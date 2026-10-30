@@ -13,7 +13,8 @@ whose half the newest draft is missing builds that draft's commit (when main has
 built); otherwise it builds origin/main's newest commit, and a draft for an older commit is deleted (it would never be
 complete). --publish publishes the draft with what it has, e.g. when there is no Mac to build the other half on.
 
-Every release's zips have the same names, Autopilot-<engine>.zip (package_release.py --unversioned), so a link like
+Every release's downloads have the same names, Autopilot-<engine>.zip (.dmg for Unreal on a Mac; package_release.py
+--unversioned), so a link like
     https://github.com/ramenvr/autopilot/releases/latest/download/Autopilot-Unreal5.8-Win64.zip
 always downloads the newest one; the release's tag (v<version>-<commit>) and title carry its version. A commit
 released already isn't redone (but with --respin). The build happens in a worktree of that commit of its own, so what
@@ -38,8 +39,9 @@ its tag. Run the two halves one after the other, not at once: two runs that both
 The downloads are signed as they're built (package_release.py --sign, which says what each needs): on Windows the
 Unity package by Unity's upm (UNITY_ORGANIZATION and its signing service account's UPM_SERVICE_ACCOUNT_KEY_ID and
 UPM_SERVICE_ACCOUNT_KEY_SECRET) and the Unreal plugins' binaries with DigiCert KeyLocker's smctl (the TribeVR Inc
-keypair); on a Mac the Unreal plugins' binaries with the Developer ID Application certificate in the keychain, and the
-zips notarized with notarytool's stored credentials (autopilot-notary), and on Windows every download's install.ps1
+keypair); on a Mac the Unreal plugins' binaries and their disk images with the Developer ID Application certificate in
+the keychain, the disk images notarized with notarytool's stored credentials (autopilot-notary) and their tickets
+stapled, and on Windows every download's install.ps1
 with smctl. A run without them stops before building (but the Unity package's, with --no-upm): a published release
 can't be signed after.
 """
@@ -80,17 +82,20 @@ def read(*args):
     return done.stdout
 
 
+MAC_DOWNLOADS = ("-Mac.dmg", "-Mac.zip")  # (the Mac Unreal downloads: disk images, zips in releases made before)
+
+
 def half(name):
-    """Which half of a release a file of it belongs to: Mac for the Mac Unreal zips, Win64 for the rest of the zips
-    (README.md and SHA256SUMS.txt are both halves')."""
-    if not name.endswith(".zip"):
-        return None
-    return "Mac" if name.endswith("-Mac.zip") else "Win64"
+    """Which half of a release a file of it belongs to: Mac for the Mac Unreal downloads, Win64 for the zips (README.md
+    and SHA256SUMS.txt are both halves')."""
+    if name.endswith(MAC_DOWNLOADS):
+        return "Mac"
+    return "Win64" if name.endswith(".zip") else None
 
 
 def complete(names):
     """Whether a release's files are both halves: Unreal for Windows and for Mac, Unity and Godot."""
-    return (any(n.endswith("-Win64.zip") for n in names) and any(n.endswith("-Mac.zip") for n in names)
+    return (any(n.endswith("-Win64.zip") for n in names) and any(n.endswith(MAC_DOWNLOADS) for n in names)
             and "Autopilot-Unity.zip" in names and "Autopilot-Godot.zip" in names)
 
 
@@ -211,10 +216,10 @@ def main(argv=None):
         previous = next((r["tag_name"] for r in releases if not r["draft"] and not r["prerelease"]), None)
         notes = os.path.join(work, f"autopilot-release-{short}-notes.md")
         with open(notes, "w", encoding="utf-8", newline="\n") as f:
-            f.write(f"Autopilot {version}, built from {commit}. Pick the zip for your engine (for Unreal, the one for "
-                    "your project's Unreal version, on Windows or macOS); README.md says how to install it, and "
-                    f"SHA256SUMS.txt lists the zips' hashes. {UNSIGNED_UNITY if args.no_upm else SIGNED} The "
-                    "downloads use Aura at https://app.tryaura.dev."
+            f.write(f"Autopilot {version}, built from {commit}. Pick the download for your engine (for Unreal, the one "
+                    "for your project's Unreal version, a zip on Windows or a disk image on macOS); README.md says how "
+                    "to install it, and SHA256SUMS.txt lists the downloads' hashes. "
+                    f"{UNSIGNED_UNITY if args.no_upm else SIGNED} The downloads use Aura at https://app.tryaura.dev."
                     f"{f' A respin of {base}: the same commit, built again.' if args.respin else ''}\n\n")
         run("gh", "release", "create", tag, *files, "-R", GITHUB, "--draft", "--target", commit, "--title",
             f"Autopilot {version} ({tag.rsplit('-', 1)[1]})", "--notes-file", notes, "--generate-notes",
@@ -253,7 +258,7 @@ def main(argv=None):
         return
     run("gh", "release", "edit", tag, "-R", GITHUB, "--draft=false", "--latest")
     print(f"\nReleased https://github.com/{GITHUB}/releases/tag/{tag} (Latest)")
-    for name in sorted(n for n in names if n.endswith(".zip")):
+    for name in sorted(n for n in names if half(n)):
         print(f"    https://github.com/{GITHUB}/releases/latest/download/{name}")
     print(f"The downloads are also in {out}")
 
