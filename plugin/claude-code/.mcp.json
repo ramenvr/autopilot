@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "autopilot": {
+      "command": "autopilot",
+      "args": [
+        "mcp"
+      ]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+# Text files are stored with LF line endings; Windows checkouts may convert them.
+* text=auto
+
+# Binary assets
+*.ttf binary
+*.png binary
+*.uasset binary
+*.umap binary

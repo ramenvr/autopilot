@@ -1,0 +1,9 @@
+{
+ "note": "An example suite for a made-up game: a farm where the player waters crops and sells them at a stall. Write your own prompts about your game; 'expected' is the answer a correct run gives, checked by hand.",
+ "prompts": [
+  {"id": "A", "prompt": "Verify that watering a planted seed makes it grow into a crop", "expected": "CONFIRMED"},
+  {"id": "B", "prompt": "Verify that the watering can holds at most 10 uses before it must be refilled", "expected": "DENIED"},
+  {"id": "C", "prompt": "Sell three crops at the stall", "expected": "achieved"},
+  {"id": "D", "prompt": "Explore the farm for bugs"}
+ ]
+}

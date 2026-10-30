@@ -1,0 +1,57 @@
+name: Uninstall e2e
+
+# Remove from this computer on computers that have never had Autopilot, on Linux, macOS (Apple Silicon and Intel) and
+# Windows (tools/uninstall_e2e.py): the agent service installed with uv, a real `autopilot serve`, and the Godot dock's
+# own buttons pressed in a headless editor. The memory and the plugins' files in a Godot, a Unity and an Unreal project
+# are laid out as runs leave them (no model keys here: no real runs); the Unity and Unreal editors aren't run (their
+# Remove is covered by their own tests, run on a machine with the engines).
+
+on:
+  pull_request:
+    paths:
+      - "autopilot/**"
+      - "plugin/godot/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - "tools/uninstall_e2e.py"
+      - ".github/workflows/uninstall-e2e.yml"
+  workflow_dispatch:
+
+env:
+  GODOT: "4.7.2"
+
+jobs:
+  e2e:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Godot (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT}-stable/Godot_v${GODOT}-stable_linux.x86_64.zip"
+          unzip -q godot.zip -d godot
+          echo "GODOT_EXE=$PWD/godot/Godot_v${GODOT}-stable_linux.x86_64" >> "$GITHUB_ENV"
+      - name: Godot (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT}-stable/Godot_v${GODOT}-stable_macos.universal.zip"
+          unzip -q godot.zip -d godot
+          echo "GODOT_EXE=$PWD/godot/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+      - name: Godot (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT}-stable/Godot_v${GODOT}-stable_win64.exe.zip"
+          unzip -q godot.zip -d godot
+          echo "GODOT_EXE=$PWD/godot/Godot_v${GODOT}-stable_win64_console.exe" >> "$GITHUB_ENV"
+      - name: Remove from this computer, end to end
+        shell: bash
+        run: python tools/uninstall_e2e.py --godot "$GODOT_EXE" --work "$RUNNER_TEMP/e2e"

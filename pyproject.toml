@@ -1,0 +1,68 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autopilot"
+version = "0.1.0"
+description = "Automated playtesting for Unreal, Unity and Godot: an agent that plays your game to verify claims, reach goals and find bugs."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "typesafe-sdk==0.7.5",
+    "requests==2.34.2",
+    "python-dotenv==1.2.3",
+    "websockets==17.1",
+    # The run's recording, encoded as H.264 MP4 (autopilot/media.py). A range, not a pin: Apple Silicon wheels of 16+ need
+    # macOS 14, so a Mac on 13 gets 15.1 (the locks in packaging/ pin one per platform)
+    "av>=15.1,<20",
+    # describe_frames' vision model on Anthropic (autopilot/vision.py): directly, through Aura's relay or OpenCode Zen
+    "anthropic==1.11.0",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Games/Entertainment",
+    "Topic :: Software Development :: Testing",
+]
+
+[project.optional-dependencies]
+# The Claude Code agent (AUTOPILOT_AGENT=claude). The default agent, OpenCode, runs under Bun: see the README.
+claude = ["claude-agent-sdk==0.2.164"]
+# The Codex agent (AUTOPILOT_AGENT=codex): OpenAI's Codex SDK and Codex itself (about 150 MB). OpenAI keys only
+codex = ["openai-codex==0.162.1"]
+dev = ["claude-agent-sdk==0.2.164", "pytest==9.1.1", "ruff==0.17.0"]
+
+[project.scripts]
+autopilot = "autopilot.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["autopilot*"]
+# Only folders with an __init__.py: OpenCode's host installs its packages beside it (opencode_host/node_modules),
+# and node-gyp's Python there must never be packaged as Autopilot's
+namespaces = false
+
+[tool.setuptools.package-data]
+autopilot = ["KIT.md", "build.json", "engines/*.md", "assistants/*.md", "agents/opencode_host/package.json",
+         "agents/opencode_host/bun.lock", "agents/opencode_host/host.ts"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "tests"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+extend-exclude = ["memory", "data"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+ignore = ["E731", "E741"]
+
+[tool.ruff.lint.per-file-ignores]
+# The plugins' live test scripts are long lists of checks, one per line
+"plugin/**/*.py" = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["autopilot"]

@@ -1,0 +1,80 @@
+name: Commit Lint
+
+# A PR's title must be a conventional commit (<type>(<scope>): <description>): commitlint with
+# @commitlint/config-conventional, passed on the command line (this repository has no package.json to hold it)
+
+on:
+  pull_request:
+    types: [opened, synchronize, edited, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  commitlint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+      - name: Install commitlint
+        run: npm install -D @commitlint/cli @commitlint/config-conventional
+      - name: Print versions
+        run: |
+          git --version
+          node --version
+          npm --version
+          npx commitlint --version
+      - name: Validate PR title with commitlint
+        if: github.event_name == 'pull_request'
+        id: commitlint
+        env:
+          # (the title through the environment, never pasted into the script: it is text anyone opening a PR writes)
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          # Capture both stdout and stderr to a file
+          printf '%s\n' "$TITLE" | npx commitlint --extends @commitlint/config-conventional > commitlint_output.txt 2>&1 || true
+
+          if [ -s commitlint_output.txt ]; then
+            echo "status=failure" >> $GITHUB_OUTPUT
+            echo "message=❌ PR title does not follow conventional commit format" >> $GITHUB_OUTPUT
+          else
+            echo "status=success" >> $GITHUB_OUTPUT
+            echo "message=✅ PR title follows conventional commit format" >> $GITHUB_OUTPUT
+          fi
+        continue-on-error: true
+      - name: Report status
+        if: always()
+        run: |
+          if [ "${{ steps.commitlint.outputs.status }}" == "success" ]; then
+            echo "${{ steps.commitlint.outputs.message }}"
+          else
+            echo "${{ steps.commitlint.outputs.message }}"
+            echo ""
+            echo "Commitlint output:"
+            if [ -f commitlint_output.txt ]; then
+              cat commitlint_output.txt
+            else
+              echo "No specific error message available"
+            fi
+            echo ""
+            echo "Expected format: <type>(<scope>): <description>"
+            echo "Examples:"
+            echo "  build: configure build system"
+            echo "  chore: update dependencies"
+            echo "  ci: update GitHub Actions workflow"
+            echo "  docs: update README"
+            echo "  feat: add new feature"
+            echo "  fix: resolve bug in login"
+            echo "  perf: optimize rendering performance"
+            echo "  refactor: restructure component"
+            echo "  revert: revert previous commit"
+            echo "  style: format code"
+            echo "  test: add unit tests"
+            exit 1
+          fi

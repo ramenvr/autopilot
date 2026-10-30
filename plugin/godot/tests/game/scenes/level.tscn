@@ -1,0 +1,169 @@
+[gd_scene load_steps=22 format=3]
+
+[ext_resource type="Script" path="res://scripts/player.gd" id="1"]
+[ext_resource type="PackedScene" path="res://scenes/fruit.tscn" id="2"]
+[ext_resource type="Script" path="res://scripts/gate.gd" id="3"]
+[ext_resource type="Script" path="res://scripts/lever.gd" id="4"]
+[ext_resource type="Script" path="res://scripts/mailbox.gd" id="5"]
+[ext_resource type="Script" path="res://scripts/pond.gd" id="6"]
+[ext_resource type="Script" path="res://scripts/hud.gd" id="7"]
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_floor"]
+size = Vector3(20, 1, 50)
+
+[sub_resource type="BoxMesh" id="BoxMesh_floor"]
+size = Vector3(20, 1, 50)
+
+[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_player"]
+radius = 0.4
+height = 1.8
+
+[sub_resource type="CapsuleMesh" id="CapsuleMesh_player"]
+radius = 0.4
+height = 1.8
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_gate"]
+size = Vector3(3, 3, 0.3)
+
+[sub_resource type="BoxMesh" id="BoxMesh_gate"]
+size = Vector3(3, 3, 0.3)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_lever"]
+size = Vector3(0.2, 1, 0.2)
+
+[sub_resource type="BoxMesh" id="BoxMesh_lever"]
+size = Vector3(0.2, 1, 0.2)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_bale"]
+size = Vector3(1, 0.8, 1)
+
+[sub_resource type="BoxMesh" id="BoxMesh_bale"]
+size = Vector3(1, 0.8, 1)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_mailbox"]
+size = Vector3(0.4, 1, 0.6)
+
+[sub_resource type="BoxMesh" id="BoxMesh_mailbox"]
+size = Vector3(0.4, 1, 0.6)
+
+[sub_resource type="BoxShape3D" id="BoxShape3D_pond"]
+size = Vector3(3, 0.4, 3)
+
+[sub_resource type="BoxMesh" id="BoxMesh_pond"]
+size = Vector3(3, 0.04, 3)
+
+[node name="Level" type="Node3D"]
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 0.5, 0.866025, 0, -0.866025, 0.5, 0, 10, 0)
+
+[node name="Floor" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -0.5, -5)
+
+[node name="Shape" type="CollisionShape3D" parent="Floor"]
+shape = SubResource("BoxShape3D_floor")
+
+[node name="Mesh" type="MeshInstance3D" parent="Floor"]
+mesh = SubResource("BoxMesh_floor")
+
+[node name="Player" type="CharacterBody3D" parent="." groups=["player"]]
+script = ExtResource("1")
+
+[node name="Shape" type="CollisionShape3D" parent="Player"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+shape = SubResource("CapsuleShape3D_player")
+
+[node name="Body" type="MeshInstance3D" parent="Player"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.9, 0)
+mesh = SubResource("CapsuleMesh_player")
+
+[node name="Head" type="Node3D" parent="Player"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 0)
+
+[node name="Camera3D" type="Camera3D" parent="Player/Head"]
+current = true
+
+[node name="Apple1" parent="." instance=ExtResource("2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.6, -4)
+
+[node name="Apple2" parent="." instance=ExtResource("2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1, 0.6, -8)
+
+[node name="Apple3" parent="." instance=ExtResource("2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0.6, -5)
+
+[node name="Apple4" parent="." instance=ExtResource("2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 3, 0.6, -6)
+
+[node name="Apple5" parent="." instance=ExtResource("2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 1, 0.6, -10)
+
+[node name="Apple6" parent="." instance=ExtResource("2")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -2, 0.6, -12)
+
+[node name="Gate" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.5, -16)
+script = ExtResource("3")
+
+[node name="Shape" type="CollisionShape3D" parent="Gate"]
+shape = SubResource("BoxShape3D_gate")
+
+[node name="Mesh" type="MeshInstance3D" parent="Gate"]
+mesh = SubResource("BoxMesh_gate")
+
+[node name="Lever" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.5, 0.5, -14)
+script = ExtResource("4")
+
+[node name="Shape" type="CollisionShape3D" parent="Lever"]
+shape = SubResource("BoxShape3D_lever")
+
+[node name="Mesh" type="MeshInstance3D" parent="Lever"]
+mesh = SubResource("BoxMesh_lever")
+
+[node name="HayBale" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 4, 0.4, -3)
+
+[node name="Shape" type="CollisionShape3D" parent="HayBale"]
+shape = SubResource("BoxShape3D_bale")
+
+[node name="Mesh" type="MeshInstance3D" parent="HayBale"]
+mesh = SubResource("BoxMesh_bale")
+
+[node name="Mailbox" type="StaticBody3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6.5, 0.5, -2.5)
+script = ExtResource("5")
+
+[node name="Shape" type="CollisionShape3D" parent="Mailbox"]
+shape = SubResource("BoxShape3D_mailbox")
+
+[node name="Mesh" type="MeshInstance3D" parent="Mailbox"]
+mesh = SubResource("BoxMesh_mailbox")
+
+[node name="Pond" type="Area3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -6, 0.02, 6)
+script = ExtResource("6")
+
+[node name="Shape" type="CollisionShape3D" parent="Pond"]
+shape = SubResource("BoxShape3D_pond")
+
+[node name="Mesh" type="MeshInstance3D" parent="Pond"]
+mesh = SubResource("BoxMesh_pond")
+
+[node name="HUD" type="CanvasLayer" parent="."]
+script = ExtResource("7")
+
+[node name="AppleLabel" type="Label" parent="HUD"]
+offset_left = 20.0
+offset_top = 20.0
+offset_right = 220.0
+offset_bottom = 46.0
+text = "Basket 0 / 10"
+
+[node name="GateLabel" type="Label" parent="HUD"]
+visible = false
+offset_left = 20.0
+offset_top = 50.0
+offset_right = 300.0
+offset_bottom = 76.0
+text = "The orchard gate is open"

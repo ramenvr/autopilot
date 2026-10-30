@@ -1,0 +1,67 @@
+; Orchard Walk: a small made-up game for the Godot addon's tests. tests/harness.py copies it, with the addon, into a
+; temporary folder and imports it there; nothing here is meant to be played by hand.
+
+config_version=5
+
+[application]
+
+config/name="Orchard Walk"
+run/main_scene="res://scenes/menu.tscn"
+config/features=PackedStringArray("4.7")
+
+[autoload]
+
+GameState="*res://scripts/game_state.gd"
+AutopilotPlaytest="*res://addons/autopilot/playtest.gd"
+
+[display]
+
+window/size/viewport_width=1152
+window/size/viewport_height=648
+
+[editor]
+
+run/main_run_args="--headless"
+
+[editor_plugins]
+
+enabled=PackedStringArray("res://addons/autopilot/plugin.cfg")
+
+[autopilot]
+
+project_id="f7f82bfd-02f3-4faf-ba36-5dae36431451"
+
+[input]
+
+move_forward={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":87), Object(InputEventKey,"physical_keycode":4194320)]
+}
+move_back={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":83), Object(InputEventKey,"physical_keycode":4194322)]
+}
+move_left={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":65), Object(InputEventKey,"physical_keycode":4194319)]
+}
+move_right={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":68), Object(InputEventKey,"physical_keycode":4194321)]
+}
+jump={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":32)]
+}
+interact={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":69)]
+}
+sprint={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":4194325)]
+}
+pause_menu={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":4194305)]
+}

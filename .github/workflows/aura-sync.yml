@@ -1,0 +1,31 @@
+name: Aura sync
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "autopilot/**"
+      - "plugin/unreal/Autopilot/**"
+      - "pyproject.toml"
+      - ".github/workflows/aura-sync.yml"
+
+permissions: {}
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/create-github-app-token@v1
+        id: app
+        with:
+          app-id: ${{ secrets.RSI_GH_APP_ID }}
+          private-key: ${{ secrets.RSI_GH_APP_PRIVATE_KEY }}
+          owner: ramenvr
+          repositories: geniusplugin
+      - name: Ask geniusplugin to sync
+        env:
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+        run: |
+          gh api repos/ramenvr/geniusplugin/dispatches -f event_type=autopilot-main \
+            -F "client_payload[sha]=$GITHUB_SHA"
+          echo "Asked geniusplugin's gamer-sync to sync autopilot@${GITHUB_SHA:0:10}"

@@ -1,0 +1,11 @@
+{
+  "name": "autopilot",
+  "owner": {"name": "Ramen VR"},
+  "plugins": [
+    {
+      "name": "autopilot",
+      "source": "./plugin/claude-code",
+      "description": "Playtest the game open in your Unreal, Unity or Godot editor with Autopilot, on your own Claude plan."
+    }
+  ]
+}

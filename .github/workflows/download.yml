@@ -1,0 +1,67 @@
+name: Download
+
+# The downloads (tools/package_release.py) on computers that have never had Autopilot: Windows, and macOS on Apple
+# Silicon and Intel. Each installs the agent service from the Godot zip as the plugin's setup does and plays the test
+# game through it with made-up OpenAI keys (tools/check_download.py)
+
+on:
+  pull_request:
+    paths:
+      - "autopilot/**"
+      - "packaging/**"
+      - "plugin/godot/**"
+      - "plugin/unity/**"
+      - "pyproject.toml"
+      - "tools/package_release.py"
+      - "tools/check_download.py"
+      - ".github/workflows/download.yml"
+  workflow_dispatch:
+
+env:
+  GODOT: "4.7.2"
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Package (Godot, Unity)
+        run: python tools/package_release.py downloads --no-unreal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: downloads
+          path: downloads/
+
+  install:
+    needs: package
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, macos-15-intel]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4  # (the test game and the check)
+      - uses: actions/setup-python@v5  # (only to run the check: the installer brings its own Python)
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: downloads
+          path: downloads
+      - name: Godot (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT}-stable/Godot_v${GODOT}-stable_win64.exe.zip"
+          unzip -q godot.zip -d godot
+          echo "GODOT_EXE=$PWD/godot/Godot_v${GODOT}-stable_win64_console.exe" >> "$GITHUB_ENV"
+      - name: Godot (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          curl -fsSL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT}-stable/Godot_v${GODOT}-stable_macos.universal.zip"
+          unzip -q godot.zip -d godot
+          echo "GODOT_EXE=$PWD/godot/Godot.app/Contents/MacOS/Godot" >> "$GITHUB_ENV"
+      - name: Install from the download and play
+        shell: bash
+        run: python tools/check_download.py downloads/Autopilot-*-Godot.zip --godot "$GODOT_EXE" --disposable

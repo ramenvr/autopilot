@@ -1,0 +1,10 @@
+{
+  "name": "autopilot-opencode-host",
+  "private": true,
+  "description": "Runs OpenCode embedded (the SDK) for autopilot/agents/opencode.py: one session, the game's tools, JSON lines on stdio.",
+  "type": "module",
+  "dependencies": {
+    "@opencode/plugin": "2.0.26",
+    "@opencode/sdk": "2.0.26"
+  }
+}

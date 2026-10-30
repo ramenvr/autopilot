@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python: ["3.12", "3.13"]  # (3.12: what the Aura client sets Autopilot up on)
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: ${{ matrix.python }}
+          activate-environment: true  # (a venv on PATH for the later steps: runners have no system 3.13)
+      - name: Install
+        run: uv pip install -e ".[dev]"
+      - name: Lint
+        run: ruff check .
+      - name: Test
+        run: pytest -q
+
+  codex:
+    # The Codex agent with Codex itself (the codex extra, ~150 MB): a whole run against a stand-in for OpenAI's API
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          activate-environment: true
+      - name: Install
+        run: uv pip install -e ".[dev,codex]"
+      - name: Test
+        run: pytest -q tests/test_codex.py

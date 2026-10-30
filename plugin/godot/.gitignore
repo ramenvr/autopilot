@@ -1,0 +1,3 @@
+# The test game's import cache (tests/harness.py imports a copy in a temporary folder)
+tests/game/.godot/
+tests/game/addons/

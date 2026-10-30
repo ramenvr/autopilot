@@ -1,0 +1,1024 @@
+/* Autopilot in The Flatness (Aura's flatness-dark theme): no shadows, no gradients, one amber; hierarchy from 1 px rules
+   and a mono micro-label scale. Dark only.
+   Surfaces: ground #121316, history rail #0f1013 (its rows alternate #0f1013 / #121316), plate #181a1e, menu / popup
+   #15171b, hover #1d2026, selected row #2a1b10 (+ a 2 px #f0873a rule on its left), well (prompt, inputs, video,
+   evidence) #0d0e11, divider rule #24262b, control outline #2c2f36.
+   Text #e6e6e8, reading text #d3d5da, row text #a4a8b0, muted and micro-labels #8b8f98; accent #f0873a (hover #f59b57,
+   at rest #c4762f), ink on any fill #141517, focus ring #ffb066, setup step done #6b4122.
+   Verdicts and states (colour / fg / surface / border): success #74b078 #b6ddb9 #16281a #3d6b42, destructive #e26a62
+   #f0b2ac #2c1715 #7a3b36, warning #e8a94e #f6dcae #2a2114 #7a5c2a, info #7aa5d8 #bcd4ee #161f2b #3a5578, neutral
+   #8b8f98 (tag #1d2026 / #c9ccd2 / #2c2f36), the accent tag #2a1b10 / #f0873a / #6b4122.
+   IBM Plex Sans 400 / 500 / 600 and IBM Plex Mono 400 / 500. Radius 8 on plates (cards, feed, composer, steer box,
+   evidence, video, menus), 0 on every control; the switch keeps its pill. UI Toolkit has no gap, no line-height, no
+   text-transform and no box-shadow: gaps are margins (a stack's children's margin-bottom, its padding-bottom less by
+   as much), capitals come from the code (ToUpperInvariant), and the history dropdown relies on its outline. */
+
+.autopilot {
+    flex-grow: 1;
+    background-color: #121316;
+    color: #e6e6e8;
+    font-size: 13px;
+    -unity-font-definition: url("Fonts/IBMPlexSans-Regular.ttf");
+}
+
+.autopilot .unity-label {
+    color: #e6e6e8;
+    padding: 0;
+    margin: 0;
+    -unity-font-definition: url("Fonts/IBMPlexSans-Regular.ttf");
+    white-space: normal;
+}
+
+/* -- type ------------------------------------------------------------------------------------------------- */
+
+.autopilot .body-500 { -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); }
+.autopilot .body-600 { -unity-font-definition: url("Fonts/IBMPlexSans-SemiBold.ttf"); }
+.autopilot .mono { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 11.5px; }
+.autopilot .mono-700 { -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf"); font-size: 11.5px; }
+
+/* the micro-label: mono 10, 0.1em, capitals (AutopilotUI.Lbl), muted */
+.autopilot .lbl {
+    -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf");
+    font-size: 10px;
+    letter-spacing: 1px;
+    color: #8b8f98;
+    white-space: normal;
+}
+
+.autopilot .nowrap { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 1; min-width: 0; }
+.autopilot .small { font-size: 12px; }
+.autopilot .tiny { font-size: 10px; }
+.autopilot .big { font-size: 15px; -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); }
+/* the mono id lines (RUN … // GOAL // DURATION … // 2 ATTEMPTS) */
+.autopilot .idline { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 10px; letter-spacing: 0.6px; color: #8b8f98; }
+
+.autopilot .t-text { color: #e6e6e8; }
+.autopilot .t-sec { color: #d3d5da; }
+.autopilot .t-sec2 { color: #a4a8b0; }
+.autopilot .t-muted { color: #8b8f98; }
+.autopilot .t-dim { color: #8b8f98; }
+.autopilot .t-lime { color: #74b078; }
+.autopilot .t-accent { color: #f0873a; }
+.autopilot .t-red { color: #e26a62; }
+.autopilot .t-amber { color: #e8a94e; }
+.autopilot .t-info { color: #7aa5d8; }
+.autopilot .t-ink { color: #141517; }
+
+/* -- layout ----------------------------------------------------------------------------------------------- */
+
+.autopilot .row { flex-direction: row; align-items: center; }
+.autopilot .col { flex-direction: column; }
+.autopilot .grow { flex-grow: 1; flex-shrink: 1; min-width: 0; }
+.autopilot .wrap { flex-wrap: wrap; }
+
+.autopilot .body { flex-grow: 1; flex-direction: row; min-height: 0; }
+.autopilot .main { flex-grow: 1; flex-shrink: 1; min-width: 0; flex-direction: column; }
+
+/* stacks: their children spaced by a margin under each (the stack's own padding-bottom is less by as much) */
+.autopilot .stack-6 > * { margin-bottom: 6px; }
+.autopilot .stack-8 > * { margin-bottom: 8px; }
+.autopilot .stack-10 > * { margin-bottom: 10px; }
+.autopilot .stack-12 > * { margin-bottom: 12px; }
+.autopilot .stack-14 > * { margin-bottom: 14px; }
+.autopilot .stack-16 > * { margin-bottom: 16px; }
+.autopilot .stack-18 > * { margin-bottom: 18px; }
+
+/* a header bar over a page (New run, Settings): 15 / 500, a rule under it */
+.autopilot .page-head {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 12px 16px;
+    border-bottom-width: 1px;
+    border-bottom-color: #24262b;
+}
+.autopilot.narrow .page-head { padding: 10px 12px; }
+.autopilot .page-title { font-size: 15px; -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); flex-grow: 1; flex-shrink: 1; }
+
+/* the history rail (wide) */
+.autopilot .rail {
+    width: 280px;
+    flex-shrink: 0;
+    background-color: #0f1013;
+    border-right-width: 1px;
+    border-right-color: #24262b;
+}
+.autopilot .rail-head {
+    flex-direction: row;
+    align-items: center;
+    padding: 12px 14px;
+    border-bottom-width: 1px;
+    border-bottom-color: #24262b;
+}
+.autopilot .rail-title { -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); margin-left: 8px; margin-right: 8px; }
+.autopilot .rail-head > .btn { margin-left: 8px; }
+.autopilot .rail-head > .settings-button { margin-left: 0; }
+
+/* the top bar (narrow): the history button, the gear, New run */
+.autopilot .topbar {
+    padding: 8px 10px 2px 10px;
+    flex-wrap: wrap;
+    border-bottom-width: 1px;
+    border-bottom-color: #24262b;
+}
+.autopilot .topbar > * { margin-bottom: 6px; }
+.autopilot .topbar > .history-button { flex-grow: 1; flex-shrink: 1; min-width: 150px; flex-basis: 150px; margin-right: 6px; }
+.autopilot .head-right { flex-direction: row; align-items: center; flex-shrink: 0; flex-grow: 0; margin-left: auto; }
+.autopilot .head-right > .btn { margin-left: 6px; }
+.autopilot .head-right > .settings-button { margin-left: 0; }
+
+/* Rerun setup and Remove greyed while a run goes (a class, so its tooltip still shows) */
+.autopilot .btn.off { opacity: 0.45; }
+
+.autopilot .tabs {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    flex-shrink: 0;
+    padding: 0 16px;
+    border-bottom-width: 1px;
+    border-bottom-color: #24262b;
+}
+.autopilot.narrow .tabs { padding: 0 12px; }
+.autopilot .ptab {
+    padding: 12px 0 10px 0;
+    margin-right: 20px;
+    -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf");
+    font-size: 12px;
+    color: #8b8f98;
+    white-space: nowrap;
+    border-bottom-width: 2px;
+    border-bottom-color: rgba(0, 0, 0, 0);
+}
+.autopilot.narrow .ptab { padding: 10px 0 8px 0; margin-right: 18px; }
+.autopilot .ptab:hover { color: #e6e6e8; }
+.autopilot .ptab.on { color: #e6e6e8; border-bottom-color: #f0873a; }
+.autopilot .tabs > .local-agent { margin-left: 20px; }
+
+.autopilot .content { flex-grow: 1; min-height: 0; }
+
+/* the status line (.status-bar): the main column's last row, under a rule; mono 11 muted, one line (its whole text in its tooltip) */
+.autopilot .status-bar {
+    flex-shrink: 0;
+    padding: 6px 16px;
+    border-top-width: 1px;
+    border-top-color: #24262b;
+    -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf");
+    font-size: 11px;
+    color: #8b8f98;
+}
+
+/* A page's content: as wide as the window up to its max width (centred beyond it); its ScrollView scrolls it
+   vertically when the window is short and never sideways (AutopilotView.PageBox) */
+.autopilot .page { width: 100%; align-self: center; flex-shrink: 0; }
+.autopilot .composer-page { max-width: 620px; padding: 28px 20px 10px 20px; }
+.autopilot.narrow .composer-page { padding: 16px 12px 2px 12px; }
+.autopilot .settings-page { max-width: 640px; padding: 18px 20px 6px 20px; }
+.autopilot.narrow .settings-page { padding: 12px 12px 0 12px; }
+.autopilot .connect-page { max-width: 540px; padding: 24px 20px; }
+.autopilot.narrow .connect-page { padding: 16px 12px; }
+.autopilot .live-body { padding: 18px 16px 2px 16px; }
+.autopilot.narrow .live-body { padding: 12px 12px 0 12px; }
+.autopilot .result-body { padding: 16px 16px 2px 16px; }
+.autopilot.narrow .result-body { padding: 12px 12px 0 12px; }
+.autopilot .scroll { flex-grow: 1; }
+
+/* a plate: cards, the feed, findings */
+.autopilot .plate {
+    background-color: #181a1e;
+    border-width: 1px;
+    border-color: #24262b;
+    border-radius: 8px;
+    padding: 12px 14px;
+}
+.autopilot .plate.stack-6 { padding-bottom: 6px; }
+.autopilot .plate.stack-8 { padding-bottom: 4px; }
+.autopilot .plate.stack-10 { padding-bottom: 2px; }
+.autopilot .plate.tight { padding: 11px 12px 5px 12px; }
+.autopilot .plate.confirm { border-color: #7a3b36; }
+.autopilot .plate.going { border-color: #3a5578; }
+.autopilot .plate.ok { border-color: #3d6b42; }
+.autopilot .plate.bad { border-color: #7a3b36; }
+.autopilot .plate.flat { padding: 0; overflow: hidden; }
+.autopilot .plate-row { flex-direction: row; align-items: center; }
+.autopilot .plate-row.wrap > * { margin-bottom: 0; }
+/* a plate's caption bar over its body (the Feed, This project) */
+.autopilot .caption { padding: 9px 11px; }
+.autopilot .caption-body { border-top-width: 1px; border-top-color: #24262b; padding: 4px 11px 8px 11px; }
+
+/* a row of buttons: 6 apart */
+.autopilot .buttons { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.autopilot .buttons > .btn { margin-right: 6px; margin-bottom: 0; }
+.autopilot .buttons.wrap > .btn { margin-bottom: 6px; }
+/* (under a rule: the Account card's, the first run's, the removal's) */
+.autopilot .buttons.ruled { border-top-width: 1px; border-top-color: #24262b; padding-top: 10px; }
+.autopilot .btn-space { margin-right: 6px; }
+
+/* -- buttons, tags, chips ---------------------------------------------------------------------------------- */
+
+/* a control: square, 28 tall, outlined (#2c2f36), its words Plex Sans 500 12 in sentence case */
+.autopilot .btn {
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    padding: 0 12px;
+    flex-shrink: 0;
+    max-width: 100%;
+    border-width: 1px;
+    border-color: #2c2f36;
+    border-radius: 0;
+    background-color: rgba(0, 0, 0, 0);
+}
+/* (a label too long for the window wraps inside its button rather than running out of it) */
+.autopilot .btn > .unity-label {
+    -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf");
+    font-size: 12px;
+    color: #e6e6e8;
+    white-space: normal;
+    -unity-text-align: middle-center;
+    flex-shrink: 1;
+}
+.autopilot .btn:hover { background-color: #1d2026; }
+.autopilot .btn.primary { background-color: #f0873a; border-color: #f0873a; }
+.autopilot .btn.primary:hover { background-color: #f59b57; border-color: #f59b57; }
+.autopilot .btn.primary > .unity-label { color: #141517; }
+.autopilot .btn.quiet { border-color: rgba(0, 0, 0, 0); }
+.autopilot .btn.quiet > .unity-label { color: #8b8f98; }
+.autopilot .btn.quiet:hover > .unity-label { color: #e6e6e8; }
+.autopilot .btn.outline { border-color: #2c2f36; }
+.autopilot .btn.danger { border-color: rgba(0, 0, 0, 0); }
+.autopilot .btn.danger > .unity-label,
+.autopilot .btn.danger:hover > .unity-label { color: #e26a62; }
+.autopilot .btn.danger:hover { background-color: #2c1715; }
+.autopilot .btn.danger-fill { background-color: #e26a62; border-color: #e26a62; }
+.autopilot .btn.danger-fill:hover { background-color: #ea8079; border-color: #ea8079; }
+.autopilot .btn.danger-fill > .unity-label { color: #141517; }
+.autopilot .btn.on { background-color: #1d2026; border-color: #2c2f36; }
+.autopilot .btn.on > .unity-label { color: #f0873a; }
+.autopilot .btn.small { min-height: 24px; padding: 0 9px; }
+.autopilot .btn.small > .unity-label { font-size: 11.5px; }
+.autopilot .btn.wide-btn { padding: 0 20px; }
+.autopilot .btn:disabled { opacity: 0.45; }
+/* a button with a glyph and no words (the gear, play / pause, show in folder, the run's Run again, Copy report and
+   Run folder): square, its glyph in the colour its words would have (AutopilotUI.Glyph's --glyph) */
+.autopilot .btn.icon { width: 28px; padding: 0; }
+.autopilot .btn.icon.small { width: 24px; }
+.autopilot .btn > .glyph { --glyph: #e6e6e8; }
+.autopilot .btn.quiet > .glyph { --glyph: #8b8f98; }
+.autopilot .btn.quiet:hover > .glyph { --glyph: #e6e6e8; }
+.autopilot .btn.primary > .glyph { --glyph: #141517; }
+.autopilot .btn.on > .glyph,
+.autopilot .btn.on:hover > .glyph { --glyph: #f0873a; }
+
+/* a tag: square, 18 tall, tinted (a surface, its colour, a border), mono 500 10 in capitals */
+.autopilot .tag {
+    height: 18px;
+    padding: 0 6px;
+    flex-shrink: 0;
+    justify-content: center;
+    border-width: 1px;
+    border-color: #2c2f36;
+    background-color: #1d2026;
+}
+.autopilot .tag > .unity-label {
+    -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf");
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    white-space: nowrap;
+    -unity-text-align: middle-center;
+    color: #c9ccd2;
+}
+.autopilot .tag.lime { background-color: #16281a; border-color: #3d6b42; }
+.autopilot .tag.lime > .unity-label { color: #74b078; }
+.autopilot .tag.red { background-color: #2c1715; border-color: #7a3b36; }
+.autopilot .tag.red > .unity-label { color: #e26a62; }
+.autopilot .tag.amber { background-color: #2a2114; border-color: #7a5c2a; }
+.autopilot .tag.amber > .unity-label { color: #e8a94e; }
+.autopilot .tag.info { background-color: #161f2b; border-color: #3a5578; }
+.autopilot .tag.info > .unity-label { color: #7aa5d8; }
+.autopilot .tag.muted { background-color: #1d2026; border-color: #2c2f36; }
+.autopilot .tag.muted > .unity-label { color: #c9ccd2; }
+.autopilot .tag.accent { background-color: #2a1b10; border-color: #6b4122; }
+.autopilot .tag.accent > .unity-label { color: #f0873a; }
+
+/* a dot before mono words (● CONNECTED, ● LIVE, ● LOCAL AGENT: drawn, the fonts have no ●) */
+.autopilot .dotlabel { flex-direction: row; align-items: center; flex-shrink: 0; }
+.autopilot .dotlabel > .unity-label { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 10px; letter-spacing: 1px; white-space: nowrap; }
+.autopilot .dotlabel.close > .unity-label { letter-spacing: 0.6px; }
+.autopilot .round-dot { width: 6px; height: 6px; border-radius: 3px; margin-right: 6px; flex-shrink: 0; }
+
+/* the policy step's action tag: square, tinted, a fill for SWITCH */
+.autopilot .act {
+    width: 62px;
+    height: 18px;
+    flex-shrink: 0;
+    border-width: 1px;
+    border-color: #2c2f36;
+    background-color: #1d2026;
+    -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf");
+    font-size: 9.5px;
+    letter-spacing: 0.57px;
+    -unity-text-align: middle-center;
+    color: #c9ccd2;
+    margin-right: 8px;
+}
+.autopilot .act.START { color: #7aa5d8; background-color: #161f2b; border-color: #3a5578; }
+.autopilot .act.KEEP { color: #c9ccd2; background-color: #1d2026; border-color: #2c2f36; }
+.autopilot .act.SWITCH { color: #141517; background-color: #f0873a; border-color: #f0873a; }
+.autopilot .act.HELD { color: #e8a94e; background-color: #2a2114; border-color: #7a5c2a; }
+.autopilot .act.DROPPED { color: #e26a62; background-color: #2c1715; border-color: #7a3b36; }
+.autopilot .act.FAILED { color: #e26a62; background-color: #2c1715; border-color: #7a3b36; }
+.autopilot .act.wide { width: auto; padding: 0 9px; height: 22px; font-size: 10.5px; }
+
+/* a filter chip: a small square control; on, the accent tag's tint */
+.autopilot .chip {
+    height: 24px;
+    padding: 0 9px;
+    margin: 0 6px 6px 0;
+    border-width: 1px;
+    border-color: #2c2f36;
+    -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf");
+    font-size: 10.5px;
+    letter-spacing: 0.63px;
+    color: #8b8f98;
+    -unity-text-align: middle-center;
+    white-space: nowrap;
+}
+.autopilot .chip:hover { background-color: #1d2026; color: #e6e6e8; }
+.autopilot .chip.on { background-color: #2a1b10; border-color: #6b4122; color: #f0873a; }
+
+/* -- fields ---------------------------------------------------------------------------------------------- */
+
+.autopilot .field-label { margin-bottom: 5px; }
+.autopilot .keyfield { margin-bottom: 10px; }
+
+.autopilot .unity-base-text-field { margin: 0; }
+.autopilot .unity-base-text-field__input {
+    background-color: #0d0e11;
+    border-width: 1px;
+    border-color: #2c2f36;
+    border-radius: 0;
+    color: #e6e6e8;
+    padding: 0 9px;
+    min-height: 28px;
+    -unity-text-align: middle-left;
+    -unity-font-definition: url("Fonts/IBMPlexSans-Regular.ttf");
+    font-size: 13px;
+}
+.autopilot .unity-base-text-field:hover .unity-base-text-field__input { border-color: #2c2f36; }
+.autopilot .unity-base-text-field:focus .unity-base-text-field__input { border-color: #ffb066; }
+.autopilot .unity-base-text-field__input .unity-label { color: #e6e6e8; }
+.autopilot .unity-base-text-field__input--placeholder,
+.autopilot .unity-base-text-field__input--placeholder .unity-label { color: #8b8f98; }
+.autopilot .multiline .unity-base-text-field__input { min-height: 64px; padding: 6px 9px; white-space: normal; -unity-text-align: upper-left; }
+.autopilot .mono-field .unity-base-text-field__input { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 12px; }
+/* a number (Minutes, Time limit): mono 12, right-aligned */
+.autopilot .num-field .unity-base-text-field__input {
+    -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf");
+    font-size: 12px;
+    -unity-text-align: middle-right;
+}
+
+/* a switch: Aura's pill (off #2c2f36, on #f0873a, its knob #ffffff), the words after it (AutopilotUI.Switch) */
+.autopilot .switch { margin: 0; }
+.autopilot .switch > .unity-toggle__input { align-items: center; flex-shrink: 1; min-width: 0; }
+.autopilot .switch .unity-toggle__checkmark,
+.autopilot .switch .unity-toggle__input:checked > .unity-toggle__checkmark,
+.autopilot .switch:checked .unity-toggle__checkmark {
+    width: 30px;
+    height: 16px;
+    min-width: 30px;
+    border-width: 0;
+    border-radius: 8px;
+    background-image: none;
+    background-color: #2c2f36;
+    flex-shrink: 0;
+    margin: 0 10px 0 0;
+    padding: 0;
+}
+.autopilot .switch:hover .unity-toggle__checkmark { background-color: #3a3e47; }
+.autopilot .switch .unity-toggle__input:checked > .unity-toggle__checkmark,
+.autopilot .switch:checked .unity-toggle__checkmark { background-color: #f0873a; }
+.autopilot .switch .knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 6px; background-color: #ffffff; }
+.autopilot .switch .unity-toggle__input:checked .knob,
+.autopilot .switch:checked .knob { left: 16px; }
+.autopilot .switch .unity-toggle__text {
+    -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf");
+    font-size: 13px;
+    color: #e6e6e8;
+    white-space: normal;
+    flex-shrink: 1;
+    min-width: 0;
+    margin: 0;
+}
+
+/* a check box (the removal's [Optional] Delete Autopilot's memories): 14 px, square, red when ticked; its words beside
+   it, wrapping in a narrow window, the box beside the first line */
+.autopilot .unity-toggle { margin: 0; }
+.autopilot .wrap-toggle > .unity-toggle__input { flex-grow: 1; flex-shrink: 1; min-width: 0; align-items: flex-start; }
+.autopilot .wrap-toggle .unity-toggle__checkmark,
+.autopilot .wrap-toggle .unity-toggle__input:checked > .unity-toggle__checkmark {
+    width: 14px;
+    height: 14px;
+    min-width: 14px;
+    margin: 2px 10px 0 0;
+    border-width: 1px;
+    border-color: #3a3e47;
+    border-radius: 0;
+    background-color: #0d0e11;
+    background-image: none;
+    flex-shrink: 0;
+}
+.autopilot .wrap-toggle .unity-toggle__input:checked > .unity-toggle__checkmark,
+.autopilot .wrap-toggle:checked .unity-toggle__checkmark { background-color: #e26a62; border-color: #e26a62; }
+.autopilot .wrap-toggle .unity-toggle__text { font-size: 12.5px; color: #d3d5da; white-space: normal; flex-shrink: 1; min-width: 0; margin: 0; }
+
+/* the dropdowns (BYOK's Coding Agent and LLM provider): a field. A locked provider (Claude Code's, Codex's) reads as
+   set, not faded */
+.autopilot .keyrow { align-items: stretch; }
+.autopilot .keyrow > .unity-base-text-field { flex-grow: 1; flex-shrink: 1; flex-basis: 0; min-width: 0; }
+.autopilot .coding-agent { margin: 0; }
+.autopilot .llm-provider { width: 140px; min-width: 140px; flex-shrink: 0; flex-grow: 0; margin: 0 6px 0 0; }
+.autopilot .key-pick > .unity-base-popup-field__input {
+    flex-grow: 1;
+    margin: 0;
+    height: auto;
+    min-height: 28px;
+    background-color: #0d0e11;
+    border-width: 1px;
+    border-color: #2c2f36;
+    border-radius: 0;
+    padding: 0 9px;
+}
+.autopilot .key-pick:focus > .unity-base-popup-field__input { border-color: #ffb066; }
+.autopilot .key-pick .unity-base-popup-field__text { color: #e6e6e8; -unity-font-definition: url("Fonts/IBMPlexSans-Regular.ttf"); font-size: 13px; }
+.autopilot .key-pick:disabled, .autopilot .key-pick:disabled > .unity-base-popup-field__input { opacity: 1; }
+.autopilot .key-pick:disabled > .unity-base-popup-field__input { background-color: #15171b; }
+.autopilot .key-pick:disabled .unity-base-popup-field__text { color: #a4a8b0; }
+
+/* -- the composer ---------------------------------------------------------------------------------------------- */
+
+/* one box (a well, radius 8): the prompt, then the Time limit and Run at its right */
+.autopilot .composer {
+    background-color: #0d0e11;
+    border-width: 1px;
+    border-color: #2c2f36;
+    border-radius: 8px;
+    padding: 11px 12px 9px 12px;
+}
+.autopilot .prompt-input .unity-base-text-field__input,
+.autopilot .prompt-input:focus .unity-base-text-field__input,
+.autopilot .prompt-input:hover .unity-base-text-field__input {
+    background-color: rgba(0, 0, 0, 0);
+    border-width: 0;
+    padding: 0;
+    min-height: 100px;
+}
+.autopilot.narrow .prompt-input .unity-base-text-field__input { min-height: 120px; }
+.autopilot .run-row { margin-top: 8px; min-height: 28px; flex-wrap: wrap; }
+.autopilot .minutes-row { flex-direction: row; align-items: center; flex-shrink: 0; }
+.autopilot .minutes-key { margin-right: 8px; }
+.autopilot .minutes-field { width: 52px; }
+.autopilot .run-button { margin-left: 8px; padding: 0 18px; }
+.autopilot .busy-line { font-size: 12px; color: #8b8f98; }
+/* out of Aura credits: the red alert's tint over the box (radius 8, as the box), Aura's words, Add credits under them */
+.autopilot .credits { border-radius: 8px; }
+.autopilot .credits > .credits-words { font-size: 12px; }
+.autopilot .credits > .btn { align-self: flex-start; margin-top: 8px; }
+/* the composer's foot: the link and Disconnect on one row at the right; the address gives up its room first */
+.autopilot .link-row { flex-wrap: nowrap; border-top-width: 1px; border-top-color: #24262b; padding-top: 10px; margin-top: 8px; }
+.autopilot .link-row > .link { flex-shrink: 0; }
+.autopilot .link-row > .link-url { margin: 0 10px; }
+/* a command to type */
+.autopilot .code { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); color: #f0873a; font-size: 11.5px; }
+
+/* -- run history -------------------------------------------------------------------------------------- */
+
+/* a run's row: alternating #0f1013 / #121316 in the rail; hover #1d2026; selected #2a1b10 and a 2 px accent rule on
+   its left, its words high-contrast */
+.autopilot .hist {
+    padding: 9px 14px 9px 12px;
+    border-left-width: 2px;
+    border-left-color: rgba(0, 0, 0, 0);
+    background-color: #0f1013;
+}
+.autopilot .hist.alt { background-color: #121316; }
+.autopilot .history-pop .hist { padding: 9px 12px 9px 10px; background-color: rgba(0, 0, 0, 0); }
+.autopilot .hist:hover,
+.autopilot .history-pop .hist:hover { background-color: #1d2026; }
+.autopilot .hist.on,
+.autopilot .hist.on:hover,
+.autopilot .history-pop .hist.on { background-color: #2a1b10; border-left-color: #f0873a; }
+.autopilot .hist-title { font-size: 12.5px; color: #d3d5da; margin-top: 3px; }
+.autopilot .hist.on .hist-title { color: #e6e6e8; }
+.autopilot .hist-meta { margin-left: 8px; font-size: 10px; color: #8b8f98; }
+.autopilot .history-button .hist-meta { color: #a4a8b0; }
+
+.autopilot .history-button {
+    height: 28px;
+    padding: 0 8px;
+    border-width: 1px;
+    border-color: #2c2f36;
+    background-color: #0f1013;
+}
+.autopilot .history-button:hover { background-color: #1d2026; }
+.autopilot .history-button:disabled { opacity: 0.6; }
+.autopilot .history-button > .glyph { --glyph: #a4a8b0; margin-left: 8px; }
+
+/* the narrow dock's history list: a floating menu (no shadow in USS: its outline) */
+.autopilot .history-pop {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    top: 44px;
+    max-height: 70%;
+    background-color: #15171b;
+    border-width: 1px;
+    border-color: #2c2f36;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.autopilot .savedata-box {
+    padding: 9px 14px;
+    border-top-width: 1px;
+    border-top-color: #24262b;
+}
+.autopilot .history-pop .savedata-box { padding: 8px 12px; }
+.autopilot .savedata-box.asking,
+.autopilot .history-pop .savedata-box.asking { padding: 10px; }
+.autopilot .reset-confirm { padding: 11px 12px 5px 12px; }
+.autopilot .reset-going,
+.autopilot .reset-outcome { margin-top: 6px; }
+.autopilot .savedata-name { flex-shrink: 0; }
+.autopilot .savedata-line { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 11px; color: #a4a8b0; margin-left: 8px; }
+.autopilot .savedata-reset { margin-left: 8px; }
+.autopilot .no-runs { font-size: 12px; color: #8b8f98; padding: 10px 14px; }
+
+/* the notice under the top bar: the warning's surface, its rule under it */
+.autopilot .notice {
+    padding: 7px 10px;
+    background-color: #2a2114;
+    border-bottom-width: 1px;
+    border-bottom-color: #7a5c2a;
+}
+.autopilot.wide .notice { padding: 7px 16px; }
+.autopilot .notice-text { font-size: 12px; color: #f6dcae; margin-right: 8px; }
+
+/* -- running ------------------------------------------------------------------------------------------- */
+
+.autopilot .live-head { padding: 12px 16px; border-bottom-width: 1px; border-bottom-color: #24262b; flex-shrink: 0; }
+.autopilot.narrow .live-head { padding: 10px 12px; flex-wrap: wrap; }
+.autopilot .live-prompt { font-size: 15px; -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); margin: 0 12px; }
+.autopilot .elapsed { -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf"); font-size: 18px; margin: 0 12px 0 12px; }
+
+/* the steer box: a well (radius 8) with Steer in it, under a rule */
+.autopilot .steer { padding: 10px 16px 12px 16px; border-top-width: 1px; border-top-color: #24262b; flex-shrink: 0; }
+.autopilot.narrow .steer { padding: 10px 12px 12px 12px; }
+.autopilot .steer-box {
+    flex-direction: row;
+    align-items: center;
+    flex-grow: 1;
+    background-color: #0d0e11;
+    border-width: 1px;
+    border-color: #2c2f36;
+    border-radius: 8px;
+    padding: 6px 6px 6px 12px;
+}
+.autopilot .steer-box > .unity-base-text-field { margin-right: 8px; }
+/* (stopping: the box and Steer locked, the whole box at 55 %) */
+.autopilot .steer-box.locked { opacity: 0.55; }
+.autopilot .steer-box.locked > .unity-base-text-field:disabled,
+.autopilot .steer-box.locked > .btn:disabled { opacity: 1; }
+/* (one line when its hints fit, more when the window is narrow: AutopilotView.FitSteerHints) */
+.autopilot .steer .steer-input .unity-base-text-field__input,
+.autopilot .steer .steer-input:focus .unity-base-text-field__input,
+.autopilot .steer .steer-input:hover .unity-base-text-field__input {
+    min-height: 0;
+    padding: 0;
+    border-width: 0;
+    background-color: rgba(0, 0, 0, 0);
+    -unity-text-align: middle-left;
+}
+
+/* the stages: a 2 px track, the accent up to the stage going; their names under it */
+.autopilot .stage-track { height: 2px; }
+/* one cell per stage; a cell is never narrower than its name's longest word (AutopilotView.FitStageName), so when
+   the panel is narrow the cells wrap onto more lines rather than cut a name */
+.autopilot .stage-labels { flex-direction: row; flex-wrap: wrap; margin-top: 8px; }
+.autopilot .stage-label { flex-grow: 1; flex-shrink: 0; flex-basis: 0; margin-bottom: 2px; }
+.autopilot .stage-name {
+    -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf");
+    font-size: 10px;
+    letter-spacing: 0.8px;
+    color: #8b8f98;
+    margin-bottom: 2px;
+}
+.autopilot .stage-name.done { color: #d3d5da; }
+.autopilot .stage-name.now { color: #f0873a; -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf"); }
+.autopilot .stage-time { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 10px; color: #8b8f98; }
+.autopilot .stage-time.now { color: #f0873a; }
+
+/* NOW: a plate, a 6 px accent square before what it does */
+.autopilot .now-card { padding: 9px 11px; }
+.autopilot .now-text { font-size: 14px; -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); margin-top: 3px; }
+.autopilot .now-mark { width: 6px; height: 6px; background-color: #f0873a; margin-right: 8px; flex-shrink: 0; }
+
+/* the harness attempts: a filled accent square each finished, a 2 px outline the one going (10 px) */
+.autopilot .attempts { flex-wrap: nowrap; }
+.autopilot .attempts > .lbl { margin-right: 8px; flex-shrink: 0; white-space: nowrap; }
+.autopilot .attempt-boxes { flex-direction: row; align-items: center; flex-grow: 1; flex-shrink: 1; flex-basis: 0; min-width: 0; overflow: hidden; }
+.autopilot .attempt-boxes > .attempt-count { flex-shrink: 0; }
+.autopilot .attempts > .step-count { flex-shrink: 1; margin-left: 8px; }
+.autopilot .attempt-box { width: 10px; height: 10px; margin-right: 4px; flex-shrink: 0; background-color: #f0873a; }
+.autopilot .attempt-box.current { background-color: rgba(0, 0, 0, 0); border-width: 2px; border-color: #f0873a; }
+.autopilot .attempt-count { -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf"); font-size: 13px; margin-left: 2px; }
+
+.autopilot .feed-card { padding: 0; overflow: hidden; }
+.autopilot .feed-title { font-size: 12px; -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); }
+.autopilot .feed-line { flex-direction: row; align-items: flex-start; padding: 5px 0; }
+.autopilot .feed-line .tag { margin-top: -1px; }
+.autopilot .feed-line.memory { margin-top: 4px; }
+.autopilot .feed-time { width: 36px; margin-right: 12px; flex-shrink: 0; color: #8b8f98; }
+.autopilot .feed-text { flex-grow: 1; flex-shrink: 1; color: #a4a8b0; }
+.autopilot .feed-line.attempt .feed-text { color: #e6e6e8; -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf"); }
+.autopilot .feed-line.attempt.current .feed-text { color: #f0873a; }
+.autopilot .feed-line.stage .feed-text { color: #e6e6e8; }
+.autopilot .feed-line.now .feed-text { color: #d3d5da; }
+.autopilot .feed-line.you .feed-text { color: #e6e6e8; -unity-font-definition: url("Fonts/IBMPlexMono-Medium.ttf"); }
+.autopilot .feed-line.engine .feed-text,
+.autopilot .feed-line.agent .feed-text { color: #d3d5da; }
+.autopilot .feed-line.memory .feed-text { color: #74b078; }
+/* an activity line: its time, its kind's icon (12 px, in its kind's colour: the editor's icon tinted, or a drawn glyph, or a
+   letter), its words (the result after them in the muted colour, by rich text), its folds; a stage's heading over its lines */
+.autopilot .feed-line.activity .feed-text { color: #e6e6e8; }
+.autopilot .feed-mark { width: 12px; margin-right: 8px; flex-shrink: 0; color: #8b8f98; --glyph: #8b8f98; --unity-image-tint-color: #8b8f98; -unity-text-align: upper-left; }
+.autopilot .feed-mark.icon { height: 12px; margin-top: 2px; }
+.autopilot .feed-mark.mark-text, .autopilot .feed-mark.mark-steer { color: #d3d5da; --glyph: #d3d5da; --unity-image-tint-color: #d3d5da; }
+.autopilot .feed-mark.mark-probe, .autopilot .feed-mark.mark-episode { color: #f0873a; --glyph: #f0873a; --unity-image-tint-color: #f0873a; }
+.autopilot .feed-mark.mark-write, .autopilot .feed-mark.mark-refine { color: #7aa5d8; --glyph: #7aa5d8; --unity-image-tint-color: #7aa5d8; }
+.autopilot .feed-mark.mark-look { color: #a08ad8; --glyph: #a08ad8; --unity-image-tint-color: #a08ad8; }
+.autopilot .feed-mark.mark-restart { color: #e8a94e; --glyph: #e8a94e; --unity-image-tint-color: #e8a94e; }
+.autopilot .feed-mark.mark-report { color: #74b078; --glyph: #74b078; --unity-image-tint-color: #74b078; }
+.autopilot .feed-mark.mark-alert { color: #e26a62; --glyph: #e26a62; --unity-image-tint-color: #e26a62; }
+.autopilot .feed-body { min-width: 0; }
+.autopilot .feed-fold { margin-top: 3px; }
+.autopilot .feed-fold-toggle { color: #8b8f98; padding: 1px 0; }
+.autopilot .feed-fold-toggle:hover { color: #e6e6e8; }
+.autopilot .feed-detail { max-height: 320px; margin-top: 4px; margin-bottom: 2px; background-color: #0d0e11; border-width: 1px; border-color: #2c2f36; border-radius: 4px; }
+.autopilot .feed-detail-text { margin: 0; }
+.autopilot .feed-detail-text .unity-base-text-field__input { background-color: #0d0e11; border-width: 0; color: #d3d5da; padding: 8px 10px; white-space: normal; }
+.autopilot .feed-line.heading { align-items: center; padding: 14px 0 4px 0; }
+.autopilot .feed-heading-name { color: #d3d5da; }
+.autopilot .feed-heading-count { margin-left: 8px; color: #8b8f98; }
+.autopilot .feed-heading-rule { height: 1px; margin-left: 10px; background-color: #24262b; }
+.autopilot .feed-tab { flex-grow: 1; min-height: 0; padding: 16px; }
+.autopilot.narrow .feed-tab { padding: 12px; }
+.autopilot .feed-plate { flex-grow: 1; min-height: 0; padding: 6px 11px 8px 11px; overflow: hidden; }
+
+/* -- the result ------------------------------------------------------------------------------------------- */
+
+.autopilot .run-id { margin-right: 6px; }
+.autopilot.narrow .run-head { align-items: flex-start; }
+.autopilot .run-head > .btn { margin-left: 6px; }
+
+/* the verdict over its reason: a solid block (16 / 600, capitals, ink on the verdict's colour) */
+.autopilot .verdict-block { align-items: flex-start; }
+.autopilot .verdict { align-self: flex-start; padding: 2px 10px; }
+.autopilot .verdict > .unity-label {
+    -unity-font-definition: url("Fonts/IBMPlexSans-SemiBold.ttf");
+    font-size: 16px;
+    letter-spacing: 0.64px;
+    color: #141517;
+    white-space: nowrap;
+}
+.autopilot .reason { color: #d3d5da; margin-top: 8px; }
+
+/* the run's recording: a well (radius 8) the video letterboxed in, then play, the scrub line, the time and show in
+   folder on one row */
+.autopilot .rec-frame {
+    height: 230px;
+    background-color: #0d0e11;
+    border-width: 1px;
+    border-color: #24262b;
+    border-radius: 8px;
+    overflow: hidden;
+}
+.autopilot.narrow .rec-frame { height: 200px; }
+.autopilot .rec-image { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
+.autopilot .rec-mark { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
+.autopilot .rec-controls { margin-top: 8px; flex-wrap: nowrap; }
+.autopilot .rec-scrub { flex-grow: 1; flex-shrink: 1; min-width: 40px; height: 14px; margin: 0 10px; justify-content: center; }
+.autopilot .rec-track { height: 2px; background-color: #24262b; }
+.autopilot .rec-fill { height: 2px; background-color: #f0873a; }
+.autopilot .rec-time { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 11px; color: #a4a8b0; flex-shrink: 0; margin-right: 10px; }
+.autopilot.narrow .rec-controls > .rec-scrub { margin: 0 8px; }
+.autopilot.narrow .rec-time { margin-right: 8px; }
+.autopilot .rec-problem { margin-top: 6px; font-size: 12px; color: #e8a94e; }
+
+/* evidence and the like: a well, mono 11.5 */
+.autopilot .monobox {
+    padding: 9px 11px 5px 11px;
+    background-color: #0d0e11;
+    border-width: 1px;
+    border-color: #24262b;
+    border-radius: 8px;
+}
+.autopilot .monobox > .unity-label { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 11.5px; color: #d3d5da; margin-bottom: 4px; }
+.autopilot.narrow .monobox > .unity-label { font-size: 11px; }
+.autopilot .section-head { margin-bottom: 6px; }
+
+/* a finding: a plate (11 × 12), its tag and label, its words, small buttons */
+.autopilot .finding-title { -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); }
+.autopilot .finding-body { font-size: 12.5px; color: #a4a8b0; }
+
+/* -- an alert: square, a surface and its border ------------------------------------------------------------------ */
+
+.autopilot .problem { padding: 9px 11px; border-width: 1px; }
+.autopilot .problem.red { background-color: #2c1715; border-color: #7a3b36; }
+.autopilot .problem.red > .unity-label { color: #f0b2ac; }
+.autopilot .problem.amber { background-color: #2a2114; border-color: #7a5c2a; }
+.autopilot .problem.amber > .unity-label { color: #f6dcae; }
+.autopilot .problem > .problem-detail,
+.autopilot .problem.amber > .problem-detail,
+.autopilot .problem.red > .problem-detail { color: #c9ccd2; font-size: 10.5px; margin-top: 2px; }
+.autopilot .problem.info { background-color: #161f2b; border-color: #3a5578; }
+.autopilot .problem.info .unity-label { color: #bcd4ee; }
+.autopilot .problem > .progress { margin-top: 0; }
+
+/* -- the agent service card (not connected) ------------------------------------------------------------------- */
+
+.autopilot .connect { padding: 0; overflow: hidden; }
+.autopilot .connect-body { padding: 12px 14px 2px 14px; }
+.autopilot .connect-where { margin-top: -6px; }
+.autopilot .connect-where > .code { margin-left: 4px; }
+/* the card's Advanced: folded under a rule, the three fields in it */
+.autopilot .advanced { padding: 9px 14px 12px 14px; border-top-width: 1px; border-top-color: #24262b; margin: 0; }
+.autopilot .advanced .unity-foldout__toggle { margin: 0; }
+.autopilot .advanced .unity-foldout__text { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 10px; letter-spacing: 1px; color: #8b8f98; }
+.autopilot .advanced .unity-foldout__content { margin-left: 0; padding-top: 10px; }
+.autopilot .advanced .unity-foldout__checkmark { -unity-background-image-tint-color: #8b8f98; }
+.autopilot .back-row { margin-top: 10px; }
+
+/* -- first-run setup --------------------------------------------------------------------------------------- */
+
+.autopilot .setup { max-width: 600px; padding: 28px 20px 2px 20px; }
+.autopilot.narrow .setup { padding: 20px 14px 0 14px; }
+.autopilot .setup > * { margin-bottom: 18px; }
+.autopilot.narrow .setup > * { margin-bottom: 14px; }
+
+.autopilot .stepper { flex-direction: row; align-items: flex-start; }
+.autopilot .step { flex-grow: 1; flex-basis: 0; min-width: 0; }
+.autopilot .step.next { margin-left: 8px; }
+.autopilot .step-bar { height: 2px; background-color: #24262b; margin-bottom: 6px; }
+.autopilot .step-label { white-space: normal; }
+.autopilot .step.done .step-bar { background-color: #6b4122; }
+.autopilot .step.done .step-label { color: #a4a8b0; }
+.autopilot .step.now .step-bar { background-color: #f0873a; }
+.autopilot .step.now .step-label { color: #f0873a; }
+
+.autopilot .setup-head { flex-direction: row; align-items: center; }
+.autopilot .setup-title {
+    -unity-font-definition: url("Fonts/IBMPlexSans-SemiBold.ttf");
+    font-size: 18px;
+    letter-spacing: -0.18px;
+    margin-left: 10px;
+    flex-shrink: 1;
+    white-space: normal;
+}
+
+.autopilot .setup-text { color: #a4a8b0; }
+.autopilot .setup-nav { flex-direction: row; align-items: center; flex-wrap: wrap; border-top-width: 1px; border-top-color: #24262b; padding-top: 12px; }
+.autopilot .setup-nav > .nav-btn { margin-left: 6px; margin-bottom: 4px; }
+.autopilot .setup-nav > .btn { margin-bottom: 4px; }
+.autopilot .setup-nav.plain { border-top-width: 0; padding-top: 0; }
+.autopilot .setup-nav-narrow { border-top-width: 1px; border-top-color: #24262b; padding-top: 12px; }
+.autopilot .setup-nav-narrow > .btn { margin-bottom: 6px; }
+.autopilot .setup-nav-narrow > .btn.stretch { align-self: stretch; }
+.autopilot .btn.back { align-self: flex-start; }
+.autopilot .pair > .btn.half { flex-grow: 1; flex-basis: 0; flex-shrink: 1; }
+.autopilot .pair > .btn.half.first { margin-right: 6px; }
+.autopilot .split.row > .btn { margin-left: 12px; }
+.autopilot .split.narrow > .btn { margin-top: 10px; align-self: stretch; }
+.autopilot .btn.full { flex-grow: 1; }
+
+.autopilot .keys { margin-top: 0; }
+.autopilot .setup-foot { flex-direction: row; border-top-width: 1px; border-top-color: #24262b; padding-top: 12px; }
+.autopilot .quietcard.dimmed { opacity: 0.55; }
+
+.autopilot .progress { flex-direction: row; align-items: center; }
+.autopilot .status-ready { background-color: #16281a; border-color: #3d6b42; }
+.autopilot .status-ready > .check { margin-right: 12px; }
+.autopilot .ready-title { -unity-font-definition: url("Fonts/IBMPlexSans-Medium.ttf"); color: #b6ddb9; }
+.autopilot .ready-url { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 10.5px; color: #8b8f98; }
+.autopilot .linkbox {
+    padding: 4px 4px 4px 10px;
+    background-color: #0d0e11;
+    border-width: 1px;
+    border-color: #24262b;
+    align-items: center;
+}
+.autopilot .linkbox.narrow { padding: 8px 10px; align-items: stretch; }
+.autopilot .linkbox > .unity-label { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 11px; color: #a4a8b0; }
+.autopilot .signed-as { flex-direction: row; align-items: flex-end; flex-wrap: wrap; }
+.autopilot .signed-as > .unity-label { margin-right: 8px; }
+
+.autopilot .prep-step { flex-direction: row; align-items: center; margin-bottom: 10px; }
+.autopilot .prep-step .ring { width: 12px; height: 12px; margin-right: 10px; flex-shrink: 0; border-width: 2px; border-color: #2c2f36; }
+.autopilot .serve-row > * { margin-right: 8px; }
+
+.autopilot .recap { border-top-width: 1px; border-top-color: #24262b; border-bottom-width: 1px; border-bottom-color: #24262b; }
+.autopilot .recap-row { padding: 8px 0; }
+.autopilot .recap-row.next { border-top-width: 1px; border-top-color: #24262b; }
+.autopilot .recap-row.row { align-items: flex-start; }
+.autopilot .recap-key { width: 130px; flex-shrink: 0; margin-right: 10px; padding-top: 3px; }
+.autopilot .recap-row.col > .recap-key { margin-bottom: 3px; padding-top: 0; }
+
+/* the account card of the Settings page */
+.autopilot .account-line { flex-direction: row; align-items: center; }
+.autopilot .account-line > .btn { margin-left: 8px; }
+.autopilot .account-line > .account-url { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 10px; color: #8b8f98; margin-left: 8px; }
+.autopilot .account-line > .account-words { font-size: 12px; color: #a4a8b0; }
+.autopilot .bill-row { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
+.autopilot .bill-row > .bill-amount { margin-left: 4px; }
+.autopilot .keys-line { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 11px; color: #a4a8b0; }
+/* a setting's card (Share runs, Autopilot in Claude Code & Codex): its title, the line under it (as the sharing
+   text), its control; the same gaps in each (AutopilotView.SettingCard) */
+.autopilot .setting > .setting-title { margin-bottom: 6px; }
+.autopilot .setting > .setting-line { margin-bottom: 10px; }
+.autopilot .setting-control { align-items: flex-start; }
+.autopilot .setting-control > .connect-command { align-self: stretch; }
+.autopilot .setting-control > .next { margin-top: 6px; }
+/* the sharing switch: its words (Data sharing on/off) 8 px from the pill, checked or not */
+.autopilot .switch.share-toggle .unity-toggle__checkmark,
+.autopilot .switch.share-toggle .unity-toggle__input:checked > .unity-toggle__checkmark,
+.autopilot .switch.share-toggle:checked .unity-toggle__checkmark { margin-right: 8px; }
+/* the first-run setup's Minutes */
+.autopilot .time-limit-field { width: 56px; }
+
+/* -- usage: This project's runs (Time, Prompt, Billed) -------------------------------------------------------- */
+
+.autopilot .usage-head { flex-direction: row; align-items: flex-end; flex-wrap: wrap; padding: 9px 14px; }
+.autopilot .usage-head > .lbl { flex-grow: 1; flex-shrink: 1; margin-right: 10px; }
+.autopilot .usage-total { flex-direction: row; align-items: flex-end; }
+.autopilot .usage-total > .unity-label { font-size: 12px; }
+.autopilot .usage-total > .mono { margin-left: 4px; }
+.autopilot .usage-body { border-top-width: 1px; border-top-color: #24262b; padding: 4px 8px 8px 8px; }
+.autopilot .urow {
+    flex-direction: row;
+    align-items: center;
+    padding: 7px 8px 7px 6px;
+    border-left-width: 2px;
+    border-left-color: rgba(0, 0, 0, 0);
+}
+.autopilot .urow.head { padding: 6px 8px; border-left-width: 0; }
+/* (cells shrink, never overflow the row: a number that doesn't fit ends in an ellipsis, the whole in its tooltip) */
+.autopilot .urow > .unity-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.autopilot .urow > .mono { font-size: 11px; }
+.autopilot .ucell-when { width: 96px; flex-shrink: 1; min-width: 0; margin-right: 8px; }
+.autopilot .ucell-name { flex-grow: 1; flex-shrink: 1; min-width: 30px; margin-right: 8px; font-size: 12.5px; }
+.autopilot .urow.head > .ucell-name { font-size: 10px; }
+.autopilot .ucell-bill { width: 90px; flex-shrink: 1; min-width: 0; -unity-text-align: middle-right; }
+.autopilot.narrow .ucell-when { width: 78px; }
+.autopilot.narrow .ucell-bill { width: 64px; }
+.autopilot.narrow .usage-head { padding: 9px 10px; }
+.autopilot.narrow .usage-body { padding: 4px 4px 8px 4px; }
+.autopilot.narrow .urow .lbl { letter-spacing: 0.3px; }
+
+/* -- policy log ------------------------------------------------------------------------------------------ */
+
+/* the filters: Policy (All, H1, H2…), a rule, Show (SWITCH first), then following live or paused on a step */
+.autopilot .filters { padding: 8px 16px 2px 16px; border-bottom-width: 1px; border-bottom-color: #24262b; flex-wrap: wrap; }
+.autopilot.narrow .filters { padding: 8px 10px 2px 10px; }
+.autopilot .filters .lbl { margin-right: 8px; margin-bottom: 6px; }
+.autopilot .filter-chips { flex-shrink: 1; min-width: 0; }
+.autopilot .filter-follow { flex-direction: row; align-items: center; flex-shrink: 0; }
+.autopilot .filter-follow > .dotlabel { margin-left: 6px; margin-bottom: 6px; }
+.autopilot .filter-follow > .dotlabel > .unity-label { letter-spacing: 1px; }
+.autopilot .filter-follow > .btn { margin-bottom: 6px; margin-left: 6px; }
+/* Find an action…: mono 11, 24 tall, 200 wide (the rest of the row when narrow) */
+.autopilot .find-field { width: 200px; flex-shrink: 0; margin: 0 0 6px 6px; }
+.autopilot .find-field .unity-base-text-field__input { min-height: 24px; height: 24px; font-size: 11px; }
+.autopilot.narrow .filter-gap { display: none; }
+.autopilot.narrow .find-field { width: auto; flex-grow: 1; flex-shrink: 1; min-width: 140px; margin-left: 0; }
+.autopilot .step-nav { margin-left: 6px; }
+.autopilot .paused-on { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 10px; letter-spacing: 1px; color: #e8a94e; margin-left: 6px; margin-bottom: 6px; white-space: nowrap; }
+.autopilot .filter-sep { width: 1px; height: 18px; background-color: #2c2f36; margin: 0 6px 6px 0; }
+
+/* the replay strip: on the plate's ground, the lane on the hover ground */
+.autopilot .strip { padding: 10px 16px 8px 16px; border-bottom-width: 1px; border-bottom-color: #24262b; background-color: #181a1e; }
+.autopilot.narrow .strip { padding: 8px 10px 6px 10px; }
+.autopilot .strip > * { margin-bottom: 3px; }
+.autopilot .strip-lane { height: 16px; flex-grow: 1; }
+.autopilot.narrow .strip-lane { height: 14px; }
+.autopilot .strip-ticks { height: 10px; flex-grow: 1; }
+.autopilot .strip-name { width: 120px; flex-shrink: 0; }
+.autopilot.narrow .strip-name { width: 84px; }
+.autopilot .strip-legend { margin-left: 120px; padding-top: 2px; }
+.autopilot.narrow .strip-ticks-row,
+.autopilot.narrow .strip-legend { display: none; }
+.autopilot .legend-item { flex-direction: row; align-items: center; margin-right: 14px; margin-bottom: 4px; }
+.autopilot .swatch { width: 8px; height: 8px; margin-right: 6px; }
+
+/* the table: mono 11, 28 tall rows under a 1 px #1d2026 line, the selected one #2a1b10 with the accent rule */
+.autopilot .prow { flex-direction: row; align-items: center; height: 28px; padding: 0 14px 0 14px; border-bottom-width: 1px; border-bottom-color: #1d2026; }
+.autopilot .prow > * { margin-right: 9px; flex-shrink: 0; }
+.autopilot .prow > .unity-label { font-size: 11px; color: #d3d5da; }
+.autopilot .prow .c-dec > .grow { font-size: 11px; }
+.autopilot .prow .c-wall { width: 92px; }
+.autopilot .prow > .c-wall { color: #8b8f98; }
+.autopilot .prow .c-t { width: 52px; }
+.autopilot .prow .c-n { width: 50px; }
+.autopilot .prow > .c-n { color: #8b8f98; }
+.autopilot .prow .c-cur { width: 104px; }
+.autopilot .prow .c-dec { width: 176px; flex-direction: row; align-items: center; }
+.autopilot .prow .c-bar { flex-grow: 1; flex-shrink: 1; min-width: 40px; height: 9px; }
+.autopilot .prow .c-ms { width: 30px; -unity-text-align: middle-right; margin-right: 0; }
+.autopilot .prow > .c-ms { color: #8b8f98; }
+.autopilot .prow.head { height: 28px; padding: 0 14px 0 16px; border-bottom-color: #24262b; }
+.autopilot .prow.head > .lbl { font-size: 10px; color: #8b8f98; }
+.autopilot.narrow .prow { padding: 0 10px 0 10px; margin-right: 0; }
+.autopilot.narrow .prow > * { margin-right: 8px; }
+.autopilot.narrow .prow.head { height: 26px; padding: 0 10px 0 12px; }
+.autopilot.narrow .prow .c-wall { display: none; }
+.autopilot.narrow .prow .c-cur { display: none; }
+.autopilot.narrow .prow .c-t { display: none; }
+.autopilot.narrow .filter-sep { display: none; }
+.autopilot.narrow .prow .c-dec { width: 150px; }
+.autopilot.narrow .prow .c-bar { min-width: 30px; }
+.autopilot.narrow .prow .c-ms { width: 26px; margin-right: 0; }
+
+.autopilot .policy-list { flex-grow: 1; }
+.autopilot .unity-collection-view__item { background-color: rgba(0, 0, 0, 0); border-left-width: 2px; border-left-color: rgba(0, 0, 0, 0); }
+.autopilot .unity-collection-view__item:hover { background-color: #1d2026; }
+.autopilot .unity-collection-view__item--selected,
+.autopilot .unity-collection-view__item--selected:hover {
+    background-color: #2a1b10;
+    border-left-color: #f0873a;
+}
+.autopilot .policy-foot { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 10px; color: #8b8f98; padding: 7px 16px; border-top-width: 1px; border-top-color: #24262b; }
+.autopilot.narrow .policy-foot { padding: 6px 10px; }
+
+/* the step picked: a side panel on the plate's ground (440 px), under the table when narrow */
+.autopilot .detail { background-color: #181a1e; }
+.autopilot.wide .detail { width: 440px; flex-shrink: 0; border-left-width: 1px; border-left-color: #24262b; }
+.autopilot.narrow .detail { border-top-width: 1px; border-top-color: #24262b; flex-grow: 1; }
+.autopilot.narrow .policy-table { height: 45%; flex-grow: 0; flex-shrink: 0; }
+.autopilot .detail-box { padding: 14px 18px 4px 18px; }
+.autopilot.narrow .detail-box { padding: 12px 12px 2px 12px; }
+.autopilot .detail-head { margin-top: 7px; }
+.autopilot .step-failed { margin-top: 6px; }
+.autopilot .detail-head > * { margin-right: 8px; }
+.autopilot .detail-action { font-size: 12px; }
+.autopilot .detail-then { margin-top: 7px; }
+.autopilot .detail-probs { margin-top: 12px; }
+.autopilot .detail-probs-head { margin-bottom: 9px; }
+.autopilot .detail-toggles { margin: 8px 0 12px 0; flex-wrap: wrap; }
+.autopilot .detail-toggles > .chip { margin: 0 6px 0 0; }
+.autopilot .detail-toggles > .btn { margin-left: 0; }
+
+.autopilot .action-name { flex-shrink: 0; overflow: hidden; }
+.autopilot .action-name > .unity-label { font-size: 11.5px; }
+.autopilot .pbar-row { flex-direction: row; align-items: center; margin-bottom: 6px; }
+.autopilot .pbar-name { width: 160px; margin-right: 10px; }
+.autopilot.narrow .pbar-name { width: 130px; margin-right: 8px; }
+.autopilot .pbar { flex-grow: 1; height: 10px; }
+.autopilot .pbar-value { width: 34px; font-size: 11.5px; -unity-text-align: middle-right; }
+.autopilot.narrow .pbar-value { width: 30px; }
+
+/* the readable observation: sections on the ground (radius 8) inside the panel */
+.autopilot .sec {
+    background-color: #121316;
+    border-width: 1px;
+    border-color: #24262b;
+    border-radius: 8px;
+    padding: 10px 12px 6px 12px;
+}
+.autopilot .sec > * { margin-bottom: 4px; }
+.autopilot .kv-row { flex-direction: row; align-items: center; }
+.autopilot .kv-key { width: 130px; flex-shrink: 0; color: #8b8f98; margin-right: 12px; font-size: 11px; }
+.autopilot.narrow .kv-key { width: 110px; margin-right: 10px; }
+.autopilot .kv-value { flex-grow: 1; flex-shrink: 1; color: #d3d5da; font-size: 11px; }
+.autopilot .kv-value.changed { color: #f0873a; }
+.autopilot .kv-row > .round-dot { margin-right: 6px; }
+.autopilot .recent-name { width: 110px; flex-shrink: 0; margin-right: 10px; font-size: 11px; }
+.autopilot .recent-secs { width: 44px; flex-shrink: 0; margin-right: 10px; font-size: 11px; }
+.autopilot .recent-outcome { width: 52px; flex-shrink: 0; margin-right: 10px; font-size: 11px; }
+
+.autopilot .option { padding: 7px 10px; margin-bottom: 4px; border-left-width: 2px; border-left-color: rgba(0, 0, 0, 0); align-items: flex-start; }
+.autopilot .option.chosen { background-color: #2a1b10; border-left-color: #f0873a; }
+.autopilot .option-name { margin-bottom: 1px; }
+.autopilot .option-p { font-size: 14px; width: 44px; -unity-text-align: upper-right; flex-shrink: 0; }
+
+.autopilot .raw {
+    -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf");
+    font-size: 11px;
+    color: #d3d5da;
+    padding: 9px 11px;
+    background-color: #0d0e11;
+    border-width: 1px;
+    border-color: #24262b;
+    border-radius: 8px;
+    margin-bottom: 10px;
+}
