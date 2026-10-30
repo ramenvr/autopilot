@@ -632,6 +632,13 @@ void UPlaytestSubsystem::StopRun()
 	Message->SetStringField(TEXT("type"), TEXT("stop"));
 	Send(Message);
 	Status(TEXT("Stopping…"));
+	// (else it loads every asset on until it ends, and the run's stop waits for it)
+	PlaytestCodex::StopExport();
+}
+
+bool UPlaytestSubsystem::GetExportProgress(int32& OutDone, int32& OutTotal) const
+{
+	return PlaytestCodex::ExportProgress(OutDone, OutTotal);
 }
 
 void UPlaytestSubsystem::SteerRun(const FString& Text)

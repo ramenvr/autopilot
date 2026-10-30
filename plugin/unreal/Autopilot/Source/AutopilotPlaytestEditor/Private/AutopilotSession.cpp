@@ -801,7 +801,10 @@ void FAutopilotSession::Forget()
 	{
 		IFileManager::Get().DeleteDirectory(*FPaths::Combine(Saved, Dir), false, true);
 	}
-	IFileManager::Get().Delete(*FPaths::Combine(Saved, TEXT("Logs"), TEXT("AutopilotCodexExport.log")), false, true, true);
+	for (const TCHAR* File : { TEXT("AutopilotCodexExport.log"), TEXT("AutopilotCodexExport.progress") })
+	{
+		IFileManager::Get().Delete(*FPaths::Combine(Saved, TEXT("Logs"), File), false, true, true);
+	}
 }
 
 void FAutopilotSession::LoadHistory()

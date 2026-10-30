@@ -130,6 +130,8 @@ int32 UAutopilotCodexCommandlet::Main(const FString& Params)
 	FParse::Value(*Params, TEXT("maxmaps="), MaxMaps);
 	const bool bNoMaps = FParse::Param(*Params, TEXT("nomaps"));
 	const bool bNoWpLoad = FParse::Param(*Params, TEXT("nowpload"));
+	FString ProgressFile;
+	FParse::Value(*Params, TEXT("progress="), ProgressFile);
 
 	// Replace an earlier export: only the folders and files this commandlet writes.
 	for (const TCHAR* Sub : { TEXT("blueprints"), TEXT("input"), TEXT("data") })
@@ -214,52 +216,76 @@ int32 UAutopilotCodexCommandlet::Main(const FString& Params)
 		return C;
 	};
 
+	// The assets to export (of the kinds read below) and the maps, known before any asset is loaded: how far the export
+	// is can be told (-progress)
 	TArray<FAssetData> Maps;
+	TArray<FAssetData> ToExport;
 	int32 SinceGc = 0;
-	int32 Index = 0;
 	for (const FAssetData& A : Assets)
 	{
-		++Index;
-		const FString Pkg = A.PackageName.ToString();
 		const FTopLevelAssetPath ClassPath = A.AssetClassPath;
 		if (ClassPath == UWorld::StaticClass()->GetClassPathName())
 		{
 			Maps.Add(A);
-			continue;
 		}
-		const FString ClassPkg = ClassPath.GetPackageName().ToString();
-		const bool bProjectClass = !ClassPkg.StartsWith(TEXT("/Script/"));
-		UClass* C = nullptr;
-		if (!bProjectClass)
+		else if (!ClassPath.GetPackageName().ToString().StartsWith(TEXT("/Script/")))
 		{
-			C = ResolveClass(ClassPath);
-			if (!C)
+			// A Blueprint class's instance: exported when it is a data asset. The class is loaded to know (a crash
+			// here keeps the asset: its export meets it again below, and notes it)
+			bool bDataAsset = true;
+			const bool bLoads = !ClassCache.Contains(ClassPath);
+			Guarded([&]()
 			{
-				continue;
+				UClass* C = ResolveClass(ClassPath);
+				bDataAsset = C && C->IsChildOf(UDataAsset::StaticClass());
+			});
+			if (bDataAsset)
+			{
+				ToExport.Add(A);
 			}
-			const bool bWanted = C->IsChildOf(UBlueprint::StaticClass()) || C->IsChildOf(UInputAction::StaticClass())
+			if (bLoads && ++SinceGc >= GcEvery)
+			{
+				CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+				SinceGc = 0;
+			}
+		}
+		else if (UClass* C = ResolveClass(ClassPath))
+		{
+			if (C->IsChildOf(UBlueprint::StaticClass()) || C->IsChildOf(UInputAction::StaticClass())
 				|| C->IsChildOf(UInputMappingContext::StaticClass()) || C->IsChildOf(UDataTable::StaticClass())
 				|| C->IsChildOf(UCurveTable::StaticClass()) || C->IsChildOf(UUserDefinedEnum::StaticClass())
 				|| C->IsChildOf(UUserDefinedStruct::StaticClass()) || C->IsChildOf(UCurveBase::StaticClass())
-				|| C->IsChildOf(UDataAsset::StaticClass());
-			if (!bWanted)
+				|| C->IsChildOf(UDataAsset::StaticClass()))
 			{
-				continue;
+				ToExport.Add(A);
 			}
 		}
+	}
+	const int32 Total = ToExport.Num() + (bNoMaps ? 0 : FMath::Min(Maps.Num(), FMath::Max(MaxMaps, 0)));
+	int32 Done = 0;
+	double ProgressAt = 0;
+	// (at most 4 times a second, and at the start and the end)
+	auto Progress = [&](bool bNow)
+	{
+		const double Now = FPlatformTime::Seconds();
+		if (ProgressFile.IsEmpty() || (!bNow && Now - ProgressAt < 0.25))
+		{
+			return;
+		}
+		ProgressAt = Now;
+		// (a map that failed to load lets one more be tried than counted: never more done than the total)
+		FFileHelper::SaveStringToFile(FString::Printf(TEXT("%d %d"), FMath::Min(Done, Total), Total), *ProgressFile);
+	};
+	UE_LOG(LogAutopilotCodex, Display, TEXT("AutopilotCodex: %d files to export"), Total);
+	Progress(true);
 
+	for (const FAssetData& A : ToExport)
+	{
+		const FString Pkg = A.PackageName.ToString();
 		FString Category;
 		bool bOk = true;
 		const bool bNoCrash = Guarded([&]()
 		{
-			if (bProjectClass)
-			{
-				C = ResolveClass(ClassPath);
-				if (!C || !C->IsChildOf(UDataAsset::StaticClass()))
-				{
-					return;
-				}
-			}
 			UObject* Obj = A.GetAsset();
 			if (!Obj)
 			{
@@ -332,9 +358,11 @@ int32 UAutopilotCodexCommandlet::Main(const FString& Params)
 			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 			SinceGc = 0;
 		}
-		if (Index % 200 == 0)
+		++Done;
+		Progress(false);
+		if (Done % 200 == 0)
 		{
-			UE_LOG(LogAutopilotCodex, Display, TEXT("AutopilotCodex: %d/%d assets"), Index, Assets.Num());
+			UE_LOG(LogAutopilotCodex, Display, TEXT("AutopilotCodex: %d/%d files"), Done, Total);
 		}
 	}
 	CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
@@ -532,10 +560,14 @@ int32 UAutopilotCodexCommandlet::Main(const FString& Params)
 				Failures.Add(Pkg + TEXT(": crashed while exporting map (skipped)"));
 			}
 			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
+			++Done;
+			Progress(false);
 		}
 		Write(TEXT("maps.txt"), MapOut.Join());
 		Counts.Add(TEXT("maps"), MapsDone);
 	}
+	Done = Total;
+	Progress(true);
 
 	const double Seconds = FPlatformTime::Seconds() - Start;
 	FOut Summary;

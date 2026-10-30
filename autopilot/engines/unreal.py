@@ -27,8 +27,9 @@ class Unreal(Engine):
     title = "Unreal Engine"
     constants = {"GAMEPLAY": GAMEPLAY}
     export_dir = "Saved/AutopilotCodex"
-    # the run history, each run's report files and recording, the codex export and its log
-    plugin_files = ("Saved/Autopilot", "Saved/Playtest", export_dir, "Saved/Logs/AutopilotCodexExport.log")
+    # the run history, each run's report files and recording, the codex export, its log and its progress file
+    plugin_files = ("Saved/Autopilot", "Saved/Playtest", export_dir, "Saved/Logs/AutopilotCodexExport.log",
+                    "Saved/Logs/AutopilotCodexExport.progress")
     no_export_note = ("note: no Blueprint export in the codex (the plugin couldn't make one: an older build without "
                       "the AutopilotCodex commandlet?)")
     default_exe = EDITOR

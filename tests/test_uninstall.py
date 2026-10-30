@@ -268,7 +268,8 @@ def test_uninstall_removes_what_the_plugins_keep_in_each_project_with_the_memory
     folder = settings(tmp_path)
     unreal = plugin_project(tmp_path, folder, "Orchard", "unreal", ["Orchard.uproject", "Saved/Config/Editor.ini"],
                             ["Saved/Autopilot/Runs/1.json", "Saved/Playtest/20261019-120000/recording.mp4",
-                             "Saved/AutopilotCodex/maps.txt", "Saved/Logs/AutopilotCodexExport.log"])
+                             "Saved/AutopilotCodex/maps.txt", "Saved/Logs/AutopilotCodexExport.log",
+                             "Saved/Logs/AutopilotCodexExport.progress"])
     unity = plugin_project(tmp_path, folder, "Harbor", "unity",
                            ["ProjectSettings/ProjectVersion.txt", "Logs/Editor.log",
                             "UserSettings/AutopilotPlaytest.json"],
