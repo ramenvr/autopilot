@@ -139,13 +139,29 @@ def test_on_macos_the_unreal_download_is_for_mac_and_leaves_out_debug_symbols(tm
     (dsym / "Info.plist").write_text("plist")
     (built / "Binaries" / "Mac" / "UnrealEditor-AutopilotPlaytest.dylib").write_bytes(b"dylib")
     (built / "Autopilot.uplugin").write_text("{}")
-    path = package_release.unreal_zip(str(tmp_path), "5.8", str(built), wheel(tmp_path), "Autopilot-1.0.0", "abc123")
-    assert os.path.basename(path) == "Autopilot-1.0.0-Unreal5.8-Mac.zip"
-    with zipfile.ZipFile(path) as z:
-        names = z.namelist()
-    assert "Autopilot/Binaries/Mac/UnrealEditor-AutopilotPlaytest.dylib" in names
-    assert "Autopilot/AgentService/install.sh" in names
-    assert not any(".dSYM" in n for n in names)
+    (built / "README.md").write_text("the plugin's own")
+    # A disk image, not a zip (a zip can't carry a stapled ticket): hdiutil makes it from a folder with Autopilot/ in it
+    staged = {}
+
+    def hdiutil(args):
+        folder = args[args.index("-srcfolder") + 1]
+        for root, _, files in os.walk(folder):
+            for name in files:
+                full = os.path.join(root, name)
+                staged[os.path.relpath(full, folder).replace(os.sep, "/")] = os.stat(full).st_mode & 0o777
+        return 0, ""
+    calls = fake_tools(monkeypatch, hdiutil)
+    path = package_release.unreal_dmg(str(tmp_path), "5.8", str(built), wheel(tmp_path), "Autopilot-1.0.0", "abc123")
+    assert os.path.basename(path) == "Autopilot-1.0.0-Unreal5.8-Mac.dmg"
+    assert calls[0][:2] == ["hdiutil", "create"] and calls[0][-1] == path
+    assert "Autopilot/Binaries/Mac/UnrealEditor-AutopilotPlaytest.dylib" in staged
+    assert "Autopilot/AgentService/install.sh" in staged
+    if os.name != "nt":  # (Windows has no execute bit to give it; the dmg is only made on a Mac)
+        assert staged["Autopilot/AgentService/install.sh"] == 0o755
+    assert not any(".dSYM" in n or "readme" in n.lower() for n in staged)
+    fake_tools(monkeypatch, lambda args: (1, ""))
+    with pytest.raises(SystemExit, match="hdiutil couldn't make"):
+        package_release.unreal_dmg(str(tmp_path), "5.8", str(built), wheel(tmp_path), "Autopilot-1.0.0", "abc123")
     launcher = fake_engine(tmp_path / "UE_5.8", minor=8, promoted=True, installed=True)
     args, _ = built_with(monkeypatch, "5.8", launcher, tmp_path)
     assert args[0] == os.path.join(launcher, "Engine", "Build", "BatchFiles", "RunUAT.sh")
@@ -352,9 +368,11 @@ def test_a_release_is_published_when_windows_and_the_mac_have_both_built_their_h
     draft (a published release can't be added to); the run that completes it publishes it."""
     windows = ["Autopilot-Unreal5.8-Win64.zip", "Autopilot-Unity.zip", "Autopilot-Godot.zip", "README.md",
                "SHA256SUMS.txt"]
-    mac = ["Autopilot-Unreal5.8-Mac.zip", "README.md", "SHA256SUMS.txt"]
+    mac = ["Autopilot-Unreal5.8-Mac.dmg", "README.md", "SHA256SUMS.txt"]
     assert [release.half(n) for n in windows] == ["Win64", "Win64", "Win64", None, None]
-    assert release.half("Autopilot-Unreal5.8-Source-Mac.zip") == "Mac"
+    assert release.half("Autopilot-Unreal5.8-Source-Mac.dmg") == "Mac"
+    assert release.half("Autopilot-Unreal5.8-Mac.zip") == "Mac"  # (a draft made before the Mac downloads were dmgs)
+    assert release.complete(windows + ["Autopilot-Unreal5.8-Mac.zip"])
     assert not release.complete(windows) and not release.complete(mac) and release.complete(windows + mac)
     # The Mac's run builds the commit of the draft Windows made, even when main has moved on since
     older = release_("v1.0.0-aaaaaaa", True, windows, "2026-10-29T09:00:00Z")
@@ -367,7 +385,7 @@ def test_a_release_is_published_when_windows_and_the_mac_have_both_built_their_h
     assert release.waiting([older, newer, respin], "Mac") is respin
     # SHA256SUMS.txt lists both halves' zips; a rerun's lines take its file's place
     theirs = "aa  Autopilot-Unity.zip\nbb  Autopilot-Unreal5.8-Win64.zip\n"
-    mac_sums = "cc  Autopilot-Unreal5.8-Mac.zip\n"
+    mac_sums = "cc  Autopilot-Unreal5.8-Mac.dmg\n"
     assert release.merged_sums(theirs, mac_sums) == theirs + mac_sums
     assert release.merged_sums(theirs, "dd  Autopilot-Unity.zip\n") == ("dd  Autopilot-Unity.zip\n"
                                                                          "bb  Autopilot-Unreal5.8-Win64.zip\n")
@@ -379,7 +397,7 @@ def test_a_release_is_published_when_windows_and_the_mac_have_both_built_their_h
 
 WINDOWS_HALF = ["Autopilot-Unity.zip", "Autopilot-Godot.zip", "Autopilot-Unreal5.8-Win64.zip", "README.md",
                 "SHA256SUMS.txt"]
-MAC_HALF = ["Autopilot-Unreal5.8-Mac.zip", "README.md", "SHA256SUMS.txt"]
+MAC_HALF = ["Autopilot-Unreal5.8-Mac.dmg", "README.md", "SHA256SUMS.txt"]
 
 
 def fake_release_tools(tmp_path, monkeypatch, platform, releases, draft_has):
@@ -532,7 +550,7 @@ def test_on_windows_sign_signs_each_dll_with_keylocker_and_reads_every_signature
         package_release.sign_binaries(str(tmp_path / "empty"), None)
 
 
-def test_on_macos_sign_signs_each_dylib_with_developer_id_and_notarizes_the_zip(tmp_path, monkeypatch):
+def test_on_macos_sign_signs_each_dylib_and_the_disk_image_and_staples_its_notarization(tmp_path, monkeypatch):
     on(monkeypatch, mac=True)
     package = built_plugin(tmp_path, "Mac")
     calls = fake_tools(monkeypatch, lambda args: (0, ""))
@@ -544,15 +562,58 @@ def test_on_macos_sign_signs_each_dylib_with_developer_id_and_notarizes_the_zip(
     fake_tools(monkeypatch, lambda args: (1, "") if "--verify" in args else (0, ""))
     with pytest.raises(SystemExit, match="isn't validly signed after codesign"):
         package_release.sign_binaries(package, "ABC123")
-    # The zip is notarized; a refusal shows Apple's log, which names the binaries it refused
+    # The disk image is signed too (a stapled ticket binds to its signature), and read back
+    dmg = "Autopilot-Unreal5.8-Mac.dmg"
+    calls = fake_tools(monkeypatch, lambda args: (0, ""))
+    package_release.sign_dmg(dmg, "ABC123")
+    assert calls == [["codesign", "--force", "--timestamp", "--sign", "ABC123", dmg],
+                     ["codesign", "--verify", "--strict", "--verbose=2", dmg]]
+    fake_tools(monkeypatch, lambda args: (1, "") if "--verify" in args else (0, ""))
+    with pytest.raises(SystemExit, match="isn't validly signed after codesign"):
+        package_release.sign_dmg(dmg, "ABC123")
+    # It is notarized; a refusal shows Apple's log, which names the binaries it refused
     calls = fake_tools(monkeypatch, lambda args: (0, json.dumps({"id": "n1", "status": "Accepted"})))
-    package_release.notarize("Autopilot-Unreal5.8-Mac.zip")
-    assert calls[0][:4] == ["xcrun", "notarytool", "submit", "Autopilot-Unreal5.8-Mac.zip"]
+    package_release.notarize(dmg)
+    assert calls[0][:4] == ["xcrun", "notarytool", "submit", dmg]
     assert package_release.NOTARY_PROFILE in calls[0] and "--wait" in calls[0]
     fake_tools(monkeypatch, lambda args: (0, "UnrealEditor-AutopilotCodex.dylib: not signed") if "log" in args
                else (1, json.dumps({"id": "n1", "status": "Invalid"})))
     with pytest.raises(SystemExit, match=r"(?s)status: Invalid.*AutopilotCodex.dylib: not signed"):
-        package_release.notarize("Autopilot-Unreal5.8-Mac.zip")
+        package_release.notarize(dmg)
+    # Then the ticket is stapled, and Gatekeeper has to accept the image as notarized
+    calls = fake_tools(monkeypatch, lambda args: (0, "source=Notarized Developer ID") if args[0] == "spctl"
+                       else (0, ""))
+    package_release.staple(dmg)
+    assert [c[:3] for c in calls] == [["xcrun", "stapler", "staple"], ["xcrun", "stapler", "validate"],
+                                      ["spctl", "--assess", "--type"]]
+    fake_tools(monkeypatch, lambda args: (0, "source=Unnotarized Developer ID") if args[0] == "spctl" else (0, ""))
+    with pytest.raises(SystemExit, match="doesn't accept .* as notarized"):
+        package_release.staple(dmg)
+    fake_tools(monkeypatch, lambda args: (65, "") if args[:3] == ["xcrun", "stapler", "staple"] else (0, ""))
+    with pytest.raises(SystemExit, match="stapler staple failed"):
+        package_release.staple(dmg)
+
+
+def test_on_macos_a_signed_build_makes_a_disk_image_signs_notarizes_and_staples_it_in_that_order(tmp_path,
+                                                                                                 monkeypatch):
+    on(monkeypatch, mac=True)
+    source = fake_engine(tmp_path / "UnrealEngine")
+    steps = []
+    monkeypatch.setattr(package_release, "MAC", False)  # (no Xcode to pick: build_unreal is faked)
+    monkeypatch.setattr(package_release, "source", lambda: ("abc123", 1767225600, "commit abc123"))
+    monkeypatch.setattr(package_release, "build_wheel", lambda out, commit, epoch: wheel(tmp_path))
+    monkeypatch.setattr(package_release, "build_unreal", lambda engine, root, work: work)
+    monkeypatch.setattr(package_release, "signer", lambda *a: "ABC123")
+    monkeypatch.setattr(package_release, "sign_binaries", lambda package, identity: steps.append("dylibs"))
+    dmg = tmp_path / "x.dmg"
+    dmg.write_bytes(b"dmg")
+    monkeypatch.setattr(package_release, "unreal_zip", lambda *a: pytest.fail("a zip for Mac"))
+    monkeypatch.setattr(package_release, "unreal_dmg", lambda *a: steps.append("dmg") or str(dmg))
+    monkeypatch.setattr(package_release, "sign_dmg", lambda path, identity: steps.append(f"sign {identity}"))
+    monkeypatch.setattr(package_release, "notarize", lambda path: steps.append("notarize"))
+    monkeypatch.setattr(package_release, "staple", lambda path: steps.append("staple"))
+    package_release.main([str(tmp_path / "out"), "--engine-dir", source, "--only-unreal", "--sign"])
+    assert steps == ["dylibs", "dmg", "sign ABC123", "notarize", "staple"]
 
 
 def test_on_windows_sign_signs_the_installer_every_download_carries(tmp_path, monkeypatch):

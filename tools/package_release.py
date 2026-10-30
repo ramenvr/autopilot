@@ -4,12 +4,13 @@
                                             [--epic <engines folder>] [--engine-dir <an engine's folder>]...
                                             [--aura-server https://<an Aura server>] [--unversioned]
 
-OUT_DIR gets, for each engine, one zip with the plugin, the agent service and how to set them up:
+OUT_DIR gets, for each engine, one download with the plugin, the agent service and how to set them up:
 
     Autopilot-<version>-Unreal<x.y>-Win64.zip   Autopilot/: the plugin built for that Unreal (BuildPlugin, Win64:
-    Autopilot-<version>-Unreal<x.y>-Mac.zip      binaries for the editor and for game builds, without debug
-                                                 symbols), to copy into the project's Plugins/; -Mac when built on
-                                                 macOS (Mac binaries, Apple silicon and Intel alike)
+    Autopilot-<version>-Unreal<x.y>-Mac.dmg      binaries for the editor and for game builds, without debug
+                                                 symbols), to copy into the project's Plugins/; -Mac.dmg, a disk
+                                                 image, when built on macOS (Mac binaries, Apple silicon and Intel
+                                                 alike; see unreal_dmg for why not a zip)
     Autopilot-<version>-Unity.zip               com.ramenvr.autopilot-<version>.tgz, for Package Manager > Add package
                                                  from tarball
     Autopilot-<version>-Godot.zip               addons/autopilot/, to copy into the project
@@ -32,7 +33,7 @@ short one (e.g. C:/Temp).
 that isn't under --epic, such as one built from source (C:/UnrealEngine); without --unreal, only for those. A plugin's
 binaries load only in an engine with the same build id, so an engine that isn't Epic's own build (Build.version's
 IsPromotedBuild 0: built from source, or an installed build a studio made from its source) gets
-Autopilot-<version>-Unreal<x.y>-Source-Win64.zip (-Mac.zip), for that engine only. A source tree (no
+Autopilot-<version>-Unreal<x.y>-Source-Win64.zip (-Mac.dmg), for that engine only. A source tree (no
 Engine/Build/InstalledBuild.txt) gets the editor's binaries only: its game builds compile the plugin's Source/
 themselves, and BuildPlugin would otherwise build the whole engine twice more for UnrealGame (Development and
 Shipping). An engine whose editor isn't built yet is built first, which takes as long as building it yourself.
@@ -54,10 +55,10 @@ Signer role): Unity 6.3 and later flag a package without a signature. The Unreal
 they're zipped, with the certificates Aura's own builds are signed with. On Windows each .dll with DigiCert
 KeyLocker's smctl (keypair WIN_KEYPAIR, the TribeVR Inc certificate; smctl set up with its SM_* variables and client
 certificate); on a Mac each .dylib with the Developer ID Application identity of team MAC_TEAM in the keychain
-(hardened runtime, Apple's timestamp), and then the zip is notarized with the credentials stored as NOTARY_PROFILE
-(xcrun notarytool store-credentials autopilot-notary --apple-id <id> --team-id 9ZSHVS35MZ --password <app-specific
-password>). A zip can't carry a stapled ticket, so a Mac checks the binaries' notarization online the first time it
-loads them. On Windows, every download's install.ps1 (what the plugins run to install the agent service) is signed
+(hardened runtime, Apple's timestamp), and then the disk image is signed with it too, notarized with the credentials
+stored as NOTARY_PROFILE (xcrun notarytool store-credentials autopilot-notary --apple-id <id> --team-id 9ZSHVS35MZ
+--password <app-specific password>), and has the ticket stapled to it, which Gatekeeper's verdict on it then has to
+show. On Windows, every download's install.ps1 (what the plugins run to install the agent service) is signed
 with smctl too. What signing needs is checked before anything is built. --no-upm: the
 Unity package without upm's signature, for a computer without its service account (the rest still signed). Godot
 has no signature for an addon, nor binaries in ours.
@@ -460,8 +461,8 @@ def sign_installer(work):
 
 
 def notarize(path):
-    """Notarizes a Mac zip with Apple (waits for the verdict); exits with Apple's log, which names every binary it
-    refused, unless it's accepted."""
+    """Notarizes a Mac download (its disk image) with Apple (waits for the verdict); exits with Apple's log, which
+    names every binary it refused, unless it's accepted."""
     print(f"Notarizing {os.path.basename(path)} (Apple usually answers in minutes)...", flush=True)
     done = subprocess.run(["xcrun", "notarytool", "submit", path, "--keychain-profile", NOTARY_PROFILE, "--wait",
                            "--timeout", "30m", "--output-format", "json"], capture_output=True, text=True)
@@ -479,15 +480,72 @@ def notarize(path):
              f"{(log or done.stdout or done.stderr).strip()}")
 
 
+def not_shipped(rel):
+    """What of a BuildPlugin package stays out of the Unreal download: debug symbols and the plugin's own README."""
+    return rel.endswith(".pdb") or ".dSYM/" in rel or rel in PLUGIN_READMES
+
+
 def unreal_zip(out, engine, package, wheel, stem, commit, source=False):
     """stem: what the zip's name starts with (Autopilot-<version>, or Autopilot with --unversioned). source: built for
     an engine that isn't Epic's own build (its zip is named so: it loads in that engine only)."""
     path = os.path.join(out, f"{stem}-Unreal{engine}{'-Source' if source else ''}-{PLATFORM}.zip")
     with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
-        add_tree(z, package, "Autopilot", skip=lambda rel: rel.endswith(".pdb") or ".dSYM/" in rel
-                 or rel in PLUGIN_READMES)
+        add_tree(z, package, "Autopilot", skip=not_shipped)
         add_agent_service(z, wheel, "Autopilot/AgentService", commit)
     return path
+
+
+def unreal_dmg(out, engine, package, wheel, stem, commit, source=False):
+    """The Mac download: the same Autopilot/ as unreal_zip's, in a disk image (hdiutil). Not a zip: a zip can't carry
+    a stapled ticket, so a Mac that unzipped it from the browser (every file quarantined) asks Apple online about each
+    dylib the editor loads, and when that lookup fails says Apple "could not verify" it. A disk image can be signed,
+    notarized and stapled (sign_dmg, notarize, staple), as Aura's own DMG is."""
+    path = os.path.join(out, f"{stem}-Unreal{engine}{'-Source' if source else ''}-{PLATFORM}.dmg")
+    with tempfile.TemporaryDirectory(prefix="rgdmg-") as staging:
+        plugin = os.path.join(staging, "Autopilot")
+        for folder, dirs, names in os.walk(package):
+            dirs[:] = sorted(d for d in dirs if d not in SKIP_NAMES)
+            for name in sorted(n for n in names if n not in SKIP_NAMES):
+                full = os.path.join(folder, name)
+                rel = os.path.relpath(full, package).replace(os.sep, "/")
+                if not not_shipped(rel):
+                    os.makedirs(os.path.join(plugin, os.path.dirname(rel)), exist_ok=True)
+                    shutil.copy2(full, os.path.join(plugin, rel))  # (a Mach-O's signature is in its bytes)
+        service = os.path.join(plugin, "AgentService")
+        os.makedirs(service, exist_ok=True)
+        for name, data, mode in agent_service_files(wheel, commit):
+            with open(os.path.join(service, name), "wb") as f:
+                f.write(data)
+            os.chmod(os.path.join(service, name), mode)
+        done = subprocess.run(["hdiutil", "create", "-volname", f"Autopilot for Unreal {engine}", "-srcfolder",
+                               staging, "-fs", "HFS+", "-format", "UDZO", "-ov", path], capture_output=True, text=True)
+    if done.returncode != 0:
+        sys.exit(f"hdiutil couldn't make {path}:\n{(done.stderr or done.stdout).strip()}")
+    return path
+
+
+def sign_dmg(path, identity):
+    """--sign on a Mac, before notarize: the disk image signed with the Developer ID and read back (Gatekeeper binds a
+    stapled ticket to the image's own signature: an unsigned one is "rejected: no usable signature" even stapled)."""
+    if subprocess.run(["codesign", "--force", "--timestamp", "--sign", identity, path]).returncode != 0:
+        sys.exit(f"Signing {path} failed: see the lines above.")
+    done = subprocess.run(["codesign", "--verify", "--strict", "--verbose=2", path], capture_output=True, text=True)
+    if done.returncode != 0:
+        sys.exit(f"{path} isn't validly signed after codesign:\n{done.stderr.strip()}")
+
+
+def staple(path):
+    """The notarized disk image's ticket stapled to it (so a Mac needn't ask Apple online), and Gatekeeper's verdict
+    on it read back: it has to be accepted as notarized, as a downloader's Mac will judge it."""
+    for step in ("staple", "validate"):
+        done = subprocess.run(["xcrun", "stapler", step, path], capture_output=True, text=True)
+        if done.returncode != 0:
+            sys.exit(f"stapler {step} failed for {path}:\n{(done.stderr or done.stdout).strip()}")
+    done = subprocess.run(["spctl", "--assess", "--type", "open", "--context", "context:primary-signature",
+                           "--verbose=2", path], capture_output=True, text=True)
+    verdict = (done.stderr + done.stdout).strip()
+    if done.returncode != 0 or "Notarized Developer ID" not in verdict:
+        sys.exit(f"Gatekeeper doesn't accept {path} as notarized:\n{verdict}")
 
 
 def signed_unity_tarball(work, path, wheel, commit):
@@ -586,7 +644,7 @@ def main(argv=None):
     ap.add_argument("--unversioned", action="store_true",
                     help="name the zips Autopilot-<engine>.zip, without the version (a release's: tools/release.py)")
     ap.add_argument("--sign", action="store_true",
-                    help="sign the Unreal plugin's binaries (and notarize the Mac zips; see the top)")
+                    help="sign the Unreal plugin's binaries (and notarize the Mac disk images; see the top)")
     ap.add_argument("--no-upm", action="store_true",
                     help="with --sign: leave out the Unity package's upm signature (when its service account isn't "
                          "set up; Unity 6.3 and later flag the package as unsigned)")
@@ -630,9 +688,12 @@ def main(argv=None):
         package = build_unreal(engine, root, work)
         if args.sign:
             sign_binaries(package, identity)
-        made.append(unreal_zip(out, engine, package, wheel, stem, commit, not epics_own_build(root)))
+        download = unreal_dmg if PLATFORM == "Mac" else unreal_zip
+        made.append(download(out, engine, package, wheel, stem, commit, not epics_own_build(root)))
         if args.sign and PLATFORM == "Mac":
+            sign_dmg(made[-1], identity)
             notarize(made[-1])
+            staple(made[-1])
     shutil.rmtree(work, ignore_errors=True)  # (kept when a build fails: its message names its log there)
     with open(os.path.join(out, "README.md"), "w", encoding="utf-8", newline="\n") as f:
         f.write(readme(plugin_version, built_from, stem))

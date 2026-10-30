@@ -8,7 +8,7 @@ verify claims about it and reach goals in it.
 | Download | For |
 |---|---|
 | `{stem}-Unreal<x.y>-Win64.zip` | Unreal Engine x.y (5.4-5.8) on Windows (prebuilt: Blueprint-only projects work too) |
-| `{stem}-Unreal<x.y>-Mac.zip` | Unreal Engine x.y (5.4-5.8) on macOS, Apple silicon or Intel (prebuilt too) |
+| `{stem}-Unreal<x.y>-Mac.dmg` | Unreal Engine x.y (5.4-5.8) on macOS, Apple silicon or Intel (prebuilt too) |
 | `{stem}-Unity.zip` | Unity 6 (6000.0 or later) on Windows or macOS |
 | `{stem}-Godot.zip` | Godot 4.7 or later on Windows or macOS |
 
@@ -18,10 +18,11 @@ verify claims about it and reach goals in it.
 
 ### Unreal Engine
 
-1. Unzip the download and move `Autopilot/` into your project's `Plugins/` folder (create a `Plugins/` folder if your
-   project doesn't have one yet), so that you have `<YourProject>/Plugins/Autopilot/Autopilot.uplugin`. Use the
-   download for your project's Unreal version. On macOS, the plugin's binaries are signed and notarized by Apple: the
-   first time the editor loads them, the Mac checks that online, so be connected then.
+1. Unzip the download (on macOS, open the `.dmg`) and copy `Autopilot/` into your project's `Plugins/` folder (create
+   a `Plugins/` folder if your project doesn't have one yet), so that you have
+   `<YourProject>/Plugins/Autopilot/Autopilot.uplugin`. Use the download for your project's Unreal version. On macOS,
+   the disk image and the plugin's binaries are signed and notarized by Apple; you can eject the disk image once
+   `Autopilot/` is copied.
 2. Open the project.
 3. Click the orange **Autopilot** icon on the level editor's toolbar (or Window > Tools > Autopilot).
 
