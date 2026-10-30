@@ -718,7 +718,9 @@ void Read(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& A
 
 bool ExportProgress(int32& OutDone, int32& OutTotal)
 {
-	if (!Running.IsValid() || Running->bFinished || Running->bStopped)
+	// (an export that ended is over for the tab, though no manifest request has seen it end yet: they are only polled
+	// while connected)
+	if (!Running.IsValid() || Running->bFinished || Running->bStopped || !FPlatformProcess::IsProcRunning(Running->Proc))
 	{
 		return false;
 	}
