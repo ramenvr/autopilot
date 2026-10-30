@@ -29,6 +29,11 @@ namespace PlaytestCodex
 	void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	/** `codex_read`: the listed files asked for, as text. */
 	void Read(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** Whether the Blueprint export is running, and how far it is: files exported, of all it exports (both 0 until it
+	 *  has counted them). Game thread. */
+	bool ExportProgress(int32& OutDone, int32& OutTotal);
+	/** Ends the export running, if any (the run was stopped): the manifest waiting for it answers with an error. */
+	void StopExport();
 	/** Ends an export still running (the bridge is going away). */
 	void Shutdown();
 }

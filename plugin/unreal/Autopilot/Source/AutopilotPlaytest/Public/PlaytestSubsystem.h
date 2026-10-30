@@ -119,7 +119,11 @@ public:
 
 	/** Ask the brain to start a run: {"kind": "verify"|"explore"|"goal", ...} (see docs/protocol.md). */
 	void StartRun(const TSharedRef<FJsonObject>& Run);
+	/** Ask the brain to stop the run; the Blueprint export running for it (UnrealEditor-Cmd) ends now. */
 	void StopRun();
+	/** Whether the Blueprint export (the AutopilotCodex commandlet, run for the brain's `codex_manifest`) is running,
+	 *  and how far it is: files exported, of all it exports (both 0 until it has counted them). */
+	bool GetExportProgress(int32& OutDone, int32& OutTotal) const;
 	/** What the user types to steer the run going now: it goes on from where the game is (see docs/protocol.md). */
 	void SteerRun(const FString& Text);
 	/** The run the connection dropped under is still played by the agent service (its events came again once

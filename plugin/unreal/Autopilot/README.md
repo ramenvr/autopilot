@@ -497,7 +497,8 @@ removes all but the settings, unless the memories are kept):
   section (the plugin's settings, including an access token if you set one);
 - `Saved/Autopilot/Runs/`: the run history the tab shows;
 - `Saved/Playtest/`: each run's report and its recording;
-- `Saved/AutopilotCodex/` and `Saved/Logs/AutopilotCodexExport.log`: the Blueprint export the agent reads.
+- `Saved/AutopilotCodex/`, `Saved/Logs/AutopilotCodexExport.log` and `Saved/Logs/AutopilotCodexExport.progress`: the
+  Blueprint export the agent reads.
 
 ## Troubleshooting
 
@@ -598,7 +599,12 @@ The plugin has three modules:
 
 ```
 UnrealEditor-Cmd.exe <project>.uproject -run=AutopilotCodex -out=<dir> [-root=/Game[,/Other]] [-maxmaps=N] [-nomaps]
+    [-progress=<file>]
 ```
+
+`-progress` names a file it rewrites as it goes, `<done> <total>`: the assets and maps exported so far, of all those it
+exports. The tab runs it with `Saved/Logs/AutopilotCodexExport.progress` and shows **Exporting files (done/total)** while
+it runs; **Stop** ends it.
 
 It lives in its own module because commandlets are looked up before `PostEngineInit` modules load.
 `python -m autopilot codex` runs it for you.

@@ -393,6 +393,11 @@ namespace
 		int32 ExitCode = 0;
 		FString Error;
 		FString Reason;  // why it runs: "missing" | "stale" | "refresh"
+		bool bStopped = false;  // ended by Stop (StopExport)
+		FString ProgressFile;  // the commandlet's -progress file: "<done> <total>"
+		int32 Done = 0;
+		int32 Total = 0;
+		double ProgressReadAt = 0;
 	};
 
 	/** The export running now, shared by every manifest request waiting for it. */
@@ -401,6 +406,11 @@ namespace
 	FString LogRelative()
 	{
 		return TEXT("Saved/Logs/AutopilotCodexExport.log");
+	}
+
+	FString ProgressRelative()
+	{
+		return TEXT("Saved/Logs/AutopilotCodexExport.progress");
 	}
 
 	/** The engine's command-line editor next to the running executable (or in the engine's binaries). */
@@ -447,9 +457,11 @@ namespace
 		}
 		const FString UProject = FPaths::ConvertRelativePathToFull(FPaths::GetProjectFilePath());
 		const FString Log = Roots.Project / LogRelative();
+		const FString ProgressFile = Roots.Project / ProgressRelative();
+		IFileManager::Get().Delete(*ProgressFile, false, true, true);  // (an earlier export's)
 		const FString Params = FString::Printf(
-			TEXT("\"%s\" -run=AutopilotCodex -out=\"%s\" -unattended -nullrhi -nosplash -nop4 -abslog=\"%s\""),
-			*UProject, *Roots.Export, *Log);
+			TEXT("\"%s\" -run=AutopilotCodex -out=\"%s\" -unattended -nullrhi -nosplash -nop4 -abslog=\"%s\" -progress=\"%s\""),
+			*UProject, *Roots.Export, *Log, *ProgressFile);
 		uint32 ProcessId = 0;
 		// Hidden, below normal priority: the game keeps its frames
 		FProcHandle Proc = FPlatformProcess::CreateProc(*Cmd, *Params, false, true, true, &ProcessId, -1, nullptr, nullptr);
@@ -463,6 +475,7 @@ namespace
 		Job->Proc = Proc;
 		Job->Start = FPlatformTime::Seconds();
 		Job->Reason = Reason;
+		Job->ProgressFile = ProgressFile;
 		return Job;
 	}
 
@@ -486,7 +499,12 @@ namespace
 		Job->bFinished = true;
 		Job->ExitCode = Code;
 		Job->Seconds = FPlatformTime::Seconds() - Job->Start;
-		if (Code != 0)
+		IFileManager::Get().Delete(*Job->ProgressFile, false, true, true);
+		if (Job->bStopped)
+		{
+			Job->Error = TEXT("The Blueprint export was stopped (the run was stopped)");
+		}
+		else if (Code != 0)
 		{
 			Job->Error = FString::Printf(TEXT("The Blueprint export exited with code %d (its log: %s)"), Code, *LogRelative());
 		}
@@ -554,6 +572,12 @@ void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject
 	// Run the export, or wait for the one running (one at a time)
 	auto Export = [Request](const FString& Reason)
 	{
+		if (Running.IsValid() && Running->bStopped)
+		{
+			// (a stopped export's process, still going away: the new one starts once it is gone)
+			FPlatformProcess::WaitForProc(Running->Proc);
+			Poll(Running, Request->Roots);
+		}
 		if (Running.IsValid())
 		{
 			Request->Job = Running;
@@ -690,6 +714,44 @@ void Read(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& A
 		return true;
 	};
 	Bridge.AddPending(MoveTemp(Pending));
+}
+
+bool ExportProgress(int32& OutDone, int32& OutTotal)
+{
+	// (an export that ended is over for the tab, though no manifest request has seen it end yet: they are only polled
+	// while connected)
+	if (!Running.IsValid() || Running->bFinished || Running->bStopped || !FPlatformProcess::IsProcRunning(Running->Proc))
+	{
+		return false;
+	}
+	// (the tab asks every frame: the file is read at most 4 times a second, and what was read last is kept when it can't be)
+	const double Now = FPlatformTime::Seconds();
+	if (Now - Running->ProgressReadAt >= 0.25)
+	{
+		Running->ProgressReadAt = Now;
+		FString Text;
+		TArray<FString> Parts;
+		if (FFileHelper::LoadFileToString(Text, *Running->ProgressFile, FFileHelper::EHashOptions::None, FILEREAD_AllowWrite)
+			&& Text.ParseIntoArrayWS(Parts) == 2 && Parts[0].IsNumeric() && Parts[1].IsNumeric())
+		{
+			Running->Done = FCString::Atoi(*Parts[0]);
+			Running->Total = FCString::Atoi(*Parts[1]);
+		}
+	}
+	OutDone = Running->Done;
+	OutTotal = Running->Total;
+	return true;
+}
+
+void StopExport()
+{
+	if (Running.IsValid() && !Running->bFinished && !Running->bStopped)
+	{
+		UE_LOG(LogPlaytest, Display, TEXT("[Autopilot] project export: stopped"));
+		Running->bStopped = true;
+		// (the manifest request waiting for it sees it end and answers with what is there: the run goes on to its stop)
+		FPlatformProcess::TerminateProc(Running->Proc, true);
+	}
 }
 
 void Shutdown()
