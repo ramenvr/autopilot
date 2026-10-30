@@ -6,6 +6,8 @@
 
 Autopilot is a continually learning real-time general playtesting system. It supports Unreal Engine 5, Unity 6, and Godot 4 on both Windows and MacOS.
 
+Install Autopilot into your project and let it learn your game, explore your levels, and improve its gameplay run after run.
+
 ## Installation
 
 You can find the installation instructions in the [Autopilot docs](https://www.tryaura.dev/documentation/autopilot/)
@@ -67,7 +69,9 @@ An Autopilot prompt is one of 4 types:
 - **Verification**, e.g. "Verify that the tree shakes when you hit it with an axe."
 - **Goal**, "Kill the boss while keeping your health above 20% of its maximum value."
 
-For every prompt, Autopilot will automatically launch a PIE window and start reading your project's source code, probe PIE, and start playing according to your prompt. Once it is done, the PIE window will close automatically, and Autopilot generates a report for you.
+For every prompt, Autopilot will automatically launch a PIE window and start reading your project's source code, probe PIE, and start playing according to your prompt. Autopilot plays by using an LLM coding agent to craft harnesses for a decision model according to what it knows about your game, and requests decisions (action choices) from the decision model during gameplay. Once Autopilot is done, the PIE window will close automatically, and Autopilot generates a report for you.
+
+Your first few runs allow Autopilot to learn about your game as it gradually populates its memory. Expect some suboptimal behavior for the first few harness attempts. **Autopilot visibly improves the more it plays your game**, and later harness attempts and runs both take a shorter time to complete a given task, as well as exhibit more intelligent behavior (e.g. faster dodging, equipping better weapons, playing smarter strategies, better aiming).
 
 ## Uninstallation
 
