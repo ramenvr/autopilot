@@ -894,6 +894,8 @@ def run_going_on(monkeypatch, tmp_path, http, first):
                      "describer": describer.provider, "proxied": os.environ.get("OPENROUTER_BASE_URL"),
                      "going_on": (run_dir / "going_on.json").exists()})
         run_dir.mkdir(parents=True, exist_ok=True)
+        if len(seen) == 1:
+            time.sleep(0.05)  # (the first agent takes some of the run's time: Windows' clock would see none go by)
         return dict(first) if len(seen) == 1 else {"outcome": "achieved", "summary": "The gate is open.",
                                                    "evidence": [], "episodes": 3, "seconds": 40}
 

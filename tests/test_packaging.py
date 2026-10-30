@@ -155,7 +155,9 @@ def test_on_macos_the_unreal_download_is_for_mac_and_leaves_out_debug_symbols(tm
     assert os.path.basename(path) == "Autopilot-1.0.0-Unreal5.8-Mac.dmg"
     assert calls[0][:2] == ["hdiutil", "create"] and calls[0][-1] == path
     assert "Autopilot/Binaries/Mac/UnrealEditor-AutopilotPlaytest.dylib" in staged
-    assert staged["Autopilot/AgentService/install.sh"] == 0o755
+    assert "Autopilot/AgentService/install.sh" in staged
+    if os.name != "nt":  # (Windows has no execute bit to give it; the dmg is only made on a Mac)
+        assert staged["Autopilot/AgentService/install.sh"] == 0o755
     assert not any(".dSYM" in n or "readme" in n.lower() for n in staged)
     fake_tools(monkeypatch, lambda args: (1, ""))
     with pytest.raises(SystemExit, match="hdiutil couldn't make"):
