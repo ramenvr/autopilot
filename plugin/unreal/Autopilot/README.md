@@ -603,7 +603,7 @@ UnrealEditor-Cmd.exe <project>.uproject -run=AutopilotCodex -out=<dir> [-root=/G
 ```
 
 `-progress` names a file it rewrites as it goes, `<done> <total>`: the assets and maps exported so far, of all those it
-exports. The tab runs it with `Saved/Logs/AutopilotCodexExport.progress` and shows **Exporting files (done/total)** while
+exports. The tab runs it with `Saved/Logs/AutopilotCodexExport.progress` and shows **Indexing files (done/total)** while
 it runs; **Stop** ends it.
 
 It lives in its own module because commandlets are looked up before `PostEngineInit` modules load.
