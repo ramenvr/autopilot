@@ -2217,8 +2217,8 @@ TSharedRef<SWidget> SPlaytestPanel::MakeLive()
 							const UPlaytestSubsystem* Bridge = UPlaytestSubsystem::Get();
 							if (!Run->bDone && Run->Feed[i]->Stage == EAutopilotStage::Analyze && Bridge && Bridge->GetExportProgress(Done, Total))
 							{
-								return Total > 0 ? FText::Format(LOCTEXT("ExportingFilesCount", "Exporting files ({0}/{1})"), Done, Total)
-									: LOCTEXT("ExportingFiles", "Exporting files");
+								return Total > 0 ? FText::Format(LOCTEXT("IndexingFilesCount", "Indexing files ({0}/{1})"), Done, Total)
+									: LOCTEXT("IndexingFiles", "Indexing files");
 							}
 							return Str(Run->Feed[i]->Text);
 						}
