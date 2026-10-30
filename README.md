@@ -2,7 +2,7 @@
 
 > By the developers of Aura, [www.tryaura.dev](https://www.tryaura.dev/)
 
-![Aura by Ramen](./assets/Aura%20anime%20logo.png)
+![Aura by Ramen](./assets/aura-logo.png)
 
 Autopilot is a continually learning real-time general playtesting system. It supports Unreal Engine 5, Unity 6, and Godot 4 on both Windows and MacOS.
 
