@@ -74,7 +74,8 @@ def _tools(session):
             except Exception:
                 text = "Tool failed:\n" + traceback.format_exc(limit=5)
             session.tool_seconds += time.time() - t0
-            return {"content": [{"type": "text", "text": text + session.steer_note() + "\n" + session.clock()}]}
+            return {"content": [{"type": "text",
+                                 "text": text + session.steer_note() + session.news() + "\n" + session.clock()}]}
         return inner
 
     bodies = {
@@ -229,7 +230,19 @@ def _guard(session):
         return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
                                        "permissionDecisionReason": bad}}
 
-    return {"PreToolUse": [HookMatcher(matcher=None, hooks=[check])]}
+    async def told(data, tool_use_id, context):
+        # Claude Code's own file tools' results carry the news too (the game tools' add it themselves): the files the
+        # export brought, how far it is, the background researcher's findings. Not a researcher's: it isn't the one
+        # who uses them
+        if data.get("agent_id") or data.get("agent_type") or str(data.get("tool_name")).startswith("mcp__game__"):
+            return {}
+        news = session.news().strip()
+        if not news:
+            return {}
+        return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": news}}
+
+    return {"PreToolUse": [HookMatcher(matcher=None, hooks=[check])],
+            "PostToolUse": [HookMatcher(matcher=None, hooks=[told])]}
 
 
 def subagent_notes(message, seen):

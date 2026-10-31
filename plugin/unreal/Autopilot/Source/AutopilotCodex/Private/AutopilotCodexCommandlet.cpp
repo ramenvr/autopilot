@@ -32,6 +32,7 @@
 #include "InputMappingContext.h"
 #include "Interfaces/IPluginManager.h"
 #include "Misc/App.h"
+#include "Misc/ConfigCacheIni.h"
 #include "Misc/FeedbackContext.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -132,15 +133,29 @@ int32 UAutopilotCodexCommandlet::Main(const FString& Params)
 	const bool bNoWpLoad = FParse::Param(*Params, TEXT("nowpload"));
 	FString ProgressFile;
 	FParse::Value(*Params, TEXT("progress="), ProgressFile);
+	// The level the run plays (a package or object path): it and what it uses are exported first
+	FString FirstMap;
+	FParse::Value(*Params, TEXT("first="), FirstMap);
 
-	// Replace an earlier export: only the folders and files this commandlet writes.
+	// Replace an earlier export: only the folders and files this commandlet writes. Its files stay until this export has
+	// written its own (the brain reads them while it runs: an unchanged asset's file is the same); those it didn't write
+	// again go at the end. summary.txt goes now: it is there only when an export has finished.
+	IFileManager::Get().Delete(*FPaths::Combine(OutDir, TEXT("summary.txt")), false, true, true);
+	if (bNoMaps)
+	{
+		IFileManager::Get().Delete(*FPaths::Combine(OutDir, TEXT("maps.txt")), false, true, true);
+	}
+	TSet<FString> Earlier;
 	for (const TCHAR* Sub : { TEXT("blueprints"), TEXT("input"), TEXT("data") })
 	{
-		IFileManager::Get().DeleteDirectory(*FPaths::Combine(OutDir, Sub), false, true);
-	}
-	for (const TCHAR* File : { TEXT("assets.txt"), TEXT("maps.txt"), TEXT("summary.txt") })
-	{
-		IFileManager::Get().Delete(*FPaths::Combine(OutDir, File), false, true, true);
+		IFileManager::Get().IterateDirectoryRecursively(*FPaths::Combine(OutDir, Sub), [&Earlier](const TCHAR* Found, bool bIsDirectory)
+		{
+			if (!bIsDirectory)
+			{
+				Earlier.Add(FPaths::ConvertRelativePathToFull(Found));
+			}
+			return true;
+		});
 	}
 	IFileManager::Get().MakeDirectory(*OutDir, true);
 	TArray<FString> Failures;
@@ -150,6 +165,7 @@ int32 UAutopilotCodexCommandlet::Main(const FString& Params)
 	auto Write = [&](const FString& Rel, const FString& Text)
 	{
 		const FString Path = FPaths::Combine(OutDir, Rel);
+		Earlier.Remove(FPaths::ConvertRelativePathToFull(Path));
 		IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
 		if (FFileHelper::SaveStringToFile(Text, *Path, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
 		{
@@ -260,6 +276,95 @@ int32 UAutopilotCodexCommandlet::Main(const FString& Params)
 				ToExport.Add(A);
 			}
 		}
+	}
+	// What the game plays comes first: the level the run plays, the project's default and startup maps and game mode, and
+	// the packages they use, nearest first (by the asset registry's dependencies; a World Partition map's actors are
+	// packages of their own). The rest (asset packs' demos and the like) follow in name order. The brain reads the export
+	// as it is written, so the order decides what it has early, not what it gets
+	{
+		// (an object path's package: /Game/Maps/Arena.Arena -> /Game/Maps/Arena)
+		auto PackageOf = [](FString Path)
+		{
+			Path.TrimStartAndEndInline();
+			int32 Slash = INDEX_NONE;
+			Path.FindLastChar(TEXT('/'), Slash);
+			const int32 Dot = Path.Find(TEXT("."), ESearchCase::CaseSensitive, ESearchDir::FromStart, FMath::Max(Slash, 0));
+			if (Dot != INDEX_NONE)
+			{
+				Path.LeftInline(Dot);
+			}
+			return Path;
+		};
+		TArray<FString> Starts;
+		if (!FirstMap.IsEmpty())
+		{
+			Starts.Add(PackageOf(FirstMap));
+		}
+		for (const TCHAR* Key : { TEXT("GameDefaultMap"), TEXT("EditorStartupMap"), TEXT("GlobalDefaultGameMode") })
+		{
+			FString Value;
+			if (GConfig && GConfig->GetString(TEXT("/Script/EngineSettings.GameMapsSettings"), Key, Value, GEngineIni) && Value.StartsWith(TEXT("/")))
+			{
+				Starts.Add(PackageOf(Value));
+			}
+		}
+		TMap<FName, int32> Depth;
+		TArray<FName> Queue;
+		auto Reach = [&Depth, &Queue](const FName Pkg, int32 D)
+		{
+			if (!Depth.Contains(Pkg))
+			{
+				Depth.Add(Pkg, D);
+				Queue.Add(Pkg);
+			}
+		};
+		for (const FString& S : Starts)
+		{
+			if (S.StartsWith(TEXT("/Script/")))
+			{
+				continue;
+			}
+			Reach(FName(*S), 0);
+			FARFilter AF;
+#if UE_VERSION_OLDER_THAN(5, 4, 0)
+			for (const FString& Path : TArray<FString>{ULevel::GetExternalActorsPath(S)})
+#else
+			for (const FString& Path : ULevel::GetExternalActorsPaths(S))
+#endif
+			{
+				AF.PackagePaths.Add(FName(*Path));
+			}
+			AF.bRecursivePaths = true;
+			AF.bIncludeOnlyOnDiskAssets = true;
+			TArray<FAssetData> ActorAssets;
+			AR.GetAssets(AF, ActorAssets);
+			for (const FAssetData& AA : ActorAssets)
+			{
+				Reach(AA.PackageName, 1);
+			}
+		}
+		for (int32 i = 0; i < Queue.Num(); ++i)
+		{
+			TArray<FName> Deps;
+			AR.GetDependencies(Queue[i], Deps);
+			const int32 D = Depth[Queue[i]] + 1;
+			for (const FName Dep : Deps)
+			{
+				const FString P = Dep.ToString();
+				if (!P.StartsWith(TEXT("/Script/")) && !P.StartsWith(TEXT("/Engine/")))
+				{
+					Reach(Dep, D);
+				}
+			}
+		}
+		auto Rank = [&Depth](const FAssetData& A)
+		{
+			const int32* D = Depth.Find(A.PackageName);
+			return D ? *D : MAX_int32;
+		};
+		ToExport.StableSort([&Rank](const FAssetData& A, const FAssetData& B) { return Rank(A) < Rank(B); });
+		Maps.StableSort([&Rank](const FAssetData& A, const FAssetData& B) { return Rank(A) < Rank(B); });
+		UE_LOG(LogAutopilotCodex, Display, TEXT("AutopilotCodex: %d packages reached from %s, exported first"), Depth.Num(), *FString::Join(Starts, TEXT(", ")));
 	}
 	const int32 Total = ToExport.Num() + (bNoMaps ? 0 : FMath::Min(Maps.Num(), FMath::Max(MaxMaps, 0)));
 	int32 Done = 0;
@@ -562,9 +667,15 @@ int32 UAutopilotCodexCommandlet::Main(const FString& Params)
 			CollectGarbage(GARBAGE_COLLECTION_KEEPFLAGS);
 			++Done;
 			Progress(false);
+			Write(TEXT("maps.txt"), MapOut.Join());  // (the maps so far: read while the rest are exported)
 		}
 		Write(TEXT("maps.txt"), MapOut.Join());
 		Counts.Add(TEXT("maps"), MapsDone);
+	}
+	// The earlier export's files this one didn't write again: their assets are gone (or no longer exported)
+	for (const FString& Gone : Earlier)
+	{
+		IFileManager::Get().Delete(*Gone, false, true, true);
 	}
 	Done = Total;
 	Progress(true);

@@ -100,7 +100,9 @@ def test_a_finished_run_leaves_no_file_open(tmp_path, monkeypatch):
     finally:
         gc.enable()
     log = tmp_path / memory.RESET_BACKUP / "Game"
-    assert [p.read_text(encoding="utf-8").count("\n") for p in log.glob("*/runs/r1/implementer.log")] == [2]
+    logs = [p.read_text(encoding="utf-8").splitlines() for p in log.glob("*/runs/r1/implementer.log")]
+    # (the whole log moved: the session's own lines, then the two above)
+    assert len(logs) == 1 and logs[0][-2].endswith("played") and logs[0][-1].endswith("reported")
 
 
 class Plugin:

@@ -301,8 +301,14 @@ def prepare(link, path=None, level=None):
         game.pause(True)
     except Exception as e:
         print(f"note: couldn't pause the game: {e}")
-    game.codex = codexmod.build(project, path=path, game=game, export=True)
-    if not game.engine.has_export(game.codex.root):
+    # The export the plugin runs now (a first one, or again after assets were saved) streams in while the agent works
+    # (codex.Indexer): the run starts on the codex there is, the level it plays exported first
+    game.codex = codexmod.build(project, path=path, game=game, export=True, stream=True,
+                                first_map=game.level_info.playing or game.level)
+    indexer = getattr(game.codex, "indexer", None)
+    if indexer is not None and indexer.running:
+        print(f"codex: the export goes on while the run works ({codexmod.progress(indexer.status())})")
+    elif not game.engine.has_export(game.codex.root):
         print(game.engine.no_export_note)
     return project, game
 
@@ -645,6 +651,9 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             asked, play_seconds = settle()
             project, game = prepare(link, path, level)
             setup.push(resume_if_failed(game))
+            indexer = getattr(getattr(game, "codex", None), "indexer", None)
+            if indexer is not None:  # (an export still going when the run ends is the next run's)
+                setup.callback(indexer.stop)
             # (runs through Aura use the agent Aura names, Claude Code unless the model picked in Aura's chat needs
             # OpenCode, whatever AUTOPILOT_AGENT says; the user's own agent works on a run started from it, through
             # Aura or not)
