@@ -583,6 +583,8 @@ class Session:
                 elif status["running"]:
                     parts.append(f"[indexing the game's files: the export {codexmod.progress(status)}; "
                                  f"{status['files']} files in the codex now]")
+                if status.get("working"):
+                    parts.append(f"[still being written: {', '.join(status['working'])}]")
             with self.findings_lock:
                 new = self.findings[self.news_findings:]
                 self.news_findings = len(self.findings)
@@ -1608,6 +1610,10 @@ def briefing(session, opening=None):
         with session.news_lock:  # (what arrived before now is in the codex the briefing reads: not news)
             session.news_batches = len(idx.batches)
         status = idx.status()
+        if "level snapshot" in status.get("working", []):
+            out.append("## The level's snapshot is being taken\n"
+                       "codex/level.txt (every actor of the running level, by kind, and where) is being written while "
+                       "you work: a tool result says when it is in. What the live game shows now is below.")
         if status["running"]:
             out.append(
                 "## The game's files are still being indexed\n"

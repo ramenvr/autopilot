@@ -295,6 +295,7 @@ class Indexer:
         self.finished_at = None  # time.time() once the export is in (or the indexer gave up: error)
         self.error = None
         self.export = None  # the manifest's last word on the export
+        self.working = []  # what aside() is still writing (its names: "level snapshot")
         self._stop = threading.Event()
         self.thread = None
 
@@ -343,23 +344,52 @@ class Indexer:
             self.files = int(res.get("files") or 0)
             if export.get("error") and not self.running:
                 self.error = export["error"]
-            batch = None
-            if announce and res.get("arrived"):
-                files = [{"path": p, "kind": kind, "line": digest(self.root, p)} for p, kind in res["arrived"]]
-                batch = {"n": len(self.batches) + 1, "at": time.time(), "files": files}
-                self.batches.append(batch)
-        if batch is not None:
-            with open(os.path.join(self.dir, f"batch-{batch['n']}.txt"), "w", encoding="utf-8") as f:
-                f.write(batch_text(batch))
-            codex = getattr(self.game, "codex", None)
-            if codex is not None:
-                codex._bp = None  # (Blueprint names are looked up again: new ones came)
-            for listener in list(self.listeners):
-                try:
-                    listener(batch)
-                except Exception as e:
-                    print(f"codex: a listener failed on batch {batch['n']}: {e}")
+        if announce and res.get("arrived"):
+            self._arrive(res["arrived"])
         self._write_status()
+
+    def _arrive(self, arrived):
+        """A batch of files ([(codex path, "new" or "changed")]): kept, written down, told to the listeners."""
+        files = [{"path": p, "kind": kind, "line": digest(self.root, p)} for p, kind in arrived]
+        with self.lock:
+            batch = {"n": len(self.batches) + 1, "at": time.time(), "files": files}
+            self.batches.append(batch)
+        with open(os.path.join(self.dir, f"batch-{batch['n']}.txt"), "w", encoding="utf-8") as f:
+            f.write(batch_text(batch))
+        codex = getattr(self.game, "codex", None)
+        if codex is not None:
+            codex._bp = None  # (Blueprint names are looked up again: new ones came)
+        for listener in list(self.listeners):
+            try:
+                listener(batch)
+            except Exception as e:
+                print(f"codex: a listener failed on batch {batch['n']}: {e}")
+
+    def aside(self, rels, work, name="codex-work"):
+        """work() writes the codex files rels (the level's snapshot) in a thread of its own, so the run doesn't wait
+        for it; they arrive as a batch of their own once written (those it wrote: a file it didn't is left out)."""
+        before = {rel: _stamp(os.path.join(self.root, rel)) for rel in rels}
+        with self.lock:
+            self.working.append(name)
+
+        def run():
+            t0 = time.time()
+            try:
+                work()
+            except Exception as e:
+                print(f"codex: {name} failed: {e}")
+                return
+            finally:
+                with self.lock:
+                    self.working.remove(name)
+                self._write_status()
+            print(f"codex: {name} done in {time.time() - t0:.1f} s")
+            written = [(rel, "changed" if before[rel] else "new") for rel in rels
+                       if _stamp(os.path.join(self.root, rel)) not in (None, before[rel])]
+            if written:
+                self._arrive(written)
+
+        threading.Thread(target=run, name=name, daemon=True).start()
 
     def _finish(self):
         with self.lock:
@@ -377,11 +407,11 @@ class Indexer:
                 print(f"codex: a listener failed at the end: {e}")
 
     def status(self):
-        """{"running", "done", "total", "files", "batches", "seconds", "finished", "error"}."""
+        """{"running", "done", "total", "files", "batches", "seconds", "finished", "error", "working"}."""
         with self.lock:
             return {"running": self.running, "done": self.done, "total": self.total, "files": self.files,
                     "batches": len(self.batches), "seconds": round(time.time() - self.started, 1),
-                    "finished": self.finished_at is not None, "error": self.error}
+                    "finished": self.finished_at is not None, "error": self.error, "working": list(self.working)}
 
     def _write_status(self):
         try:
@@ -457,6 +487,15 @@ class View:
         return f"<codex: indexed, {s.get('files', 'all')} files; {s.get('batches', 0)} batches arrived this run>"
 
 
+def _stamp(path):
+    """(size, mtime_ns) of a file, None when there is none."""
+    try:
+        st = os.stat(path)
+    except OSError:
+        return None
+    return st.st_size, st.st_mtime_ns
+
+
 def batch_text(batch):
     """A batch as its file has it: one line a file, "+" new or "~" changed, its codex path, then its digest()."""
     return "".join(f"{'+' if f['kind'] == 'new' else '~'} codex/{f['path']}  {f['line']}\n" for f in batch["files"])
@@ -495,7 +534,12 @@ def build(project, path=None, game=None, export=True, engine=None, stream=False,
     if path and fetched is None:
         # (a plugin without the codex ops: read the project's files directly)
         eng.build_local(path, codex.root, export=export)
-    if game is not None:
+    if game is not None and codex.indexer is not None:
+        # The level's snapshot reads every actor of the running level (on a big World Partition map, tens of
+        # thousands at a few frames a second: minutes): written while the run works, told when it is in
+        codex.indexer.aside(["level.txt", "controls.txt"], lambda: snapshot_level(game, codex.root),
+                            name="level snapshot")
+    elif game is not None:
         try:
             snapshot_level(game, codex.root)
         except Exception as e:  # the level snapshot helps but isn't needed

@@ -284,3 +284,21 @@ def test_the_researcher_only_wakes_for_files_that_bear_on_the_request(tmp_path, 
     r.arrived({"n": 2, "files": [{"path": "blueprints/BP_Boss.txt", "kind": "new", "line": "Blueprint"}]})
     assert seen.wait(2)
     r.stop()
+
+
+def test_the_level_snapshot_is_taken_aside_and_arrives_as_a_batch(tmp_path, monkeypatch):
+    idx = make_indexer(tmp_path, ExportingPlugin({}, []), monkeypatch)
+    idx.start()
+    done = threading.Event()
+    seen = []
+    idx.listeners.append(lambda batch: (seen.append(batch), done.set()))
+
+    def snapshot():
+        assert idx.status()["working"] == ["level snapshot"]
+        with open(os.path.join(idx.root, "level.txt"), "w") as f:
+            f.write("# Actors in the running level (2)\n")
+
+    idx.aside(["level.txt", "controls.txt"], snapshot, name="level snapshot")
+    assert done.wait(5)
+    assert [(f["path"], f["kind"]) for f in seen[0]["files"]] == [("level.txt", "new")]  # (no controls were written)
+    assert idx.status()["working"] == []
