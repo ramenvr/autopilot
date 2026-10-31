@@ -302,3 +302,30 @@ def test_the_level_snapshot_is_taken_aside_and_arrives_as_a_batch(tmp_path, monk
     assert done.wait(5)
     assert [(f["path"], f["kind"]) for f in seen[0]["files"]] == [("level.txt", "new")]  # (no controls were written)
     assert idx.status()["working"] == []
+
+
+def test_background_work_is_tried_again_when_the_game_is_too_busy(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex, "ASIDE_RETRY_SECONDS", 0.01)
+    idx = make_indexer(tmp_path, ExportingPlugin({}, []), monkeypatch)
+    idx.start()
+    done = threading.Event()
+    idx.listeners.append(lambda batch: done.set())
+    tries = []
+
+    def snapshot():
+        tries.append(1)
+        if len(tries) < 2:
+            raise TimeoutError("the game didn't answer rc within 30s")
+        with open(os.path.join(idx.root, "level.txt"), "w") as f:
+            f.write("# Actors\n")
+
+    idx.aside(["level.txt"], snapshot, name="level snapshot")
+    assert done.wait(5) and len(tries) == 2
+
+
+def test_an_export_that_ended_well_counts_as_all_written(tmp_path, monkeypatch):
+    plugin = ExportingPlugin({}, [{"Saved/AutopilotCodex/a.txt": "a"}, {"Saved/AutopilotCodex/b.txt": "b"}])
+    idx = make_indexer(tmp_path, plugin, monkeypatch)
+    idx.start()
+    wait_for(idx)
+    assert idx.status()["done"] == idx.status()["total"] == 2

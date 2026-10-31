@@ -233,6 +233,8 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
 INDEXING = ".indexing"
 POLL_SECONDS = 3.0  # how often the plugin is asked for what its export has written since
 GONE_TRIES = 5  # failed asks in a row (the game gone, the editor busy) before the indexer gives up
+ASIDE_TRIES = 3  # tries of a piece of background work (the level's snapshot) before it is left out of the run
+ASIDE_RETRY_SECONDS = 20.0
 
 
 def digest(codex_root, rel):
@@ -344,6 +346,8 @@ class Indexer:
             self.files = int(res.get("files") or 0)
             if export.get("error") and not self.running:
                 self.error = export["error"]
+            elif export.get("ran") and not self.running:
+                self.done = self.total  # (the end's answer has no progress: an export that ended well wrote it all)
         if announce and res.get("arrived"):
             self._arrive(res["arrived"])
         self._write_status()
@@ -375,10 +379,14 @@ class Indexer:
         def run():
             t0 = time.time()
             try:
-                work()
-            except Exception as e:
-                print(f"codex: {name} failed: {e}")
-                return
+                for attempt in range(1, ASIDE_TRIES + 1):
+                    try:
+                        work()
+                        break
+                    except Exception as e:  # (a busy game: the agent's probes and play share its few frames)
+                        print(f"codex: {name} failed ({attempt} of {ASIDE_TRIES}): {e}")
+                        if attempt == ASIDE_TRIES or self._stop.wait(ASIDE_RETRY_SECONDS):
+                            return
             finally:
                 with self.lock:
                     self.working.remove(name)
