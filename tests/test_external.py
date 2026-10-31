@@ -13,7 +13,7 @@ import types
 import pytest
 from test_autopilot import FakeLink
 
-from autopilot import bridge, cli, codex, dataset, mcp, transcripts, vision
+from autopilot import bridge, cli, codex, dataset, mcp, sandbox, transcripts, vision
 from autopilot.agents import external
 from autopilot.agents import session as sessionmod
 from autopilot.kit.game import Game
@@ -138,6 +138,49 @@ def test_a_start_call_is_told_why_a_run_wont_start():
         # (a run that ends before its session opens: Aura refused it, the game didn't start)
         control.starter = lambda params, desk: desk.end({"summary": "Aura refused the run: no credits left"})
         assert "didn't start: Aura refused the run: no credits left" in text_of(control.start({"request": "x"}))
+    finally:
+        control.close()
+
+
+def test_sandbox_startup_failure_reaches_the_start_call(tmp_path, monkeypatch):
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path / "memory"))
+    monkeypatch.setenv("AUTOPILOT_SANDBOX", "process")
+
+    def fail_sandbox(*args, **kwargs):
+        raise sandbox.SandboxError("the sandbox ended (1)")
+
+    monkeypatch.setattr(sandbox, "Sandbox", fail_sandbox)
+    control = external.Control()
+    worker_done = threading.Event()
+    answered = threading.Event()
+    result = {}
+
+    def starter(params, desk):
+        def run():
+            try:
+                external.implement(Game(FakeLink()), "fake", params["request"], run_id="r1", desk=desk)
+            except Exception as e:
+                result["worker_error"] = e
+            finally:
+                worker_done.set()
+
+        threading.Thread(target=run, daemon=True).start()
+        return None
+
+    control.starter = starter
+
+    def start():
+        result["answer"] = control.start({"request": "Verify that the crate opens"})
+        answered.set()
+
+    try:
+        threading.Thread(target=start, daemon=True).start()
+        assert worker_done.wait(5), "the sandbox failure wasn't reached"
+        assert isinstance(result.get("worker_error"), sandbox.SandboxError)
+        assert answered.wait(5), "start_run stayed pending after sandbox startup failed"
+        answer = result["answer"]
+        assert answer["isError"] and "didn't start: SandboxError: the sandbox ended (1)" in text_of(answer)
+        assert control.desk.session is None and control.desk.ready.is_set()
     finally:
         control.close()
 
