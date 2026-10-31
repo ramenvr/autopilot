@@ -99,7 +99,10 @@ class Model:
                 wire_messages.append({"role": "assistant", "content": m["blocks"]})
             else:
                 wire_messages.append({"role": m["role"], "content": m["content"]})
-        kwargs = {"model": model, "max_tokens": max_tokens, "messages": wire_messages}
+        # (cached up to the last block: a tool loop resends its whole conversation each turn, and the researcher's
+        # passes share the instructions and tools; uncached, BoatGame's researcher read 2.8M tokens at full price)
+        kwargs = {"model": model, "max_tokens": max_tokens, "messages": wire_messages,
+                  "cache_control": {"type": "ephemeral"}}
         if system:
             kwargs["system"] = system
         if tools:
