@@ -179,3 +179,21 @@ static func action_for_key(name: String) -> String:
 				if found == "":
 					found = str(action)
 	return found
+
+
+## How input reaches the game (context's and hello's `input`, as Unity's): keys, actions and the pointer all arrive as
+## Godot input events (Input.parse_input_event), so the game's _input / _unhandled_input / _gui_input, Input's actions
+## and its own mouse position see them; `move` presses the movement actions ("actions") or, with none bound to
+## W/A/S/D or the arrows, the keys ("keys"). `notes`: what an agent should know here.
+static func input_caps(headless: bool, mouse_mode := Input.MOUSE_MODE_VISIBLE, move_actions := true) -> Dictionary:
+	var notes := []
+	if headless:
+		notes.append("The game runs headless: the mouse is never captured (Input.mouse_mode stays visible), so a game that turns its view only while the mouse is captured won't turn; get_viewport().get_mouse_position() reports the pointer.")
+	else:
+		notes.append("Point before clicking (pointer): the mouse buttons press where the pointer is (the middle of the view until it is set), as events; a game that reads the mouse position with get_viewport().get_mouse_position() itself sees the real cursor, which the addon never moves.")
+	if mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		notes.append("The mouse is captured: the view turns with mouse motion (MouseX, MouseY); the pointer's place doesn't matter to the game.")
+	if not move_actions:
+		notes.append("No input action is bound to W/A/S/D or the arrow keys: move presses the keys themselves.")
+	return {"handling": "godot", "keys": true, "actions": true, "pointer": true, "move": "actions" if move_actions else "keys",
+		"notes": notes}

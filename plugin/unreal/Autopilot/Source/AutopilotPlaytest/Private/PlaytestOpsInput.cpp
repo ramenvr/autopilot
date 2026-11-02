@@ -64,6 +64,10 @@ namespace
 
 	void SendKey(APlayerController* PC, const FKey& Key, EInputEvent Event)
 	{
+		if (PointerButton(PC, Key, Event))
+		{
+			return;  // (a mouse button over the game's UI at the pointer: a click there, as the mouse's)
+		}
 		SendInput(PC, Key, Event, Event == IE_Released ? 0.0f : 1.0f, 1.0f / 60.0f, 0);
 	}
 
@@ -178,7 +182,45 @@ namespace
 		}
 		else
 		{
+			// A press: held a moment and across two frames, then let go (as a key's tap, and as Unity's and Godot's
+			// actions): a trigger reading the action once a frame sees it go down and up
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
+			HeldActions.RemoveAll([Action](const FHeldAction& Held) { return Held.Action.Get() == Action; });
+			HeldActions.Add({Subsystem, Action, Value});
 			Subsystem->InjectInputForAction(Action, Value, Modifiers, Triggers);
+#else
+			Subsystem->StartContinuousInputInjectionForAction(Action, Value, Modifiers, Triggers);
+#endif
+			TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> WeakSubsystem(Subsystem);
+			TWeakObjectPtr<UInputAction> WeakAction(Action);
+			FPending Pending;
+			Pending.Id = Id;
+			Pending.Op = TEXT("input");
+			Pending.StartReal = FPlatformTime::Seconds();
+			Pending.Seconds = TapSeconds;
+			Pending.Tick = [&Bridge, WeakSubsystem, WeakAction, StartFrame = GFrameCounter](FPending& P, double Now)
+			{
+				if (!TapDone(P, Now, StartFrame))
+				{
+					return false;
+				}
+				UInputAction* Current = WeakAction.Get();
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
+				HeldActions.RemoveAll([Current](const FHeldAction& Held) { return Held.Action.Get() == Current; });
+#else
+				if (UEnhancedInputLocalPlayerSubsystem* S = WeakSubsystem.Get())
+				{
+					if (Current)
+					{
+						S->StopContinuousInputInjectionForAction(Current);
+					}
+				}
+#endif
+				Bridge.Respond(P.Id, Obj(MakeShared<FJsonObject>()));
+				return true;
+			};
+			Bridge.AddPending(MoveTemp(Pending));
+			return;
 		}
 		Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
 	}
@@ -193,8 +235,17 @@ namespace
 			Bridge.RespondError(Id, TEXT("No player pawn"));
 			return;
 		}
+		// "via" (as Unity's): Unreal's move is the pawn's own movement input (its controller); the game's keys or stick
+		// are the `key` op's to press
+		const FString Via = StringField(Args, TEXT("via"));
+		if (!Via.IsEmpty() && Via != TEXT("auto") && Via != TEXT("controller"))
+		{
+			Bridge.RespondError(Id, FString::Printf(TEXT("move can't go via %s here (it adds the pawn's movement input: "
+				"via controller; press the game's keys or stick with `key`)"), *Via));
+			return;
+		}
 		const FVector Direction = VectorField(Args, TEXT("direction"));
-		const double Scale = NumberField(Args, TEXT("scale"), 1.0);
+		const double Scale = FMath::Clamp(NumberField(Args, TEXT("scale"), 1.0), -1.0, 1.0);
 		TWeakObjectPtr<APawn> WeakPawn(Pawn);
 		const FVector Start = Pawn->GetActorLocation();
 		FPending Pending;
@@ -213,6 +264,7 @@ namespace
 			TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 			const double Moved = Current ? FVector::Dist2D(Current->GetActorLocation(), Start) : 0.0;
 			Result->SetField(TEXT("moved"), PlaytestJson::Number(FMath::RoundToDouble(Moved * 10) / 10));
+			Result->SetStringField(TEXT("via"), TEXT("controller"));
 			Bridge.Respond(P.Id, Obj(Result));
 			return true;
 		};
@@ -363,6 +415,7 @@ namespace
 
 	void TickKeys(UPlaytestSubsystem& Bridge, float DeltaTime)
 	{
+		TickPointer(Bridge);
 #if UE_VERSION_OLDER_THAN(5, 3, 0)
 		for (int32 I = HeldActions.Num() - 1; I >= 0; --I)
 		{

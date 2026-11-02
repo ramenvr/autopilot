@@ -32,7 +32,6 @@ class Godot(OpEngine):
     name = "godot"
     title = "Godot"
     export_dir = EXPORT_PREFIX.rstrip("/")
-    error_log = False  # the addon sends no `log` events
     # the codex export, the run history, the Settings page's token counts; and in the project's user:// folder, each
     # run's report files and frames, and the codex export when res:// couldn't be written (user_folder)
     plugin_files = (export_dir, ".godot/editor/autopilot_runs", ".godot/editor/autopilot_usage.json")
@@ -161,15 +160,25 @@ class Godot(OpEngine):
     # -- a headless game ---------------------------------------------------------------------------------
 
     def launch_command(self, project, url, log, map=None, exe=None):
-        """Godot without a window or rendering (--headless) on the project's folder. The addon reads the arguments
-        after `--` (Unreal's spellings, or its own --playtest-url=...); -PlaytestMap: the scene to start in (a res://
-        path or a scene file's name)."""
-        return [exe or EXE, "--headless", "--path", self.project_folder(project), "--log-file", log, "--",
+        """Godot without a window or rendering (--headless) on the project's folder; or an exported build of the game
+        (exe: its executable, the project packed beside it or inside it), which needs no --path. The addon reads the
+        arguments after `--` (Unreal's spellings, or its own --playtest-url=...); -PlaytestMap: the scene to start in
+        (a res:// path or a scene file's name)."""
+        where = [] if exe and is_exported(exe) else ["--path", self.project_folder(project)]
+        return [exe or EXE, "--headless"] + where + ["--log-file", log, "--",
                 "-Playtest=goal", "-PlaytestGoal=autopilot", f"-PlaytestUrl={url}"] + (
                     [f"-PlaytestMap={map}"] if map else [])
 
 
 # -- project.godot -----------------------------------------------------------------------------------------
+
+def is_exported(exe):
+    """Whether an executable is an exported game (its .pck beside it, or a name other than Godot's own), not the
+    Godot engine that runs a project folder."""
+    if os.path.isfile(os.path.splitext(exe)[0] + ".pck"):
+        return True
+    return not os.path.basename(exe).lower().startswith("godot")
+
 
 def read_project_godot(path):
     """{section: {key: value}} of a project.godot, enough for the index: strings unquoted; the [input] section as

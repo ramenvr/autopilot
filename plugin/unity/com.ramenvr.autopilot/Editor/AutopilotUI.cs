@@ -71,6 +71,32 @@ namespace Autopilot.Playtest.Editor
             return index < 0 ? Muted : Palette[index % Palette.Length];
         }
 
+        /// <summary>The fonts the window's USS draws with (Editor/UI/Fonts, SIL OFL).</summary>
+        public static readonly string[] Fonts =
+        {
+            "IBMPlexSans-Regular.ttf", "IBMPlexSans-Medium.ttf", "IBMPlexSans-SemiBold.ttf", "IBMPlexMono-Regular.ttf", "IBMPlexMono-Medium.ttf",
+        };
+
+        /// <summary>Whether every bundled font can be read (under <paramref name="root"/>, the package's UI folder by
+        /// default). One that can't is drawn in the editor's own font; the window says so once it opens.</summary>
+        public static bool FontsFound(string root = Root)
+        {
+            foreach (var name in Fonts)
+            {
+                Font font = null;
+                try
+                {
+                    font = AssetDatabase.LoadAssetAtPath<Font>(root + "Fonts/" + name);
+                }
+                catch (Exception)
+                {
+                    // (unreadable: not found)
+                }
+                if (font == null) return false;
+            }
+            return true;
+        }
+
         static StyleSheet sheet;
 
         public static StyleSheet Sheet

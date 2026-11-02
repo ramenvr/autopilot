@@ -49,6 +49,35 @@ static func resolve(asked: String, summary_file: String) -> String:
 	return "res://" + p
 
 
+## The project's scenes (`levels`): every .tscn and .scn under res:// as res:// paths, sorted, in the folders the codex
+## reads (none starting with ".", nor node_modules, addons/autopilot or a folder holding a .gdignore). In an exported
+## build a scene is in the pack as "<name>.tscn.remap" (its binary copy elsewhere): listed by its own name, which
+## change_scene_to_file opens.
+static func scenes() -> Array:
+	var out := []
+	_scenes_in("res://", "", out)
+	out.sort()
+	return out
+
+
+static func _scenes_in(dir: String, rel: String, out: Array) -> void:
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	d.include_hidden = false
+	var files := d.get_files()
+	if files.has(".gdignore"):
+		return
+	for f in files:
+		var name := str(f).trim_suffix(".remap")
+		if name.get_extension().to_lower() in ["tscn", "scn"] and not out.has("res://" + rel + name):
+			out.append("res://" + rel + name)
+	for sub in d.get_directories():
+		if skipped_dir(sub) or (rel == "addons/" and sub == "autopilot"):
+			continue
+		_scenes_in(dir.path_join(sub), rel + sub + "/", out)
+
+
 static func _walk(dir: String, rel: String, out: Array) -> void:
 	var d := DirAccess.open(dir)
 	if d == null:

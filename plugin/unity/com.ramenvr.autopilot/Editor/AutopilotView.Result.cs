@@ -43,7 +43,8 @@ namespace Autopilot.Playtest.Editor
 
             // The run's recording, under the verdict; with none, why, as its result said (nothing in runs kept before that)
             // (a recording gone from its place: the player kept, nothing to press, saying so)
-            if (!string.IsNullOrEmpty(run.Recording)) box.Add(new RecordingPlayer(run.Recording, run.RecordingSeconds));
+            if (!string.IsNullOrEmpty(run.Recording) || RecordingPlayer.PlaysFrames && !string.IsNullOrEmpty(run.RecordingFrames))
+                box.Add(new RecordingPlayer(run.Recording, run.RecordingSeconds, run.RecordingFrames, run.RecordingFps));
             else if (!run.Active && !string.IsNullOrEmpty(run.NoRecording))
                 box.Add(Para(AutopilotText.Breakable(AutopilotText.Scrub(run.NoRecording)), "small t-muted no-recording"));
 

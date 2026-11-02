@@ -28,7 +28,7 @@ namespace Autopilot.Playtest.Editor
             var prefs = Preferences.Current;
             return $"settings|{Wide}|{AutopilotUsage.Version}|{SelectedId}|{share}|{research}|{client != null && client.Connected}|{client != null && client.RunActive}|" +
                    $"{client?.AccountVersion}|{client != null && client.CanSignIn}|{SigningIn}|{signOutConfirm}|{setupProblem}|{prefs.Access}|{PlaytestSettings.Get().UseWithAura}|{removeConfirm}|" +
-                   $"{AgentService.Current}|{AgentService.Version}";
+                   $"{AgentService.Current}|{AgentService.Version}|{PlaytestSettings.Get().ShowPolicyLog}";
         }
 
         void BuildSettings()
@@ -44,6 +44,8 @@ namespace Autopilot.Playtest.Editor
             box.Add(UsageCard());
             box.Add(SharingCard());
             box.Add(ResearchCard());
+            box.Add(BriefCard());
+            box.Add(PolicyLogCard());
             box.Add(AssistantsCard());
             box.Add(RemoveCard());
             if (offset != Vector2.zero) scroll.schedule.Execute(() => scroll.scrollOffset = offset);
@@ -193,6 +195,59 @@ namespace Autopilot.Playtest.Editor
             return toggle;
         }
 
+        public const string BriefTitle = "Design brief";
+        public const string BriefLine = "How the game is meant to work: the design, the rules players are told (e.g. “the player has three lives; each coin is worth 10 points”). Explorations report behavior that differs from it as a bug, even where the game’s own values agree with each other. Optional; sent with every run.";
+        public const string BriefPlaceholder = "How the game is meant to work";
+
+        /// <summary>The Design Brief (PlaytestSettings.DesignBrief, as Unreal's): sent with every run from the composer
+        /// and with an Explore run; saved as it is typed.</summary>
+        static VisualElement BriefCard()
+        {
+            var card = SettingCard(BriefTitle, BriefLine, "brief", out var control);
+            var s = PlaytestSettings.Get();
+            var field = Field(s.DesignBrief, true, v =>
+            {
+                s.DesignBrief = v;
+                s.Save();
+            }, BriefPlaceholder);
+            field.AddToClassList("brief-field");
+            control.Add(field);
+            return card;
+        }
+
+        public const string PolicyLogTitle = "Policy log";
+        public const string PolicyLogLine = "Show every policy step on the Policy log tab: the observation, the action probabilities, the action taken and how long it took. An agent service on this computer sends them. Applies from the next connection.";
+
+        /// <summary>The words beside the policy log switch, as it is now.</summary>
+        public static string PolicyLogState(bool on) => on ? "Policy log shown" : "Policy log hidden";
+
+        /// <summary>Show Policy Log (PlaytestSettings.ShowPolicyLog, as Unreal's): whether the hello asks for the policy
+        /// steps (`inspect`); a change connects again when no run is going, as sharing does.</summary>
+        static VisualElement PolicyLogCard()
+        {
+            var card = SettingCard(PolicyLogTitle, PolicyLogLine, "policy-log", out var control);
+            var s = PlaytestSettings.Get();
+            var toggle = Switch(PolicyLogState(s.ShowPolicyLog), s.ShowPolicyLog);
+            toggle.AddToClassList("share-toggle");
+            toggle.tooltip = "Show Policy Log";
+            toggle.RegisterValueChangedCallback(e =>
+            {
+                toggle.text = PolicyLogState(e.newValue);
+                SetShowPolicyLog(e.newValue);
+            });
+            control.Add(toggle);
+            return card;
+        }
+
+        internal static void SetShowPolicyLog(bool on)
+        {
+            var s = PlaytestSettings.Get();
+            if (s.ShowPolicyLog == on) return;
+            s.ShowPolicyLog = on;
+            s.Save();
+            Reconnect();
+        }
+
         public const string AssistantsTitle = "Autopilot in Claude Code & Codex";
         public const string AssistantsLine = "One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or ChatGPT subscriptions, respectively.";
         /// <summary>What sets up the user's own Claude Code and Codex (autopilot/connect.py), one row each.</summary>
@@ -233,7 +288,7 @@ namespace Autopilot.Playtest.Editor
         }
 
         /// <summary>Connect again (when connected and no run is going) so the agent service gets the new choices.</summary>
-        static void Reconnect()
+        internal static void Reconnect()
         {
             var client = EditorHost.Client;
             if (client == null || !client.Connected || client.RunActive) return;

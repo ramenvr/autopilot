@@ -114,6 +114,17 @@ static func kind_of(c: Control) -> String:
 		return "slider"
 	if c is LineEdit or c is TextEdit:
 		return "text_input"
+	# a control of the game's own that takes the mouse itself (its script's _gui_input, or something connected to its
+	# gui_input): a widget, clicked as the others
+	if c.mouse_filter != Control.MOUSE_FILTER_IGNORE:
+		var own_input := false
+		var sc = c.get_script()
+		if sc is Script:
+			for m in sc.get_script_method_list():
+				if m.name == "_gui_input":
+					own_input = true
+		if own_input or c.gui_input.get_connections().size() > 0:
+			return "widget"
 	return ""
 
 
@@ -161,6 +172,8 @@ func list() -> Array:
 			item.max = c.max_value
 		if c is LineEdit and c.placeholder_text != "":
 			item.placeholder = c.placeholder_text
+		if c is LineEdit or c is TextEdit:
+			item.text = c.text
 		out.append(item)
 	return out
 
@@ -245,6 +258,14 @@ func act(args: Dictionary) -> Array:
 			_push_mouse(c, MOUSE_BUTTON_LEFT, true)
 			return [true, {"via": "mouse"}]
 		"set":
+			if c is OptionButton:
+				var want := str(args.get("option", args.get("text", args.get("value", ""))))
+				for i in c.item_count:
+					if c.get_item_text(i) == want:
+						c.select(i)
+						c.item_selected.emit(i)
+						return [true, {}]
+				return [false, "%s has no option %s" % [id, want]]
 			if c is Range:
 				c.value = float(args.get("value", c.value))
 				return [true, {}]

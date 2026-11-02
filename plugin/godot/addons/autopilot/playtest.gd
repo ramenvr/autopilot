@@ -51,6 +51,11 @@ var _last_real := 0.0
 var _codex_thread: Thread = null
 var _codex_queue := []
 var _timestep_saved = null
+var _pointer = null  # where `pointer` put the mouse (the root viewport's pixels), null: the crosshair
+var _changing := false  # a scene change asked for (session, the command line's map) and not in yet: `loading`
+var _fixed_fps := 0.0  # `timestep` fixed: each frame's game time 1/fps (0: off)
+var _fixed_scale := 1.0  # the time scale the game itself set (kept under the fixed step's own)
+var _fixed_set := -1.0  # the time scale the fixed step set last
 
 # The command line (CI, headless copies)
 var cli_run := {}
@@ -93,6 +98,7 @@ func _ready() -> void:
 			push_warning("AutopilotPlaytest: no scene %s to start in" % cli_map)
 		else:
 			_launch_scene = scene  # (what a restart reopens)
+			_changing = true
 			get_tree().change_scene_to_file.call_deferred(scene)
 
 
@@ -200,10 +206,14 @@ func hello(host: String) -> Dictionary:
 	var h := {"type": "hello", "protocol": Link.PROTOCOL, "plugin_version": plugin_version(), "engine": "godot",
 		"engine_version": Engine.get_version_info().string, "project": str(ProjectSettings.get_setting("application/config/name", "")),
 		"host": host,
-		# what this addon does beyond the protocol's first version: the brain falls back for one without them
-		"features": ["timed_hold", "media"] if Media.can_capture() else ["timed_hold"],
+		# what this addon does beyond the protocol's first version: the brain falls back for one without them (a key
+		# hold with "seconds" let go in the game; `levels`, and `session` playing the `map` asked for; `pointer`;
+		# `record` and `capture`, in a game that draws)
+		"features": ["timed_hold", "levels", "pointer"] + (["media"] if Media.can_capture() else []),
 		# whether the user shares runs' data (preferences.json, or -PlaytestShare on the command line)
-		"share": Prefs.share_for_run(cli_share)}
+		"share": Prefs.share_for_run(cli_share),
+		# how input reaches the game (as Unity's: point before clicking, what headless changes)
+		"input": Keys.input_caps(DisplayServer.get_name() == "headless")}
 	# whether the agent service runs its research agent, only when chosen (preferences.json, or -PlaytestResearch on the
 	# command line); left out, the agent service decides (off for the Aura app's, on for this plugin's own)
 	var research = Prefs.research_for_run(cli_research)
@@ -310,6 +320,8 @@ func _process(delta: float) -> void:
 	var real_dt := now - _last_real if _last_real > 0.0 else delta
 	_last_real = now
 	var tree := get_tree()
+	if _fixed_fps > 0.0:
+		_fix_step(real_dt)
 	if not tree.paused:
 		game_time += delta
 	if tree.current_scene != _scene:
@@ -318,9 +330,11 @@ func _process(delta: float) -> void:
 		game_time = 0.0
 		if _launch_scene == "" and _scene and _scene.scene_file_path != "":
 			_launch_scene = _scene.scene_file_path
+		if _scene != null:
+			_changing = false
 		if had or _scene != null:
 			_release_all()
-			emit_event({"kind": "session", "t": t_value(), "running": _scene != null})
+			emit_event({"kind": "session", "t": t_value(), "running": _scene != null, "scene": _scene_path()})
 	_flush_events()
 	if link:
 		_poll_link(now)
@@ -487,12 +501,17 @@ func dispatch(id, op: String, args: Dictionary):
 		"rc":
 			return rc.handle(str(args.get("verb", "")), args.get("body", null))
 		"context":
+			if args.has("player"):
+				world.chosen = str(args.get("player", ""))
 			return [true, context()]
 		"session":
 			return session(id, args)
+		"levels":
+			return [true, levels()]
+		"pointer":
+			return pointer_op(args)
 		"pause":
-			get_tree().paused = bool(args.get("paused", false))
-			return [true, {"paused": get_tree().paused}]
+			return [true, pause_op(bool(args.get("paused", false)))]
 		"input":
 			return input_op(id, args)
 		"key":
@@ -539,7 +558,7 @@ func dispatch(id, op: String, args: Dictionary):
 			_codex_queue.append({"id": id, "op": op, "args": args})
 			return null
 		"find":
-			return [true, world.find(args)]
+			return world.find(args)
 		"transforms":
 			return [true, world.transforms(args, rc.resolve)]
 		"pose":
@@ -547,6 +566,30 @@ func dispatch(id, op: String, args: Dictionary):
 		"movement":
 			return world.movement(args)
 	return [false, "unknown op %s" % op]
+
+
+## How the game is networked (Unreal's context `net`): {"mode": "standalone" | "listen_server" | "dedicated_server" |
+## "client"}; a server says how many clients are connected (`clients`), a client says where the server's world is
+## (`server_world`: "" for another process, which a Godot server always is) and how many other clients it knows.
+func net() -> Dictionary:
+	var mp := multiplayer
+	var peer = mp.multiplayer_peer if mp else null
+	if peer == null or peer is OfflineMultiplayerPeer or peer.get_connection_status() == MultiplayerPeer.CONNECTION_DISCONNECTED:
+		return {"mode": "standalone"}
+	if mp.is_server():
+		return {"mode": "dedicated_server" if DisplayServer.get_name() == "headless" else "listen_server",
+			"clients": mp.get_peers().size()}
+	return {"mode": "client", "server_world": "", "clients": maxi(0, mp.get_peers().size() - 1)}
+
+
+## `pause`: the game's tree paused or not. A networked client pauses only its own copy of the game (the server's goes
+## on, as Unreal's can't be paused from a client): the answer says why with `why`.
+func pause_op(paused: bool) -> Dictionary:
+	get_tree().paused = paused
+	var out := {"paused": get_tree().paused}
+	if net().mode == "client":
+		out.why = "the game's server runs in another process: it can't be paused from here (only this client's copy is)"
+	return out
 
 
 func context() -> Dictionary:
@@ -560,7 +603,9 @@ func context() -> Dictionary:
 		"camera": str(cam.get_path()) if cam else "", "dimension": world.dimension(),
 		"game_name": str(ProjectSettings.get_setting("application/config/name", "")), "host": "editor" if relay else "game",
 		"engine": "godot", "session_running": s != null, "paused": get_tree().paused, "game_time": Frame.r2(game_time),
-		"project_dir": ProjectSettings.globalize_path("res://"), "controls": Keys.controls()}
+		"project_dir": ProjectSettings.globalize_path("res://"), "controls": Keys.controls(),
+		"input": Keys.input_caps(DisplayServer.get_name() == "headless", Input.mouse_mode, _move_actions().any(func(a): return a != "")),
+		"net": net(), "player_found_by": "context's player" if world.chosen != "" and p != null else ""}
 
 
 # --- session ----------------------------------------------------------------------------------------
@@ -572,23 +617,39 @@ func find_scene(name: String) -> String:
 	var want := name.get_file()
 	if not want.ends_with(".tscn") and not want.ends_with(".scn"):
 		want += ".tscn"
-	var found := []
-	Codex._walk("res://", "", found)
-	for f in found:
+	for f in Codex.scenes():
 		if str(f).get_file().to_lower() == want.to_lower():
-			return "res://" + f
+			return f
 	return ""
 
 
+## `levels` (docs/protocol.md) in the game itself (headless, an exported build): the project's scenes, and the one
+## playing, which is also what a start without a map plays (the game is already in it).
+func levels() -> Dictionary:
+	var playing := _scene_path()
+	return {"levels": Codex.scenes(), "open": playing, "playing": playing}
+
+
+## `session` in the game itself: `restart` reopens the scene the game was launched with (or `map`), as a fresh start
+## of it; `start` with a `map` the game isn't playing plays that one the same way (a brain choosing the level asks for
+## it so); `start` without one, `stop` and `status` say whether a scene runs.
 func session(id, args: Dictionary):
 	var action := str(args.get("action", "status"))
+	var map := str(args.get("map", ""))
+	if action == "start" and map != "":
+		var asked := find_scene(map)
+		if asked == "":
+			return [false, "No scene %s" % map, 404]
+		if asked == _scene_path():
+			return [true, {"running": true, "scene": asked}]
+		action = "restart"
 	if action != "restart":
-		return [true, {"running": get_tree().current_scene != null}]
+		return [true, {"running": get_tree().current_scene != null, "loading": _changing, "scene": _scene_path()}]
 	var target := ""
-	if str(args.get("map", "")) != "":
-		target = find_scene(str(args.map))
+	if map != "":
+		target = find_scene(map)
 		if target == "":
-			return [false, "No scene %s" % args.map]
+			return [false, "No scene %s" % map, 404]
 	else:
 		target = _launch_scene if _launch_scene != "" else _scene_path()
 	if target == "":
@@ -602,6 +663,7 @@ func session(id, args: Dictionary):
 	var err := get_tree().change_scene_to_file(target)
 	if err != OK:
 		return [false, "Couldn't open %s (error %d)" % [target, err], 500]
+	_changing = true
 	var started := _now()
 	var state := {"seen": 0}
 	_pending.append({"id": id, "op": "session", "tick": func(now: float) -> bool:
@@ -612,7 +674,7 @@ func session(id, args: Dictionary):
 				respond(id, {"running": true, "scene": cur.scene_file_path})
 				return true
 		if now - started > 30.0:
-			respond_error(id, "Timed out reopening the scene", 500)
+			_changing = false; respond_error(id, "Timed out reopening the scene", 500)
 			return true
 		return false})
 	return null
@@ -639,17 +701,36 @@ func _reset_autoloads() -> void:
 			fresh.free()
 
 
+## `timestep`: `fixed` makes each frame's game time 1/fps (as Unreal's fixed time step): Godot has no fixed frame time
+## at run time (only the --fixed-fps command line), so the frame rate is capped at fps and every frame sets
+## Engine.time_scale so that the frame's game time is 1/fps of the wall time the frame before took (a frame much
+## slower than the one before it still runs a little long); the game's own time scale is kept under it. Off: both
+## back as they were.
 func timestep(args: Dictionary):
 	if args.get("fixed", false):
 		if _timestep_saved == null:
-			_timestep_saved = [Engine.max_fps, Engine.physics_ticks_per_second]
+			_timestep_saved = [Engine.max_fps, Engine.time_scale]
+			_fixed_scale = Engine.time_scale
 		var fps := maxi(1, int(args.get("fps", 30)))
 		Engine.max_fps = fps
-		return [true, {"note": "Godot has no runtime fixed frame time: the frame rate is capped at %d" % fps}]
+		_fixed_fps = float(fps)
+		_fixed_set = -1.0
+		return [true, {"note": "each frame's game time is set to 1/%d s through Engine.time_scale (from the frame before's wall time), the frame rate capped at %d" % [fps, fps]}]
 	if _timestep_saved != null:
 		Engine.max_fps = _timestep_saved[0]
+		Engine.time_scale = _fixed_scale
 		_timestep_saved = null
+	_fixed_fps = 0.0
 	return [true, {}]
+
+
+func _fix_step(real_dt: float) -> void:
+	if _fixed_set >= 0.0 and not is_equal_approx(Engine.time_scale, _fixed_set):
+		_fixed_scale = Engine.time_scale  # (the game set its own: kept under ours)
+	if real_dt <= 0.0:
+		return
+	_fixed_set = clampf(_fixed_scale * (1.0 / _fixed_fps) / real_dt, 0.01, 100.0)
+	Engine.time_scale = _fixed_set
 
 
 # --- the player's hands -----------------------------------------------------------------------------
@@ -661,6 +742,91 @@ func _deliver(ev: InputEvent) -> void:
 
 func _crosshair() -> Vector2:
 	return get_viewport().get_visible_rect().size / 2.0
+
+
+## Where the player's mouse is, in the root viewport's own pixels (from its top left, y down): where `pointer` put it,
+## else the middle of the view (the crosshair, where a game that never shows its cursor aims).
+func _mouse_at() -> Vector2:
+	return _pointer if _pointer != null else _crosshair()
+
+
+## A place in the root viewport's pixels as the window's: what an event given to Input.parse_input_event carries (the
+## viewport takes the window's stretch back off it, as it does for the real mouse).
+func _to_window(p: Vector2) -> Vector2:
+	return get_viewport().get_final_transform() * p
+
+
+## The mouse buttons down now, with `button` down or up as `pressed` says (a mouse event's button_mask).
+func _buttons_with(button: int, pressed: bool) -> int:
+	var mask := Input.get_mouse_button_mask()
+	if button >= MOUSE_BUTTON_LEFT and button <= MOUSE_BUTTON_XBUTTON2:
+		var bit := 1 << (button - 1)
+		mask = (mask | bit) if pressed else (mask & ~bit)
+	return mask
+
+
+## `pointer` (as Unity's): the mouse goes to a place on screen without moving across to it (a motion event there, with
+## no `relative`: a game turning its view by the mouse doesn't turn). {"screen_x", "screen_y"}: -1 to 1 from the middle
+## of the view, y up (the numbers `view` gives a thing); {"world": a kit point} or {"object": a path}: where the camera
+## shows it (a node's drawn box's middle; a Control's middle). The buttons pressed with `key` then press there (a GUI
+## control, or what the game picks in the world under it: `_input_event`, a ray from the mouse), and holding a button
+## while pointing again drags. Answers {"screen_x", "screen_y", "x", "y": the viewport's pixels from its top left,
+## "on_screen"}.
+func pointer_op(args: Dictionary) -> Array:
+	var vp := get_viewport()
+	var size := vp.get_visible_rect().size
+	var w := maxf(1.0, size.x)
+	var h := maxf(1.0, size.y)
+	var px := Vector2.ZERO
+	var at_world = args.get("world", null)
+	var object_path := str(args.get("object", "")) if args.get("object") != null else ""
+	if typeof(at_world) == TYPE_DICTIONARY or object_path != "":
+		var node = null
+		if object_path != "":
+			node = rc.resolve(object_path)
+			if not (node is Node):
+				return [false, "Object %s does not exist" % object_path, 404]
+		if node is Control:
+			px = node.get_global_transform_with_canvas() * (node.size / 2.0)
+		elif node is CanvasItem or (node == null and world.dimension() == "2d"):
+			if node == null:
+				px = vp.get_canvas_transform() * Vector2(float(at_world.get("X", 0.0)), -float(at_world.get("Z", 0.0)))
+			else:
+				px = node.get_canvas_transform() * World.bounds2d(node).get_center()
+		else:
+			var cam: Camera3D = world.camera3d()
+			if cam == null:
+				return [false, "No camera"]
+			var at := Vector3.ZERO
+			if node == null:
+				at = Frame.from_kit(at_world)
+			elif node is Node3D:
+				var box: AABB = World.bounds3d(node)
+				at = box.get_center() if box.size.length() > 0.0 else node.global_position
+			else:
+				return [false, "%s is neither in the world nor on the screen" % object_path]
+			if cam.is_position_behind(at):
+				return [false, "That is behind the camera"]
+			px = cam.unproject_position(at)
+	elif args.has("screen_x") or args.has("screen_y"):
+		px = Vector2((float(args.get("screen_x", 0.0)) + 1.0) / 2.0 * w, (1.0 - float(args.get("screen_y", 0.0))) / 2.0 * h)
+	else:
+		return [false, "pointer needs screen_x and screen_y, world or object"]
+	_set_pointer(px)
+	return [true, {"screen_x": snappedf(px.x / w * 2.0 - 1.0, 0.001), "screen_y": snappedf(1.0 - px.y / h * 2.0, 0.001),
+		"x": roundf(px.x), "y": roundf(h - px.y), "on_screen": px.x >= 0.0 and px.x <= w and px.y >= 0.0 and px.y <= h}]
+
+
+## The mouse there (the viewport's pixels): a motion event with no `relative`, carrying the buttons held (a drag), so
+## the GUI, the game's input handlers and Input's own mouse position all follow it.
+func _set_pointer(px: Vector2) -> void:
+	_pointer = px
+	var ev := InputEventMouseMotion.new()
+	var at := _to_window(px)
+	ev.position = at
+	ev.global_position = at
+	ev.button_mask = Input.get_mouse_button_mask()
+	_deliver(ev)
 
 
 func _event(spec: Dictionary, pressed: bool, value := 1.0) -> InputEvent:
@@ -681,9 +847,9 @@ func _event(spec: Dictionary, pressed: bool, value := 1.0) -> InputEvent:
 			var ev := InputEventMouseButton.new()
 			ev.button_index = spec.button
 			ev.pressed = pressed
-			ev.position = _crosshair()
+			ev.position = _to_window(_mouse_at())  # (where `pointer` put the mouse, else the crosshair)
 			ev.global_position = ev.position
-			ev.button_mask = (1 << (spec.button - 1)) if pressed else 0
+			ev.button_mask = _buttons_with(spec.button, pressed)
 			if spec.kind == "wheel":
 				ev.factor = absf(value)
 			return ev
@@ -693,15 +859,17 @@ func _event(spec: Dictionary, pressed: bool, value := 1.0) -> InputEvent:
 			var rel := Vector2(value, 0.0) if spec.axis == "MouseX" else Vector2(0.0, -value)
 			ev.relative = rel
 			ev.screen_relative = rel
-			ev.position = _crosshair()
+			ev.position = _to_window(_mouse_at())
 			ev.global_position = ev.position
+			ev.button_mask = Input.get_mouse_button_mask()
 			return ev
 		"wheel_axis":
 			var ev := InputEventMouseButton.new()
 			ev.button_index = MOUSE_BUTTON_WHEEL_UP if value > 0 else MOUSE_BUTTON_WHEEL_DOWN
 			ev.pressed = pressed
 			ev.factor = absf(value)
-			ev.position = _crosshair()
+			ev.position = _to_window(_mouse_at())
+			ev.global_position = ev.position
 			return ev
 		"joy_button":
 			var ev := InputEventJoypadButton.new()
@@ -869,9 +1037,34 @@ func move_op(id, args: Dictionary):
 		return [false, "No player"]
 	var is3d := player is Node3D
 	var d = args.get("direction", {})
-	var scale := clampf(float(args.get("scale", 1.0)), 0.0, 1.0)
+	var scale := clampf(float(args.get("scale", 1.0)), -1.0, 1.0)
 	var seconds := float(args.get("seconds", 0.35))
 	var actions := _move_actions()
+	# how (as Unity's `via`): "stick" the movement actions pressed with analog strengths (any direction), "keys" the
+	# keys W/A/S/D themselves (8 directions), "controller" the body moved directly (move_and_collide at its walk speed:
+	# a game whose input can't be reached), "auto" the actions when the game has them, else the keys
+	var asked := str(args.get("via", "auto"))
+	var has_actions := actions.any(func(a): return a != "")
+	var via := asked
+	match asked:
+		"auto":
+			via = "stick" if has_actions else "keys"
+		"stick":
+			if not has_actions:
+				return [false, "move can't go via stick here (no move action bound to W/A/S/D or the arrows)"]
+		"keys", "controller":
+			pass
+		_:
+			return [false, "move can't go via %s (stick, keys, controller or auto)" % asked]
+	if via == "controller" and not (player is PhysicsBody3D or player is PhysicsBody2D):
+		return [false, "move can't go via controller here (the player isn't a physics body)"]
+	if via == "keys":
+		actions = ["", "", "", ""]  # (the keys themselves, pressed digitally)
+	var walk_speed := 5.0 if is3d else 300.0
+	if via == "controller":
+		var mv: Array = world.movement()
+		if mv[0] and mv[1].walk_speed != null:
+			walk_speed = float(mv[1].walk_speed) / (Frame.SCALE if is3d else 1.0)
 	var start: Vector3 = player.global_position if is3d else Vector3(player.global_position.x, 0, player.global_position.y)
 	var started := _now()
 	var keys_down := {}
@@ -895,10 +1088,16 @@ func move_op(id, args: Dictionary):
 				right.y = 0.0
 				f = want.dot(fwd.normalized()) * scale
 				r = want.dot(right.normalized()) * scale
+				if via == "controller":
+					p.move_and_collide(want * scale * walk_speed * get_process_delta_time())
+					return false
 			else:
 				# 2D: kit X is screen right, kit Z screen up
 				r = clampf(float(d.get("X", 0.0)), -1.0, 1.0) * scale
 				f = clampf(float(d.get("Z", 0.0)), -1.0, 1.0) * scale
+				if via == "controller":
+					p.move_and_collide(Vector2(r, -f) * walk_speed * get_process_delta_time())
+					return false
 			_drive([f, -f, -r, r], actions, keys_down)
 			return false
 		_drive([0.0, 0.0, 0.0, 0.0], actions, keys_down)
@@ -906,7 +1105,7 @@ func move_op(id, args: Dictionary):
 		if alive:
 			end = p.global_position if is3d else Vector3(p.global_position.x, 0, p.global_position.y)
 		var moved := Vector2(end.x - start.x, end.z - start.z).length() * (Frame.SCALE if is3d else 1.0)
-		respond(id, {"moved": snappedf(moved, 0.1)})
+		respond(id, {"moved": snappedf(moved, 0.1), "via": via})
 		return true})
 	return null
 

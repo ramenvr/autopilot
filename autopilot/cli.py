@@ -249,9 +249,9 @@ def level_alert(level):
 
 
 def wait_for_start(link, seconds=GAME_START_SECONDS):
-    """Waits while the game says it is still starting (`session` status `loading`, docs/protocol.md: Unreal's play
-    session loading its level) or is too busy to answer, up to `seconds`. Returns the seconds waited. A game that
-    doesn't say (an older plugin, Unity, Godot) is ready."""
+    """Waits while the game says it is still starting (`session` status `loading`: a play session or a scene still
+    loading, as every engine's plugin says) or is too busy to answer, up to `seconds`. Returns the seconds waited. A
+    game that doesn't say (an older plugin) is ready."""
     t0 = time.time()
     while time.time() - t0 < seconds and not getattr(link, "closed", None):
         asked = time.time()
@@ -523,6 +523,17 @@ def start_aura_run(link, kind, project, path=None, trace=None, model=None, disab
 GO_ON_SECONDS = 60  # the least time left for a run to go on on the free allowance (go_on_aura_free)
 
 
+def describer_model(run, provider):
+    """(the provider, the model or None) that describe the run's frames: through Aura, the model Aura named for the
+    run (or its free part: run.vision), else Aura's Claude (vision.MODEL through its Anthropic relay), whatever the
+    agent plays; with the user's own keys, a model of the agent's provider."""
+    if run is None:
+        return provider, None
+    if run.vision:
+        return run.vision["provider"], run.vision["model"]
+    return "anthropic", None
+
+
 def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, activity, stop, steering,
                     play_seconds, model):
     """When Aura says the run's premium credits stopped its agent (the relay's 402: aura.Run.go_on_free), the run goes
@@ -540,14 +551,16 @@ def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, 
             account.note_credits(e.message)
         return dict(report, summary=e.message)
     tel.add_provider(run.agent["provider"])
+    # (frames are described from now on by the model Aura named for the free part, on its key: a new describer)
+    seen_by, named = describer_model(run, run.agent["provider"])
+    tel.add_provider(seen_by)
     go_on(os.path.join(codexmod.project_dir(project), "runs", run_id), report)
     agent = agents.select(run.agent_name)
-    seen_by = "anthropic"  # (frames are still described by Aura's Claude, on the free part's key)
     later = agent.implement(game, project, asked, run_id=run_id, say=lambda text: link.status(plain_words(text)),
                             activity=activity, client=tel.jev(runtime.jev_client()), model=model, timeout=left,
                             stop=stop, steering=steering,
                             play_seconds=min(play_seconds, left) if play_seconds else play_seconds,
-                            describer=tel.describer(model or agent_model(seen_by), provider=seen_by))
+                            describer=tel.describer(model or agent_model(seen_by), provider=seen_by, model=named))
     # (the run's time is both sessions'; its episodes are counted on from the first's already)
     for field in ("seconds", "tool_seconds"):
         if isinstance(later.get(field), (int, float)) and isinstance(report.get(field), (int, float)):
@@ -590,7 +603,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     AUTOPILOT_AGENT or Aura says); level: the level to play (the start frame's `level`: a path or a name; by default
     the one open in the editor, and the agent moves to the one the request means: autopilot/levels.py); aura_model:
     the model picked in Aura's chat (the start frame's run `model`), for a run through Aura: Aura answers with the
-    agent and model that play it (autopilot/aura.py), and frames are still described by Aura's Claude;
+    agent and model that play it (autopilot/aura.py), and the model that describes frames (else Aura's Claude);
     disable_premium_models: the start frame's run `disable_premium_models` (Aura's chat's "Disable Premium Models"),
     passed on with it: Auto in a chat it has picked nothing for yet plays the free-tier model; feed: a Feed that
     keeps the run's activity events for a plugin that asks for them again (by default they are only sent).
@@ -675,13 +688,15 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             info = {"through_aura": bool(run), "aura_run": getattr(run, "run_id", None)}
             before = memory.snapshot(root)
             provider = getattr(agent, "current_provider", lambda: "anthropic")()
-            # (through Aura, frames are described by its Claude whatever the agent plays: that relay is proxied too)
-            seen_by = "anthropic" if run else provider
+            # (through Aura, frames are described by the model Aura named for the run, else its Claude, whatever the
+            # agent plays: that relay is proxied too)
+            seen_by, named = describer_model(run, provider)
             with telemetry.RunTelemetry(link, os.path.join(root, "runs", run_id), run_id, project, prompt, kind,
                                         share, providers=tuple(dict.fromkeys((provider, seen_by))),
                                         info=info) as tel:
-                # (describe_frames: the recording's frames, described by a vision model of the agent's provider)
-                describer = tel.describer(model or agent_model(seen_by), provider=seen_by)
+                # (describe_frames: the recording's frames, described by a vision model of the agent's provider, or
+                # the one Aura named)
+                describer = tel.describer(model or agent_model(seen_by), provider=seen_by, model=named)
                 started = time.time()
                 report = agent.implement(game, project, asked, run_id=run_id,
                                          say=lambda text: link.status(plain_words(text)), activity=activity,

@@ -42,6 +42,11 @@
             "define": "AUTOPILOT_UITK"
         },
         {
+            "name": "com.unity.modules.imgui",
+            "expression": "1.0.0",
+            "define": "AUTOPILOT_IMGUI"
+        },
+        {
             "name": "com.unity.modules.physics",
             "expression": "1.0.0",
             "define": "AUTOPILOT_PHYSICS"

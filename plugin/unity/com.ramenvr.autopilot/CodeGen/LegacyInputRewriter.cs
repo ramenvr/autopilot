@@ -10,6 +10,11 @@
 // Each call keeps its arguments; only its target changes, to the member of LegacyInput with the same name and
 // signature. A rewritten assembly gets [assembly: LegacyInputRewritten(<calls>)], which hello and context count.
 // Anything going wrong leaves the assembly as the compiler made it, with a warning.
+//
+// The same pass points the game's IMGUI calls (GUI's and GUILayout's Label, Box, Button, RepeatButton, Toggle, TextField
+// and TextArea: GuiRouted) at Autopilot.Playtest.ImguiGUI / ImguiGUILayout (Runtime/Imgui.cs), which draw them as Unity
+// does and note them for screen, ui and ui_act. Each such call gets one more argument, pushed just before it: the name
+// of the class whose code makes it (the script drawing the control), which the ids start with.
 
 using System;
 using System.Collections.Generic;
@@ -17,6 +22,7 @@ using System.IO;
 using System.Linq;
 using Mono.Cecil;
 using Mono.Cecil.Cil;
+using Mono.Cecil.Rocks;
 using Unity.CompilationPipeline.Common.Diagnostics;
 using Unity.CompilationPipeline.Common.ILPostProcessing;
 
@@ -38,6 +44,47 @@ namespace Autopilot.Playtest.CodeGen
             "get_mousePosition()", "get_mouseScrollDelta()", "get_anyKey()", "get_anyKeyDown()", "get_inputString()",
             "ResetInputAxes()",
         };
+
+        // GUI's and GUILayout's controls the shims have (Runtime/Imgui.cs: the same overloads, with the caller's class
+        // name last), by name and parameter types
+        internal static readonly HashSet<string> GuiRouted = GuiSignatures();
+
+        static HashSet<string> GuiSignatures()
+        {
+            const string rect = "UnityEngine.Rect", str = "System.String", tex = "UnityEngine.Texture", content = "UnityEngine.GUIContent";
+            const string style = "UnityEngine.GUIStyle", flag = "System.Boolean", count = "System.Int32", options = "UnityEngine.GUILayoutOption[]";
+            var set = new HashSet<string>();
+            string Sig(string kind, string name, params string[] types) => kind + "::" + name + "(" + string.Join(",", types) + ")";
+            foreach (var name in new[] { "Label", "Box", "Button", "RepeatButton" })
+            {
+                foreach (var what in new[] { str, tex, content })
+                {
+                    set.Add(Sig("UnityEngine.GUI", name, rect, what));
+                    set.Add(Sig("UnityEngine.GUI", name, rect, what, style));
+                    set.Add(Sig("UnityEngine.GUILayout", name, what, options));
+                    set.Add(Sig("UnityEngine.GUILayout", name, what, style, options));
+                }
+            }
+            foreach (var what in new[] { str, tex, content })
+            {
+                set.Add(Sig("UnityEngine.GUI", "Toggle", rect, flag, what));
+                set.Add(Sig("UnityEngine.GUI", "Toggle", rect, flag, what, style));
+                set.Add(Sig("UnityEngine.GUILayout", "Toggle", flag, what, options));
+                set.Add(Sig("UnityEngine.GUILayout", "Toggle", flag, what, style, options));
+            }
+            foreach (var name in new[] { "TextField", "TextArea" })
+            {
+                set.Add(Sig("UnityEngine.GUI", name, rect, str));
+                set.Add(Sig("UnityEngine.GUI", name, rect, str, count));
+                set.Add(Sig("UnityEngine.GUI", name, rect, str, style));
+                set.Add(Sig("UnityEngine.GUI", name, rect, str, count, style));
+                set.Add(Sig("UnityEngine.GUILayout", name, str, options));
+                set.Add(Sig("UnityEngine.GUILayout", name, str, count, options));
+                set.Add(Sig("UnityEngine.GUILayout", name, str, style, options));
+                set.Add(Sig("UnityEngine.GUILayout", name, str, count, style, options));
+            }
+            return set;
+        }
 
         public override ILPostProcessor GetInstance() => this;
 
@@ -88,47 +135,92 @@ namespace Autopilot.Playtest.CodeGen
             };
             using var assembly = AssemblyDefinition.ReadAssembly(new MemoryStream(pe), reading);
             var module = assembly.MainModule;
-            if (!module.GetTypeReferences().Any(t => t.FullName == "UnityEngine.Input"))
+            if (!module.GetTypeReferences().Any(t => t.FullName == "UnityEngine.Input" || t.FullName == "UnityEngine.GUI" || t.FullName == "UnityEngine.GUILayout"))
                 return new ILPostProcessResult(compiled.InMemoryAssembly, diagnostics);
 
             AssemblyNameReference scope = null;
-            TypeReference shim = null;
+            TypeReference shim = null, guiShim = null, layoutShim = null;
+            void Scope()
+            {
+                if (scope != null) return;
+                scope = module.AssemblyReferences.FirstOrDefault(r => r.Name == Runtime);
+                if (scope != null) return;
+                scope = new AssemblyNameReference(Runtime, new Version(0, 0, 0, 0));
+                module.AssemblyReferences.Add(scope);
+            }
             var calls = 0;
+            var guiCalls = 0;
             foreach (var type in module.GetTypes())
             {
                 foreach (var method in type.Methods)
                 {
                     if (!method.HasBody) continue;
+                    List<Instruction> drawn = null;
                     foreach (var instruction in method.Body.Instructions)
                     {
                         if (instruction.OpCode != OpCodes.Call && instruction.OpCode != OpCodes.Ldftn) continue;
                         if (!(instruction.Operand is MethodReference target) || target.HasThis) continue;
-                        if (target.DeclaringType.FullName != "UnityEngine.Input" || !Routed.Contains(Signature(target))) continue;
-                        if (shim == null)
+                        var declaring = target.DeclaringType.FullName;
+                        if ((declaring == "UnityEngine.GUI" || declaring == "UnityEngine.GUILayout") && instruction.OpCode == OpCodes.Call
+                            && GuiRouted.Contains(declaring + "::" + Signature(target)))
                         {
-                            scope = module.AssemblyReferences.FirstOrDefault(r => r.Name == Runtime);
-                            if (scope == null)
-                            {
-                                scope = new AssemblyNameReference(Runtime, new Version(0, 0, 0, 0));
-                                module.AssemblyReferences.Add(scope);
-                            }
-                            shim = new TypeReference(Runtime, Shim, module, scope);
+                            (drawn ??= new List<Instruction>()).Add(instruction);
+                            continue;
                         }
+                        if (declaring != "UnityEngine.Input" || !Routed.Contains(Signature(target))) continue;
+                        Scope();
+                        shim ??= new TypeReference(Runtime, Shim, module, scope);
                         var routed = new MethodReference(target.Name, target.ReturnType, shim) { HasThis = false };
                         foreach (var p in target.Parameters) routed.Parameters.Add(new ParameterDefinition(p.ParameterType));
                         instruction.Operand = routed;
                         ++calls;
                     }
+                    if (drawn == null) continue;
+                    // The IMGUI calls: to the shim's overload with the drawing class's name pushed last
+                    Scope();
+                    guiShim ??= new TypeReference(Runtime, "ImguiGUI", module, scope);
+                    layoutShim ??= new TypeReference(Runtime, "ImguiGUILayout", module, scope);
+                    var body = method.Body;
+                    body.SimplifyMacros();  // (long branches: the instructions added move their targets)
+                    var il = body.GetILProcessor();
+                    var owner = OwnerOf(type);
+                    foreach (var call in drawn)
+                    {
+                        var target = (MethodReference)call.Operand;
+                        var to = target.DeclaringType.FullName == "UnityEngine.GUI" ? guiShim : layoutShim;
+                        var routed = new MethodReference(target.Name, target.ReturnType, to) { HasThis = false };
+                        foreach (var p in target.Parameters) routed.Parameters.Add(new ParameterDefinition(p.ParameterType));
+                        routed.Parameters.Add(new ParameterDefinition(module.TypeSystem.String));
+                        var name = il.Create(OpCodes.Ldstr, owner);
+                        il.InsertBefore(call, name);
+                        // (a branch to the call goes to the name pushed before it; the C# compiler makes none, its
+                        // arguments come first)
+                        foreach (var other in body.Instructions)
+                        {
+                            if (other.Operand == call && other != name) other.Operand = name;
+                            else if (other.Operand is Instruction[] targets)
+                                for (var i = 0; i < targets.Length; ++i)
+                                    if (targets[i] == call)
+                                        targets[i] = name;
+                        }
+                        call.Operand = routed;
+                        ++guiCalls;
+                    }
+                    body.OptimizeMacros();
                 }
             }
-            if (calls == 0) return new ILPostProcessResult(compiled.InMemoryAssembly, diagnostics);
-
-            var attribute = new TypeReference(Runtime, "LegacyInputRewrittenAttribute", module, scope);
-            var ctor = new MethodReference(".ctor", module.TypeSystem.Void, attribute) { HasThis = true };
-            ctor.Parameters.Add(new ParameterDefinition(module.TypeSystem.Int32));
-            var mark = new CustomAttribute(ctor);
-            mark.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.Int32, calls));
-            assembly.CustomAttributes.Add(mark);
+            if (calls == 0 && guiCalls == 0) return new ILPostProcessResult(compiled.InMemoryAssembly, diagnostics);
+            void Mark(string name, int count)
+            {
+                var attribute = new TypeReference(Runtime, name, module, scope);
+                var ctor = new MethodReference(".ctor", module.TypeSystem.Void, attribute) { HasThis = true };
+                ctor.Parameters.Add(new ParameterDefinition(module.TypeSystem.Int32));
+                var mark = new CustomAttribute(ctor);
+                mark.ConstructorArguments.Add(new CustomAttributeArgument(module.TypeSystem.Int32, count));
+                assembly.CustomAttributes.Add(mark);
+            }
+            if (calls > 0) Mark("LegacyInputRewrittenAttribute", calls);
+            if (guiCalls > 0) Mark("ImguiRewrittenAttribute", guiCalls);
 
             var peOut = new MemoryStream();
             var pdbOut = new MemoryStream();
@@ -140,6 +232,16 @@ namespace Autopilot.Playtest.CodeGen
             };
             assembly.Write(peOut, writing);
             return new ILPostProcessResult(new InMemoryAssembly(peOut.ToArray(), pdbOut.ToArray()), diagnostics);
+        }
+
+        /// <summary>The class a control is drawn by, as ids name it: the class itself, or for code the compiler made
+        /// inside one (a lambda, an iterator), that one's.</summary>
+        static string OwnerOf(TypeDefinition type)
+        {
+            var t = type;
+            while (t.DeclaringType != null && (t.Name.StartsWith("<", StringComparison.Ordinal) || t.IsNested && t.CustomAttributes.Any(a => a.AttributeType.Name == "CompilerGeneratedAttribute")))
+                t = t.DeclaringType;
+            return t.Name;
         }
 
         static string Signature(MethodReference m)

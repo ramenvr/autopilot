@@ -1,5 +1,7 @@
 #include "SPlaytestPanel.h"
 
+#include "Framework/MultiBox/MultiBoxBuilder.h"
+
 #include "Editor.h"
 #include "Fonts/FontMeasure.h"
 #include "Framework/Application/SlateApplication.h"
@@ -1000,6 +1002,50 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSettingsButton(bool bSmall)
 		.WidgetIndex_Lambda([this]() { return bSettingsPage ? 1 : 0; })
 		+ SWidgetSwitcher::Slot()[Off]
 		+ SWidgetSwitcher::Slot()[On];
+}
+
+void SPlaytestPanel::ExtendTabMenu(FMenuBuilder& Menu)
+{
+	Menu.BeginSection(TEXT("Autopilot"), LOCTEXT("TabMenuSection", "Autopilot"));
+	const UPlaytestSubsystem* B = UPlaytestSubsystem::Get();
+	if (B && (B->WantsConnection() || B->IsConnected()))
+	{
+		Menu.AddMenuEntry(LOCTEXT("TabMenuDisconnect", "Disconnect"), FText::GetEmpty(), FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([]() { UserDisconnect(); })));
+	}
+	else
+	{
+		Menu.AddMenuEntry(LOCTEXT("TabMenuConnect", "Connect"), FText::GetEmpty(), FSlateIcon(),
+			FUIAction(FExecuteAction::CreateLambda([]() { TryConnectAgain(); })));
+	}
+	TWeakPtr<SPlaytestPanel> Weak = SharedThis(this);
+	Menu.AddMenuEntry(LOCTEXT("TabMenuSettings", "Settings"), FText::GetEmpty(), FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([Weak]() { if (TSharedPtr<SPlaytestPanel> P = Weak.Pin()) { P->ToggleSettings(); } }),
+			FCanExecuteAction(),
+			FIsActionChecked::CreateLambda([Weak]() { TSharedPtr<SPlaytestPanel> P = Weak.Pin(); return P.IsValid() && P->bSettingsPage; })),
+		NAME_None, EUserInterfaceActionType::ToggleButton);
+	Menu.AddMenuEntry(LOCTEXT("RerunSetup", "Rerun setup"), FText::GetEmpty(), FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([Weak]()
+		{
+			TSharedPtr<SPlaytestPanel> P = Weak.Pin();
+			if (P.IsValid() && P->CanChangeAccount())
+			{
+				P->OpenSetup();
+			}
+		}), FCanExecuteAction::CreateLambda([Weak]() { TSharedPtr<SPlaytestPanel> P = Weak.Pin(); return P.IsValid() && P->CanChangeAccount(); })));
+	Menu.AddMenuEntry(LOCTEXT("ResetMemory", "Reset memory…"), FText::GetEmpty(), FSlateIcon(),
+		FUIAction(FExecuteAction::CreateLambda([Weak]()
+		{
+			if (TSharedPtr<SPlaytestPanel> P = Weak.Pin())
+			{
+				if (P->bSettingsPage)
+				{
+					P->ToggleSettings();  // (asked in place on the runs' rail)
+				}
+				P->OnDeleteSave();
+			}
+		}), FCanExecuteAction::CreateLambda([Weak]() { TSharedPtr<SPlaytestPanel> P = Weak.Pin(); return P.IsValid() && P->IsConnected() && !P->IsRunning(); })));
+	Menu.EndSection();
 }
 
 void SPlaytestPanel::ToggleSettings()

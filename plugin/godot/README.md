@@ -66,7 +66,8 @@ Using it from then on:
    for this editor session, and **Reconnect** (there and on the card) connects again.
 3. **New run**: describe what to test in the one prompt box ("Describe what to verify, reach or explore") and press
    **Run**. The words are sent as typed (a `start` frame whose run is `{"kind": "auto", "prompt": ...,
-   "time_limit_minutes": ...}`, the protocol's "One prompt box"), and the agent service's decision model reads which of
+   "time_limit_minutes": ...}`, the protocol's "One prompt box", with `design_brief` when the Settings page's
+   **Design brief** has words), and the agent service's decision model reads which of
    the four types it is: an exploration for bugs, a test, a claim to verify, or a goal to play. The dock reads nothing
    from them: the run shows no kind until the agent service says which (its `run_kind` frame, before the game plays),
    then that kind (VERIFY, GOAL, EXPLORE). An exploration asked for as a test of the game in your own words
@@ -90,7 +91,9 @@ Using it from then on:
    start, and stops it at the end. While it plays, the dock shows:
    - the stages (launch, analyze, probe, build the harness, rollout, process the result, report; a name too long for its
      column wraps, and in a narrow dock the names go on rows of their own under the track: never cut) and what the
-     agent is doing now. "Saving what it learned to memory", after the agent finishes, is part of the report;
+     agent is doing now. "Saving what it learned to memory", after the agent finishes, is part of the report. While the
+     agent reads the project (Analyze) and the game it started hasn't come up yet, the line says **Waiting for the game
+     to start**;
    - the **Feed** tab: the run as a transcript grouped by stage: a heading per stage (Launch, Analyze, Probe, Build
      harness, Play, Results, Report) with its count of lines, and under it what the agent did and said, one line per
      event of the agent service's activity feed (the protocol's `activity` frames): its time (m:ss), a small mark for
@@ -105,7 +108,7 @@ Using it from then on:
      "Memory updated". The stage track follows the frames' stages (the status lines for an older agent service). The
      feed is kept with the run, so a run reopened from the history shows it whole; a dock that connects again while a
      run goes asks for the events it missed (`activity_since`), and an event sent twice is shown once;
-   - the **Policy log** tab: every step of the agent's policy (the action it chose, its probabilities, what changed in the
+   - the **Policy log** tab (unless **Show Policy Log** is off): every step of the agent's policy (the action it chose, its probabilities, what changed in the
      observation), filtered by harness, by tag and by **Find an action…** (the action's name); pick a row (or step with
      ◀ ▶ beside **Copy step JSON**) to pause on it ("PAUSED ON H2 #18"), **Follow live** to follow again; its footer sums
      up the steps of the harness shown ("H2: …": the harness filtered, or the picked step's; "All harnesses: …" with All
@@ -126,8 +129,9 @@ Using it from then on:
    `user://playtest/<time>/`; disabled when the folder isn’t there). From there you can also mark an alert **Not a bug**, **Show in level** (selects the nearest node in the open
    scene) or **Verify a fix** for a finding (it fills the prompt box: "Verify that this is fixed: ...").
 
-   **The recording**: when the agent service recorded the run (the result's `recording`), it plays under the verdict as
-   a flipbook of its JPEG frames (Godot plays no MP4): a picture as wide as the page and 230 px tall (200 in a narrow
+   **The recording**: when the agent service recorded the run (the result's `recording`: the last episode's, the one
+   whose play settled the result, its end held a second), it plays under the verdict as a flipbook of its JPEG frames
+   (Godot plays no MP4, only Ogg Theora; the agent service writes the frames 2 a second, at most 640 px, beside its MP4): a picture as wide as the page and 230 px tall (200 in a narrow
    dock; letterboxed, a play mark on it while paused), a play / pause button (its icon), a 2 px scrub bar, the time and
    the length, and a button with Run folder's icon (the folder) ("Show in File Explorer", "Show in
    Finder" or "Show in folder": the agent service's MP4 selected in the file manager when it is there, else the frames'
@@ -158,7 +162,9 @@ JSON file each; per user, not committed), so closing the dock or the editor lose
 session shows its result, feed, findings and recording as they were, but not its Policy log (its steps aren't kept), and
 a run still going when the editor closed shows **NO RESULT**, "The editor closed before the result came.". The gear beside **New run** (its tooltip
 "Settings"; amber on a dark fill while open) opens and closes the [Settings page](#settings-page), whose Account card
-has **Rerun setup**. The **Memory** line shows how many runs the agent remembers of this game ("· 12 runs", or "· empty");
+has **Rerun setup**. The **⋮** button after **New run** (its tooltip "More") opens the dock's menu, as Unity's window
+menu: **Connect** or **Disconnect**, **Settings** (checked while open), **Rerun setup** (disabled while a run is going)
+and **Reset memory…** (asks in place, as the footer's; disabled while not connected or a run is going). The **Memory** line shows how many runs the agent remembers of this game ("· 12 runs", or "· empty");
 **Reset
 memory…** asks in place, in the Memory row ("Reset memory?", "The agent forgets what it has learned about this game.",
 **Reset memory** and **Cancel**; no dialog) and then has it forget them (`clear_memory`): "Resetting memory…", then
@@ -206,6 +212,15 @@ it runs the agent service.", with **Start Aura** while Aura isn't running. Other
 
 These are kept per user and per project in the editor's project metadata (`.godot/editor/project_metadata.cfg`), never
 in `project.godot`, so they are not committed.
+
+**In Godot's Editor Settings** (Editor > Editor Settings > Autopilot, as Unreal's Editor Preferences > Plugins >
+Autopilot) the dock's settings show too: `autopilot/connection/agent_service_url`, `access_token` (hidden as a
+password), `use_with_aura`, `autopilot/agent_service/agent_service_command`, `autopilot/runs/time_limit_minutes`,
+`default_explore_minutes` (the first-run setup's Explore minutes, 10 by default), `design_brief` and
+`autopilot/policy_log/show_policy_log`. The project metadata stays the one place they are kept: the Editor Settings
+show the project open now (they are the user's, for every project, so opening another project shows its values), a
+change made there is applied as the dock's own control would (a new address connects again with it), and a change in
+the dock shows there at once.
 
 ### First-run setup
 
@@ -267,7 +282,7 @@ the setup at step 2 instead of the connect page, the account as chosen then, so 
    something (past runs, notes or code of its own) the setup closes by itself. When it is empty, an Explore run is
    offered: "Explore your game" (**Recommended**: "You've never used Autopilot with this game before. To help Autopilot
    understand your game, use this first exploration run and watch it improve. Autopilot still works if you skip this
-   step."), a **Minutes** box (the composer's, 10 by default), **Explore and finish** (starts the run as the composer
+   step."), a **Minutes** box (10 by default: the `default_explore_minutes` setting, see [Settings](#settings)), **Explore and finish** (starts the run as the composer
    does for "Explore", closes the setup and shows the run live; only when connected and no run is going) and **Skip and
    finish**.
 
@@ -351,6 +366,13 @@ Each of these settings is a plate laid out the same way: its name (mono caps), a
   go without it, and runs on this plugin's own agent service have it, signed in to Aura or on your own keys. The
   switch shows that default: off with Use with Aura on, on otherwise. Flipping it saves your choice, which always
   wins; the agent service learns it when the dock connects, as with data sharing.
+- **Design brief** (a text box, "Optional"): "How the game is meant to work: its design, the rules players are told
+  (e.g. “the player has three lives; each coin is worth 10 points”). Explorations report what differs from it as a bug.
+  Sent with every run." Kept as typed; a run from the prompt box sends it as `design_brief`, the first-run setup's
+  Explore run as `brief` (as Unreal's Design Brief).
+- **Show Policy Log** (a switch, "Policy log shown" or "hidden", on by default): "The Policy log tab: every step the
+  agent took in the game (the action it chose, how likely each was, what changed). Asked of the agent service from the
+  next connection." Off, the tab isn't shown and the hello's `inspect` is false.
 - **Autopilot in Claude Code & Codex**: "One-time CLI setup to run Autopilot through Claude Code or Codex using your
   Claude or ChatGPT subscriptions, respectively." then `autopilot connect claude` and `autopilot connect codex`, each
   with **Copy** (to the clipboard) (see [Runs from your own Claude Code or Codex](#runs-from-your-own-claude-code-or-codex)).
@@ -403,14 +425,23 @@ In Godot the editor and the running game are separate processes. The agent expec
 
 - the **editor** holds the one WebSocket to the agent server (its `hello` says `"host": "editor"`);
 - the agent's `session` requests are handled by the editor: `start` plays the main scene
-  (`EditorInterface.play_main_scene()`, or `play_custom_scene(map)`), `stop` stops it, and `restart` stops it and plays
-  the same scene (or `map`) again: a fresh game process, autoloads included. The answer comes once the new game's
-  autoload is attached;
+  (`EditorInterface.play_main_scene()`, or `play_custom_scene(map)`; a `map` while another scene plays switches to it, as
+  a restart), `stop` stops it, and `restart` stops it and plays the same scene (or `map`) again: a fresh game process,
+  autoloads included. The answer (`running`, `scene`) comes once the new game's autoload is attached; `status` says
+  `loading` while a game asked for hasn't come up. A `map` the project hasn't is a 404, before anything changes. The
+  `session` events carry the `scene`;
 - `codex_manifest` and `codex_read` (the project's files) are answered by the editor;
 - every other request goes to the running game's autoload over the editor's **debugger connection**
   (`EditorDebuggerPlugin` and `EngineDebugger` messages named `autopilot:*`); its answers and events come back the
-  same way, unchanged. With no game running, the editor answers `context` (`session_running: false`) and `ping` itself,
-  and other requests get an error (status 409, "No game is running");
+  same way, unchanged. With no game running, the editor answers `context` (`session_running: false`), `ping` (game
+  time 0), `screen` and `ui` (empty), `timestep` and `detectors` itself, and other requests get an error (status 409,
+  "No game is running");
+- while a run goes (a connection with a run, or a game the agent drives), the editor is kept awake: in its low-processor
+  mode it sleeps between frames (100 ms a frame while unfocused, `interface/editor/unfocused_low_processor_mode_sleep_usec`),
+  and as it relays every request, that sleep would land on every answer (measured: a relayed `ping` took 100 ms with the
+  editor sleeping 100 ms a frame, 32 ms kept awake). The sleep is set to 2 ms a frame while the run goes, every frame
+  (the editor sets it again when its focus changes), and put back as the editor's settings say (focused or not) once the
+  run ends, the connection drops or the plugin goes, as Unreal turns its editor's CPU throttling off during a run;
 - a GDScript runtime error normally stops an editor-run game in the debugger. While the agent is connected, the editor
   lets the game continue at once (the error still reaches the agent as a `log` event and a `log_error` finding).
   Without a connection the game stays stopped for you, as usual.
@@ -508,53 +539,88 @@ Names, arguments and result shapes are the same as for the other engines unless 
 | Request | In Godot |
 |---|---|
 | `context` | `world` = the current scene's path, `character` = the player (see below), `camera` / `camera_manager` = the current camera's path, `controller` / `input_subsystem` = `""`. Also: `scene` (its `res://` path), `dimension` (`3d`, `2d` or `ui`), `engine: "godot"`, `project_dir`, and `controls`: the InputMap actions (`action` = the action's name) with their keys as Unreal key names (`godot_keys`: Godot's own names). Godot's built-in `ui_*` actions are listed only when the project changed them. |
-| `session` | In a game started from the command line: `restart` reopens the scene the game was launched with (or `map`: a `res://` path or a scene file's name), and answers once it is loaded. Autoloads keep their state, as Unreal's GameInstance does across `OpenLevel`; `"fresh": true` also resets the autoloads' script variables to a new instance's values. `start` and `stop` do nothing. In the editor: see above. |
+| `context` (also) | `input` (how input reaches the game: `pointer`, `move` "actions" or "keys", and `notes`, as Unity's; the hello carries it too), `net` (`{"mode": "standalone" \| "listen_server" \| "dedicated_server" \| "client"}`, a server's `clients`, a client's `server_world` "", from the MultiplayerAPI). `{"player": path}` makes that node the player (`""`: found again). |
+| `session` | In a game started from the command line: `restart` reopens the scene the game was launched with (or `map`: a `res://` path or a scene file's name), and answers once it is loaded (`running`, `scene`). `start` with a `map` the game isn't playing plays it the same way (with the one playing, it answers at once). Autoloads keep their state, as Unreal's GameInstance does across `OpenLevel`; `"fresh": true` also resets the autoloads' script variables to a new instance's values. `stop` does nothing; `status` says `running`, `loading` (a scene change asked for and not in yet) and `scene`. A map the project hasn't: 404. The `session` events carry the `scene`. In the editor: see above. |
+| `levels` | The project's scenes (`.tscn`, `.scn`; in an exported build the `.remap`ped ones by their own names), sorted, without `addons/autopilot` and folders the codex skips; `open` and `playing`: the scene playing (the editor answers it itself: `open` the main scene). Both hellos say `levels`. |
+| `pointer` | As Unity's: `{"screen_x", "screen_y"}` (-1..1 from the view's middle, y up), `{"world": kit point}` or `{"object": path}` (a node's drawn box's middle, a Control's middle) puts the mouse there without moving across (a motion event with no `relative`; the buttons held go with it, so holding a button and pointing again drags). Answers `{"screen_x", "screen_y", "x", "y" (the viewport's pixels from its bottom left, as Unity's and Unreal's), "on_screen"}`; behind the camera, or without a place: 400. Both hellos say `pointer`. The mouse buttons `key` presses then press there (until the first `pointer`: the view's middle): GUI controls, physics picking (`_input_event`) and a game's own ray from `event.position` all get it. The real cursor is never moved: headless, `get_viewport().get_mouse_position()` reports the pointer; in a game with a window it reports the real cursor. |
 | `pause` | Sets `get_tree().paused`. The addon runs with `PROCESS_MODE_ALWAYS`, so requests are still answered while paused. |
 | `key` | Unreal key names (`W`, `SpaceBar`, `LeftShift`, `One`, `F5`, `LeftMouseButton`, `MouseScrollUp`, `MouseX`/`MouseY` (mouse motion, `relative`; MouseY is positive up), `Gamepad_FaceButton_Bottom`, `Gamepad_LeftX`...), else an InputMap action's name (`jump`), else a Godot key name (`Space`, `Ctrl`). Events go through `Input.parse_input_event` and are flushed at once, so `_input`, `_unhandled_input`, `_gui_input`, `Input.is_action_pressed` / `get_vector` and `Input.is_key_pressed` all see them. A press stays down 0.05 s and 2 frames. Holds are leased as in Unreal; a hold with `seconds` (a timed hold, `features` has `timed_hold`) lets go after that much game time, without renewal. |
 | `input` | `{"action": "<InputMap action>", "value"?, "mode"}`: an `InputEventAction` (strength from `value`). `press` goes down and up 0.05 s and 2 frames later; `hold` stays down until `release`. |
-| `move` | Presses the actions bound to W/S/A/D (else the arrow keys) with analog strengths (`Input.action_press`), so that the camera-relative input points the given kit direction, every frame for `seconds` (the keys themselves when the game has no such actions). This fits the usual `Input.get_vector(...)` plus basis movement; a game that moves differently needs `key` or `input`. |
-| `watch` | Local transforms sampled every frame (`moved` in kit units). `drawn`: the visible meshes' transforms in the thing's own frame (named `<path>/<mesh path>`), and `part shown/hidden` (meshes), `light on/off` (Light3D), `animation started/ended` (AnimationPlayer). |
+| `move` | `via` (as Unity's) `stick`: presses the actions bound to W/S/A/D (else the arrow keys) with analog strengths (`Input.action_press`), so that the camera-relative input points the given kit direction, every frame for `seconds`; `keys`: the keys themselves (8 directions); `controller`: the player body moved directly (`move_and_collide`, at its walk speed); `auto` (the default): `stick` when the game has such actions, else `keys`. `scale` -1..1 (negative: the other way). Answers `{"moved", "via"}`; a `via` it can't go (stick without actions, controller without a physics body): an error. `stick` fits the usual `Input.get_vector(...)` plus basis movement; a game that moves differently needs `key` or `input`. |
+| `watch` | Local transforms sampled every frame (`moved` in kit units). `drawn`: the visible meshes' transforms in the thing's own frame (named `<path>/<mesh path>`), and, as Unreal's, `part shown`/`part hidden` (meshes; in 2D sprites, polygons), `effect started`/`effect stopped` (GPU/CPU particles emitting, 3D and 2D), `light on`/`light off` (Light3D, Light2D), `animation started`/`animation ended` (AnimationPlayer, an AnimationTree's state machine, AnimatedSprite2D/3D) and `went limp` (a ragdoll: most bones of an active PhysicalBoneSimulator3D simulating). |
 | `view` | See below. |
 | `screen` | The visible texts of Label, RichTextLabel (parsed text), Button, LineEdit and TextEdit, keyed `<UI>.<Name>`, where `<UI>` is the nearest CanvasLayer, scene instance root or owner (`HUD.ScoreLabel`, `Menu.StartButton`), or `Screen` for controls made in code. |
-| `ui`, `ui_act` | Buttons (and Link, Texture and Menu buttons), CheckBox / CheckButton / toggle buttons (`checkbox`), OptionButton (`combo`, with `options`), Slider / SpinBox (`slider`, with `min` and `max`), LineEdit / TextEdit (`text_input`); each with `path`, `class` and `screen` (its middle in viewport pixels). `click` pushes a mouse press and release into the viewport at the control's middle (whatever is on top gets it, as with a player's mouse); when nothing takes it, the `pressed` signal is emitted instead (`"via": "signal"`). Also `set` (a slider's value, text, a toggle), `right_click`, `double_click` and `drag` (through the controls' `_get_drag_data` / `_can_drop_data` / `_drop_data`). |
-| `timestep` | Godot has no fixed frame time at runtime: `fixed` caps the frame rate at `fps` (the answer has a `note`). |
+| `ui`, `ui_act` | Buttons (and Link, Texture and Menu buttons), CheckBox / CheckButton / toggle buttons (`checkbox`), OptionButton (`combo`, with `options`), Slider / SpinBox (`slider`, with `min` and `max`), LineEdit / TextEdit (`text_input`, with its `text`), and any other control that takes the mouse itself (`widget`: its script's own `_gui_input`, or something connected to its `gui_input`); each with `path`, `class` and `screen` (its middle in viewport pixels). `click` pushes a mouse press and release into the viewport at the control's middle (whatever is on top gets it, as with a player's mouse); when nothing takes it, the `pressed` signal is emitted instead (`"via": "signal"`). Also `set` (a slider's value, text, a toggle, a combo's `option` or `text`), `right_click`, `double_click` and `drag` (through the controls' `_get_drag_data` / `_can_drop_data` / `_drop_data`). |
+| `timestep` | `fixed`: each frame's game time 1/`fps`, as Unreal's fixed time step. Godot has no fixed frame time at run time (only the `--fixed-fps` command line), so the frame rate is capped at `fps` and every frame sets `Engine.time_scale` so that the frame's game time is 1/`fps` of the wall time the frame before took (a frame much slower than the one before it still runs a little long); the game's own time scale is kept under it. The answer has a `note`. `fixed: false` puts the frame rate and the time scale back. |
+| `pause` | Also, on a networked client: `why` (only its own copy of the game pauses: the server runs in another process). |
 | `record`, `capture` | The running game's root viewport, UI included (what the player sees). The picture is read back with `RenderingDevice.texture_get_data_async` (Forward+ and Mobile); the Compatibility renderer has no asynchronous readback, so there the viewport's `get_image()` is taken, at most `fps` times a second. Scaling, the JPEG (and, for a game that holds the connection itself, the base64 and the message) are made on the `WorkerThreadPool`; a frame due while the one before is still on its way is skipped (a gap in `n`). Through the editor, the game sends the JPEG's bytes over the debugger connection and the editor makes the `frame` message (or the `capture` answer). A recording goes on in the next play session of the same connection (each is a new game process) unless the agent stopped it, and ends with the connection; `record` `stop` is answered by the editor. Headless (`--headless`, or the dummy renderer), or with no game running: 409 `no picture: ...`. |
-| `detectors` | `log_error` (`push_error`, script errors and engine errors, through a `Logger`), `nan`, `out_of_world` (a physics body 50 m below the lowest drawn point of the scene at its start), `long_fall` (the player falling for 8 s), `hitch` (a frame over 0.75 s, not in a scene's first 3 s), `hud_fraction`. Thresholds: `long_fall_seconds`, `hitch_seconds`, `out_of_world_margin`. |
+| `detectors` | `log_error` (`push_error`, script errors and engine errors, through a `Logger`; error), `nan` (error), `out_of_world` (a physics body 50 m below the lowest drawn point of the scene at its start; warning), `long_fall` (the player falling for 8 s; warning), `hitch` (a frame over 0.75 s, not in a scene's first 3 s; warning), `hud_fraction` (warning), and as Unreal's: `teleport` (a character body, or the player, moved farther in one frame than `teleport_factor` (3) times its speed allows, at least `teleport_min` (1000) units; a suspicion; `details` `from`, `to`, `moved`, `allowed`), `actor_growth` (every 10 s of game time, the game's nodes of each kind, those with a script, an instanced scene's root or a physics body or area, by class_name, script file, scene or class; a kind that kept growing over `growth_seconds` (120) to twice as many and 50 more; warning; `details` `from`, `to`, `seconds`), `clamp` (a game script's number variable outside its `@export_range`, a side left open by `or_less` / `or_greater`; warning; `details` `property`, `value`, `clamp`), `over_max` (a number variable above its sibling `max_<name>`, `<name>_max`, `Max<Name>` or `<Name>Max` when that is above 0; warning; `details` `property`, `value`, `max_property`, `max`); the last two every `property_every` (0.5) s on the scene's and the autoloads' nodes. Thresholds: `long_fall_seconds`, `hitch_seconds`, `out_of_world_margin`, `teleport_factor`, `teleport_min`, `growth_seconds`, `property_every`. |
 | `codex_manifest`, `codex_read` | `project.godot`, `export_presets.cfg` and every `.gd .cs .tscn .tres .gdshader` file, skipping folders whose name starts with `.` (`.godot`, `.git`), `node_modules`, `addons/autopilot` and any folder holding a `.gdignore`. Plus the addon's summary of the project (main scene, autoloads, input actions, global classes, every scene's node tree) as `.godot/autopilot_codex/summary.txt` (written to `user://autopilot_codex/` when `res://` is read-only). Paths follow the protocol's rules (relative, no `..`, no drive, no skipped folder). `export`: the summary is rewritten on each manifest (`"skip"` keeps the last one). In an exported build it serves what the pack holds (scripts may be binary tokens there unless the export preset keeps them as text). |
-| `find` (Godot only) | `{"class"?, "name"?, "limit"?, "things"?}` -> `{"objects": [paths]}`. `class` is a Godot class (subclasses included), a script `class_name` (or a script's file name), or `group:<name>`; `name` is a case-insensitive part of the node's name; `things: true` returns only the current scene's "things", like Unreal's actors: its direct children, physics bodies and areas, and instanced scenes' roots, not every mesh and shape under them. |
-| `transforms` (Godot only) | `{"objects": [paths]}` -> `{"objects": {path: {"location", "rotation", "velocity", "center", "extent"} \| null}}`: the node's origin, global rotation, velocity (CharacterBody / RigidBody), and the box around its drawn parts (VisualInstance3D AABBs; else its collision shapes), `extent` being half its size; all in the kit frame. |
+| `find` (Godot only) | `{"class"?, "name"?, "limit"? (10000), "things"?}` -> `{"objects": [paths]}`; a class nothing is (no Godot class, class_name or script file of that name): 400. `class` is a Godot class (subclasses included), a script `class_name` (or a script's file name), or `group:<name>`; `name` is a case-insensitive part of the node's name; `things: true` returns only the current scene's "things", like Unreal's actors: its direct children, physics bodies and areas, and instanced scenes' roots, not every mesh and shape under them. |
+| `transforms` (Godot only) | `{"objects": [paths]}` -> `{"objects": {path: {"location", "rotation", "velocity", "center", "extent", "active"} \| null}}` (null: no such node; a node with no place, a plain `Node`, answers those keys null but `active`; `active`: in the tree, processing and, drawn, visible): the node's origin, global rotation, velocity (CharacterBody / RigidBody), and the box around its drawn parts (VisualInstance3D AABBs; else its collision shapes), `extent` being half its size; all in the kit frame. |
 | `pose` (Godot only) | `{"at", "feet", "eye", "yaw", "pitch", "velocity", "on_ground", "path"}` of the player: `at` is the middle of its body (its collision shape's centre), `feet` half its height below, `eye` the camera; yaw and pitch are the camera's. |
-| `movement` (Godot only) | `{"walk_speed", "jump_z", "gravity", "half_height", "radius", "step", "max_slope", "sources"}` in kit units: speed and jump from the player script's variables or constants (`SPEED`, `WALK_SPEED`, `JUMP_VELOCITY`, `jump_height` as `sqrt(2 g h)`...), gravity from a script `gravity` or the project's, half height and radius from its collision shape, `max_slope` from `floor_max_angle`. `step` is null (a CharacterBody doesn't step up); `sources` says where each value came from. |
+| `movement` (Godot only) | `{"walk_speed", "jump_z", "gravity", "half_height", "radius", "step", "max_slope", "air_control", "sources"}` (`air_control` from an `AIR_CONTROL` / `air_control` variable or constant, else null) in kit units: speed and jump from the player script's variables or constants (`SPEED`, `WALK_SPEED`, `JUMP_VELOCITY`, `jump_height` as `sqrt(2 g h)`...), gravity from a script `gravity` or the project's, half height and radius from its collision shape, `max_slope` from `floor_max_angle`. `step` is null (a CharacterBody doesn't step up); `sources` says where each value came from. |
 
 **The player** is the physics body the current camera hangs from, else the first node in the group `player`, else the
 scene's first CharacterBody3D (or CharacterBody2D).
 
 ### `view`
 
-**3D**: the things with a drawn body (GeometryInstance3D) inside the camera's frustum that a line of sight from the
-camera reaches (the box's centre, top or nearest point), nearest first, up to `max_count` within `max_distance`. A
-"thing" is a node's nearest physics body or area, else the scene instance it belongs to, else the mesh. The player and
-a large floor it stands on are left out. Each thing has: `name`, `path`, `class`, `center`, `size` (full size, kit
-axes), `yaw`, `distance` (camera to the box), `screen_x` / `screen_y` (-1..1, right and up positive),
-`partly_in_view`, `speed`, `top_above_feet`, `bottom_above_feet`, `crosshair_on` (a ray from the camera's middle,
-areas included), `look` (`parts`: mesh names, `lights`, `animation`, `texts`: Label3D) and `label`.
+**3D** gives what Unreal's does (its `omitted` is empty): the things with a drawn body (GeometryInstance3D) inside the
+camera's frustum that a line of sight from the camera reaches (the box's centre, top or nearest point), nearest first,
+up to `max_count` within `max_distance`. A "thing" is a node's nearest physics body or area, else the scene instance
+it belongs to, else the mesh. The player, what it holds and the ground are left out (a large floor it stands on, and
+anything wider than `floor_size`, 4000 units, and flat). Each thing has: `name`, `path`, `class`, `center`, `size` (full
+size, kit axes), `yaw`, `distance` (camera to the box), `screen_x` / `screen_y` (-1..1, right and up positive),
+`partly_in_view`, `speed`, `top_above_feet`, `bottom_above_feet`, `crosshair_on` (a ray from the camera's middle, areas
+included) and `crosshair_part` (the bone it is on: a PhysicalBone3D's, or a BoneAttachment3D's above the collider),
+`tilt` (`pitch`, `roll` when turned a degree or more) and `box` (its own box, when turned: `center`, `size` along its
+own axes, `rotation`), `blocks_player` (the body is against it), for a character (a CharacterBody3D, or a thing with a
+Skeleton3D) `body_center` and `body_shown` (rays through a 7×7 grid over its box against its own shapes: the middle of
+what is seen of it, and how much shows), `look` (`parts`: mesh names, `lights`, `animation`, `texts`: Label3D, `effects`:
+`[{"asset", "scale"}]` of its particles emitting, named by their effect scene or node, `highlighted`: a mesh drawn with a
+`material_overlay`, `limp`: most of its physical bones simulating) and `label`; and its top surface (lib/reach.gd, as
+Unreal's): `top_slope_degrees` along the way its own box's top face rises most (on its own collision shapes; its box's
+top face without them) and, for a slope a body walks (5 to 50 degrees), `low_end` and `high_end` (each `{"at", "turn",
+"distance", "height_above_feet"}`, only where seen: the first place up from its low edge, and down from its high edge,
+where a body's room is clear), `lane` (`width`, `middle`, `foot`, `top`, `left`/`right`: `open`, `wall` or `drop` with its
+`depth`, `below`: how far the floor goes on past its foot) and `uphill` (`yaw`, `turn`).
+
+`held`: what the player holds, as its camera shows it: what hangs from the camera (each child of it), what is fixed onto
+a bone (a BoneAttachment3D's children, `attached_at` the bone) and physics bodies under the player (an object carried),
+with something drawn: `name`, `path`, `class`, `look.parts` (biggest first), `center`, `size`, `distance`, `screen_x` /
+`screen_y`, `in_view`; nearest the camera first. `scene.sun`: the brightest visible DirectionalLight3D's `light_energy`
+(not a sky-only one).
 
 `camera` has `location`, `yaw`, `pitch`, `fov` (horizontal, as Unreal's) and `vfov`. `body` has `velocity`, `feet_z`,
 `on_ground`, `falling`, `crouched` (always false), `standing_on`, `touching` (the last `move_and_slide`'s contacts that
-aren't floor) and `floor_slope_degrees`. `only` and `sonar` work as in Unreal (`ways` from sweeps of the body's own
-shape with `test_move`, rays down for drops, edges to a 32nd of a step; no `point_blank`).
-
-Not provided (listed in the answer's `omitted`): `held`, `scene.sun`, `openings`, `ways_up`, `lane`, slope ends,
-`body.under` / `overhead`, `highlighted`, `limp`, and effects (`effects_play` is false headless).
+aren't floor, and the body's own shape swept 10 units out 8 ways), `floor_slope_degrees` and `overhead` (the first
+thing straight above the head within `overhead_reach`, 2000 units, when it is in view, against the body or within 10
+units: `thing`, `path`, `clearance`). With `openings` or `ways_up` asked, `under` (what is straight above, whatever is
+in view), and (lib/reach.gd, Unreal's algorithm with the player's own collision shape): `openings` (gaps in what stands
+round the body across the view at its knees' and chest's height: `at`, `turn`, `distance`, `width`, `yaw`,
+`depth_beyond`, `floor_step`, `floor_above_feet`, `reachable_straight` / `blocked_at` / `blocked_by`, `passable`, `into`,
+`wall`, `sides`) and `free` (how far the body goes each 15 degrees at its knees and chest); `ways_up` (the ramps and
+stairs up from its floor it sees: `turn`, `distance_to_foot`, `rises_by`, `top_distance`, `foot`, `top`, `seen_from`
+"side" with `reachable_straight`, `lane` and `inside`), within `openings_reach` (3000 units). `walk_to` goes up them to a
+raised goal. A CharacterBody doesn't step up: the floor may rise from one place to the next by what its shape's
+rounded bottom rides over (a capsule's radius × (1 − cos `floor_max_angle`)) and what a slope no steeper than
+`floor_max_angle` rises over the way; a rise more than the step is felt again at quarters of the way, so a staircase
+(its risers all at once) is a way up only with a ramp-shaped collision under it. `only` and `sonar` work as in Unreal
+(`ways` from sweeps of the body's own shape with `test_move`, rays down for drops, edges to a 32nd of a step; a
+RigidBody3D player too, walking floors to 45 degrees; no `point_blank`).
 
 **2D**: the drawn CanvasItems (sprites, polygons) inside the camera's rectangle, nearest the player first, with
-`screen_x` / `screen_y`.
+`screen_x` / `screen_y`, the body, and `scene.sun` (the brightest DirectionalLight2D's `energy`). `omitted` lists what
+is the 3D body's and has no 2D meaning here: `held`, `openings`, `ways_up`, `lane`, the slopes, `body.under` /
+`overhead`, `look` and `blocks_player`, and `sonar`.
 
 **Headless** (`--headless`), physics, raycasts, `test_move`, `Camera3D.unproject_position` / `is_position_in_frustum`
 and GUI input all work as with a display (the tests below check this). What differs: the root viewport is 64x64 until
 the addon resizes it; mouse capture is ignored (`Input.mouse_mode` stays visible, so a game that only turns its view
-while the mouse is captured won't turn headless); effects don't run; and nothing flushes `Input.parse_input_event`
-events (the addon flushes them itself).
+while the mouse is captured won't turn); effects don't run (`effects_play` false; `look.effects` still lists the
+particles the game set emitting); and nothing flushes `Input.parse_input_event` events (the addon flushes them
+itself).
 
 ## Removing Autopilot
 
@@ -649,6 +715,7 @@ All paths are under `addons/autopilot/`.
 | `lib/rc.gd` | `rc`: property reads and writes, calls, `describe`. |
 | `lib/world.gd` | The player, `find`, `transforms`, `pose`, `movement`. |
 | `lib/sight.gd` | `view` and `watch`. |
+| `lib/reach.gd` | `view`'s body probes: a thing's own box and top surface (slopes, their ends and lanes), `openings` and `ways_up`. |
 | `lib/ui.gd` | `screen`, `ui`, `ui_act`. |
 | `lib/codex.gd` | `codex_manifest`, `codex_read` and the project summary. |
 | `lib/detectors.gd` | The in-game detectors (`log_error`, `nan`, `hud_fraction`...). |
@@ -690,11 +757,11 @@ script itself, which assembles its own copy):
 |---|---|
 | `tests/units.py` | Without a game: `tests/units.gd` (`preferences.json` and `autopilot.env`, the usage sums and file, the Autopilot bill: `bill` frames, the account's `bill`, money and dates as shown, bills kept with the usage and old records loading, the picture's scaling, encoding and message text, the agent service: finding `autopilot`, which one starts and whether the addon's is installed first, the one running kept or replaced (only an agent service's program stopped, once a session, never with the setting or a connection open), its start and install command lines, `brain.json`, the logs, with a stand-in launcher and stand-in processes; the uninstall command line (run for real with a stand-in `autopilot`: in the temporary folder, its words, its exit code, its log) and the settings folder emptied here but for `memory/` and `aura-brain.json`; the kind of run the composer's words ask for and its start frame; the stage track's names whole and within their room at every width from 160 to 1400 px; the stages at which a run can be steered; Aura's look: its fonts bundled and read, the old ones gone, its palette, round corners, accent and success kept apart, the verdict banner unslanted, the icon's color) and `tests/dock_units.gd` (the first-run setup with its stepper, Use Aura app before Sign in with browser, Next or Finish by
 what the agent service remembers, step 4 (First run: waiting, the Explore run offered with the memory empty and its start
-frame, closed by itself with the memory not empty, Skip), the first run's Explore for 10 minutes by default, the agent service and the Aura sign-in driven by `aura_sign_in` frames, the Settings page and its Account corner driven by `account` frames (asked again after Finish), BYOK wording, the Coding Agent and LLM provider dropdowns (preselected from the `account` frame or `autopilot.env`, the provider locked for Claude Code and Codex, OpenCode's own brought back, written to `autopilot.env`) and the Coding Agent with its provider on the Settings page, the bill on the run and the Settings page, the gear opening and closing the Settings page (Rerun setup there only, not in the footer), no account named in the footer, BYOK and never "Own keys", Reset memory (confirmed in place in the Memory row, its outcome there), real-time runs only, the settings; the one prompt box (no kind read as the words are typed, its Time limit at the right, kept per project, the start frames, `run_kind` and GAME TESTED, Verify a fix), Rerun setup on the Settings page (one button there, the setup from its first step, disabled while a run is going), the run history's selection, memory at the end of a run, Uninstall Autopilot (last on the Settings page, only ever a stand-in `autopilot` and a stand-in launcher, disabled while a run is going, confirmed in place with Delete Autopilot's memories off each time (ticked: no `--keep-memory`), `autopilot uninstall --yes [--keep-memory]` run disconnected, its page by exit code 0, 3, other or too long with Set up again, View logs, Try again and Cancel, nothing started or connected meanwhile, no setup with `preferences.json` gone, the settings folder emptied here but for `memory/` without an agent service), the setup at step 2 at start when the agent service is gone (and not with it there, the command set, Use with Aura, not set up, headless), the recording copied into the run folder and its player; and every page laid out at 320x900, 360x640, 560x480, 900x400 and 1400x900 and narrowed again: nothing past the dock's edge or its scroll container's, nothing making the dock wider or taller, the 560 px column centred, the prompt box's placeholder on one line, the live stage track's names whole, the steer box's "You can steer once the game is playing (Rollout)" on one line; the gear whole, one at a time, inside the dock and beside New run; the steer box enabled only at Rollout, the words kept and nothing sent at the other stages, the same box on the Feed tab; the status line (last row of every page, gone after 8 s, never the progress lines); the Live page without a policy column; the buttons that can't act now greyed but pressable, the status line saying why; the Policy log's footer by the harness shown; the Policy log's Find an action… and ◀ ▶; Get Aura; Back to the last run; runs from the user's own Claude Code or Codex (`run_started`: shown live with Started from Claude Code, Codex or your coding agent, ignored while a run is going, behind the first-run setup), the Settings page's Autopilot in Claude Code & Codex with its Copy buttons, the data sharing text, and the Research agent switch (not chosen: off with Use with Aura, on without it, signed in to Aura or not, the saved choice over both; its words, saved merged, the editor's `hello` saying it only once chosen, its plate after Data sharing); the activity feed: each `activity` frame a line under its stage (which moves the stage track), a call and its result one line with two folds, a frame sent again changing nothing, an orphan result its own line, the Feed tab's headings with their counts and its folds opening, what the hello asks for (`activity_since`), a run saved and read back with its events; built and driven headless, with a stand-in link), with the user settings folder pointed at a temporary one. |
-| `tests/smoke.py` | Every request against the game, the detectors, codex, 2D. |
+frame, closed by itself with the memory not empty, Skip), the first run's Explore for 10 minutes by default, the agent service and the Aura sign-in driven by `aura_sign_in` frames, the Settings page and its Account corner driven by `account` frames (asked again after Finish), BYOK wording, the Coding Agent and LLM provider dropdowns (preselected from the `account` frame or `autopilot.env`, the provider locked for Claude Code and Codex, OpenCode's own brought back, written to `autopilot.env`) and the Coding Agent with its provider on the Settings page, the bill on the run and the Settings page, the gear opening and closing the Settings page (Rerun setup there only, not in the footer), no account named in the footer, BYOK and never "Own keys", Reset memory (confirmed in place in the Memory row, its outcome there), real-time runs only, the settings; the one prompt box (no kind read as the words are typed, its Time limit at the right, kept per project, the start frames, `run_kind` and GAME TESTED, Verify a fix), Rerun setup on the Settings page (one button there, the setup from its first step, disabled while a run is going), the run history's selection, memory at the end of a run, Uninstall Autopilot (last on the Settings page, only ever a stand-in `autopilot` and a stand-in launcher, disabled while a run is going, confirmed in place with Delete Autopilot's memories off each time (ticked: no `--keep-memory`), `autopilot uninstall --yes [--keep-memory]` run disconnected, its page by exit code 0, 3, other or too long with Set up again, View logs, Try again and Cancel, nothing started or connected meanwhile, no setup with `preferences.json` gone, the settings folder emptied here but for `memory/` without an agent service), the setup at step 2 at start when the agent service is gone (and not with it there, the command set, Use with Aura, not set up, headless), the recording copied into the run folder and its player; and every page laid out at 320x900, 360x640, 560x480, 900x400 and 1400x900 and narrowed again: nothing past the dock's edge or its scroll container's, nothing making the dock wider or taller, the 560 px column centred, the prompt box's placeholder on one line, the live stage track's names whole, the steer box's "You can steer once the game is playing (Rollout)" on one line; the gear whole, one at a time, inside the dock and beside New run; the steer box enabled only at Rollout, the words kept and nothing sent at the other stages, the same box on the Feed tab; the status line (last row of every page, gone after 8 s, never the progress lines); the Live page without a policy column; the buttons that can't act now greyed but pressable, the status line saying why; the Policy log's footer by the harness shown; the Policy log's Find an action… and ◀ ▶; Get Aura; Back to the last run; runs from the user's own Claude Code or Codex (`run_started`: shown live with Started from Claude Code, Codex or your coding agent, ignored while a run is going, behind the first-run setup), the Settings page's Autopilot in Claude Code & Codex with its Copy buttons, the data sharing text, and the Research agent switch (not chosen: off with Use with Aura, on without it, signed in to Aura or not, the saved choice over both; its words, saved merged, the editor's `hello` saying it only once chosen, its plate after Data sharing); the activity feed: each `activity` frame a line under its stage (which moves the stage track), a call and its result one line with two folds, a frame sent again changing nothing, an orphan result its own line, the Feed tab's headings with their counts and its folds opening, what the hello asks for (`activity_since`), a run saved and read back with its events; the Design brief and Show Policy Log (the Settings page, the start frames, the hello's `inspect`, the Policy log tab), the settings in the Editor Settings both ways (with a stand-in for them), the ⋮ menu, "Waiting for the game to start", the editor kept awake while a run goes and its sleep put back when the connection drops, and no flash when the Live page, the Result and the Feed tab come in (their controls' places as drawn against three frames later); built and driven headless, with a stand-in link), with the user settings folder pointed at a temporary one. |
+| `tests/smoke.py` | Every request against the game, the detectors (teleport, actor_growth, clamp and over_max too), codex, 2D; `levels`, `session` start with a map; `pointer` on the UI (a slider clicked at a place and dragged) and in the world (a bell's `_input_event`, a game's own ray from the mouse, `get_viewport().get_mouse_position()`); `view`'s held, sun, effects, highlight, the ramp's slope, ends, lane and box, ways up, the fence's opening, `floor_size`, overhead and under, blocks_player; `watch`'s effect stopped; `ui`'s widget and text, `set` on a combo; `move` via keys, controller and backward; `find`'s unknown class, `transforms`' active; `context`'s input, net and player; `timestep` fixed. The test game has for this a ramp up to a deck with a beehive on it, a fence with a gap, an arbor, a torch with a flame (particles), a bell, a picker, a colour swatch and a lantern hanging from the camera. |
 | `tests/ci_test.py` | Command-line runs against a stub server: exit codes, report files, the token, the connect timeout; `hello`'s `share` and `research` (`preferences.json`, `--playtest-share`, `--playtest-research`; no `research` when not chosen), no `media` headless, `record` and `capture` answering 409, `usage` frames. |
-| `tests/kit_live.py` | The agent's kit (`autopilot.kit`, `autopilot/engines/godot.py`) on the game. |
-| `tests/editor_test.py` | A headless editor: the dock's connection (`hello` with `media`, `share` and `research`), session start/restart/stop, relaying (`record` and `capture` answering 409 for a headless game). |
+| `tests/kit_live.py` | The agent's kit (`autopilot.kit`, `autopilot/engines/godot.py`) on the game, `game.pointer` and a click in the world, and `walk_to` a goal on the deck (it finds the ramp up with `ways_up`). |
+| `tests/editor_test.py` | A headless editor, its Godot editor settings and user settings folder its own: the dock's connection (`hello` with `media`, `levels`, `timed_hold`, `pointer`, `input`, `share` and `research`), session start/restart/stop (`scene`, `loading`, a bad map 404, a start with another map switching), the answers with no game, relaying (`record` and `capture` answering 409 for a headless game), and relayed answers fast with the editor set to sleep 100 ms a frame (kept awake during a run). |
 
 Each starts its own Godot process (the editor test, also the games the editor starts), so run one at a time.
 `GODOT_TEST_PROJECT` (optional) points the scripts at an already assembled and imported copy instead.

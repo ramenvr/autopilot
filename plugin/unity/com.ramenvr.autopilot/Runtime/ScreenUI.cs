@@ -1,6 +1,6 @@
 // What is on screen: texts (screen), and the controls a player's mouse can use (ui, ui_act). uGUI (Text, TextMeshPro,
-// Selectables on screen-space canvases) and UI Toolkit (UIDocuments). IMGUI (OnGUI) draws without objects to read:
-// it isn't seen. World-space canvases are things in the world: view tells their texts.
+// Selectables on screen-space canvases), UI Toolkit (UIDocuments) and IMGUI (OnGUI: the game's GUI and GUILayout calls,
+// noted as they draw, see Imgui.cs). World-space canvases are things in the world: view tells their texts.
 
 using System;
 using System.Collections.Generic;
@@ -84,6 +84,9 @@ namespace Autopilot.Playtest
                     texts[Unique(texts, doc.gameObject.name + "." + name)] = e.text.Trim();
                 });
             }
+#endif
+#if AUTOPILOT_IMGUI
+            Imgui.AddTexts(texts);
 #endif
             return texts;
         }
@@ -245,13 +248,24 @@ namespace Autopilot.Playtest
                 switch (e.Target)
                 {
                     case Toggle t: item["checked"] = t.isOn; break;
-                    case Slider s: item["value"] = Json.Round(s.value, 4); break;
-                    case Scrollbar sb: item["value"] = Json.Round(sb.value, 4); break;
+                    case Slider s:
+                        item["value"] = Json.Round(s.value, 4);
+                        item["min"] = Json.Round(s.minValue, 4);
+                        item["max"] = Json.Round(s.maxValue, 4);
+                        break;
+                    case Scrollbar sb:
+                        item["value"] = Json.Round(sb.value, 4);
+                        item["min"] = 0.0;
+                        item["max"] = 1.0;
+                        break;
                     case Dropdown d:
                         item["selected"] = d.options.Count > d.value && d.value >= 0 ? d.options[d.value].text : "";
                         item["options"] = d.options.Take(20).Select(o => (object)o.text).ToList();
                         break;
-                    case InputField f: item["text"] = f.text; break;
+                    case InputField f:
+                        item["text"] = f.text;
+                        item["placeholder"] = f.placeholder is Text ph ? ph.text : "";
+                        break;
                 }
 #if AUTOPILOT_TMP
                 switch (e.Target)
@@ -260,7 +274,10 @@ namespace Autopilot.Playtest
                         item["selected"] = d.options.Count > d.value && d.value >= 0 ? d.options[d.value].text : "";
                         item["options"] = d.options.Take(20).Select(o => (object)o.text).ToList();
                         break;
-                    case TMP_InputField f: item["text"] = f.text; break;
+                    case TMP_InputField f:
+                        item["text"] = f.text;
+                        item["placeholder"] = f.placeholder is TMP_Text tph ? tph.text : f.placeholder is Text uph ? uph.text : "";
+                        break;
                 }
 #endif
 #endif
@@ -268,17 +285,34 @@ namespace Autopilot.Playtest
                 switch (e.Target)
                 {
                     case UIE.Toggle t: item["checked"] = t.value; break;
-                    case UIE.Slider s: item["value"] = Json.Round(s.value, 4); break;
-                    case UIE.SliderInt si: item["value"] = si.value; break;
+                    case UIE.Slider s:
+                        item["value"] = Json.Round(s.value, 4);
+                        item["min"] = Json.Round(s.lowValue, 4);
+                        item["max"] = Json.Round(s.highValue, 4);
+                        break;
+                    case UIE.SliderInt si:
+                        item["value"] = si.value;
+                        item["min"] = si.lowValue;
+                        item["max"] = si.highValue;
+                        break;
                     case UIE.DropdownField d:
                         item["selected"] = d.value ?? "";
                         item["options"] = d.choices.Take(20).Select(o => (object)o).ToList();
                         break;
-                    case UIE.TextField f: item["text"] = f.value; break;
+                    case UIE.TextField f:
+                        item["text"] = f.value;
+                        item["placeholder"] = f.textEdition.placeholder ?? "";
+                        break;
                 }
 #endif
                 outList.Add(item);
             }
+#if AUTOPILOT_IMGUI
+            var taken = new HashSet<string>(last.Select(e => e.Id));
+            foreach (var item in Imgui.Items())
+                if (taken.Add((string)item["id"]))
+                    outList.Add(item);
+#endif
             return outList;
         }
 
@@ -290,6 +324,13 @@ namespace Autopilot.Playtest
             var action = Json.Str(args, "action", "click");
             last = Scan();
             var e = last.FirstOrDefault(x => x.Id == id);
+#if AUTOPILOT_IMGUI
+            if (e == null)
+            {
+                var drawn = Imgui.Act(id, action, args);
+                if (drawn != null) return drawn;
+            }
+#endif
             if (e == null) return $"no element {id} on screen";
             if (!e.Enabled) return $"{id} is disabled";
 #if AUTOPILOT_UGUI
@@ -396,6 +437,54 @@ namespace Autopilot.Playtest
                             ve.SendEvent(click);
                         }
                         return "";
+                    case "right_click":
+                        // (as a player's right button: down and up over it, then its context click)
+                        using (var down = UIE.PointerDownEvent.GetPooled(Pointer(ve, 1)))
+                        {
+                            down.target = ve;
+                            ve.SendEvent(down);
+                        }
+                        using (var up = UIE.PointerUpEvent.GetPooled(Pointer(ve, 1)))
+                        {
+                            up.target = ve;
+                            ve.SendEvent(up);
+                        }
+                        using (var context = UIE.ContextClickEvent.GetPooled(Pointer(ve, 1)))
+                        {
+                            context.target = ve;
+                            ve.SendEvent(context);
+                        }
+                        return "";
+                    case "drag":
+                    {
+                        // Pressed over it, moved over the element dropped on, let go there (the pointer events a UI Toolkit
+                        // drag-and-drop manipulator reads)
+                        var to = last.FirstOrDefault(x => x.Id == Json.Str(args, "to"));
+                        if (to == null || !(to.Target is UIE.VisualElement target)) return $"no element {Json.Str(args, "to")} on screen to drop on";
+                        var from = Pointer(ve, 0);
+                        var over = Pointer(target, 0);
+                        using (var down = UIE.PointerDownEvent.GetPooled(from))
+                        {
+                            down.target = ve;
+                            ve.SendEvent(down);
+                        }
+                        using (var move = UIE.PointerMoveEvent.GetPooled(over))
+                        {
+                            move.target = ve;
+                            ve.SendEvent(move);
+                        }
+                        using (var move = UIE.PointerMoveEvent.GetPooled(over))
+                        {
+                            move.target = target;
+                            target.SendEvent(move);
+                        }
+                        using (var up = UIE.PointerUpEvent.GetPooled(over))
+                        {
+                            up.target = target;
+                            target.SendEvent(up);
+                        }
+                        return "";
+                    }
                     case "set":
                         switch (ve)
                         {
@@ -416,6 +505,15 @@ namespace Autopilot.Playtest
 #endif
             return $"no element {id} on screen";
         }
+
+#if AUTOPILOT_UITK
+        /// <summary>A mouse event at an element's middle with a button (0 left, 1 right) down, for the pointer events.</summary>
+        static Event Pointer(UIE.VisualElement e, int button)
+        {
+            var at = e.worldBound.center;
+            return new Event { type = EventType.MouseDown, button = button, mousePosition = at, clickCount = 1 };
+        }
+#endif
 
         static string SetDropdown(string id, string option, List<string> options, Action<int> set)
         {

@@ -20,6 +20,9 @@ namespace PlaytestOps
 
 	/** Every frame: keys held through the `key` op stay down, held axes send their value, leases run out. */
 	void TickKeys(UPlaytestSubsystem& Bridge, float DeltaTime);
+
+	/** How the player's inputs reach the game: context's and hello's `input` (PlaytestOpsSession.cpp). */
+	TSharedRef<FJsonObject> InputInfo();
 }
 
 /** The game's code for a brain that can't read this machine's disk (docs/protocol.md: `codex_manifest`, `codex_read`). */
@@ -73,6 +76,13 @@ namespace PlaytestUI
 	 * Events go straight to the widgets, so this works headless too. Returns "" or what went wrong.
 	 */
 	FString Act(UWorld* World, const TSharedPtr<FJsonObject>& Args);
+
+	/**
+	 * The id of the element at a pixel of the game's view (Size: the view's size in pixels), the topmost there, as
+	 * the game's widgets are laid out over the view (computed here: a game that doesn't render lays nothing out);
+	 * "" when none. For the pointer's clicks on a game that doesn't render (PlaytestOpsPointer.cpp).
+	 */
+	FString ElementAt(UWorld* World, const FVector2D& Pixel, const FVector2D& Size);
 }
 
 class FPlaytestMediaRender;

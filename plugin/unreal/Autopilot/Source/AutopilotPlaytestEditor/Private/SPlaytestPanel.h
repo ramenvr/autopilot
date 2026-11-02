@@ -63,6 +63,9 @@ public:
 	SLATE_END_ARGS()
 
 	void Construct(const FArguments& InArgs);
+	/** The tab's right-click menu (as Unity's window menu): Connect or Disconnect, Settings, Rerun setup, Reset memory…,
+	 *  doing what the tab's own buttons do. */
+	void ExtendTabMenu(class FMenuBuilder& Menu);
 	virtual void Tick(const FGeometry& AllottedGeometry, const double InCurrentTime, const float InDeltaTime) override;
 
 private:

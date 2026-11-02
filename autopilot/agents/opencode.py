@@ -13,6 +13,8 @@ data, cache), so the user's own OpenCode setup (config, agents, plugins, skills,
 run doesn't depend on what earlier runs left.
 """
 
+import contextlib
+import hashlib
 import json
 import os
 import queue
@@ -81,15 +83,87 @@ def bun():
                        "another agent with AUTOPILOT_AGENT.")
 
 
-def ensure_installed(exe):
-    """Install the host's packages (the exact versions in its lockfile) once, before the first run."""
-    if os.path.isdir(os.path.join(HOST_DIR, "node_modules", "@opencode", "sdk")):
+INSTALL_TIMEOUT = 15 * 60  # seconds an install of the host's packages may take, waiting for another one included
+
+
+def _lock_digest(host_dir):
+    with open(os.path.join(host_dir, "bun.lock"), "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def _stamp(host_dir):
+    """The file an install writes once it has finished: the lockfile's digest it installed."""
+    return os.path.join(host_dir, "node_modules", ".autopilot-installed.json")
+
+
+def installed(host_dir=HOST_DIR):
+    """Whether the host's packages are all in place: an install of this lockfile finished here. Their folders alone
+    don't say so: an install cut short (killed, out of disk, a file it couldn't write) leaves some packages, or parts
+    of one, and the host then ends at its start on a module it can't find."""
+    try:
+        with open(_stamp(host_dir), encoding="utf-8") as f:
+            return json.load(f).get("lock") == _lock_digest(host_dir)
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+@contextlib.contextmanager
+def _install_lock(host_dir, timeout=INSTALL_TIMEOUT):
+    """One install at a time in host_dir, across processes (two at once in one folder leave it half written)."""
+    f = open(os.path.join(host_dir, ".install.lock"), "a+b")
+    deadline = time.time() + timeout
+    try:
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() > deadline:
+                    raise RuntimeError(f"another install of OpenCode's packages in {host_dir} is still running")
+                time.sleep(1)
+        try:
+            yield
+        finally:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    f.seek(0)
+                    msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(f, fcntl.LOCK_UN)
+            except OSError:
+                pass
+    finally:
+        f.close()
+
+
+def ensure_installed(exe, host_dir=HOST_DIR):
+    """Install the host's packages (the exact versions in its lockfile) unless an install of this lockfile finished
+    here (installed()). Anything less is installed again from scratch (--force): Bun's own check passes a package
+    whose folder is there however few of its files are, so it would never repair an install cut short."""
+    if installed(host_dir):
         return
-    done = subprocess.run([exe, "install", "--frozen-lockfile"], cwd=HOST_DIR, capture_output=True, text=True,
-                          encoding="utf-8", errors="replace")
-    if done.returncode != 0:
-        raise RuntimeError(f"`bun install` in {HOST_DIR} failed ({done.returncode}):\n"
-                           f"{(done.stdout + done.stderr)[-2000:]}")
+    with _install_lock(host_dir):
+        if installed(host_dir):  # (another process finished it while this one waited)
+            return
+        try:
+            os.remove(_stamp(host_dir))
+        except OSError:
+            pass
+        done = subprocess.run([exe, "install", "--frozen-lockfile", "--force"], cwd=host_dir, capture_output=True,
+                              text=True, encoding="utf-8", errors="replace", timeout=INSTALL_TIMEOUT)
+        if done.returncode != 0:
+            raise RuntimeError(f"`bun install` in {host_dir} failed ({done.returncode}):\n"
+                               f"{(done.stdout + done.stderr)[-2000:]}")
+        with open(_stamp(host_dir), "w", encoding="utf-8") as f:
+            json.dump({"lock": _lock_digest(host_dir), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, f)
 
 
 def _slashes(path):
@@ -262,6 +336,62 @@ def remove_tree(path):
     shutil.rmtree(path, onexc=retry)
 
 
+ERR_TAIL = 600  # characters of the host's last words (its stderr, opencode.log) a run's reason quotes, at most
+
+
+def exit_code(code):
+    """A process's exit code as Windows names a crash's (3221226505 is 0xC0000409), else as it is."""
+    if code is None:
+        return "still running"
+    return f"{code} (0x{code & 0xFFFFFFFF:08X})" if abs(code) >= 0x10000 else str(code)
+
+
+def err_tail(err, limit=ERR_TAIL):
+    """The last of what the host wrote to its stderr (the file `err`), on one line; "" when there is none or it can't
+    be read (err isn't a file of its own)."""
+    try:
+        err.flush()
+        with open(err.name, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            f.seek(max(0, f.tell() - limit * 4))
+            text = f.read().decode("utf-8", "replace")
+    except (AttributeError, OSError, TypeError, ValueError):
+        return ""
+    words = " | ".join(line.strip() for line in text.splitlines() if line.strip())
+    return words if len(words) <= limit else "..." + words[-limit:]
+
+
+def host_ended(proc, lines, events, err, session, writing=None):
+    """Why the host ended by itself: what its fatal error said, else its exit code and the last of its stderr. writing:
+    the error that sending it a line met (it had ended, or was ending, while it was sent the request), else None. The
+    lines it wrote before it ended are read first: a fatal error among them is the reason."""
+    try:
+        code = proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        code = None
+    stop_at = time.time() + 2  # (its stdout's last lines, which the reader thread may still be passing on)
+    while not events.fatal and time.time() < stop_at:
+        try:
+            raw = lines.get(timeout=0.2)
+        except queue.Empty:
+            continue
+        if raw is None:
+            break
+        events.line(raw)
+    if events.fatal:
+        return f"OpenCode failed: {events.fatal}"
+    tail = err_tail(err)
+    note = f"OpenCode's host ended: exit code {exit_code(code)}"
+    if writing:
+        note += f", while it was sent the request ({writing})"
+    note += f"; its stderr ends: {err_tail(err, 4000)}" if tail else "; it wrote nothing to stderr"
+    session.note(note)
+    why = f"OpenCode exited ({exit_code(code)})"
+    if writing:
+        why += f" before it took the request ({writing})"
+    return why + (f": {tail}" if tail else "")
+
+
 def run_host(cmd, config, message, env, events, session, deadline, err, cwd=HOST_DIR):
     """Run the host on the request until the model's turn ends with nothing more to say to it, stop(), the deadline or
     the host's end. The user's words that came after the last tool result go to it as a new message once its turn
@@ -295,8 +425,8 @@ def run_host(cmd, config, message, env, events, session, deadline, err, cwd=HOST
             except queue.Empty:
                 continue
             if raw is None:
-                proc.wait(timeout=10)
-                return f"OpenCode failed: {events.fatal}" if events.fatal else f"OpenCode exited ({proc.returncode})"
+                lines.put(None)  # (host_ended reads to here)
+                return host_ended(proc, lines, events, err, session)
             events.line(raw)
             if events.fatal:
                 return f"OpenCode failed: {events.fatal}"
@@ -312,8 +442,9 @@ def run_host(cmd, config, message, env, events, session, deadline, err, cwd=HOST
                 return None
             idle_now = False
             send({"type": "prompt", "text": steer})
-    except OSError as e:  # (the host's stdin closed: it ended)
-        return f"OpenCode failed: {events.fatal or e}"
+    except OSError as e:  # (the host's stdin closed: it ended, or is ending. Windows says Broken pipe or No space
+        # left on device: what the host said, its exit code and stderr say why)
+        return host_ended(proc, lines, events, err, session, writing=e)
     finally:
         if idle_now:  # (else it is mid-turn, stopped or out of time: ended at once below)
             try:

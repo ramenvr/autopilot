@@ -65,6 +65,7 @@ namespace Autopilot.Playtest.Editor
                 signingIn = view.SigningIn;
             };
             rootVisualElement.Add(view);
+            if (!AutopilotUI.FontsFound()) AutopilotStatus.Say(AutopilotStatus.FontMissing);  // (as Unreal's tab and Godot's dock)
             view.CheckServiceGone();  // (set up, but the agent service is gone: the setup's Agent service step)
             view.Refresh(true);
         }

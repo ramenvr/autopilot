@@ -6,9 +6,10 @@
         [--agent opencode|claude|codex]
 
 --project is any engine's project: an Unreal .uproject, a Unity project folder or a Godot project folder. The game
-runs headless as its engine's adapter says (Engine.launch_command): Unreal `-game -nullrhi`; Unity a player build
-given with --engine <Game.exe> (`-batchmode -nographics`); Godot `--headless --path <folder>`. --engine: the engine's
-(or the build's) executable, when not the adapter's default.
+runs headless as its engine's adapter says (Engine.launch_command): Unreal `-game -nullrhi` (or a packaged build given
+with --engine <Game.exe>); Unity a player build given with --engine <Game.exe> (`-batchmode -nographics`); Godot
+`--headless --path <folder>` (or an exported build given with --engine <Game.exe>). --engine: the engine's (or the
+build's) executable, when not the adapter's default.
 
 A suite is a JSON file: {"prompts": [{"id": "A", "prompt": "...", "expected": "CONFIRMED"}, ...]} ("expected" is
 optional; bench/example.json shows the format).

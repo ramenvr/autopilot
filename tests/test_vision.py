@@ -25,9 +25,9 @@ def game():
 
 
 class Upstream:
-    """A vision model's API on this machine: Anthropic's Messages (/v1/messages) and OpenAI's chat completions
-    (/chat/completions, /openai/chat/completions). refuse: models answered 400 as Aura's relay answers an unpriced
-    one."""
+    """A vision model's API on this machine: Anthropic's Messages (/v1/messages), OpenAI's chat completions
+    (/chat/completions) and Gemini's generateContent (/models/<model>:generateContent). refuse: models answered 400 as
+    Aura's relay answers an unpriced one."""
 
     def __init__(self, refuse=()):
         self.seen = []  # (path, headers, body)
@@ -40,10 +40,17 @@ class Upstream:
             def do_POST(self):
                 body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
                 up.seen.append((self.path, {k.lower(): v for k, v in self.headers.items()}, body))
-                if body.get("model") in refuse:
+                model = body.get("model") or self.path.rpartition("/models/")[2].partition(":")[0]
+                if model in refuse:
                     self.answer(400, {"type": "error", "error": {"type": "invalid_request_error",
                                                                  "message": f"Model not available through Aura: "
-                                                                            f"{body['model']}"}})
+                                                                            f"{model}"}})
+                elif self.path.endswith(":generateContent"):
+                    self.answer(200, {"candidates": [{"content": {"role": "model", "parts": [
+                        {"text": "weighing the frames", "thought": True}, {"text": "1. A flag waves."}]},
+                        "finishReason": "STOP"}], "modelVersion": model,
+                        "usageMetadata": {"promptTokenCount": 700, "candidatesTokenCount": 20,
+                                          "thoughtsTokenCount": 5, "cachedContentTokenCount": 100}})
                 elif self.path.endswith("/v1/messages"):
                     self.answer(200, {"id": "msg_1", "type": "message", "role": "assistant", "model": body["model"],
                                       "content": [{"type": "text", "text": "1. The arm swings down."}],
@@ -145,6 +152,29 @@ def test_the_recorder_keeps_its_frames_and_films_closer_when_asked(tmp_path):
     assert [f["t"] for f in rec.frames.items] == [1.0, 2.0, 3.0] and rec.frames.items[0]["width"] == 64
 
 
+def test_an_episode_filmed_closely_is_a_video(tmp_path):
+    # run_harness frames_fps: the episode is filmed at that rate, a float once the describer has bounded it (8.0); the
+    # episode's video was made at it, and PyAV refused every frame of a float rate: the run had no recording
+    import av
+    from test_telemetry import SendLink, jpeg
+
+    link = SendLink({"project": "fake", "features": ["media"]})
+    with media.Recorder(link, str(tmp_path)) as rec:
+        d = vision.Describer(rec, "anthropic")
+        with d.filming(8) as changed:
+            assert changed and rec.fps == 8.0 and isinstance(rec.fps, float)
+            rec.begin(1)
+            for n in range(6):
+                link.frame_listeners[0]({"n": n, "t": 1.0 + n * 0.125, "wall": 50.0 + n * 0.125, "width": 64,
+                                         "height": 48, "jpeg": base64.b64encode(jpeg(shade=30 * n)).decode()})
+            rec.end(1)
+    assert rec.kept == 6 and rec.missing() is None
+    shown = rec.shown()
+    assert shown["episode"] == 1 and shown["seconds"] > 0
+    with av.open(shown["video"]) as video:
+        assert len(list(video.decode(video=0))) == 7  # (its 6 frames and the end held)
+
+
 # -- which model looks ------------------------------------------------------------------------------------------------
 
 def test_each_provider_has_its_vision_model_or_says_why_not(monkeypatch):
@@ -235,8 +265,98 @@ def test_openai_compatible_providers_get_data_urls(upstream, monkeypatch):
     pictures = [p for p in body["messages"][1]["content"] if p["type"] == "image_url"]
     assert len(pictures) == 3 and pictures[0]["image_url"]["url"] == "data:image/jpeg;base64," + base64.b64encode(
         b"jpeg0").decode()
-    assert vision.Describer(rec, "google", "gemini-4-argon").describe(0, 1e12, ["?"])[1]
-    assert upstream.seen[1][0] == "/openai/chat/completions" and "max_tokens" in upstream.seen[1][2]
+    keys(monkeypatch, OPENROUTER_API_KEY="sk-r", OPENROUTER_BASE_URL=upstream.url)
+    assert vision.Describer(rec, "openrouter").describe(0, 1e12, ["?"])[1]
+    assert upstream.seen[1][0] == "/chat/completions" and "max_tokens" in upstream.seen[1][2]
+
+
+def test_google_is_asked_on_geminis_own_api(upstream, monkeypatch):
+    """Google's models describe through generateContent (Aura's relay for Google takes nothing else): the system text,
+    the frames as inline_data after their labels, the key in x-goog-api-key; the answer's text without its thinking,
+    its usage counted (thinking as output, cached tokens apart)."""
+    keys(monkeypatch, GEMINI_API_KEY="run-token", GOOGLE_BASE_URL=upstream.url + "/v1beta/")
+    rec = FakeRecorder()
+    frames(rec, n=3)
+    usage = telemetry.Usage()
+    d = vision.Describer(rec, "google", "gemini-4-argon", usage=usage, model="gemini-3.1-flash-lite")
+    text, ok = d.describe(0, 1e12, ["What waves?"])
+    assert ok and text.endswith("\n1. A flag waves.") and "weighing" not in text
+    path, headers, body = upstream.seen[0]
+    assert path == "/v1beta/models/gemini-3.1-flash-lite:generateContent" and headers["x-goog-api-key"] == "run-token"
+    assert "authorization" not in headers
+    assert body["systemInstruction"] == {"parts": [{"text": vision.SYSTEM}]}
+    assert body["generationConfig"] == {"maxOutputTokens": vision.MAX_TOKENS}
+    (content,) = body["contents"]
+    assert content["role"] == "user" and content["parts"][1] == {"text": "Frame 1: game time 5.00 s"}
+    pictures = [p["inline_data"] for p in content["parts"] if "inline_data" in p]
+    assert len(pictures) == 3
+    assert pictures[0] == {"mime_type": "image/jpeg", "data": base64.b64encode(b"jpeg0").decode()}
+    assert "1. What waves?" in content["parts"][-1]["text"]
+    assert usage.snapshot() == [{"kind": "llm", "model": "gemini-3.1-flash-lite", "calls": 1, "input": 600,
+                                 "output": 25, "cache_read": 100, "cache_write": 0}]
+    # (a model named "models/..." is asked by its name; a user's own Google key goes the same way)
+    keys(monkeypatch, GOOGLE_API_KEY="the-users-own", GOOGLE_BASE_URL=upstream.url)
+    assert vision.Describer(rec, "google", "models/gemini-4-argon").describe(0, 1e12, ["?"])[1]
+    assert upstream.seen[1][0] == "/models/gemini-4-argon:generateContent"
+    assert upstream.seen[1][1]["x-goog-api-key"] == "the-users-own"
+
+
+def test_geminis_usage_and_pictures_are_read_as_the_others_are():
+    body = {"modelVersion": "gemini-3.1-flash-lite", "usageMetadata": {
+        "promptTokenCount": 50, "candidatesTokenCount": 7, "thoughtsTokenCount": 3, "cachedContentTokenCount": 20}}
+    assert telemetry.llm_usage(body) == ("gemini-3.1-flash-lite", {"input": 30, "output": 10, "cache_read": 20,
+                                                                    "cache_write": 0})
+    assert telemetry.llm_usage({"usageMetadata": {"promptTokenCount": 4}})[1]["input"] == 4
+    sse = telemetry.SSE()  # (a streamed generateContent: its last chunk has the whole usage)
+    for chunk in ({"candidates": [], "modelVersion": "gemini-x", "usageMetadata": {"promptTokenCount": 1}},
+                  {"candidates": [], "modelVersion": "gemini-x", "usageMetadata": {"promptTokenCount": 9,
+                                                                                   "candidatesTokenCount": 2}}):
+        sse.feed(b"data: " + json.dumps(chunk).encode() + b"\r\n\r\n")
+    assert telemetry.llm_usage(sse.result()) == ("gemini-x", {"input": 9, "output": 2, "cache_read": 0,
+                                                              "cache_write": 0})
+    kept = telemetry.without_pictures({"contents": [{"parts": [{"inline_data": {"mime_type": "image/jpeg",
+                                                                                "data": "QUJD" * 10}}]}]})
+    assert kept["contents"][0]["parts"][0]["inline_data"]["data"] == "<image/jpeg: 30 bytes>"
+
+
+def test_a_gemini_call_through_the_runs_proxy_is_counted_there_once(upstream, monkeypatch):
+    usage = telemetry.Usage()
+    proxy = telemetry.LLMProxy(usage)
+    try:
+        proxy.route("google", upstream.url + "/v1beta")
+        keys(monkeypatch, GEMINI_API_KEY="run-token", GOOGLE_BASE_URL=proxy.url("google"))
+        rec = FakeRecorder()
+        frames(rec, n=2)
+        d = vision.Describer(rec, "google", usage=usage, proxied=proxy.url(""), model="gemini-3.1-flash-lite")
+        assert d.describe(0, 1e12, ["?"])[1]
+        assert upstream.seen[0][0] == "/v1beta/models/gemini-3.1-flash-lite:generateContent"
+        assert upstream.seen[0][1]["x-goog-api-key"] == "run-token"
+        assert usage.totals()["llm"]["calls"] == 1 and usage.totals()["llm"]["output"] == 25
+    finally:
+        proxy.close()
+
+
+def test_the_model_aura_names_wins_and_is_never_swapped_for_opus(monkeypatch):
+    """Aura's relay refuses every model but the one it named for the run: it beats AUTOPILOT_VISION_MODEL and the
+    provider's default, and when it fails the agent is told (no FALLBACK)."""
+    keys(monkeypatch, ANTHROPIC_API_KEY="run-token", AUTOPILOT_VISION_MODEL="claude-other", OPENAI_API_KEY="run-token",
+         GEMINI_API_KEY="run-token")
+    assert vision.route("anthropic", "claude-opus-5-5", " claude-sonnet-5-5 ")[0][3] == "claude-sonnet-5-5"
+    assert vision.route("anthropic", "claude-opus-5-5", None)[0][3] == "claude-other"
+    assert vision.route("openai", "gpt-6.1-sol", "gpt-6-mini")[0][3] == "gpt-6-mini"
+    route, _ = vision.route("google", None, "gemini-3.1-flash-lite")
+    assert route[0] == "gemini" and route[3] == "gemini-3.1-flash-lite"
+    up = Upstream(refuse=("claude-sonnet-5-5",))
+    try:
+        keys(monkeypatch, ANTHROPIC_API_KEY="run-token", ANTHROPIC_BASE_URL=up.url)
+        rec = FakeRecorder()
+        frames(rec)
+        d = vision.Describer(rec, "anthropic", "claude-opus-5-5", model="claude-sonnet-5-5")
+        text, ok = d.describe(100.0, 104.0, ["What moves?"])
+        assert not ok and "couldn't be described" in text and "claude-sonnet-5-5" in text
+        assert [b["model"] for _, _, b in up.seen] == ["claude-sonnet-5-5"] and d.route[3] == "claude-sonnet-5-5"
+    finally:
+        up.close()
 
 
 def test_what_isnt_there_is_said_not_described(monkeypatch):

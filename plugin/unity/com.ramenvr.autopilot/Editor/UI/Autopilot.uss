@@ -849,6 +849,7 @@
 .autopilot .setting > .setting-line { margin-bottom: 10px; }
 .autopilot .setting-control { align-items: flex-start; }
 .autopilot .setting-control > .connect-command { align-self: stretch; }
+.autopilot .setting-control > .brief-field { align-self: stretch; margin: 0; }
 .autopilot .setting-control > .next { margin-top: 6px; }
 /* the sharing and research agent switches: their words (Data sharing on/off, Research agent on/off) 8 px from the
    pill, checked or not */

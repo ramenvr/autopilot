@@ -5,9 +5,11 @@
 //   Build:   the two scenes (Menu, Main) and the build list; with -buildPlayer <path> a Development player; then
 //            the project index (Library/AutopilotCodex). Exits 0, or 1 on an error.
 //
-// The course: a menu (uGUI Start button, toggle, slider, dropdown and name field; a UI Toolkit label and button) and a
-// level: a 40 m floor, a wall behind the start, a block, four spinning orbs to pick up, a gate whose panel swings open
-// on Interact (E), a first-person player, a HUD counting the orbs, and LegacyProbe (off) reading UnityEngine.Input.
+// The course: a menu (uGUI Start button, toggle, slider, dropdown and name field; a UI Toolkit label and button; an
+// OnGUI box with a label, a button, a toggle and a text field) and a level: a 40 m floor, a wall behind the start, a
+// block (a lamp's light by it), four spinning orbs to pick up, a gate whose panel swings open on Interact (E), a ramp up
+// to a raised platform, a wall with a doorway in it, a low canopy, a beacon (sparks playing, drawn outlined), a
+// first-person player holding a torch, a HUD counting the orbs, and LegacyProbe (off) reading UnityEngine.Input.
 
 using System;
 using System.IO;
@@ -129,6 +131,7 @@ public static class TestCourseBuilder
         var doc = new GameObject("MenuDoc");
         doc.AddComponent<UIDocument>().panelSettings = panel;
         doc.AddComponent<MenuToolkit>();
+        new GameObject("MenuImgui").AddComponent<MenuImgui>();
 
         var events = new GameObject("EventSystem", typeof(EventSystem));
         events.AddComponent<InputSystemUIInputModule>().AssignDefaultActions();
@@ -146,6 +149,39 @@ public static class TestCourseBuilder
         Prim(PrimitiveType.Cube, "Ground", level, new Vector3(0f, -0.5f, 0f), new Vector3(40f, 1f, 40f));
         Prim(PrimitiveType.Cube, "Wall", level, new Vector3(0f, 1.5f, -8f), new Vector3(10f, 3f, 0.5f));
         Prim(PrimitiveType.Cube, "Block", level, new Vector3(4f, 0.5f, 2f), Vector3.one);
+
+        // A ramp (18.4 degrees: 2 m up over 6 m) from the floor up to a raised platform, off to the left
+        Prim(PrimitiveType.Cube, "Platform", level, new Vector3(-13f, 1f, 13f), new Vector3(6f, 2f, 6f));
+        var ramp = Prim(PrimitiveType.Cube, "Ramp", level, new Vector3(-13f, 1f - 0.1f * Mathf.Cos(Mathf.Atan2(2f, 6f)), 7f), new Vector3(2f, 0.2f, Mathf.Sqrt(40f)));
+        ramp.transform.localRotation = Quaternion.Euler(-Mathf.Atan2(2f, 6f) * Mathf.Rad2Deg, 0f, 0f);
+        // A wall across z = -14 with a doorway 1.2 m wide in it (x -8.6 to -7.4)
+        Prim(PrimitiveType.Cube, "HouseWall", level, new Vector3(-11.3f, 1.5f, -14f), new Vector3(5.4f, 3f, 0.3f));
+        Prim(PrimitiveType.Cube, "HouseWall", level, new Vector3(-4.7f, 1.5f, -14f), new Vector3(5.4f, 3f, 0.3f));
+        // A canopy low over the floor (its underside 2.15 m up: a body 2 m tall stands under it, nearly touching)
+        Prim(PrimitiveType.Cube, "Canopy", level, new Vector3(-12f, 2.25f, -4f), new Vector3(3f, 0.2f, 3f));
+        // A lamp: a light on its own object (no body of its own) by the block, which it lights
+        var lamp = new GameObject("Lamp", typeof(Light));
+        lamp.transform.SetParent(level.transform, false);
+        lamp.transform.localPosition = new Vector3(4f, 1.3f, 2f);
+        var lampLight = lamp.GetComponent<Light>();
+        lampLight.type = LightType.Point;
+        lampLight.intensity = 2f;
+        // A beacon: sparks playing on it, drawn with an outline (a second material over its mesh)
+        var beacon = Prim(PrimitiveType.Cylinder, "Beacon", level, new Vector3(-3f, 0.5f, 9f), new Vector3(0.6f, 0.5f, 0.6f));
+        var beaconRenderer = beacon.GetComponent<MeshRenderer>();
+        beaconRenderer.sharedMaterials = new[] { beaconRenderer.sharedMaterial, new Material(Shader.Find("Unlit/Color")) { name = "BeaconOutline" } };
+        AssetDatabase.CreateAsset(beaconRenderer.sharedMaterials[1], "Assets/UI/BeaconOutline.mat");
+        var sparks = new GameObject("Sparks", typeof(ParticleSystem));
+        sparks.transform.SetParent(beacon.transform, false);
+        sparks.transform.localPosition = new Vector3(0f, 1.2f, 0f);
+        var main = sparks.GetComponent<ParticleSystem>().main;
+        main.loop = true;
+        main.playOnAwake = true;
+        // What goes wrong on purpose (numbers out of range, a jump across the level, a pile of sparks, the lights going out)
+        var hazard = new GameObject("Hazard").AddComponent<Hazard>();
+        hazard.lamp = lampLight;
+        hazard.sparks = sparks.GetComponent<ParticleSystem>();
+        hazard.beacon = beaconRenderer;
 
         var orbs = new GameObject("Orbs");
         foreach (var at in new[] { new Vector3(0f, 1f, 5f), new Vector3(-1.5f, 1f, 6.5f), new Vector3(1.5f, 1f, 6.5f), new Vector3(-6f, 1f, -3f) })
@@ -173,6 +209,9 @@ public static class TestCourseBuilder
         pivot.transform.localPosition = new Vector3(0f, 0.6f, 0f);
         pivot.AddComponent<Camera>().nearClipPlane = 0.05f;
         pivot.AddComponent<AudioListener>();
+        // What the player holds: a torch in front of its camera (drawn; no collider)
+        var torch = Prim(PrimitiveType.Cube, "Torch", pivot, new Vector3(0.3f, -0.3f, 0.6f), new Vector3(0.08f, 0.08f, 0.4f));
+        UnityEngine.Object.DestroyImmediate(torch.GetComponent<Collider>());
         var controller = player.AddComponent<PlayerController>();
         controller.cameraPivot = pivot.transform;
         controller.controls = AssetDatabase.LoadAssetAtPath<InputActionAsset>("Assets/Input/Controls.inputactions");

@@ -1,4 +1,5 @@
 #include "PlaytestSubsystem.h"
+#include "PlaytestLevels.h"
 
 #include <atomic>
 
@@ -548,6 +549,7 @@ void UPlaytestSubsystem::SendHello()
 	TArray<TSharedPtr<FJsonValue>> Features;
 	Features.Add(MakeShared<FJsonValueString>(TEXT("timed_hold")));  // key hold with "seconds", let go in-game
 	Features.Add(MakeShared<FJsonValueString>(TEXT("levels")));  // `levels`, and `session` playing the `map` asked for
+	Features.Add(MakeShared<FJsonValueString>(TEXT("pointer")));  // `pointer`: the mouse to a place, clicks land there
 	if (FPlaytestMedia::CanCapture())
 	{
 		Features.Add(MakeShared<FJsonValueString>(TEXT("media")));  // `record` and `capture` (a game that renders)
@@ -565,6 +567,8 @@ void UPlaytestSubsystem::SendHello()
 	}
 	Hello->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString(EVersionComponent::Patch));
 	Hello->SetStringField(TEXT("project"), FApp::GetProjectName());
+	Hello->SetStringField(TEXT("engine"), TEXT("unreal"));
+	Hello->SetObjectField(TEXT("input"), PlaytestOps::InputInfo());  // (as Unity's and Godot's hellos)
 	// The project's own GUID (DefaultGame.ini, made with the project and committed with it): a stable id a brain can
 	// keep what it learns by, so two games with the same name (every "MyProject") stay apart
 	const FGuid& ProjectId = GetDefault<UGeneralProjectSettings>()->ProjectID;
@@ -1338,6 +1342,7 @@ void UPlaytestSubsystem::CheckSessionChange()
 	Event->SetStringField(TEXT("kind"), TEXT("session"));
 	Event->SetField(TEXT("t"), GameTimeJson(GameTime()));
 	Event->SetBoolField(TEXT("running"), World != nullptr);
+	Event->SetStringField(TEXT("scene"), World ? PlaytestLevels::PackageOf(World) : FString());  // (as Unity's)
 	QueueEvent(Event);
 }
 

@@ -71,9 +71,16 @@ def main():
     os.makedirs(os.path.join(settings, "Autopilot"))
     with open(os.path.join(settings, "Autopilot", "preferences.json"), "w", encoding="utf-8") as f:
         json.dump({"version": 1, "onboarded": False, "share_data": False, "research_agent": False}, f)
+    # Godot's editor settings of its own, with the editor as slow between frames as an unfocused one (100 ms a frame,
+    # its interface/editor/unfocused_low_processor_mode_sleep_usec): the relay must not wait on it while a run goes
+    os.makedirs(os.path.join(settings, "Godot"))
+    with open(os.path.join(settings, "Godot", "editor_settings-4.7.tres"), "w", encoding="utf-8") as f:
+        f.write('[gd_resource type="EditorSettings" format=3]\n\n[resource]\ninterface/editor/low_processor_mode_sleep_usec = 100000\n')
     editor = start_godot(["--editor", "--path", project()], log=a.log,
                          env={"AUTOPILOT_PLAYTEST_URL": brain.url, "AUTOPILOT_PLAYTEST_AUTOCONNECT": "1", "AUTOPILOT_PLAYTEST_TOKEN": "editor-token",
-                              "LOCALAPPDATA": settings, "XDG_CONFIG_HOME": settings})
+                              "LOCALAPPDATA": settings, "XDG_CONFIG_HOME": settings,
+                              # (Godot's own editor settings too: never the user's, which the dock's settings show in)
+                              "APPDATA": settings, "XDG_DATA_HOME": settings})
     guard = Guard(editor.pid)
     guard.start()
     try:
@@ -103,6 +110,8 @@ def run(c, brain, link, guard):
     c.check("editor hello: media, levels, share and research from preferences.json (connected though not onboarded: headless)",
             {"media", "levels"} <= set(h.get("features", [])) and h.get("share") is False and h.get("research") is False,
             str({k: h.get(k) for k in ("features", "share", "research")}))
+    c.check("editor hello: timed_hold and pointer relayed to the game, and input", {"timed_hold", "pointer"} <= set(h.get("features", []))
+            and h.get("input", {}).get("pointer") is True and isinstance(h.get("input", {}).get("notes"), list), str(h.get("input")))
     lv = req("levels")
     c.check("levels: the project's scenes, the main scene open, none playing",
             {"res://scenes/menu.tscn", "res://scenes/level.tscn", "res://scenes/level2d.tscn"} <= set(lv["levels"])
@@ -112,8 +121,9 @@ def run(c, brain, link, guard):
         req("session", {"action": "start", "map": "nowhere"}, timeout=30)
         c.check("start in a scene the project hasn't: refused, nothing started", False)
     except BridgeError as e:
-        c.check("start in a scene the project hasn't: refused, nothing started",
-                "No scene nowhere" in e.error and req("session", {"action": "status"}) == {"running": False}, e.error)
+        st = req("session", {"action": "status"})
+        c.check("start in a scene the project hasn't: refused (404), nothing started",
+                "No scene nowhere" in e.error and e.status == 404 and st.get("running") is False and st.get("loading") is False, f"{e.error} {st}")
     for op, args in [("record", {"action": "start"}), ("capture", {})]:
         try:
             req(op, args)
@@ -125,7 +135,9 @@ def run(c, brain, link, guard):
     ctx = req("context")
     c.check("no game: context from the editor", ctx["session_running"] is False and ctx["host"] == "editor" and ctx["project_dir"]
             and any(x["name"] == "jump" and x["keys"] == ["SpaceBar"] for x in ctx["controls"]), str({k: ctx[k] for k in ("session_running", "host")}))
-    c.check("no game: ping", req("ping")["game_time"] is None)
+    c.check("no game: ping (game time 0, as Unreal's)", req("ping")["game_time"] == 0)
+    c.check("no game: screen, ui, timestep answer empty", req("screen") == {"texts": {}} and req("ui") == {"elements": []}
+            and req("timestep", {"fixed": False}) == {})
     try:
         req("view")
         c.check("no game: other ops error", False)
@@ -138,7 +150,9 @@ def run(c, brain, link, guard):
 
     t0 = time.monotonic()
     r = req("session", {"action": "start"}, timeout=90)
-    c.check("session start plays the main scene", r == {"running": True}, f"{r} in {time.monotonic() - t0:.1f}s")
+    c.check("session start plays the main scene", r == {"running": True, "scene": "res://scenes/menu.tscn"}, f"{r} in {time.monotonic() - t0:.1f}s")
+    c.check("session event says the scene", until(lambda: any(e.get("kind") == "session" and e.get("scene") == "res://scenes/menu.tscn"
+            for e in link.events), 3))
     ctx = req("context")
     c.check("relayed context", ctx["session_running"] and ctx["world"] == "/root/Menu" and ctx["host"] == "editor", str(ctx["world"]))
     for op, args in [("record", {"action": "start", "fps": 5}), ("capture", {"max_dim": 1920})]:
@@ -163,6 +177,16 @@ def run(c, brain, link, guard):
     c.check("relayed move", r["moved"] > 150, str(r))
     v = req("view", {"sonar": True})
     c.check("relayed view", len(v["visible"]) > 0 and len(v["body"]["sonar"]["ways"]) == 10)
+    # the editor relays every request: kept awake while a run goes (its low-processor sleep, 100 ms a frame unfocused,
+    # would add that to every answer)
+    rtts = []
+    for _ in range(30):
+        t0 = time.perf_counter()
+        req("ping")
+        rtts.append((time.perf_counter() - t0) * 1000.0)
+    rtts.sort()
+    print(f"relayed ping round trip: median {rtts[15]:.1f} ms, worst {rtts[-1]:.1f} ms")
+    c.check("relayed answers come fast while a run goes (the editor kept awake)", rtts[15] < 60, f"median {rtts[15]:.1f} ms")
     d = req("rc", {"verb": "describe", "body": {"objectPath": "/root/Level/Player"}})
     c.check("large answer through the debugger (describe)", len(d["Functions"]) > 100, f"{len(d['Functions'])} functions")
     c.check("heartbeats relayed", until(lambda: sum(1 for e in link.events if e.get("kind") == "heartbeat" and e.get("t") is not None) >= 2, 4))
@@ -194,21 +218,25 @@ def run(c, brain, link, guard):
     time.sleep(0.3)
     gs = req("rc", {"verb": "property", "body": {"objectPath": "/root/GameState", "propertyName": "apples"}})["apples"]
     new = until(lambda: set(guard.games()) - before, 5)
-    c.check("restart: a new game process, fresh state", r == {"running": True} and new and gs == 0
+    c.check("restart: a new game process, fresh state", r.get("running") is True and new and gs == 0
             and link.session_changes >= changes + 2, f"{r} new={new} apples={gs}")
     c.check("restart replays the scene played (main)", req("context")["world"] == "/root/Menu")
     r = req("session", {"action": "restart", "map": "level2d"}, timeout=90)
-    c.check("restart with a map plays that scene", r == {"running": True} and req("context")["world"] == "/root/Level2D")
+    c.check("restart with a map plays that scene (the answer says it)", r == {"running": True, "scene": "res://scenes/level2d.tscn"}
+            and req("context")["world"] == "/root/Level2D", str(r))
     lv = req("levels")
     c.check("levels: the scene playing", lv["playing"] == "res://scenes/level2d.tscn" and lv["open"] == "res://scenes/menu.tscn", str(lv))
     r = req("session", {"action": "stop"}, timeout=60)
     r = req("session", {"action": "start", "map": "res://scenes/level2d.tscn"}, timeout=90)
-    c.check("start with a map plays that scene, not the main one", r == {"running": True} and req("context")["world"] == "/root/Level2D")
+    c.check("start with a map plays that scene, not the main one", r.get("running") is True and req("context")["world"] == "/root/Level2D")
     r = req("session", {"action": "restart"}, timeout=90)
-    c.check("a restart after it replays that scene", r == {"running": True} and req("context")["world"] == "/root/Level2D")
+    c.check("a restart after it replays that scene", r.get("running") is True and req("context")["world"] == "/root/Level2D")
+    r = req("session", {"action": "start", "map": "level"}, timeout=90)
+    c.check("start with another map while a game plays switches to it", r.get("running") is True and r.get("scene") == "res://scenes/level.tscn"
+            and req("context")["world"] == "/root/Level", str(r))
     r = req("session", {"action": "stop"}, timeout=60)
     c.check("session stop", r == {"running": False} and req("context")["session_running"] is False, str(r))
-    c.check("status after stop", req("session", {"action": "status"}) == {"running": False})
+    c.check("status after stop", req("session", {"action": "status"}) == {"running": False, "loading": False, "scene": ""})
 
 
 if __name__ == "__main__":

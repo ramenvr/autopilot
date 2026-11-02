@@ -1,6 +1,7 @@
-[gd_scene load_steps=2 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/menu.gd" id="1"]
+[ext_resource type="Script" path="res://scripts/swatch.gd" id="2"]
 
 [node name="Menu" type="Control"]
 layout_mode = 3
@@ -57,3 +58,9 @@ popup/item_2/id = 2
 [node name="Nickname" type="LineEdit" parent="Box"]
 layout_mode = 2
 placeholder_text = "Nickname"
+
+[node name="Swatch" type="ColorRect" parent="Box"]
+custom_minimum_size = Vector2(0, 20)
+layout_mode = 2
+color = Color(0.8, 0.3, 0.2, 1)
+script = ExtResource("2")

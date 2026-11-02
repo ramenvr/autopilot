@@ -4,6 +4,7 @@ permissions and environment. No OpenCode, no Bun, no models: a fake host stands 
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -292,6 +293,69 @@ def test_a_failed_turn_a_stop_and_the_deadline_end_the_run(session, tmp_path):
     assert run(slow, stop=True) == "stopped"
     assert run(slow, seconds=1) == "timed out"
     assert run(crashing) == "OpenCode failed: Error: no model anthropic/x"
+
+
+def test_a_host_that_dies_says_why_not_broken_pipe(session, tmp_path):
+    # (the host ends before it reads its config: the write of a config bigger than the pipe's buffer fails, Broken
+    # pipe on Windows and Linux alike; the reason is its exit code and stderr, which go to opencode.log)
+    dying = tmp_path / "dying_host.py"
+    dying.write_text("import sys\nsys.stderr.write('error: Cannot find package \"@opencode/sdk\"\\n')\nsys.exit(3)\n",
+                     encoding="utf-8")
+    exiting = tmp_path / "exiting_host.py"
+    exiting.write_text("import sys\nsys.stdin.readline()\nsys.stderr.write('panic: oops\\nsecond line\\n')\n"
+                       "sys.exit(1)\n", encoding="utf-8")
+    notes = []
+    session.note = notes.append
+    big = {"system": "x" * 2_000_000}  # (far past any pipe's buffer: the write waits for a reader that never comes)
+
+    def run(script, config):
+        with open(tmp_path / f"{script.stem}.log", "wb") as err:
+            return opencode.run_host([sys.executable, str(script)], config, "hi", dict(os.environ),
+                                     opencode.Events(session), session, time.time() + 60, err, cwd=str(tmp_path))
+
+    why = run(dying, big)
+    assert why.startswith("OpenCode exited (3) before it took the request (") and "Errno" in why
+    assert why.endswith(': error: Cannot find package "@opencode/sdk"')
+    assert any("exit code 3" in n and "@opencode/sdk" in n for n in notes)
+    assert run(exiting, {}) == "OpenCode exited (1): panic: oops | second line"
+
+
+def test_packages_are_installed_again_until_an_install_finishes(tmp_path, monkeypatch):
+    host = tmp_path / "host"
+    (host / "node_modules" / "@opencode" / "sdk").mkdir(parents=True)  # (left by an install cut short)
+    (host / "bun.lock").write_text("lock v1", encoding="utf-8")
+    calls = []
+    result = {"code": 0}
+
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, result["code"], stdout="out", stderr="error: disk full")
+
+    monkeypatch.setattr(opencode.subprocess, "run", fake_run)
+    assert not opencode.installed(str(host))  # (its folders are there, but no install finished)
+    opencode.ensure_installed("bun", str(host))
+    assert calls == [["bun", "install", "--frozen-lockfile", "--force"]] and opencode.installed(str(host))
+    opencode.ensure_installed("bun", str(host))
+    assert len(calls) == 1  # (finished for this lockfile: nothing to do)
+    (host / "bun.lock").write_text("lock v2", encoding="utf-8")  # (a new lockfile: installed again)
+    result["code"] = 1
+    with pytest.raises(RuntimeError, match="disk full"):
+        opencode.ensure_installed("bun", str(host))
+    assert len(calls) == 2 and not opencode.installed(str(host))
+    result["code"] = 0
+    opencode.ensure_installed("bun", str(host))
+    assert len(calls) == 3 and opencode.installed(str(host))
+
+
+def test_exit_codes_and_stderr_tails_read_plainly(tmp_path):
+    assert opencode.exit_code(1) == "1" and opencode.exit_code(None) == "still running"
+    assert opencode.exit_code(3221226505) == "3221226505 (0xC0000409)"
+    log = tmp_path / "opencode.log"
+    log.write_bytes(b"\n".join(b"line %d" % i for i in range(1000)) + b"\n")
+    with open(log, "ab") as err:
+        tail = opencode.err_tail(err, limit=40)
+    assert tail.startswith("...") and tail.endswith("line 998 | line 999") and len(tail) == 43
+    assert opencode.err_tail(object()) == ""
 
 
 def test_autopilot_agent_picks_opencode_by_default(monkeypatch):

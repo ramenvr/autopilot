@@ -151,7 +151,7 @@ static func _svg(text: String, size: float, box := 24.0) -> Texture2D:
 ## play, pause: the recording's player (play_big: on the picture while it is paused; warning: there
 ## instead, amber, once it can't play); folder: the result's Run folder and
 ## the recording's Show in File Explorer (Finder, the file manager); retry: Run again; clipboard: Copy report; chevron:
-## the narrow history button; check: the agent service ready.
+## the narrow history button; check: the agent service ready; more: the dock's menu (⋮).
 const GLYPHS := {
 	"gear": ['<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>', false, 1.8, "round"],
 	"play": ['<path d="M6 4v16l14-8z"/>', true, 0.0, ""],
@@ -163,6 +163,7 @@ const GLYPHS := {
 	"retry": ['<path d="M3 12a9 9 0 1 0 3-6.7"/><path d="M3 4v5h5"/>', false, 2.0, "round"],
 	"clipboard": ['<rect x="8" y="3" width="8" height="4"/><path d="M16 5h3v16H5V5h3"/>', false, 1.9, "round"],
 	"chevron": ['<path d="M5 9l7 7 7-7"/>', false, 2.4, "butt"],
+	"more": ['<circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/>', true, 0.0, ""],
 	"check": ['<path d="M4 12l5 5L20 6"/>', false, 2.4, "square"],
 	# The activity feed's kind icons (Lucide's bot, search, binoculars, pencil, flask-conical, gamepad-2, eye, rotate-ccw,
 	# message-square, flag, megaphone, notebook-pen): drawn where the editor has no icon of the meaning, and outside the editor

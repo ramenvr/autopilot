@@ -3,7 +3,9 @@
 // Explorer, Finder or the file manager; an icon button, the folder Run folder has too). It plays with a VideoPlayer on a hidden object (HideAndDontSave) rendering into a RenderTexture shown in the box, made only when
 // it is first played or scrubbed: nothing plays by itself, and a page that only shows the box costs nothing. While it
 // plays it is repainted from EditorApplication.update (in edit mode too); it is let go when the page goes (another run,
-// the window closed, a script reload).
+// the window closed, a script reload). A project without the Video module plays the recording's frames (the JPEGs the
+// agent service keeps beside the MP4) as a flipbook in the same box, as Godot's dock does (Flipbook below); with no
+// frames either, Play opens the MP4 in the computer's own player.
 
 using System;
 using System.Collections.Generic;
@@ -54,9 +56,31 @@ namespace Autopilot.Playtest.Editor
         RenderTexture texture;
 #endif
 
-        public RecordingPlayer(string path, double seconds)
+        /// <summary>Whether a recording plays here from its frames alone (no Video module; the frames read as JPEGs).</summary>
+        public static bool PlaysFrames
         {
-            VideoPath = path;
+            get
+            {
+#if !AUTOPILOT_VIDEO && AUTOPILOT_IMAGECONVERSION
+                return true;
+#else
+                return false;
+#endif
+            }
+        }
+
+        readonly string framesDir;
+        readonly double fps;
+
+        public RecordingPlayer(string path, double seconds) : this(path, seconds, "", 0)
+        {
+        }
+
+        public RecordingPlayer(string path, double seconds, string frames, double framesFps)
+        {
+            VideoPath = path ?? "";
+            framesDir = frames ?? "";
+            fps = framesFps > 0 ? framesFps : 2;
             length = Math.Max(0, seconds);
             AddToClassList("recording");
 
@@ -89,7 +113,7 @@ namespace Autopilot.Playtest.Editor
 
             RegisterCallback<DetachFromPanelEvent>(_ => Release());
             // Gone from its place: the player kept, Play and Show in File Explorer disabled, saying so
-            if (!File.Exists(path)) Gone();
+            if (!File.Exists(VideoPath) && !(PlaysFrames && Directory.Exists(framesDir))) Gone();
         }
 
         public const string PlayName = "Play";
@@ -111,8 +135,9 @@ namespace Autopilot.Playtest.Editor
 
         void ShowInFolder()
         {
-            // (File Explorer and Finder select the file; on Linux the file manager opens its folder)
+            // (File Explorer and Finder select the file; on Linux the file manager opens its folder; frames alone: their folder)
             if (File.Exists(VideoPath)) EditorUtility.RevealInFinder(VideoPath);
+            else if (Directory.Exists(framesDir)) EditorUtility.RevealInFinder(framesDir);
         }
 
         public const string GoneLine = "The recording isn’t there any more.";
@@ -293,28 +318,96 @@ namespace Autopilot.Playtest.Editor
             if (playing) ShowPlaying(false);
         }
 #else
-        // (the project has no Video module: Play opens it in the computer's own player)
-        bool HasPicture => false;
+        // (the project has no Video module: the frames as a flipbook when it can read JPEGs and they are there, else
+        // Play opens the MP4 in the computer's own player)
+        Flipbook flip;
+        double at, lastTick;
+        bool HasPicture => flip != null && flip.Shown >= 0;
+
+        bool Flip()
+        {
+            if (flip != null) return true;
+            if (!PlaysFrames) return false;
+            flip = Flipbook.Open(framesDir, fps);
+            if (flip == null) return false;
+            holding.Add(this);
+            if (length <= 0)
+            {
+                length = flip.Length;
+                scrub.highValue = (float)length;
+            }
+            return true;
+        }
 
         void Toggle()
         {
+            if (playing)
+            {
+                ShowPlaying(false);
+                return;
+            }
+            if (Flip())
+            {
+                if (ended || at >= length)
+                {
+                    ended = false;
+                    at = 0;
+                }
+                lastTick = EditorApplication.timeSinceStartup;
+                Say("");
+                Picture();
+                ShowPlaying(true);
+                return;
+            }
             if (File.Exists(VideoPath)) EditorUtility.OpenWithDefaultApp(VideoPath);
         }
 
         void Seek(float to)
         {
+            ended = false;
+            at = to;
             time.text = Times(to);
+            if (Flip()) Picture();
+        }
+
+        void Picture()
+        {
+            var tex = flip?.Show(at);
+            if (tex == null) return;
+            image.image = tex;
+            poster.style.display = DisplayStyle.None;
+            image.MarkDirtyRepaint();
         }
 
         void Tick()
         {
-            Unhook();
+            if (!playing || flip == null)
+            {
+                Unhook();
+                return;
+            }
+            var now = EditorApplication.timeSinceStartup;
+            at += now - lastTick;
+            lastTick = now;
+            if (at >= length)
+            {
+                at = length;
+                ended = true;
+                ShowPlaying(false);
+            }
+            scrub.SetValueWithoutNotify((float)at);
+            time.text = Times(at);
+            Picture();
         }
 
         public void Release()
         {
             Unhook();
             holding.Remove(this);
+            flip?.Dispose();
+            flip = null;
+            image.image = null;
+            if (playing) ShowPlaying(false);
         }
 #endif
 
@@ -330,6 +423,74 @@ namespace Autopilot.Playtest.Editor
             if (!hooked) return;
             hooked = false;
             EditorApplication.update -= Tick;
+        }
+
+        /// <summary>The recording's frames (JPEGs in a folder, in name order) shown at a time: the frame at t * fps,
+        /// read into one texture when it changes. What a project without the Video module plays.</summary>
+        public sealed class Flipbook : IDisposable
+        {
+            public readonly List<string> Frames;
+            public readonly double Fps;
+            Texture2D texture;
+
+            /// <summary>The frame shown last (-1: none yet).</summary>
+            public int Shown { get; private set; } = -1;
+
+            Flipbook(List<string> frames, double fps)
+            {
+                Frames = frames;
+                Fps = fps;
+            }
+
+            /// <summary>The frames in <paramref name="dir"/> (*.jpg, by name), or null when there are none.</summary>
+            public static Flipbook Open(string dir, double fps)
+            {
+                try
+                {
+                    if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return null;
+                    var frames = new List<string>(Directory.GetFiles(dir, "*.jpg"));
+                    if (frames.Count == 0) return null;
+                    frames.Sort(StringComparer.Ordinal);
+                    return new Flipbook(frames, fps > 0 ? fps : 2);
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
+            }
+
+            public double Length => Frames.Count / Fps;
+
+            public int IndexAt(double seconds) => Math.Max(0, Math.Min(Frames.Count - 1, (int)Math.Floor(seconds * Fps + 1e-9)));
+
+            /// <summary>The picture at that time (read when it is another frame); null when it can't be read.</summary>
+            public Texture2D Show(double seconds)
+            {
+                var i = IndexAt(seconds);
+                if (i == Shown && texture != null) return texture;
+#if AUTOPILOT_IMAGECONVERSION
+                try
+                {
+                    if (texture == null) texture = new Texture2D(2, 2, TextureFormat.RGB24, false) { hideFlags = HideFlags.HideAndDontSave, name = "Autopilot recording" };
+                    if (!ImageConversion.LoadImage(texture, File.ReadAllBytes(Frames[i]))) return null;
+                    Shown = i;
+                    return texture;
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
+#else
+                return null;
+#endif
+            }
+
+            public void Dispose()
+            {
+                if (texture != null) UnityEngine.Object.DestroyImmediate(texture);
+                texture = null;
+                Shown = -1;
+            }
         }
 
         /// <summary>The scrub line: a 2 px track (#24262b), the accent up to the time shown; pressed or dragged, it

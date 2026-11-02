@@ -5,7 +5,9 @@
 ## wide, a dropdown when narrow; the newest 50 kept between editor sessions, ui/history.gd), the gear beside New run (the Settings page), the agent's memory
 ## of the game (Reset memory) and the Policy log.
 ## The URL, token and Agent service command are kept per user and project (EditorSettings project metadata, in .godot/:
-## never committed).
+## never committed), with the Use with Aura choice, the Time limit, the first exploration's minutes, the Design brief
+## and Show Policy Log: all shown in Godot's Editor Settings too, under Autopilot (SETTINGS), and kept in step both ways.
+## The ⋮ menu beside the gear: Connect or Disconnect, Settings, Rerun setup, Reset memory….
 ## Also the Settings page (ui/settings_page.gd: the account and Rerun setup, the tokens the agent's models used, per run
 ## and for the project, and the Data sharing choice) and, until Autopilot/preferences.json says the user went through it,
 ## the first-run setup (ui/setup_page.gd) in place of everything else, ending with a first Explore run offered when the
@@ -85,6 +87,8 @@ var _hist_list: VBoxContainer
 var _hist_footer_slot: VBoxContainer
 var _new_btn: Button
 var _gears := []  # the Settings buttons (a gear): the rail's head, the narrow top bar's
+var _mores := []  # the ⋮ buttons (the dock's menu): the rail's head, the narrow top bar's
+var _menu: PopupMenu = null
 var _strip: PanelContainer  # "not connected" strip above a run
 var _strip_text: Label
 var _strip_btn: Button
@@ -217,24 +221,139 @@ var _removal_page: ScrollContainer  # Removing Autopilot from this computer, and
 var _removal_key := []
 
 
+## The dock's settings, each kept in the project metadata (the one source of truth) and shown in Godot's Editor Settings
+## (Editor > Editor Settings > Autopilot), as Unreal's Editor Preferences > Plugins > Autopilot: [metadata key, Editor
+## Settings path, type, hint, hint string, default].
+const SETTINGS := [
+	["url", "autopilot/connection/agent_service_url", TYPE_STRING, PROPERTY_HINT_NONE, "", ""],
+	["token", "autopilot/connection/access_token", TYPE_STRING, PROPERTY_HINT_PASSWORD, "", ""],
+	["use_with_aura", "autopilot/connection/use_with_aura", TYPE_BOOL, PROPERTY_HINT_NONE, "", false],
+	["service_command", "autopilot/agent_service/agent_service_command", TYPE_STRING, PROPERTY_HINT_NONE, "", ""],
+	["time_limit_minutes", "autopilot/runs/time_limit_minutes", TYPE_INT, PROPERTY_HINT_RANGE, "1,600", 30],
+	["explore_minutes", "autopilot/runs/default_explore_minutes", TYPE_INT, PROPERTY_HINT_RANGE, "1,600", 10],
+	["design_brief", "autopilot/runs/design_brief", TYPE_STRING, PROPERTY_HINT_MULTILINE_TEXT, "", ""],
+	["show_policy_log", "autopilot/policy_log/show_policy_log", TYPE_BOOL, PROPERTY_HINT_NONE, "", true],
+]
+
+
+func _setting(key: String) -> Array:
+	for e in SETTINGS:
+		if e[0] == key:
+			return e
+	return []
+
+
+## The settings shown in the Editor Settings, from the project's (this project's values: the Editor Settings are the
+## user's, for every project, so they show the project open now); a change made there comes back (_on_editor_settings).
+func _mirror_settings() -> void:
+	var es = _es()
+	if es == null:
+		return
+	for e in SETTINGS:
+		var value = _meta(e[0], e[5])
+		if not es.has_setting(e[1]) or es.get_setting(e[1]) != value:
+			es.set_setting(e[1], value)
+		es.set_initial_value(e[1], e[5], false)
+		es.add_property_info({"name": e[1], "type": e[2], "hint": e[3], "hint_string": e[4]})
+	if not es.settings_changed.is_connected(_on_editor_settings):
+		es.settings_changed.connect(_on_editor_settings)
+
+
+func _on_editor_settings() -> void:
+	var es = _es()
+	if es == null:
+		return
+	for e in SETTINGS:
+		if es.has_setting(e[1]):
+			var v = es.get_setting(e[1])
+			if v != _meta(e[0], e[5]):
+				apply_setting(e[0], v)
+
+
+## A setting changed outside the dock (the Editor Settings), applied as the dock's own control would.
+func apply_setting(key: String, value) -> void:
+	match key:
+		"url", "token":
+			(_url if key == "url" else _token).text = str(value)
+			_apply_address()
+		"service_command":
+			set_service_command(str(value))
+		"use_with_aura":
+			_set_use_with_aura(bool(value))
+		"time_limit_minutes":
+			_c_time_limit.value = Model.time_limit_of(value)
+			_set_meta(key, Model.time_limit_of(value))
+		"explore_minutes":
+			_set_meta(key, clampi(int(value), 1, 600))
+			_render()
+		"design_brief":
+			set_design_brief(str(value))
+		"show_policy_log":
+			set_show_policy_log(bool(value))
+
+
+## The editor's settings (EditorSettings: the project metadata and the Editor Settings), or a stand-in the checks give
+## (editor_settings); null outside the editor.
+var editor_settings = null
+
+
+func _es():
+	if editor_settings != null:
+		return editor_settings
+	var ei = _ei()
+	return ei.get_editor_settings() if ei else null
+
+
 func _ei():
 	# (the dock also runs outside the editor in checks: no EditorInterface there)
 	return Engine.get_singleton("EditorInterface") if Engine.is_editor_hint() and Engine.has_singleton("EditorInterface") else null
 
 
 func _meta(key: String, default):
-	var ei = _ei()
-	if ei == null:
+	var es = _es()
+	if es == null:
 		return _meta_local.get(key, default)
-	return ei.get_editor_settings().get_project_metadata("autopilot", key, default)
+	return es.get_project_metadata("autopilot", key, default)
 
 
 func _set_meta(key: String, value) -> void:
-	var ei = _ei()
-	if ei:
-		ei.get_editor_settings().set_project_metadata("autopilot", key, value)
+	var es = _es()
+	if es:
+		es.set_project_metadata("autopilot", key, value)
+		var e := _setting(key)
+		if not e.is_empty() and (not es.has_setting(e[1]) or es.get_setting(e[1]) != value):
+			es.set_setting(e[1], value)  # (the Editor Settings show it too)
 	else:
 		_meta_local[key] = value
+
+
+## The Design brief (Unreal's Design Brief): how the game is meant to work, sent with every run the dock starts (a
+## composer run's `design_brief`, an Explore run's `brief`). "" for none.
+func design_brief() -> String:
+	return str(_meta("design_brief", "")).strip_edges()
+
+
+func set_design_brief(text: String) -> void:
+	_set_meta("design_brief", text)
+
+
+## Show Policy Log (Unreal's): the Policy log tab shown, and the policy steps asked of the agent service (the hello's
+## `inspect`, from the next connection).
+func show_policy_log() -> bool:
+	return bool(_meta("show_policy_log", true))
+
+
+func set_show_policy_log(on: bool) -> void:
+	_set_meta("show_policy_log", on)
+	bridge.inspect = on
+	if not on and tab == "policy":
+		tab = "main"
+	_render()
+
+
+## The first exploration's minutes (the first-run setup's Explore run), as Unreal's Default Explore Minutes.
+func explore_minutes() -> int:
+	return clampi(int(_meta("explore_minutes", 10)), 1, 600)
 
 
 func _ready() -> void:
@@ -269,6 +388,8 @@ func _ready() -> void:
 	bridge.bill_received.connect(_on_bill)
 	bridge.account_changed.connect(_on_account)
 	bridge.sign_in_frame.connect(_on_sign_in_frame)
+	bridge.inspect = show_policy_log()
+	_mirror_settings()
 	_usage_runs = Usage.load_runs(_usage_path())
 	if history_dir == "" and ei:
 		history_dir = ei.get_editor_paths().get_project_settings_dir().path_join(History.DIR_NAME)
@@ -365,6 +486,65 @@ func _gear(small := false) -> Button:
 	return b
 
 
+## The ⋮ button (More): the dock's menu, as Unity's window menu: Connect or Disconnect, Settings, Rerun setup, Reset
+## memory….
+func _more(small := false) -> Button:
+	var b := _icon_button("more", "More", "AutopilotQuiet", Callable(), small)
+	b.focus_mode = Control.FOCUS_NONE
+	b.pressed.connect(func() -> void: open_menu(b))
+	_mores.append(b)
+	return b
+
+
+## The menu's items now: [[label, id, enabled, checked]].
+func menu_items() -> Array:
+	var connected: bool = bridge.is_connected_to_brain()
+	var wants: bool = bridge.link.want or connected
+	var idle: bool = active == null
+	return [
+		["Disconnect" if wants else "Connect", 0, not removed() and not onboarding, false],
+		["Settings", 1, not onboarding and not removed(), settings_open],
+		["Rerun setup", 2, idle and not removed(), false],
+		["Reset memory…", 3, connected and idle and not onboarding, false],
+	]
+
+
+func open_menu(at: Control) -> void:
+	if _menu == null:
+		_menu = PopupMenu.new()
+		_menu.id_pressed.connect(menu_action)
+		add_child(_menu)
+	_menu.clear()
+	for item in menu_items():
+		if item[1] == 1:
+			_menu.add_check_item(item[0], item[1])
+			_menu.set_item_checked(_menu.get_item_index(item[1]), item[3])
+		else:
+			_menu.add_item(item[0], item[1])
+		_menu.set_item_disabled(_menu.get_item_index(item[1]), not item[2])
+	var at_rect := at.get_global_rect()
+	_menu.reset_size()
+	_menu.position = Vector2i(at.get_screen_position() + Vector2(at_rect.size.x - _menu.size.x, at_rect.size.y))
+	_menu.popup()
+
+
+func menu_action(id: int) -> void:
+	match id:
+		0:
+			if bridge.link.want or bridge.is_connected_to_brain():
+				_disconnect()
+			else:
+				_connect()
+		1:
+			toggle_settings()
+		2:
+			rerun_setup()
+		3:
+			settings_open = false
+			_render()
+			_on_reset_memory()
+
+
 ## The gear: the Settings page opened (asking the agent service for the account), or closed again.
 func toggle_settings() -> void:
 	settings_open = not settings_open
@@ -435,6 +615,7 @@ func _build() -> void:
 	rh.add_child(rt)
 	rh.add_child(_gear(true))
 	rh.add_child(_button("New run", "AutopilotPrimary", _on_new, true))
+	rh.add_child(_more(true))
 	rv.add_child(_panel(rh, HT.edge_box(HT.RAIL, HT.RULE, "bottom", 1, Vector4(14, 12, 14, 12))))
 	var rs := ScrollContainer.new()
 	rs.size_flags_vertical = Control.SIZE_EXPAND_FILL
@@ -496,6 +677,7 @@ func _build() -> void:
 	_top.add_child(_gear())
 	_new_btn = _button("New run", "AutopilotPrimary", _on_new)
 	_top.add_child(_new_btn)
+	_top.add_child(_more())
 	_hist_menu = PopupPanel.new()
 	var hv := VBoxContainer.new()
 	hv.add_theme_constant_override("separation", 0)
@@ -545,6 +727,8 @@ func _build() -> void:
 	_settings_page.research_toggled.connect(_on_research_toggled)
 	_settings_page.account_action.connect(_on_account_action)
 	_settings_page.remove_asked.connect(remove_from_computer)
+	_settings_page.brief_changed.connect(set_design_brief)
+	_settings_page.policy_log_toggled.connect(set_show_policy_log)
 	_pages.add_child(_settings_page)
 
 	_footer_slot = VBoxContainer.new()
@@ -1514,12 +1698,12 @@ func _render_run() -> void:
 	if r == null:
 		return
 	var has_steps: bool = not r.steps.is_empty()
-	if tab == "policy" and not has_steps:
+	if tab == "policy" and (not has_steps or not show_policy_log()):
 		tab = "main"
 	_tab_main.text = "Live" if r.live() else "Result"
 	_tab_feed.text = "Feed"
 	_tab_policy.text = "Policy log · %d" % r.steps.size()
-	_tab_policy.visible = has_steps
+	_tab_policy.visible = has_steps and show_policy_log()
 	_tab_link.text = _tab_meta(r)
 	_tab_local.visible = wide and r.live() and local_agent()
 	var btn: Button = {"main": _tab_main, "feed": _tab_feed, "policy": _tab_policy}[tab]
@@ -1574,11 +1758,22 @@ func _render_live() -> void:
 	_update_steer_box()
 	_update_live_clock()
 	_l_now_title.text = ("NOW · HARNESS %d" % r.attempts) if r.attempts > 0 else "NOW"
-	_l_now.text = r.now_text if r.now_text != "" else _latest_line(r)
+	_l_now.text = _now_line(r)
 	# (the harnesses before the current one finished; the current one goes on while the run does)
 	_l_squares.set_attempts(r.attempts - 1 if r.live() and r.attempts > 0 else r.attempts, r.live() and r.attempts > 0)
 	_l_steps.text = ("%d policy step%s" % [r.steps.size(), "" if r.steps.size() == 1 else "s"]) if not r.steps.is_empty() else ""
 	_render_live_feed()
+
+
+## The live run's "now" line: while the run reads the game (Analyze) and the game it started hasn't come up yet,
+## "Waiting for the game to start" (as Unreal's "Waiting for PIE"); else what the agent does now.
+func _now_line(r) -> String:
+	if r.live() and r.stage == 1 and bridge.game_starting():
+		return WAITING_FOR_GAME
+	return r.now_text if r.now_text != "" else _latest_line(r)
+
+
+const WAITING_FOR_GAME := "Waiting for the game to start"
 
 
 func _latest_line(r) -> String:
@@ -1598,6 +1793,10 @@ func _update_live_clock() -> void:
 	_l_elapsed.visible = roomy
 	_l_elapsed_cap.visible = roomy
 	_l_track.set_state(r.stage, r.attempts, r.stage_times(), not r.live())
+	if _l_now and _live.visible:
+		var now := _now_line(r)
+		if _l_now.text != now:
+			_l_now.text = now  # (the game coming up changes it with no frame from the agent service)
 
 
 ## The stage lines of the feed (TEXT; other status lines in row text).
@@ -2333,6 +2532,8 @@ func _on_run() -> void:
 	if text == "":
 		return
 	var run := Model.run_of(text, int(_c_time_limit.value))
+	if design_brief() != "":
+		run.design_brief = design_brief()  # (as Unreal's composer: how the game is meant to work)
 	_start(run, text)
 
 
@@ -2949,7 +3150,8 @@ func _render_usage() -> void:
 	var prefs := Prefs.load_preferences()
 	# (the Research agent switch: the user's choice, else off through the Aura app (Use with Aura), on otherwise)
 	var research := SettingsPage.research_shown(Prefs.research_agent(prefs), _with_aura())
-	_settings_page.show_data(_usage_runs, Prefs.share_data(prefs), _usage_note, account_view(prefs), research)
+	_settings_page.show_data(_usage_runs, Prefs.share_data(prefs), _usage_note, account_view(prefs),
+		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()}, research)
 
 
 ## The composer's Time limit as last set (a run's minutes in all), kept per user and project (project metadata
@@ -3038,6 +3240,8 @@ func close_setup() -> void:
 ## service), the setup closed and the run shown live.
 func explore_from_setup(minutes: int) -> void:
 	var run := {"kind": "explore", "minutes": maxi(1, minutes)}
+	if design_brief() != "":
+		run.brief = design_brief()
 	onboarding = false
 	_start(run, "")
 
