@@ -104,10 +104,17 @@ class CountingJev:
 
 def llm_usage(body):
     """(model, {input, output, cache_read, cache_write}) from a language model API's response (Anthropic's Messages,
-    OpenAI's chat completions or responses); usage None when it says none."""
+    OpenAI's chat completions or responses, Gemini's generateContent); usage None when it says none."""
     if not isinstance(body, dict):
         return None, None
     u = body.get("usage")
+    if not isinstance(u, dict) and isinstance(body.get("usageMetadata"), dict):
+        # (Gemini: its prompt count includes the cached tokens, and its thinking is billed as output)
+        g = body["usageMetadata"]
+        prompt, cached = g.get("promptTokenCount") or 0, g.get("cachedContentTokenCount") or 0
+        return body.get("modelVersion") or body.get("model"), {
+            "input": max(0, prompt - cached), "output": (g.get("candidatesTokenCount") or 0)
+            + (g.get("thoughtsTokenCount") or 0), "cache_read": cached, "cache_write": 0}
     if not isinstance(u, dict):
         return body.get("model"), None
     if "cache_read_input_tokens" in u or "cache_creation_input_tokens" in u or body.get("type") == "message":
@@ -125,8 +132,9 @@ def llm_usage(body):
 # -- the language model's calls -------------------------------------------------------------------------------------
 
 def without_pictures(value):
-    """A request with each picture's data (base64: Anthropic's image source, a data: URL) replaced by its size, as
-    llm.jsonl keeps it: a run's pictures are in its recording (describe_frames sends a dozen per call)."""
+    """A request with each picture's data (base64: Anthropic's image source, Gemini's inline_data, a data: URL)
+    replaced by its size, as llm.jsonl keeps it: a run's pictures are in its recording (describe_frames sends a dozen
+    per call)."""
     if isinstance(value, list):
         return [without_pictures(v) for v in value]
     if not isinstance(value, dict):
@@ -135,6 +143,8 @@ def without_pictures(value):
     for k, v in value.items():
         if k == "data" and value.get("type") == "base64" and isinstance(v, str):
             out[k] = f"<{value.get('media_type') or 'picture'}: {len(v) * 3 // 4} bytes>"
+        elif k == "data" and "mime_type" in value and isinstance(v, str):  # (Gemini's inline_data)
+            out[k] = f"<{value.get('mime_type') or 'picture'}: {len(v) * 3 // 4} bytes>"
         elif k == "url" and isinstance(v, str) and v.startswith("data:"):
             out[k] = f"<{v[5:v.find(';')] or 'picture'}: {(len(v) - v.find(',') - 1) * 3 // 4} bytes>"
         else:
@@ -177,9 +187,9 @@ class SSE:
         elif self.message is None:
             # (another API: its chunks may carry the model and, in the last one, the usage)
             response = e.get("response") if isinstance(e.get("response"), dict) else e
-            if isinstance(response.get("usage"), dict):
-                self.other_usage = response
-            self.model = response.get("model") or self.model
+            if isinstance(response.get("usage"), dict) or isinstance(response.get("usageMetadata"), dict):
+                self.other_usage = response  # (Gemini's chunks carry usageMetadata)
+            self.model = response.get("model") or response.get("modelVersion") or self.model
         elif kind == "content_block_start":
             self.blocks[e.get("index", 0)] = dict(e.get("content_block") or {})
         elif kind == "content_block_delta":
@@ -478,13 +488,14 @@ class RunTelemetry:
     def jev(self, client):
         return CountingJev(client, self.usage) if client is not None else None
 
-    def describer(self, agent_model=None, provider=None):
+    def describer(self, agent_model=None, provider=None, model=None):
         """The run's describe_frames (autopilot/vision.py): the recording's frames, described by a vision model of
-        `provider` (by default the agent's, the first of providers), through this run's proxy where it has one."""
+        `provider` (by default the agent's, the first of providers), through this run's proxy where it has one.
+        model: the one Aura named for the run (no other is used then)."""
         from .vision import Describer
 
         provider = provider or (self.providers[0] if self.providers else "anthropic")
-        return Describer(self.recorder, provider, agent_model,
+        return Describer(self.recorder, provider, agent_model, model=model,
                          usage=self.usage, proxied=self.proxy.url("") if self.proxy else None,
                          log=self.dir if self.share else None)
 

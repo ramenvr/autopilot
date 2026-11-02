@@ -22,6 +22,12 @@ Each run:
      AUTOPILOT_OPENCODE_PROVIDER, AUTOPILOT_MODEL). For Auto, Aura answers with the model Auto picked in the chat.
      Without Codex installed (the codex extra), an OpenAI model plays on OpenCode; OpenCode needs Bun, and without it
      the run plays with Claude Code, on Autopilot's own model.
+     Frames are described (describe_frames, autopilot/vision.py) by the model Aura's answer names in `vision`
+     ({provider, model}: its model selector picks it, and the relay refuses any other for the run), through Aura's
+     relay for that provider with the run token (its <PROVIDER>_BASE_URL and key variables are set for the run like the
+     agent's, and may be another provider than the agent's); without `vision` (an older Aura, a run the Autopilot tab
+     started with no model picked), by Opus 5.5 through Aura's Anthropic relay. A run that goes on on the free
+     allowance (go_on_free) describes with the `vision` of that answer from then on.
   4. Saves the game's memory to Aura (autopilot/aura_memory.py; fetched back before a run on a machine without it), then
      finishes the run (POST .../api/autopilot/runs/finish): Aura bills it by those tokens. A run never finished (the
      editor closed) is billed by Aura once its token expires.
@@ -52,6 +58,8 @@ AGENT = "claude"  # a run through Aura's agent (Claude Code) unless Aura names a
 AGENTS = ("claude", "codex", "opencode")
 OPENCODE_PROVIDERS = ("openai", "openrouter", "google")
 CODEX_PROVIDERS = ("openai",)
+# The providers Aura may name a frame-describing model on (its answer's `vision`)
+VISION_PROVIDERS = ("anthropic", "openai", "openrouter", "google")
 MAX_MODEL = 128  # characters of the model asked for, at most
 # Where a brain run for Aura says it listens (bridge.brain_file): what the plugins' Use with Aura reads
 BRAIN_FILE = "aura-brain.json"
@@ -214,6 +222,19 @@ def agent_of(agent, relay):
     return {"name": name, "provider": provider, "model": model.strip(), **required}
 
 
+def vision_of(vision, relay):
+    """Aura's answer's `vision` (the model that describes the run's frames: {provider, model}) when Aura's relay has
+    that provider, else None (Opus 5.5 through Aura's Anthropic relay, as before Aura named one)."""
+    if not isinstance(vision, dict):
+        return None
+    provider, model = vision.get("provider"), vision.get("model")
+    if provider not in VISION_PROVIDERS or not isinstance(model, str) or not model.strip():
+        return None
+    if not (relay or {}).get(provider):
+        return None
+    return {"provider": provider, "model": model.strip()}
+
+
 def bun_ready():
     """Whether OpenCode can run here: it needs Bun (autopilot/agents/opencode.py)."""
     from .agents import opencode
@@ -268,6 +289,8 @@ class Run:
         # Auto in a chat it has picked nothing for yet then plays the user's free-tier model
         self.disable_premium_models = disable_premium_models is True and self.model is not None
         self.agent = None  # the agent and model Aura answered with for it (agent_of), once started
+        self.vision = None  # the model Aura named to describe its frames (vision_of), once started; None: Opus 5.5
+        self._rooted = set()  # the providers whose <PROVIDER>_BASE_URL the run pointed at the relay (_relay_env)
         self.kind = kind if kind in KINDS else "goal"
         self.mode = AURA_VERIFICATION if mode == AURA_VERIFICATION else PLAYTEST
         self.project = project
@@ -302,6 +325,7 @@ class Run:
         self.run_id, self.run_token = answer["run_id"], answer["token"]
         self.relay, self.finish_url = answer["relay"], answer["finish"]
         self.training = answer.get("training") or None
+        self.vision = vision_of(answer.get("vision"), self.relay)
         if answer.get("memory"):
             from .aura_memory import MemorySync
 
@@ -329,12 +353,13 @@ class Run:
         for k in ("ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_OAUTH_TOKEN"):
             os.environ.pop(k, None)  # (else a client may prefer the user's own sign-in to the run's key)
         os.environ.update({"TYPESAFE_BASE_URL": self.relay["typesafe"], "ANTHROPIC_BASE_URL": self.relay["anthropic"]})
+        self._rooted = {"anthropic"}
         self._agent_env()
         return self
 
     def _agent_env(self):
-        """The run's key for Jev and Claude, and the agent's model, its API root and key (its API roots for Jev and
-        Claude are set once, on entering: a proxy may stand in for them since)."""
+        """The run's key for Jev and Claude, the agent's model, its API root and key, and the frame describer's API
+        root and key (each API root is set once, the first time the run needs it: a proxy may stand in for it since)."""
         os.environ.update({"TYPESAFE_API_KEY": self.run_token, "ANTHROPIC_API_KEY": self.run_token})
         if self.agent:  # (the model picked in Aura's chat; else Autopilot's own, as AUTOPILOT_MODEL says)
             os.environ["AUTOPILOT_MODEL"] = self.agent["model"]
@@ -342,22 +367,31 @@ class Run:
                 from .agents.opencode import PROVIDER_KEYS
 
                 provider = self.agent["provider"]
-                os.environ.update({
-                    "AUTOPILOT_OPENCODE_PROVIDER": provider,
-                    f"{provider.upper()}_BASE_URL": self.relay[provider],
-                    **{k: self.run_token for k in PROVIDER_KEYS.get(provider, (f"{provider.upper()}_API_KEY",))},
-                })
+                os.environ["AUTOPILOT_OPENCODE_PROVIDER"] = provider
+                self._relay_env(provider, PROVIDER_KEYS.get(provider, (f"{provider.upper()}_API_KEY",)))
             elif self.agent["name"] == "codex":  # (agents/codex.py: its key and API root, OpenAI's)
-                os.environ.update({"OPENAI_BASE_URL": self.relay["openai"], "OPENAI_API_KEY": self.run_token,
-                                   "CODEX_API_KEY": self.run_token})
+                self._relay_env("openai", ("OPENAI_API_KEY", "CODEX_API_KEY"))
+        if self.vision and self.vision["provider"] != "anthropic":  # (Anthropic's root and key: set above)
+            # (describe_frames reads the key variables vision.ROUTES names for its provider: all the run's token)
+            from .vision import ROUTES
+
+            self._relay_env(self.vision["provider"], ROUTES[self.vision["provider"]][2])
+
+    def _relay_env(self, provider, keys):
+        """provider's API root at Aura's relay (once a run) and each of its key variables the run's token."""
+        if provider not in self._rooted:
+            os.environ[f"{provider.upper()}_BASE_URL"] = self.relay[provider]
+            self._rooted.add(provider)
+        os.environ.update(dict.fromkeys(keys, self.run_token))
 
     def go_on_free(self):
         """Inside the run, once its agent stopped without a report: ask Aura whether the run goes on on the team's free
         allowance (POST /api/autopilot/runs/free: Aura says yes only when the run's premium credits stopped it). Yes:
-        the run's key is its free part's and its agent the one Aura names (Auto's free-tier model, required), set for
-        the agents from now on, and True. No: None when Aura said nothing for it (not stopped by its credits, an Aura
-        without the route, not reachable); raises Refused when the team has no free allowance left either (NO_CREDITS,
-        in Aura's words), or the agent can't play here (AGENT_UNAVAILABLE)."""
+        the run's key is its free part's, its agent the one Aura names (Auto's free-tier model, required) and its
+        frame describer the answer's `vision` (None: Opus 5.5), set for the agents from now on, and True. No: None
+        when Aura said nothing for it (not stopped by its credits, an Aura without the route, not reachable); raises
+        Refused when the team has no free allowance left either (NO_CREDITS, in Aura's words), or the agent can't play
+        here (AGENT_UNAVAILABLE)."""
         if not self.run_token or self.relay is None:
             return None
         try:
@@ -379,6 +413,7 @@ class Run:
         if not isinstance(token, str) or not token or agent is None:
             return None
         self.agent = playable(agent, self.say)  # (required: raises Refused when it can't play here)
+        self.vision = vision_of(answer.get("vision"), self.relay)  # (the free part's: its frames are described so)
         self.run_token = token
         self._agent_env()
         return True

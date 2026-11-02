@@ -7,8 +7,10 @@ the request (docs/architecture.md, "Looking at the picture").
     Describer   a run's describe_frames: picks up to MAX_FRAMES of an episode's frames, sends them with the agent's
                 questions (and SWEEP) to the vision model and returns its description. The model sees the frames and
                 the questions only: what the agent hopes to see can't colour what it is told is there.
-    route()     which API and model describe frames for a run: the agent's own provider's (Aura's relay in a run
-                through Aura), a model that takes pictures; None, with why, when the provider has none.
+    route()     which API and model describe frames for a run: the agent's own provider's, a model that takes
+                pictures; None, with why, when the provider has none. In a run through Aura, the model Aura named for
+                the run (its answer's `vision`, autopilot/aura.py) through Aura's relay for its provider, else Opus 5.5
+                through Aura's Anthropic relay.
 
 The description is all the agent gets: no agent takes pictures in its tool results (Codex's image viewing is off,
 OpenCode's and the game tools' results are text), and an agent reading frames itself would read them knowing what it
@@ -27,12 +29,14 @@ import time
 
 import requests
 
-# The vision model, on Anthropic (direct, through Aura, through OpenCode Zen). Of the models Aura's relay has a price
-# for (it refuses others), Opus 5.5 is the one that described game frames without misreading them (2026-10-19: Sonnet 5
-# made up an animation and guessed a covered digit)
+# The vision model, on Anthropic (direct, through Aura when Aura names none, through OpenCode Zen). Of the models
+# Aura's relay has a price for (it refuses others), Opus 5.5 is the one that described game frames without misreading
+# them (2026-10-19: Sonnet 5 made up an animation and guessed a covered digit). A run through Aura uses the model Aura
+# names for it instead, when it names one (Aura's model selector chooses it; the relay refuses any other)
 MODEL = "claude-opus-5-5"
 OPENROUTER_MODEL = "anthropic/claude-opus-5.5"
-FALLBACK = "claude-opus-5-5"  # when another model is refused (AUTOPILOT_VISION_MODEL one Aura's relay has no price for)
+# when another model is refused (AUTOPILOT_VISION_MODEL one Aura's relay has no price for); never when Aura named it
+FALLBACK = "claude-opus-5-5"
 EFFORT = "low"  # its thinking: describing is perceiving, not working something out
 MAX_TOKENS = 4000
 MAX_FRAMES = 12  # frames one description looks at, at most
@@ -47,15 +51,16 @@ LOG = "describe.jsonl"  # in a shared run's telemetry/: each description, its fr
 
 # A provider's API for describing frames: (wire, API root, key variables, model, path for the "openai" wire). The
 # root is <PROVIDER>_BASE_URL when the environment sets one (the run's proxy, Aura's relay, a gateway); model None is
-# the agent's own (session.MODELS: those take pictures)
+# the agent's own (session.MODELS: those take pictures). Google's is Gemini's own API (generateContent): Aura's relay
+# for Google takes no other
 ROUTES = {
     "anthropic": ("anthropic", "https://api.anthropic.com", ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"), MODEL, None),
     "opencode": ("anthropic", "https://opencode.ai/zen", ("OPENCODE_API_KEY",), MODEL, None),
     "openrouter": ("openai", "https://openrouter.ai/api/v1", ("OPENROUTER_API_KEY",), OPENROUTER_MODEL,
                    "/chat/completions"),
     "openai": ("openai", "https://api.openai.com/v1", ("OPENAI_API_KEY", "CODEX_API_KEY"), None, "/chat/completions"),
-    "google": ("openai", "https://generativelanguage.googleapis.com/v1beta",
-               ("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"), None, "/openai/chat/completions"),
+    "google": ("gemini", "https://generativelanguage.googleapis.com/v1beta",
+               ("GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY"), None, None),
 }
 NO_VISION = {"deepseek": "DeepSeek's models can't look at pictures"}
 
@@ -77,18 +82,21 @@ SWEEP = ("Last: anything in these frames that looks unusual for a game's picture
          "rest moves, text cut off or overlapping): say what and in which frames; or say nothing like that shows.")
 
 
-def route(provider, agent_model=None):
-    """(wire, API root, key, model, path) that describe frames for an agent on provider, else (None, why)."""
+def route(provider, agent_model=None, model=None):
+    """(wire, API root, key, model, path) that describe frames for an agent on provider, else (None, why). model: the
+    one Aura named for the run, used whatever AUTOPILOT_VISION_MODEL and the provider's default say (Aura's relay
+    refuses any other)."""
     if provider in NO_VISION:
         return None, NO_VISION[provider]
     if provider not in ROUTES:
         return None, f"no model of {provider} is known to look at pictures"
-    wire, root, keys, model, path = ROUTES[provider]
+    wire, root, keys, default, path = ROUTES[provider]
     root = (os.environ.get(provider.upper().replace("-", "_") + "_BASE_URL") or "").strip().rstrip("/") or root
     key = next((os.environ[k] for k in keys if (os.environ.get(k) or "").strip()), None)
     if not key:
         return None, f"there is no {provider} key"
-    model = (os.environ.get("AUTOPILOT_VISION_MODEL") or "").strip() or model or agent_model
+    model = ((model or "").strip() or (os.environ.get("AUTOPILOT_VISION_MODEL") or "").strip() or default
+             or agent_model)
     return (wire, root, key, model, path), None
 
 
@@ -129,14 +137,16 @@ def pick(frames, count):
 
 class Describer:
     """A run's describe_frames. recorder: the run's media.Recorder (its frames, its fps); provider, agent_model: the
-    agent's; usage: the run's telemetry.Usage (a call not through the run's proxy is counted here); proxied: the
-    proxy's URL prefix (calls through it are counted there); log: a shared run's telemetry folder, or None."""
+    agent's (in a run through Aura, the provider of the model Aura named); model: the model Aura named for the run, or
+    None; usage: the run's telemetry.Usage (a call not through the run's proxy is counted here); proxied: the proxy's
+    URL prefix (calls through it are counted there); log: a shared run's telemetry folder, or None."""
 
-    def __init__(self, recorder, provider, agent_model=None, usage=None, proxied=None, log=None):
+    def __init__(self, recorder, provider, agent_model=None, usage=None, proxied=None, log=None, model=None):
         self.recorder = recorder
         self.frames = getattr(recorder, "frames", None)
         self.provider = provider
-        self.route, self.no_model = route(provider, agent_model)
+        self.named = bool((model or "").strip())  # (Aura named the model: no other may describe, FALLBACK neither)
+        self.route, self.no_model = route(provider, agent_model, model)
         self.usage = usage
         self.proxied = proxied
         self.log = log
@@ -273,10 +283,12 @@ class Describer:
             try:
                 return self._anthropic(root, key, model, parts)
             except Exception as e:
-                if not _refused_model(e) or model == FALLBACK:
+                if not _refused_model(e) or model == FALLBACK or self.named:
                     raise
                 self.route = (wire, root, key, FALLBACK, path)  # (for the rest of the run)
                 return self._anthropic(root, key, FALLBACK, parts)
+        if wire == "gemini":
+            return self._gemini(root, key, model, parts)
         return self._openai(root + path, key, model, parts)
 
     def _anthropic(self, root, key, model, parts):
@@ -318,6 +330,28 @@ class Describer:
         choice = (body.get("choices") or [{}])[0]
         text = ((choice.get("message") or {}).get("content") or "").strip()
         return text or "(no description)", body.get("model") or model, body.get("usage")
+
+    def _gemini(self, root, key, model, parts):
+        """Gemini's own API (models/<model>:generateContent), the one Aura's relay for Google takes."""
+        content = [{"text": v} if kind == "text" else {"inline_data": {"mime_type": "image/jpeg", "data": v}}
+                   for kind, v in parts]
+        name = model[len("models/"):] if model.startswith("models/") else model
+        url = f"{root}/models/{name}:generateContent"
+        r = requests.post(url, headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+                          json={"systemInstruction": {"parts": [{"text": SYSTEM}]},
+                                "contents": [{"role": "user", "parts": content}],
+                                "generationConfig": {"maxOutputTokens": MAX_TOKENS}},
+                          timeout=TIMEOUT)
+        if r.status_code >= 400:
+            raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+        body = r.json()
+        self._count(url, body)
+        candidates = body.get("candidates") or []
+        if not candidates and (body.get("promptFeedback") or {}).get("blockReason"):
+            raise RuntimeError("the vision model declined to describe these frames")
+        found = ((candidates or [{}])[0].get("content") or {}).get("parts") or []
+        text = "\n".join(p["text"] for p in found if isinstance(p.get("text"), str) and not p.get("thought")).strip()
+        return text or "(no description)", body.get("modelVersion") or model, body.get("usageMetadata")
 
     def _count(self, url, body):
         """The call's tokens into the run's usage, unless the run's proxy counted them."""
