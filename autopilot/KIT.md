@@ -38,6 +38,12 @@ Inputs (the player's hands; the only way to act in play):
   Escape, Enter, One..Nine, LeftMouseButton, RightMouseButton, MiddleMouseButton...) or of an Enhanced Input action path
   (`/Game/Input/IA_Jump.IA_Jump`, value optional).
 - `game.hold("W")` ... `game.release("W")`; `game.release_all()`. Holds are leased: the runtime renews them every tick.
+- `game.pointer(screen_x, screen_y)` / `game.pointer(world=point)` / `game.pointer(object=path)`: puts the mouse at a place
+  on the view without moving across to it (-1..1 from the middle, y up, the numbers `view` gives a thing); the mouse
+  buttons pressed after it click there, in the world as on the UI (`game.press("LeftMouseButton")`). A drag (a selection
+  box, a slider): point, `game.hold("LeftMouseButton")`, point again in two or three steps, `game.release(...)`. Point
+  well inside the view (many games pan at the screen's edge), and check what got selected or ordered: a click lands on
+  whatever is in front at that spot.
 - `game.mouse(right_counts, up_counts)`: a mouse flick. `game.turn(right_deg, up_deg)`: turn the view by degrees (uses
   the measured sensitivity; `game.calibrate_look()` measures it, once).
 - `game.keys`: movement keys the controllers use, {"forward": "W", "back": "S", "left": "A", "right": "D", "jump": "SpaceBar"}:
@@ -58,7 +64,7 @@ Each does one tick of control per step and returns a `Result` (truthy when it wo
   and walks the shortest way the map leaves open, planned again when what it feels blocks it (round rocks and walls,
   out of dead ends, through doorways). Jumps when stuck on something it can't feel; won't walk off a drop deeper than
   `max_drop` (300). No waypoints needed. A goal higher than a step up (a platform, an upper floor) it reaches by a way
-  up it sees (a ramp, stairs: the view's `ways_up`, where the engine's plugin tells them), else it looks round for one:
+  up it sees (a ramp, stairs: the view's `ways_up`, which every engine's plugin tells; not a 2D game), else it looks round for one:
   don't write routes of the level's ramps for it. `climb=False`: no ways up. It lets go of forward early by how far
   the body slides (measured in this game) and returns stopped, about `within` from the target. Fails with "stuck" or
   "walk timed out" (`.data`: distance left, the `way` it last planned) when it finds no way: the target likely needs

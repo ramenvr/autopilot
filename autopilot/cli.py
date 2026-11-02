@@ -249,9 +249,9 @@ def level_alert(level):
 
 
 def wait_for_start(link, seconds=GAME_START_SECONDS):
-    """Waits while the game says it is still starting (`session` status `loading`, docs/protocol.md: Unreal's play
-    session loading its level) or is too busy to answer, up to `seconds`. Returns the seconds waited. A game that
-    doesn't say (an older plugin, Unity, Godot) is ready."""
+    """Waits while the game says it is still starting (`session` status `loading`: a play session or a scene still
+    loading, as every engine's plugin says) or is too busy to answer, up to `seconds`. Returns the seconds waited. A
+    game that doesn't say (an older plugin) is ready."""
     t0 = time.time()
     while time.time() - t0 < seconds and not getattr(link, "closed", None):
         asked = time.time()

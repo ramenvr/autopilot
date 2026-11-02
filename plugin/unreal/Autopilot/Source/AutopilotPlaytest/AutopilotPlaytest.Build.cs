@@ -21,6 +21,7 @@ public class AutopilotPlaytest : ModuleRules
 			"AssetRegistry",
 			"EnhancedInput",
 			"InputCore",
+			"ApplicationCore",
 			"Slate",
 			"SlateCore",
 			"UMG",

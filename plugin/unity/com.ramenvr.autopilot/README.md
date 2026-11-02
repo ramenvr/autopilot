@@ -68,7 +68,9 @@ From a copy of this repository: in the Package Manager choose **+ > Install pack
 The agent enters play mode by itself when it needs the game. While a run plays you can:
 
 - watch it on the **Live** tab (the current stage on a track, which follows the agent service's activity frames, or its
-  status lines for an older one; what the agent is doing now; its **Harness attempts**: a
+  status lines for an older one; what the agent is doing now: while the run gets the game ready, *Indexing files
+  (12/40)* as the project index is written and *Waiting for play mode* while play mode is entered, as Unreal's tab says
+  them; its **Harness attempts**: a
   filled square each one finished, an outlined one the one going, on one row (at most 24; when they don't all fit, the latest), and the feed's last 10 lines, one line each, no folds);
 - read the run as a transcript on the **Feed** tab, grouped by stage: a heading per stage (Launch, Analyze, Probe, Build
   harness, Play, Results, Report) with its count of lines, and under it what the agent did and said, one line per event
@@ -82,13 +84,15 @@ The agent enters play mode by itself when it needs the game. While a run plays y
   stage; an agent service too old to send activity frames gives the status lines alone, as before. A run's feed is kept
   with it, so a run reopened from the History shows it whole; a window that connects again while a run goes asks for
   the events it missed (`activity_since`), and an event sent twice is shown once;
-- see each of the policy's decisions on the **Policy log** tab (only when the brain runs on this machine): filter by
+- see each of the policy's decisions on the **Policy log** tab (only when the brain runs on this machine, and **Show
+  policy log** is on: the Settings page's **Policy log** switch, or Preferences > Autopilot): filter by
   harness and decision (SWITCH, START, KEEP, HELD, DROPPED), *Find an action…* by name, pick a step (*PAUSED ON H2 #18*,
   **Follow live** to follow again; ◀ ▶ beside **Copy step JSON** step through the rows), the footer summing the harness
   picked (*H2: …*) or, with All and nothing picked, *All harnesses: …*;
 - **Steer** it while the game is playing (the Rollout stage): type a hint in the box under the run (*Send a steering prompt to Autopilot*,
   e.g. "go round the rocks to the left first") and press **Steer** or Enter; you can type at any stage, but **Steer** sends only once the game is playing (its tooltip says so before), keeping what you typed;
-- **Stop** it early (it reads *Stopping…* and the steer box locks until the run ends); the agent still reports what it found.
+- **Stop** it early (it reads *Stopping…* and the steer box locks until the run ends; a project index being written
+  stops too); the agent still reports what it found.
 
 A run started from your own Claude Code or Codex (`autopilot connect claude|codex`, see [Usage](#usage)) shows here as
 one started from the box: the agent service says so with a `run_started` message, and the
@@ -113,7 +117,10 @@ Finder or your file manager (selected, on Windows and macOS). Nothing plays by i
 into a RenderTexture, in edit mode too) is made only when you press Play or scrub, and let go when the page changes. The
 recording is copied into the run's folder (`recording.mp4`, off the main thread), so it outlives a Reset memory; until
 the copy is done, or when it fails, it plays from where the agent service wrote it. A project without the Video module
-(`com.unity.modules.video`) opens it in your video player only. A run with no recording says why in its place, in one
+(`com.unity.modules.video`) plays the recording's frames (the JPEGs the agent service keeps beside the MP4, the
+result's `recording.frames` at its `frames_fps`) in the same box as a flipbook, as Godot's dock does, with the same
+play / pause, scrub line and time (they are copied into the run's folder, `recording/`, off the main thread; without
+the Image Conversion module, or the frames, Play opens the MP4 in your video player). A run with no recording says why in its place, in one
 muted line: *No recording:* and the result's `no_recording` (for example *the game can't be recorded here: it runs
 without rendering*), or, when the result has neither `recording` nor `memory` (an agent service older than recording
 every run ran it), *No recording.* The line is decided when the result comes and kept with the run (`no_recording`), so
@@ -142,7 +149,23 @@ one row at the right (the address shortens when narrow).
 The project index, a text description of your scenes, prefabs, ScriptableObjects and input actions in
 `Library/AutopilotCodex/` that the agent reads to understand the game, is written by itself before play mode starts
 whenever it is missing or older than your assets (there is no button for it; `CodexExport.Run` exports it from the
-command line, see [The codex export](#the-codex-export)).
+command line, see [The codex export](#the-codex-export)). It is written a file at a time across the editor's updates,
+so the editor stays responsive: the Live page counts the files (*Indexing files (12/40)*), the `session` status says
+`loading` meanwhile, and **Stop** ends it (it writes no `summary.txt` then, so it is written again next time; play
+mode is entered all the same, and the run stops from there).
+
+While the agent service plays the game in the editor (a run, or play mode it entered), a script error doesn't pause
+it: the Console's **Error Pause** is turned off and put back as it was once no run has gone on for 10 s (what it was is
+kept in EditorPrefs for the project, so an editor that crashed or closed mid-run puts it back the next time it opens,
+as does removing the package), as Godot's plugin tells its debugger to continue. The run reports the error itself (the
+`log_error` detector).
+
+The main toolbar has an Autopilot button (its logo; it opens the window): Unity 6.3 and later through the toolbar's
+own API; 6000.0 to 6000.2 by putting it into the toolbar's UI Toolkit tree (found through reflection: a toolbar that
+isn't as expected gets no button, never an error).
+
+When a bundled font can't be read the window says so on its status line as it opens (*A bundled font couldn’t be read:
+using the editor’s font*), as Unreal's tab and Godot's dock do.
 
 Entering play mode reloads scripts (unless Enter Play Mode Settings turn that off). The connection then closes with
 code 1012 and comes straight back, resuming the same run, so a run carries on across play mode changes (a recording
@@ -184,7 +207,12 @@ restarts; entries from before bills load as before). Then **Share runs to improv
 or *Data sharing off* beside it (*Enabling this sends
 recordings, screenshots, and agent traces and memories to the developers of Autopilot. For runs from your own Claude
 Code or Codex, the agent traces are its conversation during the run.*, as in the setup; a change applies from the next
-connection). Then **Autopilot in Claude Code & Codex**: how to run Autopilot through your own Claude Code or Codex, on
+connection). Then **Design brief**: how the game is meant to work (the design, the rules players are told, e.g. *the
+player has three lives; each coin is worth 10 points*), a box saved as you type, sent with every run (the composer's
+`start` as `design_brief`, an Explore run's as `brief`, as Unreal's Design Brief): explorations report behavior that
+differs from it as a bug. Then **Policy log**, a switch (*Policy log shown* / *Policy log hidden*): whether the hello
+asks the agent service for every policy step (`inspect`) for the Policy log tab (on by default; a change connects
+again when no run is going). Then **Autopilot in Claude Code & Codex**: how to run Autopilot through your own Claude Code or Codex, on
 your Claude or ChatGPT subscription: the commands that set each up, run once in a terminal (`autopilot connect claude`,
 `autopilot connect codex`, each with **Copy**). Each of these three cards is its title, a line on what it is for, then its control. Last,
 **Uninstall Autopilot** (its **Uninstall** button), which removes Autopilot from this computer (see [Removing
@@ -345,8 +373,12 @@ agent service it carries; one without it (a repository checkout) does as describ
 
 ### Settings
 
-The connect screen's Advanced and the composer remember their values per user and per project in
-`UserSettings/AutopilotPlaytest.json` (Unity's per-user folder, normally not committed):
+The connect screen's Advanced, the composer and the Settings page remember their values per user and per project in
+`UserSettings/AutopilotPlaytest.json` (Unity's per-user folder, normally not committed). The same settings are on
+Unity's own **Preferences > Autopilot** page (Edit > Preferences; Unity > Settings on macOS), as Unreal's Editor
+Preferences > Plugins > Autopilot: Connection (Agent Service URL, Access Token, Use with Aura), Agent Service (Agent
+service command), Runs (Default Explore Minutes, Design Brief) and Policy Log (Show Policy Log), each with Unreal's
+words as its tooltip; a change there is the window's too (URL, token and Use with Aura from the next connection):
 
 | setting | meaning |
 |---|---|
@@ -354,7 +386,9 @@ The connect screen's Advanced and the composer remember their values per user an
 | Use with Aura (`use_with_aura`) | off by default. On (the first-run setup's **Use Aura app**), the window connects to the agent service the [Aura](https://www.tryaura.dev/) app runs on this machine instead: runs go through Aura, on your Aura plan, and what the agent learns about each game is kept with Aura across your team's machines. Off, the window never connects to Aura's |
 | Access token (`token`) | optional. When set, it is sent as `Authorization: Bearer <token>` when connecting. When empty, the `AUTOPILOT_PLAYTEST_TOKEN` environment variable is used if set; otherwise no token is sent. The local brain needs none |
 | Agent service command (`service_command`) | empty by default: the `autopilot` command is found by itself. A whole command line that starts it, `serve ...` going after it, e.g. `C:\path\to\autopilot\.venv\Scripts\python.exe -m autopilot` in a repository checkout |
-| `prompt`, `explore_minutes` | the composer's text and the first-run setup's Explore minutes (a `turn_based`, `mode` or `brief` an older version saved is ignored: runs are always real time, and the agent service reads the kind from the words; so are `auto_connect`, `auto_start_service` and `hide_aura_notice`: the editor always connects, and starts the agent service, by itself) |
+| `prompt`, `explore_minutes` | the composer's text and the first-run setup's Explore minutes (Default Explore Minutes, 1 to 600) (a `turn_based`, `mode` or `brief` an older version saved is ignored: runs are always real time, and the agent service reads the kind from the words; so are `auto_connect`, `auto_start_service` and `hide_aura_notice`: the editor always connects, and starts the agent service, by itself) |
+| Design brief (`design_brief`) | how the game is meant to work; sent with every run when it says anything (empty by default) |
+| Show policy log (`show_policy_log`) | `true` by default: the hello asks for the policy steps (`inspect`) for the Policy log tab; never in batch mode |
 
 ## Removing Autopilot
 
@@ -510,11 +544,14 @@ unless it sets its own frame rate.
 | `Runtime/Paths.cs` | the object paths the brain uses (`Main:/Level/Gem@2`, `...\|Component`) |
 | `Runtime/Hands.cs` | the hands: virtual keyboard, mouse and gamepad on the Input System, the same keys for `LegacyInput`; input actions; `pointer` |
 | `Runtime/LegacyInput.cs` | `UnityEngine.Input`'s reads with the bridge's keys in them (the game's calls are pointed here) |
-| `CodeGen/LegacyInputRewriter.cs` | the IL post-processor that points the game's `UnityEngine.Input` calls at `LegacyInput` |
-| `Runtime/View.cs` | `view` (what the player sees, sonar) and `watch` |
+| `CodeGen/LegacyInputRewriter.cs` | the IL post-processor that points the game's `UnityEngine.Input` calls at `LegacyInput`, and its `GUI` / `GUILayout` controls at `ImguiGUI` / `ImguiGUILayout` |
+| `Runtime/View.cs` | `view` (what the player sees, sonar) and `watch` (with `drawn`: how a thing is drawn) |
+| `Runtime/ViewSpace.cs` | `view`'s spatial reads, as Unreal's: things' own boxes, the player's body probing the room (openings, ways up and their lanes, point blank), a thing's top surface and lane, lights, effects, highlights and what is held |
+| `Runtime/Imgui.cs` | IMGUI (`OnGUI`) controls noted as they are drawn and clicked for `screen`, `ui` and `ui_act` (the shims the rewriter points GUI and GUILayout calls at) |
+| `Runtime/Net.cs` | context's `net`: Netcode for GameObjects or Mirror, through reflection |
 | `Runtime/Player.cs` | finding the player, `pose`, `movement` |
 | `Runtime/ScreenUI.cs` | `screen` (text on screen), `ui` and `ui_act` (uGUI and UI Toolkit controls) |
-| `Runtime/Detectors.cs` | bug detectors: log errors, NaN, falling out of the world, long falls, hitches, HUD counters |
+| `Runtime/Detectors.cs` | bug detectors: log errors, NaN, falling out of the world, long falls, hitches, HUD counters, teleports, objects piling up, numbers out of their range or above their maximum |
 | `Runtime/Media.cs` | `record` (the `frame` messages) and `capture`: the game's view read back without waiting, encoded off the main thread |
 | `Runtime/Account.cs` | the agent service's `account` frame (with its period `bill`, `out_of_credits` and BYOK `coding_agent` and `llm_provider`), the Coding Agents (`CodingAgents`) and LLM providers (`LlmProviders`), the Aura sign-in's states (`aura_sign_in` frames), and bills as shown (`Billing`: money, the period's dates) |
 | `Runtime/Preferences.cs` | `Autopilot/preferences.json` (sharing, the first-run setup's choices) and `Autopilot/autopilot.env` (own model keys, the Coding Agent and the LLM provider) |
@@ -525,14 +562,16 @@ unless it sets its own frame rate.
 | `Editor/EditorHost.cs` | the client in the editor: play mode as the session, surviving script reloads |
 | `Editor/HostLink.cs` | another editor plugin (Aura's) carrying the connection to the brain in place of the WebSocket |
 | `Editor/Headless.cs` | the editor in batch mode (`-executeMethod Autopilot.Playtest.Editor.Headless.Run`) |
-| `Editor/CodexExport.cs` | the project index export to `Library/AutopilotCodex/` |
+| `Editor/CodexExport.cs` | the project index export to `Library/AutopilotCodex/` (in steps across the editor's updates, counted, stopped by Stop) |
+| `Editor/ErrorPause.cs` | the Console's Error Pause held off while the agent plays, put back after (also after a crash) |
+| `Editor/AutopilotSettingsProvider.cs` | Preferences > Autopilot: the window's settings on Unity's own Preferences page |
 | `Editor/BuildHook.cs` | adds `PlaytestBuildInfo` to Development builds |
 | `Editor/LegacyAxes.cs` | the project's Input Manager axes, for `LegacyInput` (and baked into builds) |
 | `Editor/RunInBackground.cs` | Run In Background on while a run plays in the editor, put back after (and when the package is removed) |
-| `Editor/PlaytestSettings.cs` | the per-user settings file |
+| `Editor/PlaytestSettings.cs` | the per-user settings file (with the Design Brief and Show Policy Log) |
 | `Editor/PlaytestWindow.cs` | **Window > Autopilot**; hosts `AutopilotView` |
 | `Editor/AutopilotView.cs` (with `.Live.cs`, `.Result.cs`), `AutopilotPolicyView.cs`, `AutopilotUI.cs`, `UI/Autopilot.uss` | the window's UI Toolkit content, widgets and theme (Aura's Flatness look: one amber, square controls, 8 px plates; IBM Plex Sans and IBM Plex Mono in `UI/Fonts`, SIL OFL) |
-| `Editor/AutopilotRecording.cs` | the run's recording on its Result page (VideoPlayer into a RenderTexture) |
+| `Editor/AutopilotRecording.cs` | the run's recording on its Result page (VideoPlayer into a RenderTexture; without the Video module, its frames as a flipbook) |
 | `Editor/AutopilotSession.cs` | the run history, kept across script reloads (SessionState) and editor restarts (`UserSettings/AutopilotRuns/`) |
 | `Editor/AutopilotUsage.cs`, `AutopilotView.Settings.cs` | the Settings page: this project's runs and their Aura bills (each run's tokens per model kept), the ledger in `UserSettings/AutopilotUsage.json` |
 | `Editor/AutopilotView.Setup.cs` | the first-run setup (account, agent service, privacy settings, the first run) and the browser sign-in |
@@ -540,10 +579,10 @@ unless it sets its own frame rate.
 | `Editor/AgentService.cs` | finding, installing and starting the agent service; following `brain.json` |
 | `Editor/Uninstall.cs`, `AutopilotView.Remove.cs` | Uninstall Autopilot from this computer (`autopilot uninstall`, or the settings folder emptied here), the removed state, the Settings page's Uninstall Autopilot box and the page saying how it went; the setup's Agent service step when the agent service is gone |
 | `Editor/AutopilotText.cs` | turns the brain's status lines into the words the window uses |
-| `Editor/AutopilotToolbar.cs` | the main toolbar badge (Unity 6.3 and later) |
+| `Editor/AutopilotToolbar.cs` | the main toolbar's button (Unity 6.3 and later through its API, earlier through the toolbar's UI Toolkit tree) |
 | `Tests~/` | the live tests and the test game they make (see Tests, below); the `~` keeps Unity from importing them |
 | `Tests/Editor/` | EditMode unit tests (usage, preferences and autopilot.env, recording's scaling and messages, the account frames, the agent service's command lines, `HostLinkTests`: the connection carried by another plugin (the hello first and requests answered over the link, a script reload's 1012 and the session resumed over the next link, a new hello after the other plugin's connection ended, a disconnect ending the link, `HostLink` found by name), `UninstallTests`: removing Autopilot from this computer (its command line and result, the settings folder emptied without it, memory/ kept when asked, the project's run files deleted, nothing started while removed, the old-named folder not moved back, the uninstall run with a stand-in command on Windows), `HistoryTests`: the run history kept across editor restarts (a run's file written and read back, the newest 50 kept, a run going when the editor closed shown as NO RESULT, a run already here kept newest, the files of runs no longer kept deleted; every test's history in a temporary folder), `ComposerTests`: the kind read from the composer's words, the start frame, the memory line, the report stage, the recording's copy, the no-recording line (decided from the result, kept with the run), steering only at the Rollout and a run started from Claude Code or Codex (`run_started`: shown as the window's own, with where it came from, never over a run going), `ActivityTests`: the activity feed (each `activity` frame a line under its stage, a call and its result one line with two folds, a frame sent again changing nothing, the Feed tab's headings with their counts, `activity_since`, a run saved and read back with its events); and `LayoutTests`: every page laid out at 320x900, 360x640, 560x480, 900x400 and 1400x900 in an editor panel of its own, checked to fit and to say the design's words, with Rerun setup (in the header and on the Settings page, greyed mid-run), the selected run's row, the composer's placeholder, the stage names never cut from 300 px up, the setup's four steps in one column, the run's id line with its three icons
-on one row (and the prompt close under it), the composer's link and Disconnect on one row, the recording's 230 px box, the no-recording line wrapping in its place, no findings header without findings, and the steer box greyed outside the Rollout, its hint fitting from 300 px up, Remove Autopilot: the Settings page's box, its confirmation and the pages saying how the removal went, and the Settings page's Claude Code and Codex card: its words, its place and its Copy buttons); compiled only where the package is testable |
+on one row (and the prompt close under it), the composer's link and Disconnect on one row, the recording's 230 px box, the no-recording line wrapping in its place, no findings header without findings, and the steer box greyed outside the Rollout, its hint fitting from 300 px up, Remove Autopilot: the Settings page's box, its confirmation and the pages saying how the removal went, and the Settings page's Claude Code and Codex card: its words, its place and its Copy buttons; and a page swapped (Live to Result and back) settled in its first layout: UI Toolkit lays out and applies the geometry fits in the update that first draws it, so it doesn't flash as Unreal's Slate did before SSettle); `ParityTests.cs`: OnGUI's controls read and clicked in an IMGUI pass of the test's own (the rewriter's routes matching the shims, the test game's `MenuImgui` routed when the project has it), the Console's Error Pause held off and put back (also after an editor that closed mid-run), the Design Brief sent with runs, Show Policy Log and the Preferences page saving where the window reads, the project index written in steps with its count and stopped, the Live page's now-line, the bundled fonts' notice, the recording's frames as a flipbook, the toolbar button put into an older toolbar; compiled only where the package is testable |
 
 The customer-facing window speaks of an agent, harnesses, policy steps, actions and observations; keep internal names out of it
 (`AutopilotText.Scrub` removes the ones that slip through status lines).
@@ -587,20 +626,20 @@ Unity's getters that copy or leak (`material`, `mesh`...) are never read. A miss
 
 | op | here |
 |---|---|
-| `context` | Unreal's fields plus `project_dir`, `engine`, `input` (what the bridge can drive), `scenes`, `build_scenes`, `launch_scene`, `player_found_by`; `{"player": path}` names the player when it can't be found (see below) |
-| `find`, `transforms`, `pose`, `movement` | as the protocol's Engines section; `find {"things": true}` lists the scene's things (objects that aren't plain groups, at the top or under a plain group: Unreal's actors), `{"inactive": true}` inactive objects too. The player: the object `context` named, else tagged `Player`, else with a `PlayerInput`, else with a `CharacterController`, else the main camera's top object with a Rigidbody. `pose.at` is its body's middle (the CharacterController's or capsule's centre), the eye the main camera. `movement` reads the CharacterController (half height, radius, step, slope) and the player's script fields (walk speed: `walkSpeed`/`moveSpeed`/`speed`...; jump: `jumpSpeed`/`jumpForce`, or `jumpHeight` as `sqrt(2 g h)`; gravity: `gravity`, else `Physics.gravity` (`Physics2D.gravity` without the Physics module, else 9.81)), with `sources` saying where each came from |
-| `session` | editor: `start`/`stop` enter and leave play mode (`map` sets the scene it starts in); `restart` reloads the launch scene (or `map`), `{"fresh": true}` leaves and re-enters play mode (static state too). Player: `restart` reloads the launch scene (or `map`: a name, path or build index). Objects kept with DontDestroyOnLoad stay across a reload, as they do for the game itself |
-| `pause` | `Time.timeScale` 0 (restored after), audio paused |
-| `key` | an Input System action's name (`Player/Jump`, `Jump`) where a key name is expected: pressed, held (leased) and released as the action (so the kit's `game.press` / `game.hold` take action names); else Unreal's FKey names (letters, `One`..`Zero`, `SpaceBar`, `LeftShift`, `Escape`, arrows, `F1`..`F12`, `LeftMouseButton`.., `MouseX`/`MouseY` (pixels of mouse movement), `MouseWheelAxis`, `Gamepad_*`) or Input System key names; `press` (down, up 50 ms and 2 frames later), `hold` (leased; with `seconds`, a timed hold: let go after that much game time, no renewal; the hello's `features` has `timed_hold`), `release`, `release_all` |
-| `input` | an Input System action by `Map/Action` or name: presses what it is bound to on the bridge's devices (a 2D composite's keys by the value's sign, a gamepad stick with its value) |
+| `context` | Unreal's fields plus `project_dir`, `engine`, `input` (what the bridge can drive), `scenes`, `build_scenes`, `launch_scene`, `player_found_by`, `imgui` (`calls`: the game's OnGUI controls routed through the bridge; `drawn`: how many it drew); `{"player": path}` names the player when it can't be found (see below). `controls` lists the Input System's actions and, as Unreal's, the legacy Input Manager's axes: a button as `legacy:<Name>` (`digital`), any other as `legacy-axis:<Name>`, with their keys (FKey names; `MouseX`, `MouseY`, `MouseWheelAxis`). `net`: how the game is networked, from Netcode for GameObjects' NetworkManager or Mirror (through reflection): `{"mode": "standalone" \| "listen_server" \| "dedicated_server" \| "client"}`, a client's with `server_world` `""` (its server is another process) and `clients` |
+| `find`, `transforms`, `pose`, `movement` | as the protocol's Engines section; `find {"things": true}` lists the scene's things (objects that aren't plain groups, at the top or under a plain group: Unreal's actors), `{"inactive": true}` inactive objects too. The player: the object `context` named, else tagged `Player`, else with a `PlayerInput`, else with a `CharacterController`, else the main camera's top object with a Rigidbody. `pose.at` is its body's middle (the CharacterController's or capsule's centre), the eye the main camera. `movement` reads the CharacterController (half height, radius, step, slope) and the player's script fields (walk speed: `walkSpeed`/`moveSpeed`/`speed`...; jump: `jumpSpeed`/`jumpForce`, or `jumpHeight` as `sqrt(2 g h)`; gravity: `gravity`, else `Physics.gravity` (`Physics2D.gravity` without the Physics module, else 9.81); air control: `airControl`), with `sources` saying where each came from |
+| `session` | editor: `start`/`stop` enter and leave play mode (`map` sets the scene it starts in; while play mode plays another scene, `start` with a `map` switches to it); `restart` reloads the launch scene (or `map`), `{"fresh": true}` leaves and re-enters play mode (static state too). Player: `restart` reloads the launch scene (or `map`: a name, path or build index), `start` with a `map` switches to it; a scene the build hasn't is refused (404) before anything changes. Answers say the `scene`; `status` says `loading` while the project index is written or play mode is entered (editor) or a scene loads (player). Objects kept with DontDestroyOnLoad stay across a reload, as they do for the game itself |
+| `pause` | `Time.timeScale` 0 (restored after), audio paused; a networked client (its server in another process) can't: `{"paused", "why"}` |
+| `key` | an Input System action's name (`Player/Jump`, `Jump`) where a key name is expected: pressed, held (leased) and released as the action (so the kit's `game.press` / `game.hold` take action names); else Unreal's FKey names (letters, `One`..`Zero`, `SpaceBar`, `LeftShift`, `Escape`, arrows, `F1`..`F12`, `LeftMouseButton`.., `MouseX`/`MouseY` (pixels of mouse movement), `MouseWheelAxis`, `Gamepad_*`) or Input System key names; `press` (down, up 50 ms and 2 frames later), `hold` (leased; with `seconds`, a timed hold: let go after that much game time, no renewal; the hello's `features` has `timed_hold`), `release` (an unknown key name is an error, as Unreal's), `release_all` |
+| `input` | an Input System action by `Map/Action` or name: presses what it is bound to on the bridge's devices (a 2D composite's keys by the value's sign, a gamepad stick with its value); `legacy:<Name>`, a legacy Input Manager button, presses its first key (as the `key` op) |
 | `move` | through the game's move action (a Vector2 action named like Move): its gamepad stick (any direction), else its keys (8 ways); else, or with `"via": "controller"`, the CharacterController (or Rigidbody) moved at the walk speed. Answers `{"moved", "via"}` |
-| `watch` | each object's transform against its parent, every frame (`moved`, `turned`, `changed size`); `drawn` isn't supported (the answer has no `drawn`) |
-| `view` | things with a visible renderer (grouped to the topmost object that isn't a plain group) in the camera's frustum and in line of sight: `name`, `path`, `class` (the game's script on it), `center`, `size`, `yaw`, `distance`, `screen_x`/`screen_y`, `top_above_feet`/`bottom_above_feet`, `crosshair_on`, `blocks_player`, `speed`, `look` (`parts`: mesh names; `texts`; `animation`); `camera` (horizontal `fov`); `body` (`velocity`, `feet_z`, `on_ground`, `falling`, `standing_on`, `floor_slope_degrees`, `touching`). Boxes are world-aligned (`oriented: false`). With `sonar` (`sonar_reach`, `sonar_turns`): `body.sonar.ways`, how far the player's body could walk each way (its capsule, a little thinner, swept half a metre at a time a step above the floor; a walkable rise is climbed; a ray down onto the floor each half metre finds drops deeper than 60 cm or two steps, and floors steeper than its slope limit): `{"turn", "clear", "by": wall\|drop\|steep\|reach, "thing"?, "normal"?, "drop"?, "rise"?}`, at most 16 ways and 512 sweeps a look. Left out, and listed in its `omitted`: `held`, `openings`, `ways_up`, sonar's `point_blank`, `lane`, slopes' ends, lights, effects, `highlighted`, `overhead` |
-| `screen` | texts on screen-space canvases (uGUI Text, TextMeshPro with its tags taken off) keyed `<canvas>.<object>`, and UI Toolkit text elements keyed `<UIDocument object>.<element>`. IMGUI (`OnGUI`) isn't read |
-| `ui`, `ui_act` | uGUI Selectables (Button, Toggle, Slider, Scrollbar, Dropdown, InputField and their TextMeshPro kinds) and UI Toolkit Button, Toggle, Slider, DropdownField, TextField; clicks go in as the input module sends them (pointer enter, down, up, click), `set` gives a value, `drag` drags and drops |
+| `watch` | each object's transform against its parent, every frame (`moved`, `turned`, `changed size`). With `drawn` (as Unreal's): a thing's root and its `parts` (3) biggest shown meshes (not ones a skeleton carries), each by its own path, sampled in the thing's frame, and how the thing is drawn: `part shown` / `part hidden` (a mesh), `effect started` / `effect stopped` (a particle system or VFX Graph effect), `light on` / `light off` (its lights and a helper's beside it), `animation started` / `animation ended` (its Animator's clips), `went limp` (a ragdoll: an Animator off, most of three or more rigidbodies moving by physics), each change with its `asset`; the answer says `drawn: true` |
+| `view` | as Unreal's: things with a visible renderer (grouped to the topmost object that isn't a plain group; the ground, wider than `floor_size` (4000) and flat, left out) in the camera's frustum and in line of sight: `name`, `path`, `class` (the game's script on it), `label` (its first text), `center`, `size` (the box around it), `box` (its own box: `center`, `size` along its own axes and `rotation`, when it is turned) and `tilt` (`pitch`, `roll` when tipped), `yaw`, `distance`, `screen_x`/`screen_y`, `top_above_feet`/`bottom_above_feet`, `crosshair_on` and `crosshair_part` (the bone whose collider the view's line meets), `body_center`/`body_shown` (a character with a skinned mesh and colliders: the middle of what shows of its body), `blocks_player`, `speed`, `look` (`parts`: mesh names; `texts`; `animation`; `effects`: `{asset, scale}` of particle systems and VFX Graph effects playing; `lights`: `{on, brightness}`, its own lit lights and a light on an object with no body of its own beside it; `highlighted`: a mesh drawn with more materials than it has submeshes (an outline or overlay pass, as outline packages add) or a material or shader named outline or highlight; `limp`), its top surface (`top_slope_degrees`; for a slope 5 to 50 degrees a body could walk up, `low_end`, `high_end` (each a place seen: `at`, `turn`, `distance`, `height_above_feet`), `uphill` and `lane`: `width`, `middle`, `foot`, `top`, `left`/`right` (`open`, `wall`, `drop` with its `depth`) and `below`); `held` (the things hanging from the player, a bone of its skinned mesh or its camera, as the camera draws them (its culling mask): `name`, `path`, `class`, `look.parts`, `attached_at`, `center`, `size`, `distance`, `screen_x`/`screen_y`, `in_view`), `camera` (horizontal `fov`), `scene.sun` (the brightest directional light's intensity), `oriented: true`, `body` (`velocity`, `feet_z`, `on_ground`, `falling`, `standing_on`, `floor_slope_degrees`, `touching`, `overhead`: what is straight above the head, when it is in view, touched or within 10 cm, and its `clearance`). With `openings` (and `openings_reach`): `body.openings` (each doorway the body could take: `at`, `turn`, `distance`, `width`, `yaw`, `depth_beyond`, `floor_step`, `floor_above_feet`, `reachable_straight` or `blocked_at`/`blocked_by`, `passable`, `into`, `wall`, `sides`), `body.free` (how far the body goes at its knees and chest each 15 degrees) and `body.under`; with `ways_up`: `body.ways_up` (ramps and stairs up from the body's floor, also seen from the side: `turn`, `distance_to_foot`, `rises_by`, `top_distance`, `foot`, `top`, `seen_from`, `reachable_straight`, `lane`, `inside`). With `sonar` (`sonar_reach`, `sonar_turns`): `body.sonar.ways`, how far the player's body could walk each way (its capsule, a little thinner, swept half a metre at a time a step above the floor; a walkable rise is climbed; a ray down onto the floor each half metre finds drops deeper than 60 cm or two steps, and floors steeper than its slope limit): `{"turn", "clear", "by": wall\|drop\|steep\|reach, "thing"?, "normal"?, "drop"?, "rise"?}`, at most 16 ways and 512 sweeps a look, and `point_blank` (how far past the body's side a line at its knees and one at its chest meet something, within 1.5 body widths: `knee`, `chest`, `thing`, `normal`, `within`). Every probe is the player's own body's: lines stopped by what its layer collides with (triggers never), its CharacterController's capsule (step offset, slope limit): never navigation data. A project without the Physics module lists what it can't tell in `omitted` |
+| `screen` | texts on screen-space canvases (uGUI Text, TextMeshPro with its tags taken off) keyed `<canvas>.<object>`, UI Toolkit text elements keyed `<UIDocument object>.<element>`, and IMGUI's (`OnGUI`, see below) labels and boxes keyed `<script>.Label` / `<script>.Box` (`#2`... for more) and its buttons' and toggles' words under their ids; `{"ui": true}` adds the `ui` list |
+| `ui`, `ui_act` | uGUI Selectables (Button, Toggle, Slider, Scrollbar, Dropdown, InputField and their TextMeshPro kinds), UI Toolkit Button, Toggle, Slider, DropdownField, TextField, and IMGUI's buttons, toggles and text fields (`<script>.<words>`, `<script>.TextField`; `"imgui": true`, `screen_x`/`screen_y`); sliders say their `min` and `max`, text fields their `placeholder`; clicks go in as the input module sends them (pointer enter, down, up, click), `set` gives a value, `drag` drags and drops (a UI Toolkit element too: pressed over it, moved to the element `to`, let go there), `right_click` (UI Toolkit: down, up and its context click) |
 | `timestep` | `Time.captureFramerate` |
-| `detectors` | `log_error` (errors, exceptions, failed asserts in the log), `nan`, `out_of_world` (100 m below the level's lowest solid thing, or `kill_y`; or 10 km away), `long_fall` (8 s), `hitch` (0.75 s), `hud_fraction` (`a/b` on screen with `a > b > 0`). Thresholds: `long_fall_seconds`, `hitch_seconds`, `hud_every`, `kill_y` |
-| `record`, `capture` | the Game view (a player's screen) with its UI, taken at the end of a frame (`ScreenCapture.CaptureScreenshotIntoRenderTexture`), read back with `AsyncGPUReadback` (the game never waits on the GPU), scaled, JPEG-encoded, base64'd and written as JSON on a worker thread; a frame due while the one before is still in flight is skipped (a gap in `n`). Frames only while play mode runs and isn't paused (nor the game's `Time.timeScale` 0); a recording pauses when play mode stops and goes on when it plays again on the same connection, across the script reload. `-nographics` (no graphics device), no game running, or a build without the Screen Capture or Image Conversion module: 409 `no picture: ...`; the hello says `media` whenever both modules are in. A still while the editor is paused: 409 |
+| `detectors` | `log_error` (errors, exceptions, failed asserts in the log), `nan`, `out_of_world` (100 m below the level's lowest solid thing, or `kill_y`; or 10 km away), `long_fall` (8 s), `hitch` (0.75 s), `hud_fraction` (`a/b` on screen with `a > b > 0`), and as Unreal's: `teleport` (`suspicion`: a character, the player or one with a CharacterController, moved farther in one frame than `teleport_factor` (3) times its speed or walk speed allows, at least `teleport_min` (1000 cm); not right after the bridge's own `rc`, which moves things for a verification's setup), `actor_growth` (the objects of one kind, by the game's script on them or their name, at least doubling and 50 more over `growth_seconds` (120), counted every 10 s of game time), `clamp` (a game script's number field outside its `[Range]` or `[Min]`: `{property, value, clamp: "[min, max]"}`), `over_max` (a number field above its sibling maximum, `health` and `maxHealth`/`healthMax`, `m_` and `_` kept: `{property, value, max_property, max}`), checked every `property_every` (0.5 s). Thresholds: `long_fall_seconds`, `hitch_seconds`, `hud_every`, `kill_y`, `teleport_factor`, `teleport_min`, `growth_seconds`, `property_every` |
+| `record`, `capture` | `record` wants `action` `start` or `stop` (none is an error). The Game view (a player's screen) with its UI, taken at the end of a frame (`ScreenCapture.CaptureScreenshotIntoRenderTexture`), read back with `AsyncGPUReadback` (the game never waits on the GPU), scaled, JPEG-encoded, base64'd and written as JSON on a worker thread; a frame due while the one before is still in flight is skipped (a gap in `n`). Frames only while play mode runs and isn't paused (nor the game's `Time.timeScale` 0); a recording pauses when play mode stops and goes on when it plays again on the same connection, across the script reload. `-nographics` (no graphics device), no game running, or a build without the Screen Capture or Image Conversion module: 409 `no picture: ...`; the hello says `media` whenever both modules are in. A still while the editor is paused: 409 |
 | `codex_manifest`, `codex_read` | `Packages/manifest.json`, `ProjectSettings/*.asset` (and `ProjectVersion.txt`), `Assets/**/*.cs`, `*.inputactions`, `*.asmdef` (also in embedded packages, `Packages/<name>/`), and the export in `Library/AutopilotCodex/`; folders `Library` (but the export), `Temp`, `Logs`, `obj`, `Build(s)`, `.git`, `node_modules`, `.*` and `*~` are skipped anywhere; the same limits as Unreal's. The export: in the editor, run in place (scenes are opened one by one in edit mode; in play mode only the loaded ones are written, live); from a player, the editor that built it runs `CodexExport.Run` headless on the project (refused while the project is open in an editor) |
 
 ### Input: what can be driven
@@ -644,6 +683,15 @@ button, axis and mouse reads (`GetKey`, `GetKeyDown`/`Up`, `GetMouseButton*`, `G
 main camera shows it). Both input paths see it (`Input.mousePosition`, `Mouse.current.position`). Press
 `LeftMouseButton` there to click; hold it and point again to drag.
 
+**IMGUI (`OnGUI`)** draws without objects to read, so the same IL post-processor points your scripts' calls to `GUI`'s
+and `GUILayout`'s `Label`, `Box`, `Button`, `RepeatButton`, `Toggle`, `TextField` and `TextArea` (every overload) at
+`ImguiGUI` / `ImguiGUILayout` (`Runtime/Imgui.cs`), with the calling class's name pushed as one more argument. They
+draw the control as Unity does and note it as it is drawn (its words, where it is on screen, the script that drew it),
+for `screen`, `ui` and `ui_act`: a click is given by the control at its next drawing that isn't a layout pass (the
+button returns true once, the toggle the other value, the text field the text set). An assembly with routed controls
+carries `[assembly: ImguiRewritten(<calls>)]` (`context`'s `imgui.calls`). Unity calls no `OnGUI` in a batch-mode
+player or editor: there nothing is drawn, so nothing is read or clicked (`imgui.drawn` stays 0).
+
 `hello` and `context` say what can be driven (`input.handling`, `keys`, `actions`, `legacy_input_reads`, `pointer`,
 `notes`). With neither (the Input Manager only, and nothing routed) the brain falls back to `rc` calls, `move` (which
 then moves the CharacterController) and UI clicks.
@@ -679,15 +727,23 @@ on a machine).
 1. `testgame.py` makes the test game in a new temporary folder: `TestCourse/` (its scripts, input actions and the
    editor script that builds it) copied into a throwaway Unity project, with this package referenced from disk.
    The editor builds it headless: a menu scene (uGUI button, toggle, slider, dropdown and text field, a UI Toolkit
-   label and button) and a level (a floor with drops at its edges, a wall, a block, four spinning orbs to pick up, a
-   gate that swings open on E, a first-person player on a CharacterController, a HUD counting the orbs), the project
-   index, and a Development player.
+   label and button, an OnGUI box with a label, buttons, a toggle and a text field) and a level (a floor with drops at
+   its edges, a wall, a block with a lamp's light by it, four spinning orbs to pick up, a gate that swings open on E, a
+   ramp up to a raised platform, a wall with a doorway, a low canopy, a beacon with sparks playing and an outline, a
+   `Hazard` script that misbehaves on request, a first-person player on a CharacterController holding a torch, a HUD
+   counting the orbs), the project index, and a Development player.
 2. `smoke.py ci`: command-line runs of the player and the editor against a stub brain: a `verify` run's report files
    and exit code 2, a refused token (exit 1), and no brain at all with `-PlaytestConnectTimeout=5` (exit 1 and
    `result.json` with the error).
 3. `smoke.py player` and `smoke.py editor`: every op against the game, in the player and in the editor's play mode
-   (with the script reload when entering play mode).
-4. `kit_live.py` and `sonar_live.py`: the brain's movement controllers and `view`'s sonar on the player.
+   (with the script reload when entering play mode); the player also the OnGUI controls routed (and not drawn: a
+   batch-mode player calls no OnGUI), the detectors teleport, clamp, over_max and actor_growth, watch with `drawn`, the
+   legacy Input Manager's controls, a session start with a map, and the protocol's errors; the editor also a script
+   error not pausing the game with Error Pause on.
+4. `kit_live.py` and `sonar_live.py`: the brain's movement controllers and `view`'s sonar on the player; and `view`'s
+   spatial reads (the ramp as a way up with its lane, `walk_to` up it to the platform, the ramp's slope, ends, tilt and
+   own box, the doorway's opening, point blank, the torch held, the lamp's light, the beacon's sparks and outline, the
+   canopy overhead).
 5. The test game is deleted (`--keep` keeps it; `--only smoke-player,kit` runs some of them).
 
 The EditMode unit tests in `Tests/Editor/` need a project that lists the package as testable

@@ -1098,7 +1098,7 @@ namespace Autopilot.Playtest.Editor
         /// agent service doesn't read it from words), shown live, and the setup closed.</summary>
         internal void ExploreAndFinish()
         {
-            var frame = new Dictionary<string, object> { ["kind"] = "explore", ["minutes"] = Math.Max(1, PlaytestSettings.Get().ExploreMinutes) };
+            var frame = ExploreFrame(PlaytestSettings.Get().ExploreMinutes, PlaytestSettings.Get().DesignBrief);
             if (!AutopilotSession.Start(frame, "Explore"))
             {
                 setupProblem = "The Explore run couldn’t start: Autopilot isn’t connected to the agent service, or a run is going.";

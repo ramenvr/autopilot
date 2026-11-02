@@ -64,6 +64,13 @@ namespace PlaytestOps
 	void Input(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void Move(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void KeyOp(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** `pointer` (PlaytestOpsPointer.cpp): the mouse to a place on the game's view; the buttons pressed after click there. */
+	void PointerOp(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** A mouse button going down or up while the pointer is set: true when it went to the game's UI under the pointer
+	 *  (then not to the player controller). */
+	bool PointerButton(APlayerController* PC, const FKey& Key, EInputEvent Event);
+	/** Every frame: the pointer kept where it was put (forgotten once the brain or the session is gone). */
+	void TickPointer(UPlaytestSubsystem& Bridge);
 	void Screen(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void UiList(UPlaytestSubsystem& Bridge, int64 Id);
 	void UiAct(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);

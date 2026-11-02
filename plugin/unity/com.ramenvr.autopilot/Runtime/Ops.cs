@@ -23,6 +23,10 @@ namespace Autopilot.Playtest
         /// build's. False when it can't load `map` (SceneManager then tries).</summary>
         public static Func<string, bool> EditorLoad;
 
+        /// <summary>The editor's session still starting (EditorHost): the project index written before play mode, or
+        /// play mode being entered. Said as `session` status's `loading`, so the agent service waits it out.</summary>
+        public static Func<bool> EditorLoading;
+
         public static bool IsPaused => Application.isPlaying && (paused || Time.timeScale == 0f);
 
         public static void Handle(PlaytestClient client, long id, string op, Dictionary<string, object> args)
@@ -42,6 +46,7 @@ namespace Autopilot.Playtest
                     client.Respond(id, View.Look(args));
                     break;
                 case "rc":
+                    Detectors.BridgeActedFrame = Time.frameCount;  // (what it moves isn't the game teleporting it)
                     Rc(client, id, args);
                     break;
                 case "context":
@@ -63,8 +68,12 @@ namespace Autopilot.Playtest
                     Watch.Handle(client, id, args);
                     break;
                 case "screen":
-                    client.Respond(id, new Dictionary<string, object> { ["texts"] = ScreenText.Texts().ToDictionary(p => p.Key, p => (object)p.Value) });
+                {
+                    var shown = new Dictionary<string, object> { ["texts"] = ScreenText.Texts().ToDictionary(p => p.Key, p => (object)p.Value) };
+                    if (Json.Bool(args, "ui", false)) shown["ui"] = ScreenUI.List();  // (and the controls, as Unreal's screen {"ui": true})
+                    client.Respond(id, shown);
                     break;
+                }
                 case "ui":
                     client.Respond(id, new Dictionary<string, object> { ["elements"] = ScreenUI.List() });
                     break;
@@ -196,6 +205,18 @@ namespace Autopilot.Playtest
                 ["build_scenes"] = build,
                 ["launch_scene"] = LaunchScene,
                 ["rendering"] = View.Rendering,
+                ["net"] = Net.Info(),  // (how the game is networked: Netcode for GameObjects or Mirror)
+                // The game's OnGUI controls routed through the bridge (screen, ui, ui_act read and click them while they
+                // are drawn: never in a batch-mode player, which calls no OnGUI) and how many it drew so far
+                ["imgui"] = new Dictionary<string, object>
+                {
+                    ["calls"] = LegacyInput.ImguiCalls,
+#if AUTOPILOT_IMGUI
+                    ["drawn"] = Imgui.Drawn,
+#else
+                    ["drawn"] = 0,
+#endif
+                },
             };
         }
 
@@ -206,17 +227,57 @@ namespace Autopilot.Playtest
             var action = Json.Str(args, "action", "status");
             if (action == "status" || action == "")
             {
-                client.Respond(id, new Dictionary<string, object> { ["running"] = client.Host.SessionRunning });
+                var status = new Dictionary<string, object> { ["running"] = client.Host.SessionRunning };
+                status["loading"] = EditorLoading != null ? EditorLoading() : restarting > 0;  // (a scene still loading)
+                client.Respond(id, status);
                 return;
             }
             if (client.Host.Session(client, id, action, args)) return;
-            if (action != "restart")
+            var map = Json.Str(args, "map");
+            // A player: a scene asked for that the build hasn't is refused before anything changes; a start with a map
+            // while another scene plays switches to it (as Godot's game does)
+            if (!string.IsNullOrEmpty(map) && action != "stop" && BuildIndexOf(map) < 0)
             {
-                client.Respond(id, new Dictionary<string, object> { ["running"] = Application.isPlaying });
+                client.RespondError(id, $"No scene {map} in the build", 404);
                 return;
             }
-            Restart(client, id, Json.Str(args, "map"));
+            if (action == "start" && !string.IsNullOrEmpty(map) && !IsActiveScene(map))
+            {
+                Restart(client, id, map);
+                return;
+            }
+            if (action != "restart")
+            {
+                client.Respond(id, new Dictionary<string, object> { ["running"] = Application.isPlaying, ["scene"] = SceneManager.GetActiveScene().path });
+                return;
+            }
+            Restart(client, id, map);
         }
+
+        /// <summary>The build index of a scene asked for by build index, path or name; -1 when the build hasn't it.</summary>
+        public static int BuildIndexOf(string map)
+        {
+            if (int.TryParse(map, out var index)) return index >= 0 && index < SceneManager.sceneCountInBuildSettings ? index : -1;
+            var byPath = SceneUtility.GetBuildIndexByScenePath(map);
+            if (byPath >= 0) return byPath;
+            var name = System.IO.Path.GetFileNameWithoutExtension(map);
+            for (var i = 0; i < SceneManager.sceneCountInBuildSettings; ++i)
+                if (string.Equals(System.IO.Path.GetFileNameWithoutExtension(SceneUtility.GetScenePathByBuildIndex(i)), name, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            return -1;
+        }
+
+        /// <summary>Whether the scene playing is the one asked for (a build index, path or name).</summary>
+        public static bool IsActiveScene(string map)
+        {
+            var active = SceneManager.GetActiveScene();
+            if (!active.IsValid() || string.IsNullOrEmpty(map)) return false;
+            if (int.TryParse(map, out var index)) return active.buildIndex == index;
+            return string.Equals(active.path, map, StringComparison.OrdinalIgnoreCase)
+                   || string.Equals(active.name, System.IO.Path.GetFileNameWithoutExtension(map), StringComparison.OrdinalIgnoreCase);
+        }
+
+        static int restarting;
 
         /// <summary>`levels` in a player: the build's scenes, the one playing open (docs/protocol.md).</summary>
         static Dictionary<string, object> PlayerLevels()
@@ -247,6 +308,7 @@ namespace Autopilot.Playtest
                 return;
             }
             var frames = 0;
+            ++restarting;
             client.AddPending(new Pending
             {
                 Id = id,
@@ -257,11 +319,13 @@ namespace Autopilot.Playtest
                     var active = SceneManager.GetActiveScene();
                     if (active.handle != old && active.isLoaded && ++frames >= 2)
                     {
+                        restarting = Math.Max(0, restarting - 1);
                         client.Respond(p.Id, new Dictionary<string, object> { ["running"] = true, ["scene"] = active.path });
                         return true;
                     }
                     if (now - p.Start > p.Seconds)
                     {
+                        restarting = Math.Max(0, restarting - 1);
                         client.RespondError(p.Id, $"Timed out opening {target} (is it in the build's scene list?)", 500);
                         return true;
                     }
@@ -293,6 +357,13 @@ namespace Autopilot.Playtest
             if (!Application.isPlaying)
             {
                 client.RespondError(id, "No game is running");
+                return;
+            }
+            var why = Net.CantPause();
+            if (why != null)
+            {
+                // (a networked client: its server, in another process, keeps the game going)
+                client.Respond(id, new Dictionary<string, object> { ["paused"] = IsPaused, ["why"] = why });
                 return;
             }
             SetPaused(Json.Bool(args, "paused", false));

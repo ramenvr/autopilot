@@ -14,6 +14,8 @@
 //   data/<path>.txt      ScriptableObject assets and their values
 //   input/<path>.txt     Input System action maps: actions, types, bindings, composites, control schemes; and the
 //                        legacy Input Manager's axes
+// In the editor's window the export goes in steps across the editor's updates (Start): the Live page counts the files
+// (Indexing files (n/total)) and Stop ends it (no summary.txt then: it is done again next time).
 // Values are Unity's own: x right, y up, z forward, metres.
 
 using System;
@@ -57,7 +59,139 @@ namespace Autopilot.Playtest.Editor
             return Codex.ExportNeeded(project);
         }
 
+        /// <summary>The export, whole, before it returns (the command line, a player's request, tests).</summary>
         public static void Export(string dir)
+        {
+            using (var steps = Steps(dir, new Job()))
+            {
+                while (steps.MoveNext())
+                {
+                }
+            }
+        }
+
+        /// <summary>An export going on across the editor's updates (Start): how far it is, and how it ended.</summary>
+        public sealed class Job
+        {
+            /// <summary>Files written (a scene, a prefab, a data asset; the input; the build list and scripts) and how
+            /// many in all (0 until they are counted).</summary>
+            public int Done, Total;
+            /// <summary>Stop ended it (no summary.txt was written).</summary>
+            public bool Stopped;
+            public bool Finished;
+            public Exception Error;
+            internal IEnumerator<bool> Steps;
+            internal Action<Job> Then;
+        }
+
+        static Job running;
+
+        /// <summary>The export going on in steps, if any.</summary>
+        public static Job Running => running != null && !running.Finished ? running : null;
+
+        /// <summary>How far the export going on is (the Live page's "Indexing files (done/total)"); false when none is
+        /// going.</summary>
+        public static bool Progress(out int done, out int total)
+        {
+            var job = Running;
+            done = job?.Done ?? 0;
+            total = job?.Total ?? 0;
+            return job != null;
+        }
+
+        /// <summary>The export going on stopped (Stop pressed while it runs): it ends before its next file, writing no
+        /// summary.txt (so it is done again next time), and its continuation is called with Stopped.</summary>
+        public static void Stop()
+        {
+            var job = Running;
+            if (job != null) job.Stopped = true;
+        }
+
+        /// <summary>Seconds of an editor update the export's steps may use before it lets the editor go on (the window
+        /// repaints its count between them).</summary>
+        const double SliceSeconds = 0.05;
+
+        /// <summary>The export into <paramref name="dir"/> in steps across the editor's updates (the editor stays
+        /// responsive and the window shows how far it is); <paramref name="then"/> once it is over (finished, failed:
+        /// Error, or stopped: Stopped), on the main thread. One export at a time: while one runs, this one's
+        /// continuation waits for that one's end.</summary>
+        public static Job Start(string dir, Action<Job> then)
+        {
+            var going = Running;
+            if (going != null)
+            {
+                var prior = going.Then;
+                going.Then = j =>
+                {
+                    prior?.Invoke(j);
+                    then?.Invoke(j);
+                };
+                return going;
+            }
+            var job = new Job { Then = then };
+            job.Steps = Steps(dir, job);
+            running = job;
+            EditorApplication.update -= Tick;
+            EditorApplication.update += Tick;
+            return job;
+        }
+
+        static void Tick()
+        {
+            var job = running;
+            if (job == null || job.Finished)
+            {
+                EditorApplication.update -= Tick;
+                return;
+            }
+            var until = EditorApplication.timeSinceStartup + SliceSeconds;
+            try
+            {
+                while (!job.Stopped && EditorApplication.timeSinceStartup < until)
+                {
+                    if (!job.Steps.MoveNext())
+                    {
+                        Finish(job);
+                        return;
+                    }
+                }
+            }
+            catch (Exception e)
+            {
+                job.Error = e;
+                Finish(job);
+                return;
+            }
+            if (job.Stopped) Finish(job);
+        }
+
+        static void Finish(Job job)
+        {
+            EditorApplication.update -= Tick;
+            job.Finished = true;
+            try
+            {
+                job.Steps.Dispose();  // (a stopped one closes the scene it had open: its finally)
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[Autopilot] The project index export didn't close cleanly: " + e.Message);
+            }
+            if (running == job) running = null;
+            if (job.Error != null) Debug.LogWarning("[Autopilot] The project index export failed: " + job.Error.Message);
+            try
+            {
+                job.Then?.Invoke(job);
+            }
+            catch (Exception e)
+            {
+                Debug.LogWarning("[Autopilot] After the project index export: " + e);
+            }
+        }
+
+        /// <summary>The export, a file at a time: each step writes one (a scene, a prefab, a data asset; the input; the
+        /// build list and scripts) and counts it in job.Done; summary.txt is written last.</summary>
+        static IEnumerator<bool> Steps(string dir, Job job)
         {
             var started = DateTime.Now;
             Directory.CreateDirectory(dir);
@@ -66,13 +200,21 @@ namespace Autopilot.Playtest.Editor
             var counts = new Dictionary<string, int>();
             var playing = EditorApplication.isPlayingOrWillChangePlaymode;
 
+            // What there is to write, counted first (the count the window shows)
+            var scenePaths = AssetDatabase.FindAssets("t:Scene", new[] { "Assets" }).Select(AssetDatabase.GUIDToAssetPath).OrderBy(p => p, StringComparer.Ordinal).ToList();
+            var prefabPaths = AssetDatabase.FindAssets("t:Prefab", new[] { "Assets" }).Select(AssetDatabase.GUIDToAssetPath).OrderBy(p => p, StringComparer.Ordinal).ToList();
+            var dataPaths = AssetDatabase.FindAssets("t:ScriptableObject", new[] { "Assets" }).Select(AssetDatabase.GUIDToAssetPath).Distinct()
+                .Where(p => !p.EndsWith(".inputactions", StringComparison.OrdinalIgnoreCase)).OrderBy(p => p, StringComparer.Ordinal).ToList();
+            job.Total = scenePaths.Count + prefabPaths.Count + dataPaths.Count + 2;  // (and the input; the build list and scripts)
+            yield return true;
+
             // Scenes: opened one by one in edit mode; in play mode only those loaded (live), the others kept as they were
             var scenesDir = Path.Combine(dir, "scenes");
             if (!playing && Directory.Exists(scenesDir)) Directory.Delete(scenesDir, true);
-            var scenePaths = AssetDatabase.FindAssets("t:Scene", new[] { "Assets" }).Select(AssetDatabase.GUIDToAssetPath).OrderBy(p => p, StringComparer.Ordinal).ToList();
             var n = 0;
             foreach (var path in scenePaths)
             {
+                ++job.Done;
                 var scene = SceneManager.GetSceneByPath(path);
                 var opened = false;
                 if (!scene.IsValid() || !scene.isLoaded)
@@ -106,6 +248,7 @@ namespace Autopilot.Playtest.Editor
                 {
                     if (opened) EditorSceneManager.CloseScene(scene, true);
                 }
+                yield return true;
             }
             counts["scenes"] = n;
 
@@ -113,8 +256,9 @@ namespace Autopilot.Playtest.Editor
             var prefabsDir = Path.Combine(dir, "prefabs");
             if (Directory.Exists(prefabsDir)) Directory.Delete(prefabsDir, true);
             n = 0;
-            foreach (var path in AssetDatabase.FindAssets("t:Prefab", new[] { "Assets" }).Select(AssetDatabase.GUIDToAssetPath).OrderBy(p => p, StringComparer.Ordinal))
+            foreach (var path in prefabPaths)
             {
+                ++job.Done;
                 var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(path);
                 if (prefab == null) continue;
                 var sb = new StringBuilder();
@@ -124,6 +268,7 @@ namespace Autopilot.Playtest.Editor
                 DumpObject(sb, prefab, 0, PrefabPath);
                 Write(prefabsDir, Strip(path) + ".txt", sb);
                 ++n;
+                yield return true;
             }
             counts["prefabs"] = n;
 
@@ -131,9 +276,9 @@ namespace Autopilot.Playtest.Editor
             var dataDir = Path.Combine(dir, "data");
             if (Directory.Exists(dataDir)) Directory.Delete(dataDir, true);
             n = 0;
-            foreach (var path in AssetDatabase.FindAssets("t:ScriptableObject", new[] { "Assets" }).Select(AssetDatabase.GUIDToAssetPath).Distinct().OrderBy(p => p, StringComparer.Ordinal))
+            foreach (var path in dataPaths)
             {
-                if (path.EndsWith(".inputactions", StringComparison.OrdinalIgnoreCase)) continue;
+                ++job.Done;
                 var assets = AssetDatabase.LoadAllAssetsAtPath(path).OfType<ScriptableObject>().Where(a => a != null && Reflect.IsGameType(a.GetType())).ToList();
                 if (assets.Count == 0) continue;
                 var sb = new StringBuilder();
@@ -146,6 +291,7 @@ namespace Autopilot.Playtest.Editor
                 }
                 Write(dataDir, Strip(path) + ".txt", sb);
                 ++n;
+                yield return true;
             }
             counts["data"] = n;
 
@@ -153,6 +299,8 @@ namespace Autopilot.Playtest.Editor
             var inputDir = Path.Combine(dir, "input");
             if (Directory.Exists(inputDir)) Directory.Delete(inputDir, true);
             counts["input"] = ExportInput(inputDir);
+            ++job.Done;
+            yield return true;
 
             // Build scenes, scripts
             var build = new StringBuilder();
@@ -172,6 +320,7 @@ namespace Autopilot.Playtest.Editor
                 ++nScripts;
             }
             File.WriteAllText(Path.Combine(dir, "scripts.txt"), scripts.ToString(), new UTF8Encoding(false));
+            ++job.Done;
 
             // The summary, last
             var summary = new StringBuilder();

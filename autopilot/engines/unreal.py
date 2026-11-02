@@ -218,10 +218,14 @@ class Unreal(Engine):
     # -- a headless game ---------------------------------------------------------------------------------
 
     def launch_command(self, project, url, log, map=None, exe=None):
-        """The editor's executable as a game, without rendering (-game -nullrhi)."""
-        return [exe or EDITOR, project] + ([map] if map else []) + [
-            "-game", "-nullrhi", "-unattended", "-nosplash", "-log", "-Playtest=goal", "-PlaytestGoal=autopilot",
-            f"-PlaytestUrl={url}", f"-abslog={log}"]
+        """The editor's executable as a game, without rendering (-game -nullrhi); or a packaged build of the game
+        (exe: <Game>.exe, a Development build with the plugin), which needs neither the project nor -game. Both read
+        the -Playtest* arguments."""
+        playtest = ["-nullrhi", "-unattended", "-nosplash", "-log", "-Playtest=goal", "-PlaytestGoal=autopilot",
+                    f"-PlaytestUrl={url}", f"-abslog={log}"]
+        if exe and is_packaged(exe):
+            return [exe] + ([map] if map else []) + playtest
+        return [exe or EDITOR, project] + ([map] if map else []) + ["-game"] + playtest
 
 
 # -- the codex (functions: autopilot.codex keeps their old names) ---------------------------------------------
@@ -234,6 +238,11 @@ def owner_actor(path):
     if not sep or len(parts) < 2 or not all(parts[:2]):
         return None
     return f"{head}:{parts[0]}.{parts[1]}"
+
+
+def is_packaged(exe):
+    """Whether an executable is a packaged game (not the editor: UnrealEditor.exe, UnrealEditor-Cmd.exe, ...)."""
+    return not os.path.basename(exe).lower().startswith(("unrealeditor", "ue4editor"))
 
 
 def has_commandlet(uproject):

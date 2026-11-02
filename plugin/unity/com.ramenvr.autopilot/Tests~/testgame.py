@@ -145,6 +145,7 @@ def make(root=None, player=True, log=print, handling=None):
         "com.unity.modules.audio": "1.0.0",
         "com.unity.modules.imgui": "1.0.0",
         "com.unity.modules.jsonserialize": "1.0.0",
+        "com.unity.modules.particlesystem": "1.0.0",
         "com.unity.modules.physics": "1.0.0",
         "com.unity.modules.ui": "1.0.0",
         "com.unity.modules.uielements": "1.0.0",

@@ -47,6 +47,8 @@ const Media = preload("lib/media.gd")
 const SESSION_TIMEOUT := 60.0
 
 var debugger  # debugger.gd
+## Whether the hello asks for the policy steps (`inspect`): the dock's Show Policy Log setting.
+var inspect := true
 var link = Link.new()
 var run_active := false
 var brain_steers := false  # the welcome's features had "steer": the user can steer a run while it plays
@@ -78,6 +80,7 @@ var _codex_thread: Thread = null
 var _codex_queue := []
 var _summary_path := ""
 var _last_played := ""
+var _starting := false  # a session start is waiting for its game (`session` status says loading)
 var _auto_started := false
 var _record = null  # the brain's `record` start args while it records (kept across play sessions; null: not recording)
 var _record_frames := 0  # frames passed on since that start
@@ -94,6 +97,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	keep_awake(false)
 	link.close()
 	if _codex_thread and _codex_thread.is_started():
 		_codex_thread.wait_to_finish()
@@ -146,12 +150,16 @@ func _send_hello() -> void:
 		version = str(cfg.get_value("plugin", "version", version))
 	var h := {"type": "hello", "protocol": Link.PROTOCOL, "plugin_version": version, "engine": "godot",
 		"engine_version": Engine.get_version_info().string, "project": str(ProjectSettings.get_setting("application/config/name", "")),
-		"host": "editor", "inspect": true,
+		"host": "editor", "inspect": inspect,
 		# the games it starts can be captured (a headless one answers record and capture with 409); `levels`, and
-		# `session` playing the `map` asked for
-		"features": ["media", "levels"],
+		# `session` playing the `map` asked for; and what the game's own autoload does, relayed to it: a key hold with
+		# "seconds" let go in the game (timed_hold), `pointer`
+		"features": ["media", "levels", "timed_hold", "pointer"],
 		# whether the user shares runs' data (Autopilot/preferences.json; read again at every connection)
-		"share": Prefs.share_data(Prefs.load_preferences())}
+		"share": Prefs.share_data(Prefs.load_preferences()),
+		# how input reaches the games it starts (as the game's own hello says; the game's context says it for the game
+		# running, headless or not)
+		"input": Keys.input_caps(false)}
 	var pid := str(ProjectSettings.get_setting("autopilot/project_id", ""))
 	if pid != "":
 		h.project_id = pid
@@ -258,9 +266,45 @@ func feedback(signature: String, verdict: String) -> void:
 	link.send({"type": "feedback", "signature": signature, "verdict": verdict})
 
 
+# --- the editor kept awake during a run ---------------------------------------------------------------
+
+## How long the editor's loop may sleep between frames while a run goes (µs). The editor relays every request and
+## answer: in low-processor mode it sleeps between frames, 100 ms a frame while unfocused
+## (interface/editor/unfocused_low_processor_mode_sleep_usec), and that delay would land on every answer. As Unreal's
+## editor CPU throttling turned off during a run.
+const AWAKE_SLEEP_USEC := 2000
+var awake := false  # the editor kept awake now
+var _sleep_before := -1  # the sleep the editor had when kept awake (put back, headless)
+
+
+## Keep the editor awake (on) or let it sleep as its settings say again (off: the run ended, the connection closed,
+## the plugin went). Called every frame: the editor sets its sleep again when its focus changes.
+func keep_awake(on: bool) -> void:
+	if on:
+		if not awake:
+			awake = true
+			_sleep_before = OS.low_processor_usage_mode_sleep_usec
+		if OS.low_processor_usage_mode_sleep_usec > AWAKE_SLEEP_USEC:
+			OS.low_processor_usage_mode_sleep_usec = AWAKE_SLEEP_USEC
+	elif awake:
+		awake = false
+		OS.low_processor_usage_mode_sleep_usec = _editor_sleep()
+
+
+## The sleep the editor's own settings give it now: focused or not (what it sets itself when its focus changes).
+func _editor_sleep() -> int:
+	var es = EditorInterface.get_editor_settings() if Engine.is_editor_hint() and Engine.has_singleton("EditorInterface") else null
+	if es == null or DisplayServer.get_name() == "headless":
+		return _sleep_before if _sleep_before >= 0 else OS.low_processor_usage_mode_sleep_usec
+	var focused := DisplayServer.window_is_focused()
+	var key := "interface/editor/low_processor_mode_sleep_usec" if focused else "interface/editor/unfocused_low_processor_mode_sleep_usec"
+	return int(es.get_setting(key)) if es.has_setting(key) else _sleep_before
+
+
 # --- the frame --------------------------------------------------------------------------------------
 
 func _process(_delta: float) -> void:
+	keep_awake(is_connected_to_brain() and (run_active or _game_ready))
 	var now := _now()
 	for frame in link.poll():
 		_on_brain_frame(frame)
@@ -489,9 +533,13 @@ func _on_request(frame: Dictionary) -> void:
 		"context":
 			_respond(id, _editor_context())
 		"ping":
-			_respond(id, {"game_time": null, "wall_time": Time.get_unix_time_from_system()})
-		"detectors":
+			_respond(id, {"game_time": 0.0, "wall_time": Time.get_unix_time_from_system()})
+		"detectors", "timestep":
 			_respond(id, {})
+		"screen":
+			_respond(id, {"texts": {}})
+		"ui":
+			_respond(id, {"elements": []})
 		_:
 			_respond_error(id, "No game is running (start one with session start)", 409)
 
@@ -514,7 +562,7 @@ func _editor_context() -> Dictionary:
 	return {"world": "", "scene": "", "character": "", "controller": "", "input_subsystem": "", "camera_manager": "", "camera": "",
 		"game_name": str(ProjectSettings.get_setting("application/config/name", "")), "host": "editor", "engine": "godot",
 		"session_running": false, "paused": false, "game_time": 0.0, "project_dir": ProjectSettings.globalize_path("res://"),
-		"controls": controls}
+		"controls": controls, "input": Keys.input_caps(false), "net": {"mode": "standalone"}}
 
 
 # --- the play session -------------------------------------------------------------------------------
@@ -525,11 +573,9 @@ func _find_scene(name: String) -> String:
 	var want := name.get_file()
 	if not want.ends_with(".tscn") and not want.ends_with(".scn"):
 		want += ".tscn"
-	var found := []
-	Codex._walk("res://", "", found)
-	for f in found:
+	for f in Codex.scenes():
 		if str(f).get_file().to_lower() == want.to_lower():
-			return "res://" + f
+			return f
 	return ""
 
 
@@ -562,12 +608,18 @@ func _session(id, args: Dictionary) -> void:
 	if str(args.get("map", "")) != "":
 		scene = _find_scene(str(args.map))
 		if scene == "":
-			_respond_error(id, "No scene %s" % args.map)
+			_respond_error(id, "No scene %s" % args.map, 404)  # (before anything changes)
 			return
+	if action == "start" and scene != "" and EditorInterface.is_playing_scene():
+		# a start with a map while another scene plays: that map, as a restart into it
+		if EditorInterface.get_playing_scene() == scene and _game_ready:
+			_respond(id, {"running": true, "scene": scene})
+			return
+		action = "restart"
 	match action:
 		"start":
 			if _game_ready:
-				_respond(id, {"running": true})
+				_respond(id, {"running": true, "scene": _playing()})
 				return
 			if not EditorInterface.is_playing_scene():
 				_play(scene)
@@ -611,23 +663,43 @@ func _session(id, args: Dictionary) -> void:
 						return true
 					return false
 				if _game_ready and _game_gen > gen:
-					_respond(id, {"running": true})
+					_respond(id, {"running": true, "scene": _playing()})
 					return true
 				if now - started > SESSION_TIMEOUT:
 					_respond_error(id, "Timed out waiting for the play session", 500)
 					return true
 				return false})
 		_:
-			_respond(id, {"running": _game_ready})
+			# loading: a play session asked for or starting, its game not attached yet (the agent service waits it out)
+			_respond(id, {"running": _game_ready, "loading": (EditorInterface.is_playing_scene() or _starting) and not _game_ready,
+				"scene": _playing()})
+
+
+## Whether a game was asked for and hasn't come up yet: a session start waiting for it, or a play session whose game
+## isn't attached (the dock's "Waiting for the game to start").
+func game_starting() -> bool:
+	if _game_ready:
+		return false
+	if _starting:
+		return true
+	return Engine.is_editor_hint() and Engine.has_singleton("EditorInterface") and EditorInterface.is_playing_scene()
+
+
+## The scene the play session plays ("" with none).
+func _playing() -> String:
+	return EditorInterface.get_playing_scene() if EditorInterface.is_playing_scene() else ""
 
 
 func _wait_ready(id, gen: int) -> void:
 	var started := _now()
+	_starting = true
 	_pending.append({"tick": func(now: float) -> bool:
 		if _game_ready:
-			_respond(id, {"running": true})
+			_starting = false
+			_respond(id, {"running": true, "scene": _playing()})
 			return true
 		if now - started > SESSION_TIMEOUT:
+			_starting = false
 			_respond_error(id, "Timed out waiting for the play session", 500)
 			return true
 		return false})
@@ -654,7 +726,7 @@ func _on_session_stopped(session_id: int) -> void:
 		_respond_error(id, "the game stopped", 500)
 	_forwarded.clear()
 	if was and is_connected_to_brain():
-		link.send({"type": "events", "events": [{"kind": "session", "t": null, "running": false}], "t": null})
+		link.send({"type": "events", "events": [{"kind": "session", "t": null, "running": false, "scene": ""}], "t": null})
 
 
 func _on_session_breaked(session_id: int) -> void:
@@ -678,7 +750,7 @@ func _on_game_message(message: String, data: Array, session_id: int) -> void:
 				_game_ready = true
 				_game_gen += 1
 				if is_connected_to_brain():
-					link.send({"type": "events", "events": [{"kind": "session", "t": 0.0, "running": true}], "t": 0.0})
+					link.send({"type": "events", "events": [{"kind": "session", "t": 0.0, "running": true, "scene": _playing()}], "t": 0.0})
 				else:
 					_detach()  # nobody to play for: let the game be
 		"frame":

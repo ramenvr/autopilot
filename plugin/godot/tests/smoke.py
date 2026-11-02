@@ -105,17 +105,80 @@ def run(c, brain, link):
     c.check("ui_act combo option", gs("pace") == "Brisk", gs("pace"))
     req("ui_act", {"id": "Menu.Nickname", "action": "set", "text": "Robin"})
     c.check("ui_act text input", gs("nickname") == "Robin", gs("nickname"))
+    els = {e["id"]: e for e in req("ui")["elements"]}
+    c.check("ui text input answers its text", els["Menu.Nickname"].get("text") == "Robin", str(els["Menu.Nickname"]))
+    c.check("ui widget: a control that takes the mouse itself", els.get("Menu.Swatch", {}).get("kind") == "widget", str(els.get("Menu.Swatch")))
+    r = req("ui_act", {"id": "Menu.Swatch", "action": "click"})
+    c.check("ui_act click on a widget (mouse)", r.get("via") == "mouse" and gs("swatch_clicks") == 1, f"{r} {gs('swatch_clicks')}")
+    req("ui_act", {"id": "Menu.Pace", "action": "set", "option": "Slow"})
+    c.check("ui_act set on a combo (option)", gs("pace") == "Slow", gs("pace"))
+    req("ui_act", {"id": "Menu.Pace", "action": "set", "text": "Brisk"})
+    c.check("ui_act set on a combo (text)", gs("pace") == "Brisk", gs("pace"))
     try:
         req("ui_act", {"id": "Menu.Nope"})
         c.check("ui_act unknown id errors", False)
     except BridgeError as e:
         c.check("ui_act unknown id errors", "no element" in e.error, e.error)
+    # --- levels (the game itself lists the project's scenes) and pointer on the UI ------------------------
+    lv = req("levels")
+    c.check("levels lists the project's scenes", {"res://scenes/menu.tscn", "res://scenes/level.tscn", "res://scenes/level2d.tscn"}
+            <= set(lv.get("levels", [])) and not any("addons/autopilot" in x for x in lv.get("levels", [])), str(lv))
+    c.check("levels: the menu open and playing", lv.get("open") == lv.get("playing") == "res://scenes/menu.tscn", str(lv))
+    c.check("hello features: levels, pointer", {"levels", "pointer", "timed_hold"} <= set(h.get("features", [])), str(h.get("features")))
+    slider = els["Menu.Brightness"]["screen"]
+    sy = round(1 - slider["y"] / 648 * 2, 4)
+    at = lambda share: round((slider["x"] - 150 + 300 * share) / 1152 * 2 - 1, 4)  # (the slider is 300 px wide)
+    pt = req("pointer", {"screen_x": at(0.2), "screen_y": sy})
+    c.check("pointer answers where the mouse is", pt.get("on_screen") is True and abs(pt["x"] - (slider["x"] - 90)) <= 1
+            and abs((648 - pt["y"]) - slider["y"]) <= 1 and abs(pt["screen_x"] - at(0.2)) < 0.002, str(pt))
+    req("key", {"key": "LeftMouseButton", "mode": "press"})
+    b = until(lambda: (lambda v: v if abs(v - 0.5) > 0.05 else None)(gs("brightness")), 2)
+    c.check("pointer + LeftMouseButton clicks the UI there (the slider at 20%)", b is not None and abs(b - 0.2) < 0.06, str(b))
+    req("pointer", {"screen_x": at(0.3), "screen_y": sy})
+    req("key", {"key": "LeftMouseButton", "mode": "hold"})
+    for share in (0.5, 0.7, 0.8):
+        req("pointer", {"screen_x": at(share), "screen_y": sy})
+        time.sleep(0.05)
+    req("key", {"key": "LeftMouseButton", "mode": "release"})
+    b = until(lambda: (lambda v: v if v > 0.6 else None)(gs("brightness")), 2)
+    c.check("hold + pointer + release drags (the slider to 80%)", b is not None and abs(b - 0.8) < 0.06, str(b))
+    pt = req("pointer", {"object": "/root/Menu/Box/PlayButton"})
+    c.check("pointer at a Control: its middle", abs(pt["x"] - els["Menu.PlayButton"]["screen"]["x"]) <= 1
+            and abs((648 - pt["y"]) - els["Menu.PlayButton"]["screen"]["y"]) <= 1, str(pt))  # (y from the bottom)
+    try:
+        req("pointer", {})
+        c.check("pointer without a place errors", False)
+    except BridgeError as e:
+        c.check("pointer without a place errors", "pointer needs" in e.error, e.error)
     r = req("ui_act", {"id": "Menu.PlayButton", "action": "click"})
     ctx = until(lambda: (lambda x: x if x.get("world") == "/root/Level" else None)(req("context")), 10)
     c.check("ui_act click Play opens the level", r.get("via") == "mouse" and ctx and ctx["world"] == "/root/Level", str(r))
     c.check("session event on scene change", until(lambda: any(e.get("kind") == "session" for e in link.events), 2))
     c.check("context character/camera", ctx["character"] == "/root/Level/Player" and ctx["camera"] == "/root/Level/Player/Head/Camera3D"
             and ctx.get("dimension") == "3d", f"{ctx['character']} {ctx['camera']}")
+    # a click in the world where the pointer is: the Bell's _input_event (physics picking) and a game's own ray from the
+    # mouse (the Picker: event.position, and get_viewport().get_mouse_position())
+    time.sleep(0.3)
+    pt = req("pointer", {"object": "/root/Level/Bell"})
+    pw = req("pointer", {"world": {"X": 1000, "Y": -450, "Z": 150}})
+    c.check("pointer at a world point and at a thing (where the camera shows it)", pt.get("on_screen") and pt["x"] < 576
+            and abs(pt["x"] - pw["x"]) <= 2 and abs(pt["y"] - pw["y"]) <= 2, f"{pt} {pw}")
+    req("key", {"key": "LeftMouseButton", "mode": "press"})
+    rung = until(lambda: gs("bell_rings") >= 1, 3)
+    c.check("pointer + LeftMouseButton clicks in the world (_input_event picking)", rung, str(gs("bell_rings")))
+    c.check("a game's ray from the mouse finds what is there", gs("picked") == "Bell", gs("picked"))
+    m = gs("mouse_at")
+    view_h = pw["y"] / ((pw["screen_y"] + 1) / 2)  # (the answer's y counts from the bottom left; the game's from the top)
+    c.check("get_viewport().get_mouse_position() is the pointer (headless)", abs(m["x"] - pw["x"]) <= 1
+            and abs(m["y"] - (1 - pw["screen_y"]) / 2 * view_h) <= 1,
+            f"{m} {pw}")
+    try:
+        req("pointer", {"world": {"X": -1000, "Y": 0, "Z": 100}})
+        c.check("pointer behind the camera errors", False)
+    except BridgeError as e:
+        c.check("pointer behind the camera errors", "behind the camera" in e.error, e.error)
+    lv = req("levels")
+    c.check("levels: the level playing", lv.get("playing") == "res://scenes/level.tscn", str(lv))
     time.sleep(0.3)
 
     # --- find, transforms, pose, movement --------------------------------------------------------
@@ -127,6 +190,29 @@ def run(c, brain, link):
     c.check("find by group", len(req("find", {"class": "group:fruit"})["objects"]) == 6
             and req("find", {"class": "group:player"})["objects"] == ["/root/Level/Player"])
     c.check("find limit", len(req("find", {"class": "Node", "limit": 3})["objects"]) == 3)
+    c.check("find: no limit given finds past 1000 (10000, as Unity's)", len(req("find", {"class": "Node"})["objects"]) > 30)
+    try:
+        req("find", {"class": "NoSuchClassAnywhere"})
+        c.check("find: an unknown class is a 400", False)
+    except BridgeError as e:
+        c.check("find: an unknown class is a 400", e.status == 400 and "Unknown class" in e.error, e.error)
+    c.check("find by script file name", req("find", {"class": "lever"})["objects"] == ["/root/Level/Lever"])
+    tr = req("transforms", {"objects": ["/root/GameState", "/root/Level/HUD/GateLabel", "/root/Level/Gate"]})["objects"]
+    c.check("transforms: a node with no transform answers active (not gone)", tr["/root/GameState"] is not None
+            and tr["/root/GameState"]["active"] is True and tr["/root/GameState"]["location"] is None, str(tr["/root/GameState"]))
+    c.check("transforms: active (a hidden label isn't)", tr["/root/Level/HUD/GateLabel"]["active"] is False and tr["/root/Level/Gate"]["active"] is True,
+            str(tr["/root/Level/HUD/GateLabel"]))
+    ctx2 = req("context")
+    c.check("context input (how input reaches the game)", ctx2.get("input", {}).get("pointer") is True and ctx2["input"].get("move") == "actions"
+            and any("headless" in n for n in ctx2["input"].get("notes", [])), str(ctx2.get("input")))
+    c.check("context net: standalone", ctx2.get("net") == {"mode": "standalone"}, str(ctx2.get("net")))
+    c.check("hello input", h.get("input", {}).get("pointer") is True, str(h.get("input")))
+    ctx3 = req("context", {"player": "/root/Level/Gate"})
+    c.check("context player: the node chosen", ctx3["character"] == "/root/Level/Gate", ctx3["character"])
+    ctx3 = req("context", {"player": ""})
+    c.check("context player \"\": found again", ctx3["character"] == "/root/Level/Player", ctx3["character"])
+    st = req("session", {"action": "status"})
+    c.check("session status: loading false, the scene", st.get("loading") is False and st.get("scene") == "res://scenes/level.tscn", str(st))
     tr = req("transforms", {"objects": ["/root/Level/Apple1", "/root/Level/Apple4", "/root/Level/Gate", "/root/Nope"]})["objects"]
     a1, a4, gate = tr["/root/Level/Apple1"], tr["/root/Level/Apple4"], tr["/root/Level/Gate"]
     # Godot (0, 0.6, -4) -> kit (400, 0, 60); (3, 0.6, -6) -> (600, 300, 60): +Y is the player's right (handedness)
@@ -141,7 +227,8 @@ def run(c, brain, link):
     c.check("pose yaw/pitch/on_ground", abs(pose["yaw"]) < 0.01 and abs(pose["pitch"]) < 0.01 and pose["on_ground"] is True, str(pose))
     mv = req("movement")
     c.check("movement", mv["walk_speed"] == 500 and mv["jump_z"] == 450 and abs(mv["gravity"] - 980) < 1 and mv["half_height"] == 90
-            and mv["radius"] == 40 and abs(mv["max_slope"] - 45) < 0.01 and mv["step"] is None, str(mv))
+            and mv["radius"] == 40 and abs(mv["max_slope"] - 45) < 0.01 and mv["step"] is None and mv["air_control"] == 0.3
+            and mv["sources"]["air_control"] == "script AIR_CONTROL", str(mv))
 
     # --- rc ------------------------------------------------------------------------------------------
     rc = lambda verb, **body: req("rc", {"verb": verb, "body": body})
@@ -218,6 +305,22 @@ def run(c, brain, link):
     a1 = req("pose")["at"]
     c.check("move in a world direction (camera-relative keys)", r["moved"] > 120 and abs(wrap(yaw_of(a1["X"] - a0["X"], a1["Y"] - a0["Y"]) - 180)) < 6,
             f"moved {r['moved']} toward {yaw_of(a1['X'] - a0['X'], a1['Y'] - a0['Y']):.1f}")
+    a0 = req("pose")["at"]
+    r = req("move", {"direction": {"X": -1, "Y": 0, "Z": 0}, "seconds": 0.4, "via": "keys"})
+    a1 = req("pose")["at"]
+    c.check("move via keys (W/A/S/D themselves)", r.get("via") == "keys" and r["moved"] > 120 and a1["X"] < a0["X"] - 100, f"{r} {a0} {a1}")
+    r = req("move", {"direction": {"X": 1, "Y": 0, "Z": 0}, "seconds": 0.4, "via": "controller"})
+    a2 = req("pose")["at"]
+    c.check("move via controller (the body moved directly)", r.get("via") == "controller" and r["moved"] > 120 and a2["X"] > a1["X"] + 100,
+            f"{r} {a1} {a2}")
+    r = req("move", {"direction": {"X": 1, "Y": 0, "Z": 0}, "seconds": 0.4, "scale": -1})
+    a3 = req("pose")["at"]
+    c.check("move scale -1 walks backward (stick: the actions)", r.get("via") == "stick" and a3["X"] < a2["X"] - 100, f"{r} {a2} {a3}")
+    try:
+        req("move", {"direction": {"X": 1, "Y": 0, "Z": 0}, "seconds": 0.1, "via": "teleporter"})
+        c.check("move via something unknown errors", False)
+    except BridgeError as e:
+        c.check("move via something unknown errors", "can't go via teleporter" in e.error, e.error)
     req("key", {"key": "MouseX", "mode": "press", "value": -round(math.radians(90) / 0.003, 1)})
     # key hold W (leased) and release
     a0 = req("pose")["at"]
@@ -273,6 +376,87 @@ def run(c, brain, link):
     c.check("view crosshair test", any(x.get("crosshair_on") for x in v2["visible"]), str([(x["name"], x.get("crosshair_on")) for x in v2["visible"]]))
     req("key", {"key": "MouseY", "mode": "press", "value": 81})
 
+    # --- view: what the body finds (held, sun, effects, highlight, slopes, ways up, openings, overhead, touching) ---
+    v = req("view", {"max_count": 40})
+    vis = {x["name"]: x for x in v["visible"]}
+    held = v.get("held", [])
+    c.check("view held: the lantern hanging from the camera", [x["name"] for x in held] == ["Lantern"] and held[0]["in_view"] is True
+            and held[0]["look"]["parts"] == ["CylinderMesh"] and "Lantern" not in vis, str(held))
+    c.check("view scene.sun", v.get("scene", {}).get("sun") == 1.0, str(v.get("scene")))
+    c.check("view omitted: nothing in 3D", v.get("omitted") == [], str(v.get("omitted")))
+    c.check("view look.effects (particles emitting)", vis.get("Torch", {}).get("look", {}).get("effects") == [{"asset": "Flame", "scale": 1.0}],
+            str(vis.get("Torch")))
+    rc("call", objectPath="/root/Level/Apple1", functionName="highlight", parameters={"on": True})
+    v = req("view", {"only": ["Apple1"]})
+    c.check("view look.highlighted (an overlay material)", v["visible"] and v["visible"][0].get("look", {}).get("highlighted") is True,
+            str(v["visible"]))
+    rc("call", objectPath="/root/Level/Apple1", functionName="highlight", parameters={"on": False})
+    c.check("not highlighted any more", not req("view", {"only": ["Apple1"]})["visible"][0].get("look", {}).get("highlighted"))
+    # face the ramp up to the deck (kit yaw 130: its foot at about (-600, 700))
+    req("key", {"key": "MouseX", "mode": "press", "value": round(math.radians(130) / 0.003, 1)})
+    time.sleep(0.15)
+    v = req("view", {"max_count": 40, "ways_up": True})
+    ramp = {x["name"]: x for x in v["visible"]}.get("Ramp", {})
+    c.check("view top_slope_degrees and tilt (the ramp)", ramp.get("top_slope_degrees") == 14 and abs(ramp.get("tilt", {}).get("pitch", 0)) == 14,
+            str({k: ramp.get(k) for k in ("top_slope_degrees", "tilt")}))
+    c.check("view uphill (kit -X)", abs(wrap(ramp.get("uphill", {}).get("yaw", 0) - 180)) <= 1, str(ramp.get("uphill")))
+    lo, hi = ramp.get("low_end", {}).get("at"), ramp.get("high_end", {}).get("at")
+    c.check("view low_end and high_end", lo and hi and abs(lo["X"] + 615) < 30 and lo["Z"] < 15 and abs(hi["X"] + 1185) < 30 and hi["Z"] > 135,
+            f"{lo} {hi}")
+    lane = ramp.get("lane", {})
+    box = ramp.get("box", {})
+    c.check("view box: the ramp's own (turned) box", abs(box.get("size", {}).get("X", 0) - 618) < 3 and abs(box.get("size", {}).get("Y", 0) - 500) < 2
+            and abs(box.get("size", {}).get("Z", 0) - 20) < 2 and abs(abs(box.get("rotation", {}).get("pitch", 0)) - 14) < 0.2, str(box))
+    c.check("view lane (its width, sides, foot, top)", 400 < lane.get("width", 0) <= 500 and lane.get("left", {}).get("by") in ("drop", "open")
+            and lane.get("right", {}).get("by") in ("drop", "open") and "foot" in lane and "top" in lane, str(lane))
+    ways = v["body"].get("ways_up", [])
+    up = next((w for w in ways if w["top"]["Z"] > 130 and "lane" in w), None)  # (its middle line, found by its lane)
+    c.check("view ways_up: the ramp, foot to top", up and abs(up["foot"]["X"] + 600) < 80 and 450 < up["foot"]["Y"] < 950
+            and up["foot"]["Z"] < 15 and up["top"]["X"] < -1050 and up["rises_by"] >= 130, str(ways))
+    c.check("view ways_up lane", up and up.get("lane", {}).get("width", 0) > 300, str(up and up.get("lane")))
+    # face the fence behind (kit yaw 180): the gap in it is an opening
+    req("key", {"key": "MouseX", "mode": "press", "value": round(math.radians(50) / 0.003, 1)})
+    time.sleep(0.15)
+    v = req("view", {"openings": True})
+    ops = v["body"].get("openings", [])
+    gap = next((o for o in ops if abs(o["at"]["X"] + 1800) < 60), None)
+    c.check("view openings: the gap in the fence", gap and abs(gap["at"]["Y"]) < 40 and 160 < gap["width"] < 240 and gap["passable"] is True
+            and gap["reachable_straight"] is True and set(gap.get("sides", [])) == {"FenceLeft", "FenceRight"}, str(ops))
+    has_pond = "Pond" in {x["name"] for x in req("view", {"max_count": 40})["visible"]}
+    no_pond = "Pond" not in {x["name"] for x in req("view", {"max_count": 40, "floor_size": 250})["visible"]}
+    c.check("view floor_size: wider than it and flat is ground (the pond)", has_pond and no_pond, f"{has_pond} {no_pond}")
+    c.check("view free (the body's room across the view)", len(v["body"].get("free", [])) >= 6, str(v["body"].get("free")))
+    req("key", {"key": "MouseX", "mode": "press", "value": -round(math.radians(180) / 0.003, 1)})
+    # under the arbor, looking up at it: overhead (in view), under (asked with ways_up)
+    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": -2, "y": 0, "z": 2}}, access="WRITE_ACCESS")
+    req("key", {"key": "MouseY", "mode": "press", "value": 300})
+    time.sleep(0.2)
+    v = req("view", {"ways_up": True, "max_count": 40})
+    oh, un = v["body"].get("overhead", {}), v["body"].get("under", {})
+    c.check("view body.overhead and body.under (the arbor)", oh.get("thing") == "Arbor" and 55 < oh.get("clearance", 0) < 75
+            and un.get("thing") == "Arbor", f"{oh} {un}")
+    req("key", {"key": "MouseY", "mode": "press", "value": -300})
+    # against the hay bale, facing it: touching, and blocks_player on it
+    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": 3.14, "y": 0, "z": -3}}, access="WRITE_ACCESS")
+    req("key", {"key": "MouseX", "mode": "press", "value": round(math.radians(90) / 0.003, 1)})
+    time.sleep(0.2)
+    v = req("view", {"max_count": 40})
+    bale = {x["name"]: x for x in v["visible"]}.get("HayBale", {})
+    c.check("view blocks_player and touching (against the hay bale)", bale.get("blocks_player") is True
+            and any(t["thing"] == "HayBale" for t in v["body"].get("touching", [])), str(v["body"].get("touching")))
+    req("session", {"action": "restart", "map": "level"})
+    time.sleep(0.2)
+
+    # watch notes how things are drawn: an effect stopping (the torch's flame)
+    result = {}
+    th = threading.Thread(target=lambda: result.update(req("watch", {"objects": ["/root/Level/Torch"], "drawn": True, "seconds": 0.5})))
+    th.start()
+    time.sleep(0.2)
+    rc("property", objectPath="/root/Level/Torch/Flame", propertyName="emitting", propertyValue={"emitting": False}, access="WRITE_ACCESS")
+    th.join()
+    c.check("watch notes an effect stopping", any(ch["what"] == "effect stopped" and ch.get("asset") == "Flame" for ch in result.get("changes", [])),
+            str(result))
+
     # --- watch -----------------------------------------------------------------------------------------
     w = req("watch", {"objects": ["/root/Level/Apple2"], "drawn": True, "seconds": 0.5})
     c.check("watch drawn sees the apple's mesh turn", w.get("drawn") is True and any(ch["what"] == "turned" and ch["object"].endswith("Apple2/Mesh") for ch in w["changes"]),
@@ -293,6 +477,25 @@ def run(c, brain, link):
     c.check("detector hud_fraction (12 / 10 written into the HUD's value)", hud and hud[0]["signature"] == "hud_fraction:HUD.AppleLabel"
             and hud[0]["source"] == "engine" and hud[0]["details"]["value"] == 12 and hud[0]["details"]["max"] == 10, str(hud and hud[0]))
     rc("property", objectPath="/root/GameState", propertyName="apples", propertyValue={"apples": 6}, access="WRITE_ACCESS")
+    # clamp (a variable outside its @export_range), over_max (above its max_ sibling), teleport (a body moved too far
+    # in one frame)
+    rc("property", objectPath="/root/GameState", propertyName="stamina", propertyValue={"stamina": 150}, access="WRITE_ACCESS")
+    cl = until(lambda: [f for f in link.findings if f.get("detector") == "clamp"], 3)
+    c.check("detector clamp (@export_range)", cl and cl[0]["signature"] == "clamp:game_state.stamina" and cl[0]["severity"] == "warning"
+            and cl[0]["details"] == {"property": "stamina", "value": 150, "clamp": "[0, 100]"}
+            and cl[0]["summary"] == "game_state stamina is 150, outside its allowed range 0..100", str(cl and cl[0]))
+    rc("property", objectPath="/root/GameState", propertyName="stamina", propertyValue={"stamina": 100}, access="WRITE_ACCESS")
+    rc("property", objectPath="/root/GameState", propertyName="health", propertyValue={"health": 130}, access="WRITE_ACCESS")
+    om = until(lambda: [f for f in link.findings if f.get("detector") == "over_max"], 3)
+    c.check("detector over_max (max_health)", om and om[0]["signature"] == "over_max:game_state.health"
+            and om[0]["details"] == {"property": "health", "value": 130, "max_property": "max_health", "max": 100}
+            and om[0]["summary"] == "game_state health is 130, above max_health 100", str(om and om[0]))
+    rc("property", objectPath="/root/GameState", propertyName="health", propertyValue={"health": 50}, access="WRITE_ACCESS")
+    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": 0, "y": 0, "z": 0}}, access="WRITE_ACCESS")
+    tp = until(lambda: [f for f in link.findings if f.get("detector") == "teleport"], 3)
+    c.check("detector teleport (a body moved too far in one frame)", tp and tp[0]["signature"] == "teleport:player"
+            and tp[0]["severity"] == "suspicion" and tp[0]["details"]["moved"] > 1000 and tp[0]["details"]["allowed"] >= 1000
+            and _near(tp[0]["details"]["to"], (0, 0, 0), 2), str(tp and tp[0]))
     walk_to(req, "/root/Level/Lever", stop_short=150)
     result = {}
     th = threading.Thread(target=lambda: result.update(req("watch", {"objects": ["/root/Level/Gate"], "seconds": 0.6})))
@@ -329,8 +532,27 @@ def run(c, brain, link):
     time.sleep(0.2)
     c.check("unpause: time goes on", req("ping")["game_time"] > t2)
 
+    c.check("pause standalone: no why", "why" not in req("pause", {"paused": False}))
+    req("timestep", {"fixed": True, "fps": 20})
+    time.sleep(0.3)
+    f0 = rc("call", objectPath="Engine", functionName="get_process_frames", parameters={})["ReturnValue"]
+    t0g = req("ping")["game_time"]
+    time.sleep(1.5)
+    f1 = rc("call", objectPath="Engine", functionName="get_process_frames", parameters={})["ReturnValue"]
+    t1g = req("ping")["game_time"]
+    req("timestep", {"fixed": False})
+    per = (t1g - t0g) / max(1, f1 - f0)
+    c.check("timestep fixed: each frame's game time 1/fps", abs(per - 0.05) < 0.005, f"{per:.4f} s a frame over {f1 - f0} frames")
+    c.check("timestep off: the time scale back", rc("property", objectPath="Engine", propertyName="time_scale")["time_scale"] == 1.0)
     # --- detectors op, timestep -----------------------------------------------------------------------------
     c.check("detectors op", req("detectors", {"enabled": True, "hitch_seconds": 1.0}) == {})
+    # actor_growth: 60 nodes of one kind more within growth_seconds (10 here)
+    req("detectors", {"growth_seconds": 10})
+    rc("call", objectPath="/root/GameState", functionName="leak", parameters={"n": 60})
+    ag = until(lambda: [f for f in link.findings if f.get("detector") == "actor_growth"], 25, 0.2)
+    c.check("detector actor_growth (a leak)", ag and ag[0]["signature"] == "actor_growth:Area3D" and ag[0]["details"]["to"] >= 60
+            and ag[0]["details"]["seconds"] == 10, str(ag and ag[0]))
+    req("detectors", {"growth_seconds": 120})
     c.check("timestep op", "note" in req("timestep", {"fixed": True, "fps": 30}) and req("timestep", {"fixed": False}) == {})
 
     # --- session restart ------------------------------------------------------------------------------------
@@ -341,7 +563,10 @@ def run(c, brain, link):
     c.check("autoload state kept (as Unreal's GameInstance)", gs("apples") == 6)
     r = req("session", {"action": "restart", "map": "level", "fresh": True}, timeout=40)
     c.check("session restart map + fresh resets autoload variables", req("context")["world"] == "/root/Level" and gs("apples") == 0, str(r))
-    c.check("session status", req("session", {"action": "status"}) == {"running": True})
+    c.check("session status", req("session", {"action": "status"}).get("running") is True)
+    r = req("session", {"action": "start", "map": "menu"}, timeout=40)
+    c.check("session start with another map plays it (headless)", r.get("running") and req("context")["world"] == "/root/Menu", str(r))
+    req("session", {"action": "restart", "map": "level"}, timeout=40)
 
     # --- codex ------------------------------------------------------------------------------------------------
     m = req("codex_manifest", {}, timeout=120)
@@ -380,6 +605,10 @@ def run(c, brain, link):
     c.check("2D move right", r["moved"] > 60 and req("pose")["at"]["X"] > x0 + 60, str(r))
     v = req("view")
     c.check("2D view", "Berry" in [x["name"] for x in v["visible"]], str([x["name"] for x in v["visible"]]))
+    c.check("2D view omitted: the 3D body's", {"held", "ways_up", "openings", "sonar"} <= set(v.get("omitted", [])), str(v.get("omitted")))
+    r = req("session", {"action": "start", "map": "level2d"})
+    c.check("session start with the map playing: nothing reopened", r.get("running") is True and r.get("scene") == "res://scenes/level2d.tscn", str(r))
+    c.check("levels in 2D", req("levels").get("playing") == "res://scenes/level2d.tscn")
     c.check("2D find/rc", req("find", {"class": "CharacterBody2D"})["objects"] == ["/root/Level2D/Player2D"]
             and rc("property", objectPath="/root/Level2D/Player2D", propertyName="position")["position"].keys() == {"x", "y"})
     req("key", {"key": "SpaceBar", "mode": "press"})

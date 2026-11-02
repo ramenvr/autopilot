@@ -3,7 +3,8 @@
 ## what Autopilot billed the account this period and Aura's words when the team is out of credits; the agent service's
 ## line; Add credits, Rerun setup, Sign out, Sign in again), the
 ## project's runs ("This project · N runs", what Aura billed for them, and each run: its time, prompt and bill), the
-## Data sharing choice (preferences.json share_data), Claude Code and Codex (running Autopilot from the user's own
+## Data sharing choice (preferences.json share_data), the runs' Design brief and Show Policy Log (the dock's settings,
+## also in the Editor Settings), Claude Code and Codex (running Autopilot from the user's own
 ## coding agent: the commands that set it up, to copy) and, last, Remove Autopilot (from this computer, confirmed in
 ## place). The data comes from the dock (show_data()); the numbers from ui/usage.gd.
 @tool
@@ -16,6 +17,10 @@ signal share_toggled(on: bool)
 signal account_action(action: String)
 ## Remove Autopilot from this computer, confirmed (keep_memory: Delete Autopilot's memories left unticked)
 signal remove_asked(keep_memory: bool)
+## The Design brief's words changed (kept as typed; sent with the next run)
+signal brief_changed(text: String)
+## Show Policy Log switched
+signal policy_log_toggled(on: bool)
 
 const HT = preload("autopilot_theme.gd")
 const W = preload("widgets.gd")
@@ -33,6 +38,14 @@ const ASSISTANTS_INTRO := ("One-time CLI setup to run Autopilot through Claude C
 	+ "subscriptions, respectively.")
 const ASSISTANTS_COMMANDS := ["autopilot connect claude", "autopilot connect codex"]
 const SHARING_TITLE := "Share runs to improve Autopilot"
+const BRIEF_TITLE := "Design brief"
+const BRIEF_TEXT := ("How the game is meant to work: its design, the rules players are told (e.g. “the player has three lives; "
+	+ "each coin is worth 10 points”). Explorations report what differs from it as a bug. Sent with every run.")
+const POLICY_TITLE := "Show Policy Log"
+const POLICY_TEXT := ("The Policy log tab: every step the agent took in the game (the action it chose, how likely each was, "
+	+ "what changed). Asked of the agent service from the next connection.")
+const POLICY_ON := "Policy log shown"
+const POLICY_OFF := "Policy log hidden"
 const SHARING_ON := "Data sharing on"  # (the switch's words, as it stands)
 const SHARING_OFF := "Data sharing off"
 ## The setting plates' spacing (Sharing, Claude Code & Codex): title to subtitle, subtitle to its control,
@@ -52,6 +65,8 @@ var confirming_removal := false
 var delete_memory := false  # (the removal's Delete Autopilot's memories box, unticked whenever it asks)
 var _busy := false  # a run is going: the buttons that change the account are disabled
 var _last := []  # show_data's arguments (built again when Sign out asks to confirm)
+var brief_box: TextEdit = null  # the Design brief's box (for the checks)
+var policy_switch: CheckBox = null  # Show Policy Log's switch
 ## What Copy does with a command (the clipboard; checks put a stand-in here: a headless Godot has no clipboard)
 var copy_text := func(text: String) -> void: DisplayServer.clipboard_set(text)
 
@@ -116,8 +131,8 @@ func _plate(row := false, sep := 10.0, border := HT.RULE, margins := Vector4(14,
 ## "verdict", "usage", "bill"}, oldest first, listed newest first); share:
 ## preferences.json's share_data; note: a line under the sharing choice ("" for none); account: the Account plate
 ## (account_view()).
-func show_data(entries: Array, share: bool, note := "", account := {}) -> void:
-	_last = [entries, share, note, account]
+func show_data(entries: Array, share: bool, note := "", account := {}, runs := {}) -> void:
+	_last = [entries, share, note, account, runs]
 	_busy = account.get("busy", false) == true
 	for c in _scroll.get_children():
 		_scroll.remove_child(c)
@@ -131,6 +146,9 @@ func show_data(entries: Array, share: bool, note := "", account := {}) -> void:
 		_v.add_child(_account_card(account))
 	_v.add_child(_runs_list(entries))
 	_v.add_child(_sharing_card(share, note))
+	if not runs.is_empty():
+		_v.add_child(_brief_card(str(runs.get("design_brief", ""))))
+		_v.add_child(_policy_card(runs.get("show_policy_log", true) == true))
 	_v.add_child(_assistants_card())
 	_v.add_child(_remove_card())
 
@@ -167,6 +185,35 @@ func _sharing_card(share: bool, note: String) -> PanelContainer:
 		n.add_theme_color_override("font_color", HT.RED)
 		box.add_child(n)
 	return _setting_card(SHARING_TITLE, SHARING, box)
+
+
+## The Design brief: the words as kept, changed as typed (brief_changed; nothing built again under the caret).
+func _brief_card(text: String) -> PanelContainer:
+	var box := TextEdit.new()
+	box.text = text
+	box.placeholder_text = "Optional"
+	box.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	box.custom_minimum_size = Vector2(0, HT.px(84))
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.text_changed.connect(func() -> void: brief_changed.emit(box.text))
+	brief_box = box
+	return _setting_card(BRIEF_TITLE, BRIEF_TEXT, box)
+
+
+## Show Policy Log: a switch, its words beside it.
+func _policy_card(on: bool) -> PanelContainer:
+	var sw := CheckBox.new()
+	sw.theme_type_variation = "AutopilotSwitch"
+	sw.tooltip_text = POLICY_TITLE
+	sw.add_theme_constant_override("h_separation", HT.px(8))
+	sw.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	sw.button_pressed = on
+	sw.text = POLICY_ON if on else POLICY_OFF
+	sw.toggled.connect(func(v: bool) -> void:
+		sw.text = POLICY_ON if v else POLICY_OFF
+		policy_log_toggled.emit(v))
+	policy_switch = sw
+	return _setting_card(POLICY_TITLE, POLICY_TEXT, sw)
 
 
 ## Autopilot in Claude Code & Codex: running Autopilot from the user's own coding agent, set up once with a command
@@ -615,5 +662,5 @@ func _dim(text: String) -> Label:
 
 
 func _rebuild() -> void:
-	if _last.size() == 4:
-		show_data(_last[0], _last[1], _last[2], _last[3])
+	if _last.size() == 5:
+		show_data(_last[0], _last[1], _last[2], _last[3], _last[4])

@@ -15,6 +15,7 @@
 #include "Input/DragAndDrop.h"
 #include "Input/Events.h"
 #include "Input/Reply.h"
+#include "Layout/ArrangedChildren.h"
 #include "InputCoreTypes.h"
 #include "Slate/SObjectWidget.h"
 #include "UObject/UObjectIterator.h"
@@ -328,10 +329,69 @@ TArray<TSharedPtr<FJsonValue>> List(UWorld* World)
 		else if (const USlider* Slider = Cast<USlider>(W))
 		{
 			Item->SetNumberField(TEXT("value"), Slider->GetValue());
+			Item->SetNumberField(TEXT("min"), Slider->GetMinValue());
+			Item->SetNumberField(TEXT("max"), Slider->GetMaxValue());
+		}
+		else if (const UEditableTextBox* Box = Cast<UEditableTextBox>(W))
+		{
+			// What is typed in it now, and its hint (as Unity's and Godot's text inputs)
+			Item->SetStringField(TEXT("text"), Box->GetText().ToString());
+			Item->SetStringField(TEXT("placeholder"), Box->GetHintText().ToString());
+		}
+		else if (const UEditableText* Edit = Cast<UEditableText>(W))
+		{
+			Item->SetStringField(TEXT("text"), Edit->GetText().ToString());
+			Item->SetStringField(TEXT("placeholder"), Edit->GetHintText().ToString());
 		}
 		Out.Add(MakeShared<FJsonValueObject>(Item));
 	}
 	return Out;
+}
+
+FString ElementAt(UWorld* World, const FVector2D& Pixel, const FVector2D& Size)
+{
+	UGameViewportClient* Viewport = World ? World->GetGameViewport() : nullptr;
+	TSharedPtr<SViewport> Root = Viewport ? Viewport->GetGameViewportWidget() : nullptr;
+	if (!Root.IsValid() || Size.X < 1.0 || Size.Y < 1.0)
+	{
+		return FString();
+	}
+	List(World);
+	TMap<const SWidget*, int32> Listed;  // each element's widget -> its index in Last
+	for (int32 i = 0; i < Last.Num(); ++i)
+	{
+		if (TSharedPtr<SWidget> Slate = Last[i].Slate.Pin())
+		{
+			Listed.Add(Slate.Get(), i);
+		}
+	}
+	// Laid out as Slate would over a view of that size (desired sizes first), the topmost element under the pixel:
+	// the last one met in paint order
+	Root->SlatePrepass(1.f);
+	int32 Found = INDEX_NONE;
+	TFunction<void(const TSharedRef<SWidget>&, const FGeometry&, int32)> Visit;
+	Visit = [&](const TSharedRef<SWidget>& Widget, const FGeometry& Geometry, int32 Depth)
+	{
+		if (Depth > 96 || !Widget->GetVisibility().IsVisible() || Widget->GetRenderOpacity() <= 0.f)
+		{
+			return;
+		}
+		if (const int32* Index = Listed.Find(&Widget.Get()))
+		{
+			if (Geometry.IsUnderLocation(Pixel))
+			{
+				Found = *Index;
+			}
+		}
+		FArrangedChildren Arranged(EVisibility::Visible);
+		Widget->ArrangeChildren(Geometry, Arranged);
+		for (int32 i = 0; i < Arranged.Num(); ++i)
+		{
+			Visit(Arranged[i].Widget, Arranged[i].Geometry, Depth + 1);
+		}
+	};
+	Visit(Root.ToSharedRef(), FGeometry::MakeRoot(Size, FSlateLayoutTransform()), 0);
+	return Found != INDEX_NONE ? Last[Found].Id : FString();
 }
 
 FString Act(UWorld* World, const TSharedPtr<FJsonObject>& Args)
@@ -381,6 +441,10 @@ FString Act(UWorld* World, const TSharedPtr<FJsonObject>& Args)
 			{
 				Option = Combo->GetOptionAtIndex((Combo->GetSelectedIndex() + 1) % Combo->GetOptionCount());
 			}
+			if (Combo->FindOptionIndex(Option) == INDEX_NONE)
+			{
+				return FString::Printf(TEXT("%s has no option %s"), *Id, *Option);  // (as Unity's and Godot's)
+			}
 			Combo->SetSelectedOption(Option);
 		}
 		else
@@ -398,7 +462,32 @@ FString Act(UWorld* World, const TSharedPtr<FJsonObject>& Args)
 	}
 	else if (Action == TEXT("set"))
 	{
-		if (USlider* Slider = Cast<USlider>(W))
+		if (UCheckBox* Check = Cast<UCheckBox>(W))
+		{
+			// {"value": true|false}: checked or not (as Unity's and Godot's), whatever it was
+			bool bValue = !Check->IsChecked();
+			Args->TryGetBoolField(TEXT("value"), bValue);
+			if (bValue != Check->IsChecked())
+			{
+				Check->SetIsChecked(bValue);
+				Check->OnCheckStateChanged.Broadcast(bValue);
+			}
+		}
+		else if (UComboBoxString* Combo = Cast<UComboBoxString>(W))
+		{
+			// {"option"} (or {"text"}): that option picked
+			FString Option;
+			if (!Args->TryGetStringField(TEXT("option"), Option))
+			{
+				Args->TryGetStringField(TEXT("text"), Option);
+			}
+			if (Combo->FindOptionIndex(Option) == INDEX_NONE)
+			{
+				return FString::Printf(TEXT("%s has no option %s"), *Id, *Option);
+			}
+			Combo->SetSelectedOption(Option);
+		}
+		else if (USlider* Slider = Cast<USlider>(W))
 		{
 			const float Value = (float)Args->GetNumberField(TEXT("value"));
 			Slider->SetValue(Value);

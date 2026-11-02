@@ -222,6 +222,10 @@ namespace Autopilot.Playtest.Editor
         public string Recording = "";
         /// <summary>How long the recording is, as the result said (0: not said).</summary>
         public double RecordingSeconds;
+        /// <summary>The recording's frames (the folder of JPEGs the agent service wrote, or their copy in the run's
+        /// folder) and how many a second: what a project without the Video module plays, as a flipbook.</summary>
+        public string RecordingFrames = "";
+        public double RecordingFps;
         /// <summary>The report's line saying why the run has no recording, decided when its result came (see
         /// NoRecordingLine); "" when it has one, when the result didn't say, and in runs kept before this line.</summary>
         public string NoRecording = "";
@@ -454,6 +458,8 @@ namespace Autopilot.Playtest.Editor
                 ["bill"] = Bill,
                 ["recording"] = Recording,
                 ["recording_seconds"] = RecordingSeconds,
+                ["recording_frames"] = RecordingFrames,
+                ["recording_fps"] = RecordingFps,
                 ["no_recording"] = NoRecording,
                 ["by"] = By,
             };
@@ -473,6 +479,7 @@ namespace Autopilot.Playtest.Editor
                 Usage = Json.Obj(o, "usage"),  // (absent in runs kept before there was usage)
                 Bill = Json.Obj(o, "bill"),  // (absent in runs kept before bills, and in runs not through Aura)
                 Recording = Json.Str(o, "recording"), RecordingSeconds = Json.Num(o, "recording_seconds", 0),  // (absent before recordings)
+                RecordingFrames = Json.Str(o, "recording_frames"), RecordingFps = Json.Num(o, "recording_fps", 0),
                 NoRecording = Json.Str(o, "no_recording"),  // (absent in runs kept before the line: they show nothing)
                 By = Json.Str(o, "by"),  // (absent in runs the window started)
             };
@@ -500,6 +507,8 @@ namespace Autopilot.Playtest.Editor
             {
                 var copied = string.IsNullOrEmpty(r.ReportDir) || string.IsNullOrEmpty(r.Recording) ? null : Path.Combine(r.ReportDir, "recording.mp4");
                 if (copied != null && File.Exists(copied)) r.Recording = copied;
+                var frames = string.IsNullOrEmpty(r.ReportDir) || string.IsNullOrEmpty(r.RecordingFrames) ? null : Path.Combine(r.ReportDir, "recording");
+                if (frames != null && Directory.Exists(frames) && Directory.GetFiles(frames, "*.jpg").Length > 0) r.RecordingFrames = frames;
             }
             catch (Exception) { }  // (a path that can't be: as it was kept)
             return r;
@@ -641,6 +650,8 @@ namespace Autopilot.Playtest.Editor
             var client = EditorHost.Client;
             if (client == null) return;
             client.StopRun();
+            // (else the project index goes on writing every scene until it ends, and the run's stop waits for it)
+            CodexExport.Stop();
             var live = Current;
             if (live == null || live.Stopping) return;
             live.Stopping = true;
@@ -963,9 +974,14 @@ namespace Autopilot.Playtest.Editor
         static void KeepRecording(AutopilotRun run, Dictionary<string, object> recording)
         {
             var video = Json.Str(recording, "video");
+            run.RecordingFrames = Json.Str(recording, "frames");
+            run.RecordingFps = Json.Num(recording, "frames_fps", 2);
+            run.RecordingSeconds = Json.Num(recording, "seconds", 0);
+#if !AUTOPILOT_VIDEO
+            KeepFrames(run);  // (played here as a flipbook: kept with the run)
+#endif
             if (string.IsNullOrEmpty(video)) return;
             run.Recording = video;
-            run.RecordingSeconds = Json.Num(recording, "seconds", 0);
             var dir = run.ReportDir;
             if (string.IsNullOrEmpty(dir)) return;
             string target;
@@ -998,6 +1014,50 @@ namespace Autopilot.Playtest.Editor
                 catch (Exception e)
                 {
                     mainThread.Enqueue(() => Debug.LogWarning($"[Autopilot] Couldn't copy the run's recording to {target} (shown from {video}): {e.Message}"));
+                }
+            });
+        }
+
+        /// <summary>The recording's frames copied into the run's folder (recording/, off the main thread), so the
+        /// flipbook outlives a Reset memory, as Godot's dock keeps them; once copied the run plays the copy.</summary>
+        internal static void KeepFrames(AutopilotRun run)
+        {
+            var src = run.RecordingFrames;
+            var dir = run.ReportDir;
+            if (string.IsNullOrEmpty(src) || string.IsNullOrEmpty(dir)) return;
+            string dst;
+            try
+            {
+                if (!Directory.Exists(src)) return;
+                dst = Path.Combine(dir, "recording");
+                if (string.Equals(Path.GetFullPath(src).TrimEnd('\\', '/'), Path.GetFullPath(dst).TrimEnd('\\', '/'), StringComparison.OrdinalIgnoreCase)) return;
+            }
+            catch (Exception)
+            {
+                return;
+            }
+            Task.Run(() =>
+            {
+                try
+                {
+                    Directory.CreateDirectory(dst);
+                    var n = 0;
+                    foreach (var file in Directory.GetFiles(src, "*.jpg"))
+                    {
+                        File.Copy(file, Path.Combine(dst, Path.GetFileName(file)), true);
+                        ++n;
+                    }
+                    if (n == 0) return;
+                    mainThread.Enqueue(() =>
+                    {
+                        if (run.RecordingFrames != src) return;
+                        run.RecordingFrames = dst;
+                        Touch(run);
+                    });
+                }
+                catch (Exception e)
+                {
+                    mainThread.Enqueue(() => Debug.LogWarning($"[Autopilot] Couldn't copy the run's recording frames to {dst} (played from {src}): {e.Message}"));
                 }
             });
         }

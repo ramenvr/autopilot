@@ -168,6 +168,21 @@ namespace
 	}
 }
 
+	TSharedRef<FJsonObject> InputInfo()
+	{
+		// How the player's inputs reach the game (as Unity's context `input`): keys and buttons through the player
+		// controller, Enhanced Input actions by path, the legacy mappings as legacy:<Name>; the pointer; `move` adds
+		// movement input to the pawn (its controller); no notes (Unity's say how its input handling is set up)
+		TSharedRef<FJsonObject> Input = MakeShared<FJsonObject>();
+		Input->SetStringField(TEXT("handling"), TEXT("enhanced_input"));
+		Input->SetBoolField(TEXT("keys"), true);
+		Input->SetBoolField(TEXT("actions"), true);
+		Input->SetBoolField(TEXT("pointer"), true);
+		Input->SetStringField(TEXT("move"), TEXT("controller"));
+		Input->SetArrayField(TEXT("notes"), TArray<TSharedPtr<FJsonValue>>());
+		return Input;
+	}
+
 	void Context(UPlaytestSubsystem& Bridge, int64 Id)
 	{
 		UWorld* World = Bridge.GetGameWorld();
@@ -186,6 +201,7 @@ namespace
 		Result->SetField(TEXT("game_time"), PlaytestJson::Number(World ? World->GetTimeSeconds() : 0.0));
 		Result->SetArrayField(TEXT("controls"), Controls(PC));
 		Result->SetObjectField(TEXT("net"), Net(Bridge, World, PC));
+		Result->SetObjectField(TEXT("input"), InputInfo());
 		if (!World)
 		{
 			const FString Problem = Bridge.GetPlayProblem();
@@ -199,10 +215,12 @@ namespace
 
 namespace
 {
-	TSharedPtr<FJsonValue> Running(bool bRunning)
+	/** {"running", "scene": the level playing (its package name), as Unity's and Godot's answers}. */
+	TSharedPtr<FJsonValue> Running(bool bRunning, const UWorld* World)
 	{
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		Result->SetBoolField(TEXT("running"), bRunning);
+		Result->SetStringField(TEXT("scene"), bRunning && World ? PlaytestLevels::PackageOf(World) : FString());
 		return Obj(Result);
 	}
 
@@ -270,16 +288,24 @@ namespace
 			Bridge.Respond(Id, Obj(Status));
 			return;
 		}
+		// A level that can't play (none or several by that name): 404 before anything changes, as Unity's and Godot's
+		FString Map = StringField(Args, TEXT("map"));
+		FString Package, Error;
+		if (!Map.IsEmpty() && (Action == TEXT("start") || Action == TEXT("restart")) && !PlaytestLevels::Resolve(Map, Package, Error))
+		{
+			Bridge.RespondError(Id, Error, 404);
+			return;
+		}
 		if (Bridge.SessionHandler)
 		{
 			TWeakObjectPtr<UPlaytestSubsystem> Weak(&Bridge);
-			Bridge.SessionHandler(Action, StringField(Args, TEXT("map")), [Weak, Id](bool bRunning, const FString& Error)
+			Bridge.SessionHandler(Action, Map, [Weak, Id](bool bRunning, const FString& Error)
 			{
 				if (UPlaytestSubsystem* B = Weak.Get())
 				{
 					if (Error.IsEmpty())
 					{
-						B->Respond(Id, Running(bRunning));
+						B->Respond(Id, Running(bRunning, B->GetGameWorld()));
 					}
 					else
 					{
@@ -291,18 +317,17 @@ namespace
 		}
 		// A game build: there is always a session; restarting reopens the map the game was launched with (or the one
 		// asked for: "map"), never the one it travelled to since (a match that ended moves the server on to the next
-		// map), with what the game put on the viewport taken off first (see RemoveGameWidgets)
-		if (Action != TEXT("restart") || !World)
+		// map), with what the game put on the viewport taken off first (see RemoveGameWidgets). A start asking for
+		// another level than the one playing goes there, as a restart in it
+		const bool bSwitch = Action == TEXT("start") && World && !Package.IsEmpty() && Package != PlaytestLevels::PackageOf(World);
+		if ((Action != TEXT("restart") && !bSwitch) || !World)
 		{
-			Bridge.Respond(Id, Running(World != nullptr));
+			Bridge.Respond(Id, Running(World != nullptr, World));
 			return;
 		}
-		FString Map = StringField(Args, TEXT("map"));
-		FString Package, Error;
-		if (!Map.IsEmpty() && Map.StartsWith(TEXT("/")) && !PlaytestLevels::Resolve(Map, Package, Error))
+		if (!Package.IsEmpty())
 		{
-			Bridge.RespondError(Id, Error, 404);
-			return;
+			Map = Package;
 		}
 		if (Map.IsEmpty())
 		{
@@ -324,7 +349,7 @@ namespace
 			UWorld* Current = Bridge.GetGameWorld();
 			if (Current && Current != Old.Get() && Current->HasBegunPlay())
 			{
-				Bridge.Respond(P.Id, Running(true));
+				Bridge.Respond(P.Id, Running(true, Current));
 				return true;
 			}
 			if (Now - P.StartReal > 30.0)

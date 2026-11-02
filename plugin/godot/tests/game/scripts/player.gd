@@ -4,6 +4,7 @@ const SPEED := 5.0
 const JUMP_VELOCITY := 4.5
 const LOOK := 0.003
 const REACH := 3.0
+const AIR_CONTROL := 0.3
 
 var gravity: float = ProjectSettings.get_setting("physics/3d/default_gravity")
 var spawn := Vector3.ZERO

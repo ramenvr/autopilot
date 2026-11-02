@@ -124,6 +124,10 @@ namespace PlaytestOps
 		{
 			KeyOp(Bridge, Id, Args);
 		}
+		else if (Op == TEXT("pointer"))
+		{
+			PointerOp(Bridge, Id, Args);
+		}
 		else if (Op == TEXT("view"))
 		{
 			View(Bridge, Id, Args);

@@ -37,9 +37,20 @@ func is_ours(n: Node) -> bool:
 	return n == host or host.is_ancestor_of(n)
 
 
-## The player: the body the current camera hangs from (a CharacterBody3D/2D or other physics body), else the first
-## node in the group "player"/"Player", else the scene's first CharacterBody3D (or 2D). null in a menu.
+## The node `context`'s `player` chose (a path; "" lets the addon find it again), while it exists.
+var chosen := ""
+
+
+## The player: the node `context` was told is the player (its `player` argument), else the body the current camera
+## hangs from (a CharacterBody3D/2D or other physics body), else the first node in the group "player"/"Player", else the
+## scene's first CharacterBody3D (or 2D). null in a menu.
 func player() -> Node:
+	if chosen != "":
+		var c := tree().root.get_node_or_null(NodePath(chosen)) if chosen.begins_with("/") else null
+		if c == null and scene() != null:
+			c = scene().get_node_or_null(NodePath(chosen))
+		if c is Node3D or c is Node2D:
+			return c
 	var f := Engine.get_process_frames()
 	if f == _player_frame and is_instance_valid(_player_cache):
 		return _player_cache
@@ -107,10 +118,42 @@ static func is_of(n: Node, cls: String) -> bool:
 	return false
 
 
-func find(args: Dictionary) -> Dictionary:
+## Whether a class name is one `find` knows: a Godot class, a script's class_name, or a script file's name.
+static func known_class(cls: String) -> bool:
+	if ClassDB.class_exists(cls):
+		return true
+	for c in ProjectSettings.get_global_class_list():
+		if str(c.get("class", "")) == cls:
+			return true
+	if _script_names.is_empty():
+		_scripts_in("res://", _script_names)
+	return _script_names.has(cls)
+
+
+static var _script_names := {}
+
+
+static func _scripts_in(dir: String, out: Dictionary) -> void:
+	var d := DirAccess.open(dir)
+	if d == null:
+		return
+	for f in d.get_files():
+		var name := str(f).trim_suffix(".remap")
+		if name.get_extension() in ["gd", "gdc", "cs"]:
+			out[name.get_basename()] = true
+	for sub in d.get_directories():
+		if not sub.begins_with(".") and sub != "node_modules":
+			_scripts_in(dir.path_join(sub), out)
+
+
+## `find` (as Unity's): {"class"?, "name"?, "limit"? (10000), "things"?} -> {"objects": [paths]}; [false, why, 400] for a
+## class nothing is (no Godot class, class_name or script of that name).
+func find(args: Dictionary):
 	var cls := str(args.get("class", ""))
 	var name := str(args.get("name", "")).to_lower()
-	var limit := int(args.get("limit", 1000))
+	var limit := int(args.get("limit", 10000))
+	if cls != "" and not cls.begins_with("group:") and not known_class(cls):
+		return [false, "Unknown class %s (no Godot class, class_name or script of that name)" % cls, 400]
 	var out := []
 	var candidates: Array
 	if cls.begins_with("group:"):
@@ -139,7 +182,7 @@ func find(args: Dictionary) -> Dictionary:
 		if name != "" and not (name in str(n.name).to_lower()):
 			continue
 		out.append(str(n.get_path()))
-	return {"objects": out}
+	return [true, {"objects": out}]
 
 
 func _walk(n: Node, out: Array) -> void:
@@ -236,7 +279,26 @@ static func velocity2d_of(n: Node) -> Vector2:
 	return Vector2.ZERO
 
 
+## Whether a node takes part in the game now: in the tree, processing, and (a drawn one) visible.
+static func active_of(n: Node) -> bool:
+	if not n.is_inside_tree() or not n.can_process():
+		return false
+	if n is Node3D or n is CanvasItem:
+		return n.is_visible_in_tree()
+	return true
+
+
+## A node's transform in the kit frame ({"location", "rotation", "velocity", "center", "extent", "active"}); a node
+## that has none (a plain Node: a manager, a timer) answers the same keys null but `active`, so it isn't taken for gone.
 static func transform_of(n: Node):
+	var t = _transform_of(n)
+	if t == null:
+		t = {"location": null, "rotation": null, "velocity": null, "center": null, "extent": null}
+	t.active = active_of(n)
+	return t
+
+
+static func _transform_of(n: Node):
 	if n is Node3D:
 		var b := bounds3d(n)
 		return {"location": Frame.kit(n.global_position), "rotation": Frame.kit_rot(n.global_basis),
@@ -324,6 +386,7 @@ const SPEED_RE := "^(walk_?|move_?|movement_?|max_?|run_?|player_?|base_?)?speed
 const JUMP_RE := "^(jump_?)(velocity|speed|force|impulse|strength|power)$"
 const JUMP_HEIGHT_RE := "^(jump_?)(height)$"
 const GRAVITY_RE := "^gravity$"
+const AIR_CONTROL_RE := "^air_?control$"
 
 
 ## A number the player's script holds under a name matching the pattern (its variables, then its constants):
@@ -352,7 +415,11 @@ func movement(_args := {}) -> Array:
 	var is3d := p is Node3D
 	var scale := Frame.SCALE if is3d else 1.0
 	var out := {"walk_speed": null, "jump_z": null, "gravity": null, "half_height": null, "radius": null, "step": null,
-		"max_slope": null, "sources": {}}
+		"max_slope": null, "air_control": null, "sources": {}}
+	var air := script_number(p, AIR_CONTROL_RE)
+	if air[0] != null:
+		out.air_control = Frame.r2(air[0])  # (a share of the control on the ground, 0..1, as Unreal's)
+		out.sources.air_control = "script " + air[1]
 	var speed := script_number(p, SPEED_RE)
 	if speed[0] != null:
 		out.walk_speed = Frame.r2(absf(speed[0]) * scale)
