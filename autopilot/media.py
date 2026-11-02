@@ -78,14 +78,16 @@ class Encoder:
 
     def _open(self, width, height):
         self.size = (_even(width), _even(height))
-        s = self.container.add_stream("libx264", rate=self.fps)
+        # (the rate as a fraction: a float one, 8.0 from an episode filmed closely (vision.Describer.filming), fails
+        # every frame in PyAV ("'float' object has no attribute 'numerator'"): the episode had no video)
+        s = self.container.add_stream("libx264", rate=Fraction(self.fps).limit_denominator(1000))
         s.width, s.height = self.size
         s.pix_fmt = "yuv420p"
         s.time_base = Fraction(1, 1000)
         s.codec_context.time_base = Fraction(1, 1000)
         # (no B-frames: with them each frame is decoded before its time, and the MP4's media length, counted in decode
         # times, comes out frames short of its last picture: a player going by it never shows the video's end)
-        s.options = {"preset": "veryfast", "crf": str(CRF), "g": str(self.fps * 2), "bf": "0"}
+        s.options = {"preset": "veryfast", "crf": str(CRF), "g": str(max(1, round(self.fps * 2))), "bf": "0"}
         self.stream = s
 
     def add(self, jpeg, wall):

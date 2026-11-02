@@ -145,6 +145,29 @@ def test_the_recorder_keeps_its_frames_and_films_closer_when_asked(tmp_path):
     assert [f["t"] for f in rec.frames.items] == [1.0, 2.0, 3.0] and rec.frames.items[0]["width"] == 64
 
 
+def test_an_episode_filmed_closely_is_a_video(tmp_path):
+    # run_harness frames_fps: the episode is filmed at that rate, a float once the describer has bounded it (8.0); the
+    # episode's video was made at it, and PyAV refused every frame of a float rate: the run had no recording
+    import av
+    from test_telemetry import SendLink, jpeg
+
+    link = SendLink({"project": "fake", "features": ["media"]})
+    with media.Recorder(link, str(tmp_path)) as rec:
+        d = vision.Describer(rec, "anthropic")
+        with d.filming(8) as changed:
+            assert changed and rec.fps == 8.0 and isinstance(rec.fps, float)
+            rec.begin(1)
+            for n in range(6):
+                link.frame_listeners[0]({"n": n, "t": 1.0 + n * 0.125, "wall": 50.0 + n * 0.125, "width": 64,
+                                         "height": 48, "jpeg": base64.b64encode(jpeg(shade=30 * n)).decode()})
+            rec.end(1)
+    assert rec.kept == 6 and rec.missing() is None
+    shown = rec.shown()
+    assert shown["episode"] == 1 and shown["seconds"] > 0
+    with av.open(shown["video"]) as video:
+        assert len(list(video.decode(video=0))) == 7  # (its 6 frames and the end held)
+
+
 # -- which model looks ------------------------------------------------------------------------------------------------
 
 def test_each_provider_has_its_vision_model_or_says_why_not(monkeypatch):
