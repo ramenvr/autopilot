@@ -235,9 +235,9 @@ Rules:
   how much?"); what the answers point to is still checked in the game.
 
 Background reading (when the run has it): while you work, and above all while a harness plays, a reader
-goes through the game's code for you: it checks the harness that plays against the code, and explains from the code what each episode showed. Its
-findings come with your tool results (all of them in {run}/findings.md). Use what bears on the next harness: what was
-found while harness N played belongs in harness N+1.
+goes through the game's code for you: it checks the harness that plays against the code, and explains from the code
+what each episode showed. Its findings come with your tool results (all of them in {run}/findings.md). Use what
+bears on the next harness: what was found while harness N played belongs in harness N+1.
 
 The contract's docstrings (autopilot/kit/harness.py):
 ```python
