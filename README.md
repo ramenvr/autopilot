@@ -94,6 +94,16 @@ For every prompt, Autopilot will automatically launch a PIE window and start rea
 
 Your first few runs allow Autopilot to learn about your game as it gradually populates its memory. Expect some suboptimal behavior for the first few harness attempts. **Autopilot visibly improves the more it plays your game**, and later harness attempts and runs both take a shorter time to complete a given task, as well as exhibit more intelligent behavior (e.g. faster dodging, equipping better weapons, playing smarter strategies, better aiming).
 
+## Uninstallation
+
+To do a clean uninstall of Autopilot, do the following steps:
+
+1. In Autopilot, go to **Settings** and click **Uninstall**. By default, Autopilot keeps your project's memories; you can choose to delete memories instead (this is a destructive action).
+2. Remove the plugin from each project:
+   - **Unreal**: Close the editor and delete `Plugins/Autopilot/`.
+   - **Unity**: Remove the Autopilot package in the Package Manager.
+   - **Godot**: Disable Autopilot in **Project > Project Settings > Plugins**, then delete `addons/autopilot/`.
+
 ## Contributing
 
 Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to set up a development environment, run the tests, and add support for a new engine. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
