@@ -14,6 +14,7 @@ the plugin and the keyed Jev client:
       Session.<method>(...)        ----- "call" ------------------------------->  a Session of its own
       media.Recorder.begin/end     <---- "episode" -----------------------------  RemoteRecorder (each episode's video)
       Session.activity(...)        <---- "activity" ----------------------------  Session.forward (the feed's events)
+      llm.Reader (llm, llm_map)    <---- "llm" ---------------------------------  RemoteReader (the child has no key)
 
 AUTOPILOT_SANDBOX: "auto" (default: bubblewrap where available, else a plain child process), "bwrap" (required),
 "process", or "off" (in this process: tests and debugging only). On Windows and macOS "auto" is a plain child
@@ -88,6 +89,7 @@ class Sandbox:
                  say=None, activity=None):
         self.link, self.client = link, client
         self.recorder = recorder  # (the run's media.Recorder: the episodes the child plays mark their videos on it)
+        self.reader = None  # (the run's llm.Reader: the child's llm and llm_map calls; set by the parent's session)
         self.scrub = scrub or (lambda x: x)
         # The child's progress lines and activity events (docs/protocol.md): the parent session's say() and
         # activity(), so its stage and its feed know what the child does; without them, the link's status alone
@@ -149,6 +151,8 @@ class Sandbox:
                 self.pool.submit(self._jev, msg)
             elif kind == "episode":
                 self.pool.submit(self._episode, msg)
+            elif kind == "llm":
+                self.pool.submit(self._llm, msg)
             elif kind == "send":
                 try:
                     self.link.send(self.scrub(msg["frame"]))
@@ -189,6 +193,29 @@ class Sandbox:
             if self.recorder is not None and msg.get("mark") in ("begin", "end"):
                 getattr(self.recorder, msg["mark"])(int(msg["n"]))
             reply = {"type": "res", "rid": msg["rid"], "ok": True}
+        except Exception as e:
+            reply = {"type": "res", "rid": msg["rid"], "ok": False, "error": f"{type(e).__name__}: {e}"}
+        self._write(reply)
+
+    def _llm(self, msg):
+        """A probe's llm or llm_map in the child: "ask" (question, about) -> the answer; "map" (question, paths) ->
+        the job's number and file; "job" (n, wait, timeout) -> {"done", "answers"}."""
+        try:
+            if self.reader is None:
+                raise RuntimeError("no model to read with in this run")
+            op = msg.get("op")
+            if op == "ask":
+                value = self.reader.ask(msg.get("question") or "", msg.get("about"))
+            elif op == "map":
+                job = self.reader.map(msg.get("question") or "", msg.get("paths") or [])
+                value = {"n": job.n, "file": job.file}
+            elif op == "job":
+                job = self.reader.jobs[int(msg["n"]) - 1]
+                answers = job.result(wait=bool(msg.get("wait")), timeout=msg.get("timeout"))
+                value = {"done": job.done(), "answers": answers, "paths": job.paths}
+            else:
+                raise ValueError(f"unknown llm op {op}")
+            reply = {"type": "res", "rid": msg["rid"], "ok": True, "result": value}
         except Exception as e:
             reply = {"type": "res", "rid": msg["rid"], "ok": False, "error": f"{type(e).__name__}: {e}"}
         self._write(reply)
@@ -371,6 +398,49 @@ class RemoteRecorder:
         self._mark("end", n, 20)
 
 
+class RemoteReader:
+    """The parent's llm.Reader, for llm and llm_map in probes here (the model's key is the parent's)."""
+
+    def __init__(self, link):
+        self.link = link
+
+    def _ask(self, msg, timeout):
+        r = self.link._ask({"type": "llm", **msg}, timeout=timeout)
+        if not r.get("ok"):
+            raise RuntimeError(r.get("error") or "the model call failed")
+        return r["result"]
+
+    def ask(self, question, about=None):
+        return self._ask({"op": "ask", "question": question, "about": about}, timeout=600)
+
+    def map(self, question, paths):
+        job = self._ask({"op": "map", "question": question, "paths": list(paths)}, timeout=60)
+        return RemoteJob(self, job["n"], job["file"], list(paths))
+
+
+class RemoteJob:
+    """An llm_map job the parent runs: done(), result(wait=True, timeout=None) -> {path: answer}, as llm.Job."""
+
+    def __init__(self, reader, n, file, paths):
+        self.reader, self.n, self.file, self.paths = reader, n, file, paths
+
+    def _state(self, wait=False, timeout=None):
+        return self.reader._ask({"op": "job", "n": self.n, "wait": wait, "timeout": timeout},
+                                timeout=(timeout or 3600) + 30 if wait else 60)
+
+    def done(self):
+        return bool(self._state()["done"])
+
+    def result(self, wait=True, timeout=None):
+        return self._state(wait, timeout)["answers"]
+
+    def __repr__(self):
+        state = self._state()
+        return (f"<llm_map {self.n}: {len(state['answers'])} of {len(self.paths)} files answered "
+                f"({'done' if state['done'] else 'running'}); .result() for {{path: answer}}; all of them in "
+                f"{self.file}>")
+
+
 def child_main():
     out = _Out()
     reader = io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8")
@@ -389,6 +459,7 @@ def child_main():
     session.forward = lambda event: out({"type": "activity", "event": event})  # (the parent's feed has it)
     session.stop = stopped.is_set
     session.recorder = RemoteRecorder(link)
+    session.reader = RemoteReader(link)
     pool = futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="call")
 
     def run_call(msg):

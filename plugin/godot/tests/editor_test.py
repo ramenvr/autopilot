@@ -66,11 +66,11 @@ def main():
     a = ap.parse_args()
     c = Checks()
     brain = Brain(a.port)
-    # a user settings folder of its own (Autopilot/preferences.json: sharing off), never the user's
+    # a user settings folder of its own (Autopilot/preferences.json: sharing and the research agent off), never the user's
     settings = tempfile.mkdtemp(prefix="godot_editor_settings_")
     os.makedirs(os.path.join(settings, "Autopilot"))
     with open(os.path.join(settings, "Autopilot", "preferences.json"), "w", encoding="utf-8") as f:
-        json.dump({"version": 1, "onboarded": False, "share_data": False}, f)
+        json.dump({"version": 1, "onboarded": False, "share_data": False, "research_agent": False}, f)
     # Godot's editor settings of its own, with the editor as slow between frames as an unfocused one (100 ms a frame,
     # its interface/editor/unfocused_low_processor_mode_sleep_usec): the relay must not wait on it while a run goes
     os.makedirs(os.path.join(settings, "Godot"))
@@ -107,9 +107,9 @@ def run(c, brain, link, guard):
     c.check("editor hello", h.get("engine") == "godot" and h.get("host") == "editor" and len(h.get("project_id", "").replace("-", "")) == 32, str(h))
     auth = brain.headers[-1].get("Authorization") or brain.headers[-1].get("authorization")
     c.check("editor sends the Bearer token", auth == "Bearer editor-token", auth)
-    c.check("editor hello: media, levels, and share from preferences.json (connected though not onboarded: headless)",
-            {"media", "levels"} <= set(h.get("features", [])) and h.get("share") is False,
-            str({k: h.get(k) for k in ("features", "share")}))
+    c.check("editor hello: media, levels, share and research from preferences.json (connected though not onboarded: headless)",
+            {"media", "levels"} <= set(h.get("features", [])) and h.get("share") is False and h.get("research") is False,
+            str({k: h.get(k) for k in ("features", "share", "research")}))
     c.check("editor hello: timed_hold and pointer relayed to the game, and input", {"timed_hold", "pointer"} <= set(h.get("features", []))
             and h.get("input", {}).get("pointer") is True and isinstance(h.get("input", {}).get("notes"), list), str(h.get("input")))
     lv = req("levels")

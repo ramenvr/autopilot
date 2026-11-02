@@ -42,6 +42,7 @@ bool FPlaytestPreferencesFileTest::RunTest(const FString& Parameters)
 	FPlaytestPreferences Prefs = PlaytestPreferences::Load(Dir.Path);
 	TestFalse(TEXT("not onboarded"), Prefs.bOnboarded);
 	TestTrue(TEXT("sharing by default"), Prefs.bShareData);
+	TestFalse(TEXT("the research agent not chosen"), Prefs.ResearchChoice.IsSet());
 	TestTrue(TEXT("no access"), Prefs.Access.IsEmpty());
 
 	// Corrupt: the defaults too
@@ -49,6 +50,7 @@ bool FPlaytestPreferencesFileTest::RunTest(const FString& Parameters)
 	Prefs = PlaytestPreferences::Load(Dir.Path);
 	TestFalse(TEXT("corrupt: not onboarded"), Prefs.bOnboarded);
 	TestTrue(TEXT("corrupt: sharing"), Prefs.bShareData);
+	TestFalse(TEXT("corrupt: the research agent not chosen"), Prefs.ResearchChoice.IsSet());
 
 	// Written, merged with keys another plugin keeps there
 	FFileHelper::SaveStringToFile(TEXT("{\"version\": 1, \"theme\": \"dark\", \"access\": \"aura\"}"), *File);
@@ -56,6 +58,12 @@ bool FPlaytestPreferencesFileTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("access read"), Prefs.Access, FString(TEXT("aura")));
 	Prefs.bOnboarded = true;
 	Prefs.bShareData = false;
+	// (the research agent not chosen: nothing written for it, so the agent service decides)
+	PlaytestPreferences::Save(Prefs, Dir.Path);
+	FString Unchosen;
+	FFileHelper::LoadFileToString(Unchosen, *File);
+	TestFalse(TEXT("nothing chosen: no research_agent written"), Unchosen.Contains(TEXT("research_agent")));
+	Prefs.ResearchChoice = false;
 	Prefs.Access.Empty();  // (skipped: the choice made before stays)
 	TestTrue(TEXT("saved"), PlaytestPreferences::Save(Prefs, Dir.Path));
 	TestFalse(TEXT("no temp file left"), FPaths::FileExists(File + TEXT(".tmp")));
@@ -70,10 +78,12 @@ bool FPlaytestPreferencesFileTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("version"), (int32)Json->GetNumberField(TEXT("version")), 1);
 	TestTrue(TEXT("onboarded"), Json->GetBoolField(TEXT("onboarded")));
 	TestFalse(TEXT("share_data"), Json->GetBoolField(TEXT("share_data")));
+	TestFalse(TEXT("research_agent"), Json->GetBoolField(TEXT("research_agent")));
 	TestEqual(TEXT("access kept"), Json->GetStringField(TEXT("access")), FString(TEXT("aura")));
 	Prefs = PlaytestPreferences::Load(Dir.Path);
 	TestTrue(TEXT("read back: onboarded"), Prefs.bOnboarded);
 	TestFalse(TEXT("read back: not sharing"), Prefs.bShareData);
+	TestTrue(TEXT("read back: the research agent off"), Prefs.ResearchChoice.IsSet() && !Prefs.ResearchChoice.GetValue());
 
 	Prefs.Access = TEXT("own_keys");
 	PlaytestPreferences::Save(Prefs, Dir.Path);

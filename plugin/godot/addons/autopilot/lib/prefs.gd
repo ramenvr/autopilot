@@ -1,8 +1,9 @@
 ## The user's Autopilot choices, shared by every engine and project on the machine (docs/protocol.md "Sharing a run's
 ## data"), in Autopilot/ under the user settings folder, as autopilot/bridge.py brain_file and the Unreal and Unity plugins
 ## name it: %LOCALAPPDATA% on Windows, ~/Library/Application Support on macOS, $XDG_CONFIG_HOME or ~/.config elsewhere.
-##  - preferences.json: {"version": 1, "onboarded": bool, "share_data": bool, "access": "aura" | "own_keys"}; a missing
-##    or unreadable file is the defaults (not onboarded, sharing on);
+##  - preferences.json: {"version": 1, "onboarded": bool, "share_data": bool, "research_agent": bool, "access": "aura" |
+##    "own_keys"}; a missing or unreadable file is the defaults (not onboarded, sharing on, the research agent not
+##    chosen: research_agent is written only when the user flips its switch);
 ##  - autopilot.env: KEY=value lines (the BYOK keys the first-run setup takes, its Coding Agent and OpenCode's LLM
 ##    provider), merged: other lines and keys are kept.
 ## Also what a running agent service announces there (brain.json, aura-brain.json: {"url", "pid"}) and the Aura app
@@ -113,6 +114,13 @@ static func share_data(prefs: Dictionary) -> bool:
 	return prefs.share_data if typeof(prefs.get("share_data")) == TYPE_BOOL else true
 
 
+## The user's choice of the research agent (the agent service reading the game's code while harnesses play): true or
+## false once they flipped the Settings page's switch, null while they haven't (absent or not a boolean). Not chosen,
+## the agent service decides: off for the Aura app's (Use with Aura), on for the plugin's own.
+static func research_agent(prefs: Dictionary):
+	return prefs.research_agent if typeof(prefs.get("research_agent")) == TYPE_BOOL else null
+
+
 ## The prefs with changes merged in (keys not in changes are kept; a null value removes its key), as "version": 1.
 static func merged(prefs: Dictionary, changes: Dictionary) -> Dictionary:
 	var out := prefs.duplicate(true)
@@ -134,12 +142,25 @@ static func save_preferences(changes: Dictionary, path := "") -> Error:
 ## Whether this run shares its data: preferences.json's share_data, unless the command line says (-PlaytestShare=0|1,
 ## given: "" when it doesn't).
 static func share_for_run(given: String, path := "") -> bool:
+	var said = said_on(given)
+	return said if said != null else share_data(load_preferences(path))
+
+
+## This run's research agent choice: the command line's (-PlaytestResearch=0|1, given: "" when it doesn't say), else
+## preferences.json's research_agent; null when neither chose (the agent service decides).
+static func research_for_run(given: String, path := ""):
+	var said = said_on(given)
+	return said if said != null else research_agent(load_preferences(path))
+
+
+## A command line's on/off word: true (1, true, yes, on), false (0, false, no, off), or null for anything else ("").
+static func said_on(given: String):
 	var g := given.strip_edges().to_lower()
 	if g in ["0", "false", "no", "off"]:
 		return false
 	if g in ["1", "true", "yes", "on"]:
 		return true
-	return share_data(load_preferences(path))
+	return null
 
 
 # --- autopilot.env ----------------------------------------------------------------------------------------

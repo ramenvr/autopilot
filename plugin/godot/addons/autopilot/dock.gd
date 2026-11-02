@@ -724,6 +724,7 @@ func _build() -> void:
 		settings_open = false
 		_render())
 	_settings_page.share_toggled.connect(_on_share_toggled)
+	_settings_page.research_toggled.connect(_on_research_toggled)
 	_settings_page.account_action.connect(_on_account_action)
 	_settings_page.remove_asked.connect(remove_from_computer)
 	_settings_page.brief_changed.connect(set_design_brief)
@@ -3147,8 +3148,10 @@ func _render_usage() -> void:
 		if not r.usage.is_empty() or not r.bill.is_empty():
 			_usage_runs = Usage.upsert(_usage_runs, r.usage_record())
 	var prefs := Prefs.load_preferences()
+	# (the Research agent switch: the user's choice, else off through the Aura app (Use with Aura), on otherwise)
+	var research := SettingsPage.research_shown(Prefs.research_agent(prefs), _with_aura())
 	_settings_page.show_data(_usage_runs, Prefs.share_data(prefs), _usage_note, account_view(prefs),
-		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()})
+		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()}, research)
 
 
 ## The composer's Time limit as last set (a run's minutes in all), kept per user and project (project metadata
@@ -3164,7 +3167,19 @@ func _on_time_limit_changed(minutes: float) -> void:
 ## The Settings page's Data sharing box: preferences.json share_data. The hello carries it, so a connection open with no
 ## run going is made again at once; otherwise it counts from the next connection.
 func _on_share_toggled(on: bool) -> void:
-	var err := Prefs.save_preferences({"share_data": on})
+	_save_setting({"share_data": on})
+
+
+## The Settings page's Research agent switch: the user's choice, saved as preferences.json research_agent (written only
+## here: until then the agent service decides). The hello carries it once chosen, so it applies as the sharing box does.
+func _on_research_toggled(on: bool) -> void:
+	_save_setting({"research_agent": on})
+
+
+## A Settings page switch's choice merged into preferences.json; with no run going an open connection is made again at
+## once (its hello says it), otherwise it counts from the next connection.
+func _save_setting(changes: Dictionary) -> void:
+	var err := Prefs.save_preferences(changes)
 	if err != OK:
 		_usage_note = ""
 		_set_status("Couldn’t save the setup to %s (error %d)" % [Prefs.file(Prefs.PREFERENCES), err])

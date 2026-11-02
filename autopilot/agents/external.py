@@ -200,7 +200,7 @@ class Desk:
                 text += f" (run {self.marker})"  # (every answer names the run: the describer's transcript is found)
             if tool == "report" and s.report is not None:
                 self.reported_at = time.time()
-            content = [{"type": "text", "text": text + s.steer_note() + "\n" + s.clock()}]
+            content = [{"type": "text", "text": text + s.steer_note() + s.news() + "\n" + s.clock()}]
             content += [{"type": "image", "data": base64.standard_b64encode(jpeg).decode("ascii"),
                          "mimeType": "image/jpeg"} for jpeg in images]
             return {"content": content, "isError": False}

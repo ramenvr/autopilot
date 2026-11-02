@@ -66,6 +66,7 @@ var cli_stay_open := false
 var cli_map := ""  # -PlaytestMap / --playtest-map: the scene to start in (a res:// path or a scene file's name)
 var cli_connect_timeout := 120.0  # -PlaytestConnectTimeout / --playtest-connect-timeout: seconds to wait for the welcome
 var cli_share := ""  # -PlaytestShare=0|1 / --playtest-share=...: overrides preferences.json's share_data for this run
+var cli_research := ""  # -PlaytestResearch=0|1 / --playtest-research=...: overrides preferences.json's research_agent for this run
 var _cli_deadline := 0.0
 var _exiting := false
 var _run_asked := false  # the command line's run went to a brain (asked once: never again on a new connection)
@@ -175,6 +176,8 @@ func _parse_command_line() -> void:
 				cli_stay_open = true
 			"playtestshare":
 				cli_share = value if value != "" else "1"
+			"playtestresearch":
+				cli_research = value if value != "" else "1"
 			"playtestconnecttimeout":
 				if value.is_valid_float() and float(value) > 0.0:
 					cli_connect_timeout = float(value)
@@ -211,6 +214,11 @@ func hello(host: String) -> Dictionary:
 		"share": Prefs.share_for_run(cli_share),
 		# how input reaches the game (as Unity's: point before clicking, what headless changes)
 		"input": Keys.input_caps(DisplayServer.get_name() == "headless")}
+	# whether the agent service runs its research agent, only when chosen (preferences.json, or -PlaytestResearch on the
+	# command line); left out, the agent service decides (off for the Aura app's, on for this plugin's own)
+	var research = Prefs.research_for_run(cli_research)
+	if typeof(research) == TYPE_BOOL:
+		h.research = research
 	if project_id() != "":
 		h.project_id = project_id()
 	return h

@@ -888,6 +888,7 @@ namespace Autopilot.Playtest.Tests
         // (the same words as the setup's step 3)
         const string ShareLine = "Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot." +
                                  " For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.";
+        const string ResearchLine = "Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.";
 
         static void Settings(AutopilotView v) => v.Page = "settings";
 
@@ -895,9 +896,11 @@ namespace Autopilot.Playtest.Tests
         public void SettingsPageFits()
         {
             Assert.AreEqual(ShareLine, AutopilotView.ShareLine);
+            Assert.AreEqual(ResearchLine, AutopilotView.ResearchLine);
             var sharing = new List<string>
             {
                 "Share runs to improve Autopilot", ShareLine,
+                "RESEARCH AGENT", ResearchLine,
                 "Uninstall Autopilot", "Uninstall",
             };
             Assert.AreEqual(0, AutopilotUsage.Entries.Count, "the test's own ledger starts empty");
@@ -1085,16 +1088,22 @@ namespace Autopilot.Playtest.Tests
             Assert.IsNull(Callout(), "BYOK");
         }
 
-        /// <summary>Share runs and Autopilot in Claude Code &amp; Codex look alike: each card is its title (the mono
-        /// micro-label), the line under it in the sharing text's style, then its control (the switch with no words of
-        /// its own, the commands with Copy), with the same gaps; no Time limit card (the composer has it).</summary>
+        /// <summary>Share runs, Research agent and Autopilot in Claude Code &amp; Codex look alike: each card is its
+        /// title (the mono micro-label), the line under it in the sharing text's style, then its control (a switch
+        /// with no words of its own, the commands with Copy), with the same gaps; no Time limit card (the composer has
+        /// it).</summary>
         [Test]
         public void TheSettingsCardsAreTitleLineThenControl()
         {
             Assert.AreEqual("Share runs to improve Autopilot", AutopilotView.ShareTitle);
+            Assert.AreEqual("Research agent", AutopilotView.ResearchTitle);
             Show(new Vector2Int(560, 900), Settings);
             Assert.IsNull(host.Q(className: "time-limit"), "no Time limit card");
-            var cards = new[] { ("sharing", "SHARE RUNS TO IMPROVE AUTOPILOT", ShareLine), ("assistants", "AUTOPILOT IN CLAUDE CODE & CODEX", AutopilotView.AssistantsLine) };
+            var cards = new[]
+            {
+                ("sharing", "SHARE RUNS TO IMPROVE AUTOPILOT", ShareLine), ("research", "RESEARCH AGENT", ResearchLine),
+                ("assistants", "AUTOPILOT IN CLAUDE CODE & CODEX", AutopilotView.AssistantsLine),
+            };
             var shareLine = host.Q(className: "sharing").Children().ElementAt(1);
             var titles = new List<VisualElement>();
             foreach (var (cls, title, line) in cards)
@@ -1155,10 +1164,119 @@ namespace Autopilot.Playtest.Tests
             Assert.AreEqual("Data sharing off", lone.text, "and back");
             CollectionAssert.AreEqual(new[] { true, false }, got);
             host.Remove(lone);
+
+            // Research agent: the same switch, "Research agent on/off" (as it is now: nothing chosen, this plugin's
+            // own agent service, so on)
+            var research = host.Q(className: "research").Q(className: "setting-control").Q<Toggle>(className: "research-toggle");
+            Assert.IsNotNull(research);
+            Assert.AreEqual("Research agent", research.tooltip);
+            Assert.IsNull(Preferences.Current.ResearchAgent, "not chosen");
+            Assert.IsFalse(PlaytestSettings.Get().UseWithAura);
+            Assert.IsTrue(research.value, "Use with Aura off, nothing chosen: on");
+            Assert.AreEqual(AutopilotView.ResearchState(research.value), research.text);
+            Assert.AreEqual("Research agent on", AutopilotView.ResearchState(true));
+            Assert.AreEqual("Research agent off", AutopilotView.ResearchState(false));
+            var researchPill = research.Q(className: "unity-toggle__checkmark");
+            var researchWords = research.Q<Label>(className: "unity-toggle__text");
+            Assert.IsNotNull(researchPill);
+            Assert.IsNotNull(researchWords);
+            Assert.AreEqual(8, researchWords.worldBound.xMin - researchPill.worldBound.xMax, 0.5f, "8 px from the pill to its words");
+            Assert.AreEqual(researchPill.worldBound.center.y, researchWords.worldBound.center.y, 2f, "its words centred with the pill");
+            Assert.AreEqual(pill.worldBound.width, researchPill.worldBound.width, 0.5f, "the sharing switch's pill");
+            got.Clear();
+            lone = AutopilotView.ResearchSwitch(true, got.Add);
+            host.Add(lone);
+            lone.value = false;
+            Assert.AreEqual("Research agent off", lone.text, "the words follow the switch");
+            lone.value = true;
+            Assert.AreEqual("Research agent on", lone.text, "and back");
+            CollectionAssert.AreEqual(new[] { false, true }, got);
+            host.Remove(lone);
             // Claude Code & Codex: the two commands, 6 px apart
             var rows = host.Q(className: "assistants").Q(className: "setting-control").Query(className: "connect-command").ToList();
             Assert.AreEqual(2, rows.Count);
             Assert.AreEqual(6, rows[1].worldBound.yMin - rows[0].worldBound.yMax, 0.5f, "between the commands");
+        }
+
+        /// <summary>What the Research agent switch shows with nothing chosen: off for runs through the Aura app (Use
+        /// with Aura), on for this plugin's own agent service, signed in to Aura or with the user's own keys; a choice
+        /// beats both. (SetUp turns Use with Aura off and TearDown puts it back.)</summary>
+        [Test]
+        public void TheResearchAgentSwitchFollowsUseWithAuraUntilChosen()
+        {
+            Assert.IsFalse(AutopilotView.ResearchShown(null, true), "through the Aura app: off");
+            Assert.IsTrue(AutopilotView.ResearchShown(null, false), "this plugin's own agent service: on");
+            Assert.IsTrue(AutopilotView.ResearchShown(true, true), "the choice beats Use with Aura");
+            Assert.IsFalse(AutopilotView.ResearchShown(false, false), "the choice beats the own agent service");
+
+            Toggle Switch()
+            {
+                Show(new Vector2Int(560, 900), Settings);
+                return host.Q(className: "research").Q<Toggle>(className: "research-toggle");
+            }
+
+            // Use with Aura on, nothing chosen: off
+            PlaytestSettings.Get().UseWithAura = true;
+            var toggle = Switch();
+            Assert.IsFalse(toggle.value, "Use with Aura, nothing chosen: off");
+            Assert.AreEqual("Research agent off", toggle.text);
+
+            // Use with Aura off: on, whatever the account (signed in to Aura, before any account frame, own keys)
+            PlaytestSettings.Get().UseWithAura = false;
+            Preferences.Update(new Dictionary<string, object> { ["access"] = Preferences.AccessAura });
+            Assert.IsTrue(Switch().value, "access aura, no account frame: on");
+            var c = Client();
+            c.TestReceive($"{{\"type\": \"account\", \"mode\": \"aura\", \"email\": \"{Email}\", \"signed_in\": true}}");
+            toggle = Switch();
+            Assert.IsTrue(toggle.value, "signed in to Aura on the own agent service: on");
+            Assert.AreEqual("Research agent on", toggle.text);
+            c.TestReceive("{\"type\": \"account\", \"mode\": \"own_keys\", \"signed_in\": false, \"keys\": {}}");
+            Assert.IsTrue(Switch().value, "own keys: on");
+            Assert.IsNull(Preferences.Current.ResearchAgent, "showing saves nothing");
+
+            // A choice beats both: on through the Aura app, off on the own agent service
+            Preferences.Update(new Dictionary<string, object> { ["research_agent"] = true });
+            PlaytestSettings.Get().UseWithAura = true;
+            Assert.IsTrue(Switch().value, "chosen on, Use with Aura");
+            Preferences.Update(new Dictionary<string, object> { ["research_agent"] = false });
+            PlaytestSettings.Get().UseWithAura = false;
+            toggle = Switch();
+            Assert.IsFalse(toggle.value, "chosen off, own agent service");
+            Assert.AreEqual("Research agent off", toggle.text);
+        }
+
+        /// <summary>Flipping the Research agent switch saves the choice in preferences.json (merged: the other keys
+        /// stay), and from then on the page shows it, whatever Use with Aura says.</summary>
+        [Test]
+        public void TheResearchAgentSwitchSavesTheChoice()
+        {
+            Preferences.Update(new Dictionary<string, object> { ["share_data"] = false });
+            PlaytestSettings.Get().UseWithAura = true;  // (put back by TearDown)
+            Show(new Vector2Int(560, 900), Settings);
+            var toggle = host.Q(className: "research").Q<Toggle>(className: "research-toggle");
+            Assert.IsFalse(toggle.value, "Use with Aura, nothing chosen: off");
+            Assert.IsNull(Preferences.Research(), "the hello leaves it out");
+            toggle.value = true;
+            var raw = Preferences.ReadRaw();
+            Assert.AreEqual(true, raw["research_agent"]);
+            Assert.AreEqual(true, raw["onboarded"], "the other keys stay");
+            Assert.AreEqual(false, raw["share_data"], "the other keys stay");
+            Assert.AreEqual(true, Preferences.Research(), "the next hello says it");
+            Assert.AreEqual("Research agent on", toggle.text);
+
+            // Shown again: on, as saved, though through the Aura app; then off, saved too, and kept with Use with
+            // Aura off
+            Show(new Vector2Int(560, 900), Settings);
+            toggle = host.Q(className: "research").Q<Toggle>(className: "research-toggle");
+            Assert.IsTrue(toggle.value);
+            Assert.AreEqual("Research agent on", toggle.text);
+            toggle.value = false;
+            Assert.AreEqual(false, Preferences.ReadRaw()["research_agent"]);
+            Assert.AreEqual(false, Preferences.Research());
+            Assert.AreEqual("Research agent off", toggle.text);
+            PlaytestSettings.Get().UseWithAura = false;
+            Show(new Vector2Int(560, 900), Settings);
+            Assert.IsFalse(host.Q(className: "research").Q<Toggle>(className: "research-toggle").value, "the choice beats the own agent service");
         }
 
         // -- Autopilot in Claude Code & Codex: a run started there, and how to set them up ---------------------------
@@ -1171,15 +1289,17 @@ namespace Autopilot.Playtest.Tests
                 "autopilot connect claude", "autopilot connect codex");
             Assert.AreEqual("One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or ChatGPT subscriptions, respectively.", AutopilotView.AssistantsLine);
 
-            // After Data sharing, before Uninstall Autopilot; nothing under the commands
+            // After Data sharing and Research agent, before Uninstall Autopilot; nothing under the commands
             Show(new Vector2Int(560, 900), Settings);
             var words = Words();
             StringAssert.DoesNotContain("Then ask it", words);
             StringAssert.DoesNotContain("Runs still use", words);
             var sharing = words.IndexOf(ShareLine, StringComparison.Ordinal);
+            var research = words.IndexOf(ResearchLine, StringComparison.Ordinal);
             var card = words.IndexOf("Autopilot in Claude Code & Codex", StringComparison.OrdinalIgnoreCase);
             var remove = words.IndexOf("Uninstall Autopilot", StringComparison.OrdinalIgnoreCase);
-            Assert.That(sharing >= 0 && card > sharing && remove > card, $"sharing {sharing}, the card {card}, uninstall {remove}");
+            Assert.That(sharing >= 0 && research > sharing && card > research && remove > card,
+                $"sharing {sharing}, research agent {research}, the card {card}, uninstall {remove}");
 
             // Each command's Copy puts it on the clipboard
             var copied = EditorGUIUtility.systemCopyBuffer;

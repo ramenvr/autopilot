@@ -2479,14 +2479,17 @@ bool FAutopilotRunStartedTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the session's runs as they were"), Session.Runs.Num(), RunsBefore);
 	Session.AgentStartedRunId = AgentRunBefore;
 
-	// The Settings page: the card after Data sharing, before Uninstall
+	// The Settings page: the card after Data sharing and the Research agent, before Uninstall
 	TSharedRef<SWidget> SettingsPage = Panel->MakeSettings();
 	Panel->RebuildSettings();
 	const FString Words = Shown(SettingsPage, 600.f, 3000.f);
 	const int32 Share = Words.Find(TEXT("Share runs to improve Autopilot"));
+	const int32 Research = Words.Find(TEXT("Research agent"), ESearchCase::CaseSensitive);
 	const int32 Title = Words.Find(TEXT("Autopilot in Claude Code & Codex"), ESearchCase::IgnoreCase);
 	const int32 Uninstall = Words.Find(TEXT("Uninstall Autopilot"));
-	TestTrue(TEXT("settings: the card, after Data sharing and before Uninstall"), Share != INDEX_NONE && Title > Share && Uninstall > Title);
+	TestTrue(TEXT("settings: Data sharing, then the Research agent"), Share != INDEX_NONE && Research > Share);
+	TestTrue(TEXT("settings: the card, after the Research agent and before Uninstall"), Title > Research && Uninstall > Title);
+	TestTrue(TEXT("settings: what the research agent does, and its cost"), Words.Contains(TEXT("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.")));
 	TestTrue(TEXT("settings: what sharing sends, and for these runs"), Words.Contains(TEXT("Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot. For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.")));
 	const TCHAR* CardWords[] = {
 		TEXT("One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or ChatGPT subscriptions, respectively."),
@@ -2546,7 +2549,7 @@ namespace
 	}
 }
 
-// The Settings page's sharing and Claude Code & Codex plates are built alike: the name (the mono
+// The Settings page's sharing, research agent and Claude Code & Codex plates are built alike: the name (the mono
 // micro-label), what it does (in the sharing text's font: Body 12), then what changes it (the switch alone, its name
 // the tooltip; the two commands with Copy), 6 px under the name and 10 px under the words
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotSettingCardsTest, "AutopilotPlaytest.Editor.SettingCards",
@@ -2563,6 +2566,7 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 	TSharedRef<SPlaytestPanel> Panel = SNew(SPlaytestPanel).KeysDir(Dir.Path);
 	Panel->Prefs.bOnboarded = true;
 	Panel->Prefs.bShareData = false;
+	Panel->Prefs.ResearchChoice = false;
 	struct FCase
 	{
 		const TCHAR* Name;
@@ -2575,6 +2579,9 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 		{ TEXT("sharing"), Panel->MakeDataSharing(), TEXT("Share runs to improve Autopilot"),
 			TEXT("Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot. For runs from your own Claude Code or Codex, the agent traces are its conversation during the run."),
 			TEXT("Data sharing off") },
+		{ TEXT("research agent"), Panel->MakeResearchAgent(), TEXT("Research agent"),
+			TEXT("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost."),
+			TEXT("Research agent off") },
 		{ TEXT("Claude Code & Codex"), Panel->MakeCodingAgents(), TEXT("Autopilot in Claude Code & Codex"),
 			TEXT("One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or ChatGPT subscriptions, respectively."),
 			TEXT("autopilot connect claude | Copy | autopilot connect codex | Copy") },
@@ -2652,6 +2659,29 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("sharing: on, its words"), AllWords(Toggle.ToSharedRef()), FString(TEXT("Data sharing on")));
 		Panel->Prefs.bShareData = false;
 		TestEqual(TEXT("sharing: off again"), AllWords(Toggle.ToSharedRef()), FString(TEXT("Data sharing off")));
+	}
+	// The research agent's switch: the same, in its own words
+	const TSharedPtr<SWidget> ResearchToggle = FirstOfType(Cases[1].Card, TEXT("SCheckBox"));
+	if (TestTrue(TEXT("research agent: a switch"), ResearchToggle.IsValid()))
+	{
+		const TSharedPtr<IToolTip> Tip = ResearchToggle->GetToolTip();
+		TestTrue(TEXT("research agent: the switch's tooltip, its name"), Tip.IsValid() && AllWords(Tip->AsWidget()).Contains(TEXT("Research agent")));
+		TestEqual(TEXT("research agent: off, its words"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent off")));
+		Panel->Prefs.ResearchChoice = true;
+		TestEqual(TEXT("research agent: on, its words"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
+		// Never chosen: what the agent service does without a choice, off in the Aura app's (Use with Aura) and on in the
+		// user's own, also when it runs through Aura (signed in)
+		UPlaytestSettings* Settings = GetMutableDefault<UPlaytestSettings>();
+		const bool bWasAura = Settings->bUseWithAura;
+		Panel->Prefs.ResearchChoice.Reset();
+		Panel->Prefs.Access = TEXT("aura");
+		Settings->bUseWithAura = false;  // (not saved: put back below)
+		TestEqual(TEXT("research agent: the plugin's own agent service, signed in to Aura: on"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
+		Settings->bUseWithAura = true;
+		TestEqual(TEXT("research agent: Use with Aura: off"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent off")));
+		Panel->Prefs.ResearchChoice = true;
+		TestEqual(TEXT("research agent: the choice beats the Aura app's default"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
+		Settings->bUseWithAura = bWasAura;
 	}
 	return true;
 }

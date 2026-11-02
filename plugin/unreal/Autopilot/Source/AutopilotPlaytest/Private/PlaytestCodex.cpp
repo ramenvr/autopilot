@@ -22,7 +22,8 @@ namespace
 {
 	using FPending = UPlaytestSubsystem::FPending;
 
-	constexpr int32 MaxFiles = 20000;
+	// What one manifest serves in all (the brain fetches it over the plugin's socket and keeps a copy): past it the
+	// manifest says truncated. Every file counts, however many there are
 	constexpr int64 MaxTotalBytes = 200ll * 1024 * 1024;
 	constexpr int64 DefaultReadBytes = 1000000;
 	constexpr int64 MaxReadBytes = 4ll * 1024 * 1024;
@@ -155,7 +156,21 @@ namespace
 		FString Path;  // as the manifest names it
 		FString Full;  // on disk
 		int64 Size = 0;
+		FDateTime Modified;
 	};
+
+	/**
+	 * The hashes worked out so far, by file and its size and time: a manifest asked for again and again while the export
+	 * runs (codex_manifest with wait false) hashes only the files written since. Any thread, under HashesLock.
+	 */
+	struct FKnownHash
+	{
+		int64 Size = 0;
+		FDateTime Modified;
+		FString Hash;
+	};
+	TMap<FString, FKnownHash> KnownHashes;
+	FCriticalSection HashesLock;
 
 	/** Files under Dir (and its subdirectories when bRecurse, skipped ones left out), Keep deciding by file name. */
 	void Walk(const FString& Dir, const FString& Prefix, bool bRecurse, TFunctionRef<bool(const FString&)> Keep, TArray<FListed>& Out)
@@ -173,7 +188,7 @@ namespace
 			}
 			else if (Keep(Name))
 			{
-				Out.Add({Prefix / Name, Dir / Name, Stat.FileSize});
+				Out.Add({Prefix / Name, Dir / Name, Stat.FileSize, Stat.ModificationTime});
 			}
 			return true;
 		});
@@ -188,10 +203,10 @@ namespace
 	{
 		TArray<FListed> Found;
 		const FString UProject = Roots.Project / Roots.UProjectName;
-		const int64 UProjectSize = IFileManager::Get().FileSize(*UProject);
-		if (UProjectSize >= 0)
+		const FFileStatData UProjectStat = IFileManager::Get().GetStatData(*UProject);
+		if (UProjectStat.bIsValid && !UProjectStat.bIsDirectory)
 		{
-			Found.Add({Roots.UProjectName, UProject, UProjectSize});
+			Found.Add({Roots.UProjectName, UProject, UProjectStat.FileSize, UProjectStat.ModificationTime});
 		}
 		auto Sorted = [&Found](int32 From)
 		{
@@ -215,26 +230,36 @@ namespace
 		Buffer.SetNumUninitialized(256 * 1024);  // HashFile reads in chunks of its size (an empty one would never end)
 		for (const FListed& File : Found)
 		{
-			if (Files.Num() >= MaxFiles)
-			{
-				bTruncated = true;
-				break;
-			}
 			if (Total + File.Size > MaxTotalBytes)
 			{
 				bTruncated = true;
 				continue;  // (a smaller one may still fit)
 			}
-			const FMD5Hash Hash = FMD5Hash::HashFile(*File.Full, &Buffer);
-			if (!Hash.IsValid())
+			FString Hash;
 			{
-				continue;  // gone, or can't be read
+				FScopeLock Lock(&HashesLock);
+				const FKnownHash* Known = KnownHashes.Find(File.Full);
+				if (Known && Known->Size == File.Size && Known->Modified == File.Modified)
+				{
+					Hash = Known->Hash;
+				}
+			}
+			if (Hash.IsEmpty())
+			{
+				const FMD5Hash Md5 = FMD5Hash::HashFile(*File.Full, &Buffer);
+				if (!Md5.IsValid())
+				{
+					continue;  // gone, or can't be read
+				}
+				Hash = LexToString(Md5);
+				FScopeLock Lock(&HashesLock);
+				KnownHashes.Add(File.Full, {File.Size, File.Modified, Hash});
 			}
 			Total += File.Size;
 			TSharedRef<FJsonObject> Entry = MakeShared<FJsonObject>();
 			Entry->SetStringField(TEXT("path"), File.Path);
 			Entry->SetNumberField(TEXT("size"), (double)File.Size);
-			Entry->SetStringField(TEXT("hash"), LexToString(Hash));
+			Entry->SetStringField(TEXT("hash"), Hash);
 			Files.Add(MakeShared<FJsonValueObject>(Entry));
 		}
 		TSharedPtr<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -445,8 +470,9 @@ namespace
 		return FString();
 	}
 
-	/** Start the export: the job, or nullptr with Error set. */
-	TSharedPtr<FExportJob> StartExport(const FRoots& Roots, const FString& Reason, FString& Error)
+	/** Start the export: the job, or nullptr with Error set. FirstMap: the level the run plays, exported (with what it
+	 * uses) first; "" for none. */
+	TSharedPtr<FExportJob> StartExport(const FRoots& Roots, const FString& Reason, const FString& FirstMap, FString& Error)
 	{
 		const FString Cmd = FindEditorCmd();
 		if (Cmd.IsEmpty())
@@ -459,9 +485,13 @@ namespace
 		const FString Log = Roots.Project / LogRelative();
 		const FString ProgressFile = Roots.Project / ProgressRelative();
 		IFileManager::Get().Delete(*ProgressFile, false, true, true);  // (an earlier export's)
-		const FString Params = FString::Printf(
+		FString Params = FString::Printf(
 			TEXT("\"%s\" -run=AutopilotCodex -out=\"%s\" -unattended -nullrhi -nosplash -nop4 -abslog=\"%s\" -progress=\"%s\""),
 			*UProject, *Roots.Export, *Log, *ProgressFile);
+		if (!FirstMap.IsEmpty() && !FirstMap.Contains(TEXT("\"")))
+		{
+			Params += FString::Printf(TEXT(" -first=\"%s\""), *FirstMap);
+		}
 		uint32 ProcessId = 0;
 		// Hidden, below normal priority: the game keeps its frames
 		FProcHandle Proc = FPlatformProcess::CreateProc(*Cmd, *Params, false, true, true, &ProcessId, -1, nullptr, nullptr);
@@ -544,6 +574,37 @@ namespace
 		return Info;
 	}
 
+	/** Read the job's -progress file into Done and Total (at most 4 times a second; what was read last is kept when it
+	 * can't be read). */
+	void ReadProgress(FExportJob& Job)
+	{
+		const double Now = FPlatformTime::Seconds();
+		if (Now - Job.ProgressReadAt < 0.25)
+		{
+			return;
+		}
+		Job.ProgressReadAt = Now;
+		FString Text;
+		TArray<FString> Parts;
+		if (FFileHelper::LoadFileToString(Text, *Job.ProgressFile, FFileHelper::EHashOptions::None, FILEREAD_AllowWrite)
+			&& Text.ParseIntoArrayWS(Parts) == 2 && Parts[0].IsNumeric() && Parts[1].IsNumeric())
+		{
+			Job.Done = FCString::Atoi(*Parts[0]);
+			Job.Total = FCString::Atoi(*Parts[1]);
+		}
+	}
+
+	/** The export's part of an answer that doesn't wait for it to end: running, with how far it is. */
+	TSharedRef<FJsonObject> RunningInfo(FExportJob& Job)
+	{
+		ReadProgress(Job);
+		TSharedRef<FJsonObject> Info = ExportInfo(true, Job.Reason, FPlatformTime::Seconds() - Job.Start, nullptr, FString());
+		Info->SetBoolField(TEXT("running"), true);
+		Info->SetNumberField(TEXT("done"), Job.Done);
+		Info->SetNumberField(TEXT("total"), Job.Total);
+		return Info;
+	}
+
 	/** One manifest request: waiting for the export, then for the hashes. */
 	struct FManifestRequest
 	{
@@ -558,9 +619,15 @@ namespace
 void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args)
 {
 	FString Mode = TEXT("auto");
+	// wait false: answered with the files there now while the export runs (its progress in the answer), so the brain
+	// fetches them as they come and asks again; first_map: the level the run plays, which a new export does first
+	bool bWait = true;
+	FString FirstMap;
 	if (Args.IsValid())
 	{
 		Args->TryGetStringField(TEXT("export"), Mode);
+		Args->TryGetBoolField(TEXT("wait"), bWait);
+		Args->TryGetStringField(TEXT("first_map"), FirstMap);
 	}
 	if (Mode != TEXT("auto") && Mode != TEXT("refresh") && Mode != TEXT("skip"))
 	{
@@ -570,7 +637,7 @@ void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject
 	TSharedPtr<FManifestRequest> Request = MakeShared<FManifestRequest>();
 	Request->Roots = GetRoots();
 	// Run the export, or wait for the one running (one at a time)
-	auto Export = [Request](const FString& Reason)
+	auto Export = [Request, FirstMap](const FString& Reason)
 	{
 		if (Running.IsValid() && Running->bStopped)
 		{
@@ -584,7 +651,7 @@ void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject
 			return;
 		}
 		FString Error;
-		Running = StartExport(Request->Roots, Reason, Error);
+		Running = StartExport(Request->Roots, Reason, FirstMap, Error);
 		Request->Job = Running;
 		if (!Running.IsValid())
 		{
@@ -615,7 +682,7 @@ void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject
 	Pending.Id = Id;
 	Pending.Op = TEXT("codex_manifest");
 	Pending.StartReal = FPlatformTime::Seconds();
-	Pending.Tick = [&Bridge, Request, Export](FPending& P, double Now)
+	Pending.Tick = [&Bridge, Request, Export, bWait](FPending& P, double Now)
 	{
 		if (Request->Checking.IsValid())
 		{
@@ -640,6 +707,10 @@ void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject
 			if (Poll(Job, Request->Roots))
 			{
 				Request->Export = ExportInfo(true, Job->Reason, Job->Seconds, &Job->ExitCode, Job->Error);
+			}
+			else if (!bWait)
+			{
+				Request->Export = RunningInfo(*Job);
 			}
 			else if (FPlatformTime::Seconds() - P.StartReal > ExportWaitSeconds)
 			{
@@ -724,20 +795,7 @@ bool ExportProgress(int32& OutDone, int32& OutTotal)
 	{
 		return false;
 	}
-	// (the tab asks every frame: the file is read at most 4 times a second, and what was read last is kept when it can't be)
-	const double Now = FPlatformTime::Seconds();
-	if (Now - Running->ProgressReadAt >= 0.25)
-	{
-		Running->ProgressReadAt = Now;
-		FString Text;
-		TArray<FString> Parts;
-		if (FFileHelper::LoadFileToString(Text, *Running->ProgressFile, FFileHelper::EHashOptions::None, FILEREAD_AllowWrite)
-			&& Text.ParseIntoArrayWS(Parts) == 2 && Parts[0].IsNumeric() && Parts[1].IsNumeric())
-		{
-			Running->Done = FCString::Atoi(*Parts[0]);
-			Running->Total = FCString::Atoi(*Parts[1]);
-		}
-	}
+	ReadProgress(*Running);  // (the tab asks every frame)
 	OutDone = Running->Done;
 	OutTotal = Running->Total;
 	return true;

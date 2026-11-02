@@ -8,6 +8,7 @@ are run and how they reach the tools; what the tools do lives here, in Session. 
 
 import ast
 import contextlib
+import functools
 import io
 import json
 import math
@@ -59,6 +60,9 @@ RESULTS = "Looking at the results"  # an episode ended: the implementer works on
 STAGES = {READING: "analyze", PROBING: "probe", WRITING: "build", RESULTS: "results"}
 PLAYING = "Trying the harness"  # (how the progress line of an episode starts)
 PROBE_RESULT = 30000  # the most characters an activity event's detail carries (a probe's output, a file's head)
+# The most characters of news (Session.news) one tool result carries: what a tool result holds in the agent's context.
+# Past it the news is written whole to a file of the run, and the result says where
+NEWS_INLINE = PROBE_RESULT
 # The kinds of activity event whose call the agent makes and whose result the tool's body sends later, with `ends`
 # naming the call's id (Session.activity)
 CALL_KINDS = ("probe", "episode", "look")
@@ -221,6 +225,19 @@ Rules:
 - `check_harness(file="harness.py", seconds=..., restart=True, only=None)`: tries this run's harness without Jev
   (setup, the first observation with its facts, status, plan step and options, then each option's executor alone)
   and reports how each went; `only`: the option names to try.
+- `codex`: the game's files as the plugin's export indexes them (it may still be running as you start: see the
+  briefing). `codex.status()`: how far it is; `codex.arrivals()`: every batch of files it brought, each file with a
+  line on what it is; `codex.files("blueprints/**/BP_*.txt")`: the codex's files now.
+- `llm(question, about)`: a model's answer about files you don't need in your own context (`about`: a path such as
+  "codex/blueprints/BP_Boss.txt", a list of paths, or text). `job = llm_map(question, paths)`: the same question of
+  each file on its own, in the background: it returns at once; `job.done()`, `job.result()` -> {path: answer} (every
+  answer is also written whole to the file the job names). For many files at once ("which of these deal damage, and
+  how much?"); what the answers point to is still checked in the game.
+
+Background reading (when the run has it): while you work, and above all while a harness plays, a reader
+goes through the game's code for you: it checks the harness that plays against the code, and explains from the code
+what each episode showed. Its findings come with your tool results (all of them in {run}/findings.md). Use what
+bears on the next harness: what was found while harness N played belongs in harness N+1.
 
 The contract's docstrings (autopilot/kit/harness.py):
 ```python
@@ -486,6 +503,196 @@ class Session:
         self.looks_itself = False
         self.marker = None  # the user's own agent's run: "<run id>-<nonce>", named in what it is told (its transcript)
         self.alerts = []  # what the user must be told with the result (the result's `alerts`)
+        # What reaches the agent with its tool results while it works (news): the export's files as they arrive
+        # (codex.Indexer), and the background researcher's findings (agents/researcher.py)
+        self.reader = None  # llm.Reader for llm/llm_map in probes (in the sandbox's child, the parent's, relayed)
+        self.researcher = None
+        self.findings = []  # [{"n", "at", "text", "files", "source", "told": the tool result that carried it}]
+        self.findings_lock = threading.Lock()
+        self.news_lock = threading.Lock()
+        self.news_batches = 0  # the indexer's batches told so far
+        self.news_findings = 0  # the findings told so far
+        self.index_was_running = False  # (the export was still running when the run started: its end is told)
+        self.index_told_done = False
+        self.harness_started = {}  # episode n -> time.time() its harness started playing
+
+    def indexer(self):
+        """The codex's Indexer (codex.Indexer) when the export streamed in for this run, else None."""
+        return getattr(getattr(self.game, "codex", None), "indexer", None)
+
+    def request_words(self):
+        """The request's words (stems of 4+ letters, not the stop words) a file is matched on."""
+        words = []
+        for w in re.findall(r"[A-Za-z][A-Za-z']+", self.prompt):
+            w = w.lower().removesuffix("'s").strip("'")
+            if len(w) >= 4 and w not in STOP_WORDS and _stem(w) not in words:
+                words.append(_stem(w))
+        return words
+
+    def written_now(self):
+        """{"harness.py", "notes.md", "lib.py": its text now ("" when there is none)}."""
+        return {"harness.py": _whole(os.path.join(self.run_dir, "harness.py")),
+                "notes.md": _whole(os.path.join(self.root, "notes.md")),
+                "lib.py": _whole(os.path.join(self.root, "lib.py"))}
+
+    def last_write(self):
+        """time.time() harness.py, notes.md or lib.py was last written (0 when none is there)."""
+        times = [0.0]
+        for path in (os.path.join(self.run_dir, "harness.py"), os.path.join(self.root, "notes.md"),
+                     os.path.join(self.root, "lib.py")):
+            with contextlib.suppress(OSError):
+                times.append(os.path.getmtime(path))
+        return max(times)
+
+    def add_finding(self, text, files, source):
+        """The background researcher found something: kept, written to runs/<id>/findings.md, told with the next tool
+        result. source: what it came from ("from episode 2", "while harness 3 played"...)."""
+        with self.findings_lock:
+            finding = {"n": len(self.findings) + 1, "at": time.time(), "text": str(text).strip(),
+                       "files": [str(f) for f in files], "source": source, "episodes": self.episodes, "told": None}
+            self.findings.append(finding)
+            with open(os.path.join(self.run_dir, "findings.md"), "a", encoding="utf-8") as f:
+                f.write(f"## Finding {finding['n']} ({source}, {time.strftime('%H:%M:%S')})\n{finding['text']}\n"
+                        + (f"Files: {', '.join(finding['files'])}\n" if finding["files"] else "") + "\n")
+        self.note(f"finding {finding['n']} ({source}): {finding['text']}")
+        return finding
+
+    def findings_text(self):
+        """Every finding so far, whole (for the researcher's next pass)."""
+        with self.findings_lock:
+            return "\n".join(f"{f['n']}. {f['text']}" + (f" (files: {', '.join(f['files'])})" if f["files"] else "")
+                             for f in self.findings)
+
+    def news(self):
+        """What reaches the agent with this tool result besides the tool's own answer ("" when nothing): how far the
+        export's indexing is, the files it brought since the last tool result, its end, and the background
+        researcher's new findings. Each is told once; nothing is cut (what is longer than a tool result holds is
+        written whole to a file of the run, and the result says where)."""
+        with self.news_lock:
+            parts = []
+            idx = self.indexer()
+            if idx is not None:
+                status = idx.status()
+                fresh = idx.since(self.news_batches)
+                self.news_batches += len(fresh)
+                if fresh:
+                    parts.append(self._arrivals_text(fresh, status))
+                if status["finished"] and self.index_was_running and not self.index_told_done:
+                    self.index_told_done = True
+                    parts.append(self._indexed_text(status))
+                elif status["running"]:
+                    parts.append(f"[indexing the game's files: the export {codexmod.progress(status)}; "
+                                 f"{status['files']} files in the codex now]")
+                if status.get("working"):
+                    parts.append(f"[still being written: {', '.join(status['working'])}]")
+            with self.findings_lock:
+                new = self.findings[self.news_findings:]
+                self.news_findings = len(self.findings)
+                told = self.episodes
+                for f in new:
+                    f["told"] = told
+            if new:
+                parts.append(self._findings_text(new))
+            return ("\n\n" + "\n\n".join(parts)) if parts else ""
+
+    def _matches(self, path):
+        """{request word: times in the codex file} for the words it has."""
+        words = self.request_words()
+        try:
+            with open(os.path.join(self.root, "codex", path), encoding="utf-8", errors="replace") as f:
+                text = f.read().lower()
+        except OSError:
+            return {}
+        return {w: text.count(w) for w in words if w in text}
+
+    def _kept(self, name, text):
+        """Writes text whole to runs/<id>/news/<name> and returns its path in the game's folder."""
+        folder = os.path.join(self.run_dir, "news")
+        os.makedirs(folder, exist_ok=True)
+        with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
+            f.write(text)
+        return f"{self.run_rel}/news/{name}"
+
+    def _arrivals_text(self, batches, status):
+        files = [f for b in batches for f in b["files"]]
+        scored = []
+        for f in files:
+            hits = self._matches(f["path"])
+            scored.append((-sum(1 for v in hits.values() if v), f["path"], f, hits))
+        scored.sort(key=lambda s: (s[0], s[1]))  # (by how many of the request's words a file has, then by path)
+        lines = []
+        for _, _, f, hits in scored:
+            said = f" [request words: {', '.join(f'{w}: {n}' for w, n in hits.items())}]" if hits else ""
+            lines.append(f"{'+' if f['kind'] == 'new' else '~'} codex/{f['path']}  {f['line']}{said}")
+        new = sum(1 for f in files if f["kind"] == "new")
+        where = (f"batch{'es' if len(batches) > 1 else ''} {batches[0]['n']}"
+                 + (f"-{batches[-1]['n']}" if len(batches) > 1 else "") + f" in {codexmod.INDEXING}/")
+        head = (f"## Files the export brought since your last tool result ({len(files)}: {new} new, {len(files) - new} "
+                f"changed; {where}; indexing: {codexmod.progress(status)}"
+                + ("" if status["running"] else ", done") + ")\n"
+                "Those with the request's words first. Read what bears on the request; the rest are there to grep.")
+        body = "\n".join(lines)
+        if len(head) + len(body) <= NEWS_INLINE:
+            return head + "\n" + body
+        # Too many for one tool result: all of them go to a file, and the result carries those with the request's
+        # words, most of the words first, as many whole lines as it holds
+        path = self._kept(f"arrivals-{batches[0]['n']}.txt", body + "\n")
+        shown, size = [], len(head) + 200
+        for (_, _, _, hits), line in zip(scored, lines):
+            if not hits or size + len(line) + 1 > NEWS_INLINE:
+                break
+            shown.append(line)
+            size += len(line) + 1
+        matching = sum(1 for s in scored if s[3])
+        text = head + f"\nAll {len(files)} are in {path}, one a line, those with the request's words first."
+        if shown:
+            text += f" The first {len(shown)} of the {matching} with the request's words:\n" + "\n".join(shown)
+        return text
+
+    def _indexed_text(self, status):
+        idx = self.indexer()
+        since = self.last_write()
+        written = " ".join(self.written_now().values())
+        named = []
+        if since and idx is not None:
+            for b in idx.batches:
+                if b["at"] < since:
+                    continue
+                for f in b["files"]:
+                    stem = os.path.splitext(os.path.basename(f["path"]))[0]
+                    if len(stem) >= 4 and re.search(rf"(?<![A-Za-z0-9_]){re.escape(stem)}(?![A-Za-z0-9_])", written):
+                        named.append(f"codex/{f['path']}  {f['line']}")
+        text = (f"## The export is in: {status['files']} files in the codex"
+                + (f" (it ended with: {status['error']})" if status.get("error") else "") + ". A search now looks at "
+                "all of the game's files.")
+        if named:
+            body = "\n".join(dict.fromkeys(named))
+            text += ("\nThese arrived after you last wrote harness.py, notes.md or lib.py, and what you wrote names "
+                     "them (worth a look if you rely on them; no need to read again what you have):\n")
+            text += body if len(text) + len(body) <= NEWS_INLINE else (
+                f"{len(named)} files, all in {self._kept('named-after-writing.txt', body + chr(10))}")
+        return text
+
+    def _findings_text(self, new):
+        harness = os.path.join(self.run_dir, "harness.py")
+        written = os.path.getmtime(harness) if os.path.exists(harness) else 0.0
+        lines = []
+        for f in new:
+            late = ""
+            after = [k for k, t in self.harness_started.items() if t > f["at"]]
+            if after:  # (it came in while the agent was writing: the harness it then ran didn't have it)
+                late = f" (came in before harness {min(after)} started, too late for it: it played without this)"
+            elif written and f["at"] > written:
+                late = " (came in after you last wrote harness.py)"
+            lines.append(f"Finding {f['n']} ({f['source']}){late}: {f['text']}"
+                         + (f"\n  files: {', '.join(f['files'])}" if f["files"] else ""))
+        head = (f"## Found in the game's code in the background ({len(new)} new; all in {self.run_rel}/findings.md). "
+                "Use what bears on the next harness.")
+        body = "\n".join(lines)
+        if len(head) + len(body) <= NEWS_INLINE:
+            return head + "\n" + body
+        path = self._kept(f"findings-{new[0]['n']}.txt", body)
+        return head + f"\n{len(new)} findings, whole in {path}."
 
     def say(self, text):
         """A progress line for the plugin's tab. Once an episode has been played, reading, probing and writing are
@@ -694,6 +901,39 @@ class Session:
             return runtime.check(self.game, runtime.load_harness(path), **kwargs)
 
         ns.update(check_harness=check_harness)
+        # The export's indexing as it goes (codex.View), and the brain's own model for reading at scale
+        view = codexmod.View(self.root)
+        ns["codex"] = view
+        if "grep" in ns:
+            searched = ns["grep"]
+
+            def grep(*a, **k):
+                """research.grep, saying when the export is still being indexed (a match may still come)."""
+                found = searched(*a, **k)
+                status = view.status()
+                if status.get("running") and isinstance(found, list):
+                    found.append(f"(searched what is indexed so far: the export {codexmod.progress(status)}; what is "
+                                 "still coming may match too)")
+                return found
+
+            ns["grep"] = functools.wraps(searched)(grep)
+        reader = self.reader
+
+        def llm(question, about=None):
+            """A model's answer to question about `about`: a path in the game's folder (e.g. "codex/blueprints/
+            BP_Boss.txt"), a list of them, or text. For reading what you don't need in your own context."""
+            if reader is None:
+                return "llm isn't available in this run (no model to read with)."
+            return reader.ask(question, about)
+
+        def llm_map(question, paths):
+            """question asked of each path on its own, in the background: returns a job at once (job.done(),
+            job.result() -> {path: answer}; each answer whole in the run's results/ as it comes)."""
+            if reader is None:
+                return "llm_map isn't available in this run (no model to read with)."
+            return reader.map(question, list(paths))
+
+        ns.update(llm=llm, llm_map=llm_map)
         if self.root not in sys.path:
             sys.path.insert(0, self.root)
         return ns
@@ -795,6 +1035,11 @@ class Session:
                         "report now with what the episodes so far showed.")
             seconds = min(float(seconds), left)
         until = t0 + left if left is not None else until  # (the sandbox's own session is passed it)
+        n = self.episodes + 1
+        if os.path.exists(os.path.join(self.run_dir, file)):
+            self.harness_started[n] = t0
+            if self.researcher is not None:  # (it checks the harness against the code while it plays)
+                self.researcher.playing(n)
         if self.sandbox:
             text = self._remote("run_harness", seconds=seconds, restart=restart, file=file, until=until)
         else:
@@ -803,6 +1048,9 @@ class Session:
             self.looking = True  # (_run_harness said RESULTS, where it played)
             if self.play_started is None and self.play_seconds is not None:
                 self.play_started = t0
+            if self.researcher is not None:  # (what the episode raised, answered from the code for the next harness)
+                summary = _whole(os.path.join(self.run_dir, f"trace{self.episodes}_summary.txt"))
+                self.researcher.episode(self.episodes, summary)
         return kept + text
 
     def _episode_over(self, until=None):
@@ -1243,6 +1491,15 @@ def network_note(net, paused=None):
     return " ".join(note)
 
 
+def _whole(path):
+    """A file's whole text ("" when there is none)."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except OSError:
+        return ""
+
+
 def _read(path, n=BRIEF_FILE):
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
@@ -1348,6 +1605,24 @@ def briefing(session, opening=None):
         since = None
     if since and (notes or lib or runs):  # (with nothing learned yet, nothing can be out of date)
         out.append(since)
+    idx = session.indexer()
+    if idx is not None:
+        with session.news_lock:  # (what arrived before now is in the codex the briefing reads: not news)
+            session.news_batches = len(idx.batches)
+        status = idx.status()
+        if "level snapshot" in status.get("working", []):
+            out.append("## The level's snapshot is being taken\n"
+                       "codex/level.txt (every actor of the running level, by kind, and where) is being written while "
+                       "you work: a tool result says when it is in. What the live game shows now is below.")
+        if status["running"]:
+            out.append(
+                "## The game's files are still being indexed\n"
+                f"The plugin is exporting the game's Blueprints, data and maps ({codexmod.progress(status)} "
+                f"so far; the level this run plays and what it uses first). The codex has {status['files']} "
+                "files now and grows while you work: each tool result lists the files that arrived since the last "
+                f"one (all of them also in {codexmod.INDEXING}/batch-N.txt), and says when the export is in. A search "
+                "that finds nothing has looked at what is indexed so far: what you need may still come. Work with "
+                "what is there; you never need to read a file again unless it changed and you rely on it.")
     readme = _read(os.path.join(codex_root, "README.md"))
     if readme:
         out.append(f"## codex/README.md\n{readme}")
@@ -1528,7 +1803,37 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
                                              level=getattr(game, "level", None), say=session.say,
                                              activity=session.activity)
         session.note(f"sandbox: {session.sandbox.kind}")
+    start_reading(session, describer)
     return session
+
+
+def start_reading(session, describer=None):
+    """The brain's own reading for the run: llm and llm_map in probes (an llm.Reader on the describer's provider, its
+    calls counted in the run's usage) and the background researcher (agents/researcher.py), told of each batch the
+    export brings (codex.Indexer). Neither when no model can be reached; the researcher only when the run has it
+    (researcher.enabled: the user's choice on the plugin's Settings page, else off in the Aura app's Autopilot)."""
+    from .. import llm
+    from . import researcher
+
+    provider = getattr(describer, "provider", None) or "anthropic"
+    reading = llm.Model(provider, agent_model=model(provider), usage=getattr(describer, "usage", None),
+                        proxied=getattr(describer, "proxied", None))
+    idx = session.indexer()
+    session.index_was_running = bool(idx is not None and idx.status()["running"])
+    if reading.route is None:
+        session.note(f"reading: no model ({reading.unavailable}): no llm, llm_map or background researcher")
+        return
+    session.reader = llm.Reader(reading, session.root, os.path.join(session.run_dir, "results"), note=session.note)
+    if session.sandbox is not None:
+        session.sandbox.reader = session.reader
+    hello = getattr(getattr(session.game, "link", None), "hello", None)
+    if not researcher.enabled(hello):
+        session.note("researcher: off (the user's choice, or the Aura app's Autopilot with none)")
+    else:
+        session.researcher = researcher.Researcher(session, reading)
+        if idx is not None:
+            idx.listeners.append(session.researcher.arrived)
+        session.note(f"researcher: on, {reading.name}")
 
 
 def first_message(session):
@@ -1590,12 +1895,32 @@ def finish(session, started, stopped, last_text, **facts):
     })
     if session.alerts:
         report["alerts"] = list(session.alerts)
+    if session.researcher is not None:
+        session.researcher.stop()
+    if session.reader is not None:
+        session.reader.close()
+    idx = session.indexer()
+    if idx is not None:
+        if session.researcher is not None and session.researcher.arrived in idx.listeners:
+            idx.listeners.remove(session.researcher.arrived)
+        # How much of the export the run had (it streamed in while the run worked), and what the researcher found
+        report["indexing"] = dict(idx.status(), batches_told=session.news_batches)
+    if session.findings:
+        report["background_findings"] = len(session.findings)
+    if session.reader is not None and session.reader.model.tokens:  # (llm, llm_map and the researcher, by model)
+        report["reading_usage"] = session.reader.model.tokens
     with open(os.path.join(session.run_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
     # The codex this run worked from: the next run is told what changed since. Only a run that played or reported
     # counts, so changes a run stopped (or crashed) before it worked on them are told to the next one. A named change
     # this run was told of is checked once the passages naming it were edited (or none names it any more); the rest
-    # stay listed
+    # stay listed. An export that streamed in is recorded once it is all in (the codex as it is then), and not at all
+    # while it still runs: the next run is told the changes since the last whole one
+    if session.index_was_running and getattr(session, "codex_seen", None):
+        if idx is not None and idx.status()["finished"] and not idx.status().get("error"):
+            session.codex_seen = codexmod.fingerprint(os.path.join(session.root, "codex"))
+        else:
+            session.codex_seen = None
     if getattr(session, "codex_seen", None) and (session.report or session.episodes):
         try:
             after, told = _written(session.root), getattr(session, "codex_told", None) or {}

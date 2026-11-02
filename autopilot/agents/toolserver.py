@@ -79,7 +79,8 @@ class ToolServer:
         if self.files is not None and tool in FILE_TOOLS:
             s.tool_call(tool, args, log=f"{tool}: {json.dumps(args)[:600]}")
             self.say(WRITING if tool in ("write_file", "edit_file") else READING)
-            return self.files.call(tool, args)  # (no clock: file tools take no game time)
+            # (no clock: file tools take no game time; the news, as every tool result has)
+            return self.files.call(tool, args) + s.news()
         if tool not in tools:
             names = list(tools) + (list(FILE_TOOLS) if self.files is not None else [])
             return f"No tool {tool!r}: the tools are {', '.join(names)}."
@@ -93,7 +94,7 @@ class ToolServer:
             except Exception:
                 text = "Tool failed:\n" + traceback.format_exc(limit=5)
             s.tool_seconds += time.time() - t0
-            return text + s.steer_note() + "\n" + s.clock()
+            return text + s.steer_note() + s.news() + "\n" + s.clock()
 
     def close(self):
         self.httpd.shutdown()

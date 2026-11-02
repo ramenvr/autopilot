@@ -81,6 +81,21 @@ def enabled():
     return bool(api_url())
 
 
+_app = False  # this Autopilot is the one the Aura app started (mark_app)
+
+
+def mark_app(started_by_app):
+    """At start: whether this Autopilot is the Aura app's (AUTOPILOT_AURA_URL set for it, not --aura), the one plugins
+    set to Use with Aura reach, rather than the user's own agent service (which may run through Aura too)."""
+    global _app
+    _app = bool(started_by_app)
+
+
+def from_app():
+    """Whether this Autopilot is the Aura app's (mark_app)."""
+    return _app
+
+
 def default_url():
     """The Aura server runs go through when Aura is chosen (--aura, the first-run setup): Aura's own, unless
     AUTOPILOT_AURA_SERVER names another (a staging or preview one). Unlike AUTOPILOT_AURA_URL, it doesn't choose

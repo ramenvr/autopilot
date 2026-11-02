@@ -26,6 +26,13 @@ def no_account_threads_left(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_background_researcher(monkeypatch):
+    """A test's fake episodes never wake the background researcher (agents/researcher.py): with a key in this
+    machine's environment it would call a real model. Its own tests start one with a fake model."""
+    monkeypatch.setenv("AUTOPILOT_RESEARCHER", "0")
+
+
+@pytest.fixture(autouse=True)
 def no_kept_aura_session(tmp_path, monkeypatch):
     """Tests never read or write the Aura sign-in this machine keeps (autopilot/aura_login.py)."""
     from autopilot import aura_login

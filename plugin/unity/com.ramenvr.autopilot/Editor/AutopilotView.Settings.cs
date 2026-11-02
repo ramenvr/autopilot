@@ -1,8 +1,8 @@
 // The Autopilot window's Settings page: how Autopilot runs (the account card: Aura, the Aura app, BYOK, or not set up,
 // from the agent service's account frame and preferences.json), this project's runs and, for runs through Aura, what
-// Autopilot billed (the project's total and run by run), whether runs' data is shared, how to run Autopilot from
-// the user's own Claude Code or Codex, and Remove Autopilot (AutopilotView.Remove.cs; AutopilotView.cs has the rest
-// of the window).
+// Autopilot billed (the project's total and run by run), whether runs' data is shared, whether runs use the research
+// agent, how to run Autopilot from the user's own Claude Code or Codex, and Remove Autopilot (AutopilotView.Remove.cs;
+// AutopilotView.cs has the rest of the window).
 
 using System;
 using System.Collections.Generic;
@@ -23,9 +23,10 @@ namespace Autopilot.Playtest.Editor
         string SettingsKey()
         {
             var share = Preferences.Current.ShareData;
+            var research = Preferences.Current.ResearchAgent;
             var client = EditorHost.Client;
             var prefs = Preferences.Current;
-            return $"settings|{Wide}|{AutopilotUsage.Version}|{SelectedId}|{share}|{client != null && client.Connected}|{client != null && client.RunActive}|" +
+            return $"settings|{Wide}|{AutopilotUsage.Version}|{SelectedId}|{share}|{research}|{client != null && client.Connected}|{client != null && client.RunActive}|" +
                    $"{client?.AccountVersion}|{client != null && client.CanSignIn}|{SigningIn}|{signOutConfirm}|{setupProblem}|{prefs.Access}|{PlaytestSettings.Get().UseWithAura}|{removeConfirm}|" +
                    $"{AgentService.Current}|{AgentService.Version}|{PlaytestSettings.Get().ShowPolicyLog}";
         }
@@ -42,6 +43,7 @@ namespace Autopilot.Playtest.Editor
             box.Add(AccountCorner());
             box.Add(UsageCard());
             box.Add(SharingCard());
+            box.Add(ResearchCard());
             box.Add(BriefCard());
             box.Add(PolicyLogCard());
             box.Add(AssistantsCard());
@@ -120,9 +122,9 @@ namespace Autopilot.Playtest.Editor
         /// <summary>The words beside the sharing switch, as it is now: "Data sharing on" / "Data sharing off".</summary>
         public static string ShareState(bool on) => on ? "Data sharing on" : "Data sharing off";
 
-        /// <summary>A setting's card (Share runs, Autopilot in Claude Code &amp; Codex): its title (mono capitals),
-        /// the line under it (as the sharing text: small, t-sec2), then its control (the box returned), the same
-        /// gaps in each (.setting in Autopilot.uss).</summary>
+        /// <summary>A setting's card (Share runs, Research agent, Autopilot in Claude Code &amp; Codex): its title
+        /// (mono capitals), the line under it (as the sharing text: small, t-sec2), then its control (the box
+        /// returned), the same gaps in each (.setting in Autopilot.uss).</summary>
         static VisualElement SettingCard(string title, string line, string classes, out VisualElement control)
         {
             var card = Card("plate card-sec setting " + classes);
@@ -150,6 +152,44 @@ namespace Autopilot.Playtest.Editor
             toggle.RegisterValueChangedCallback(e =>
             {
                 toggle.text = ShareState(e.newValue);
+                changed(e.newValue);
+            });
+            return toggle;
+        }
+
+        public const string ResearchTitle = "Research agent";
+        public const string ResearchLine = "Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.";
+
+        /// <summary>The words beside the research agent switch, as it is now: "Research agent on" / "Research agent
+        /// off".</summary>
+        public static string ResearchState(bool on) => on ? "Research agent on" : "Research agent off";
+
+        /// <summary>What the research agent switch shows: the user's choice (preferences.json's research_agent) when
+        /// made; else what the agent service does by default: off for runs through the Aura app (Use with Aura), on
+        /// for this plugin's own agent service (signed in to Aura or with the user's own keys).</summary>
+        public static bool ResearchShown(bool? chosen, bool useWithAura)
+        {
+            return chosen ?? !useWithAura;
+        }
+
+        /// <summary>Whether runs use the research agent (ResearchShown): the sharing card's look, its switch.</summary>
+        VisualElement ResearchCard()
+        {
+            var card = SettingCard(ResearchTitle, ResearchLine, "research", out var control);
+            control.Add(ResearchSwitch(ResearchShown(Preferences.Current.ResearchAgent, PlaytestSettings.Get().UseWithAura), SetResearch));
+            return card;
+        }
+
+        /// <summary>The research agent switch, as the sharing one: its words (ResearchState) right of the pill;
+        /// <paramref name="changed"/> gets each new value.</summary>
+        public static Toggle ResearchSwitch(bool on, Action<bool> changed)
+        {
+            var toggle = Switch(ResearchState(on), on);
+            toggle.AddToClassList("research-toggle");
+            toggle.tooltip = ResearchTitle;
+            toggle.RegisterValueChangedCallback(e =>
+            {
+                toggle.text = ResearchState(e.newValue);
                 changed(e.newValue);
             });
             return toggle;
@@ -233,6 +273,16 @@ namespace Autopilot.Playtest.Editor
         {
             if (Preferences.Current.ShareData == share) return;
             if (!Preferences.Update(new Dictionary<string, object> { ["share_data"] = share }))
+                AutopilotStatus.Say(AutopilotStatus.SetupNotSaved(Preferences.DefaultPath, Preferences.LastError));
+            Reconnect();
+        }
+
+        /// <summary>The switch flipped: the user's choice from now on (saved even when none was made before, so it no
+        /// longer follows the account).</summary>
+        static void SetResearch(bool research)
+        {
+            if (Preferences.Current.ResearchAgent == research) return;
+            if (!Preferences.Update(new Dictionary<string, object> { ["research_agent"] = research }))
                 AutopilotStatus.Say(AutopilotStatus.SetupNotSaved(Preferences.DefaultPath, Preferences.LastError));
             Reconnect();
         }

@@ -31,6 +31,7 @@ namespace Autopilot.Playtest.Tests
             var p = Preferences.Load(PrefsPath);
             Assert.IsFalse(p.Onboarded);
             Assert.IsTrue(p.ShareData);
+            Assert.IsNull(p.ResearchAgent, "not chosen");
             Assert.AreEqual("", p.Access);
 
             Directory.CreateDirectory(Path.GetDirectoryName(PrefsPath));
@@ -38,23 +39,72 @@ namespace Autopilot.Playtest.Tests
             p = Preferences.Load(PrefsPath);
             Assert.IsFalse(p.Onboarded);
             Assert.IsTrue(p.ShareData);
+            Assert.IsNull(p.ResearchAgent);
 
             File.WriteAllText(PrefsPath, "[1, 2]");
             Assert.IsTrue(Preferences.Load(PrefsPath).ShareData);
+            Assert.IsNull(Preferences.Load(PrefsPath).ResearchAgent);
 
-            File.WriteAllText(PrefsPath, "{\"share_data\": \"no\"}");  // (not a bool: the default)
+            File.WriteAllText(PrefsPath, "{\"share_data\": \"no\", \"research_agent\": 0}");  // (not bools: the defaults)
             Assert.IsTrue(Preferences.Load(PrefsPath).ShareData);
+            Assert.IsNull(Preferences.Load(PrefsPath).ResearchAgent, "not a boolean: not chosen");
+            File.WriteAllText(PrefsPath, "{\"research_agent\": \"true\"}");
+            Assert.IsNull(Preferences.Load(PrefsPath).ResearchAgent, "not a boolean: not chosen");
         }
 
         [Test]
         public void ReadsWhatTheFileSays()
         {
             Directory.CreateDirectory(Path.GetDirectoryName(PrefsPath));
-            File.WriteAllText(PrefsPath, "{\"version\": 1, \"onboarded\": true, \"share_data\": false, \"access\": \"own_keys\"}");
+            File.WriteAllText(PrefsPath, "{\"version\": 1, \"onboarded\": true, \"share_data\": false, \"research_agent\": false, \"access\": \"own_keys\"}");
             var p = Preferences.Load(PrefsPath);
             Assert.IsTrue(p.Onboarded);
             Assert.IsFalse(p.ShareData);
+            Assert.AreEqual(false, p.ResearchAgent);
             Assert.AreEqual(Preferences.AccessOwnKeys, p.Access);
+
+            // Each switch on its own
+            File.WriteAllText(PrefsPath, "{\"share_data\": false, \"research_agent\": true}");
+            p = Preferences.Load(PrefsPath);
+            Assert.IsFalse(p.ShareData);
+            Assert.AreEqual(true, p.ResearchAgent);
+            File.WriteAllText(PrefsPath, "{\"research_agent\": false}");
+            p = Preferences.Load(PrefsPath);
+            Assert.IsTrue(p.ShareData);
+            Assert.AreEqual(false, p.ResearchAgent);
+        }
+
+        [Test]
+        public void TheResearchAgentChoiceIsSavedAndReadBack()
+        {
+            var folderWas = Aura.FolderOverride;
+            Aura.FolderOverride = Path.Combine(dir, "Autopilot");  // (never the user's own preferences.json)
+            try
+            {
+                // No file: not chosen (the hello leaves "research" out)
+                Assert.IsNull(Preferences.Research());
+
+                // Off, merged with what is there (sharing and another plugin's key stay)
+                Directory.CreateDirectory(Aura.FolderOverride);
+                File.WriteAllText(Preferences.DefaultPath, "{\"version\": 1, \"share_data\": false, \"other\": \"kept\"}");
+                Assert.IsTrue(Preferences.Update(new Dictionary<string, object> { ["research_agent"] = false }));
+                var raw = Preferences.ReadRaw();
+                Assert.AreEqual(false, raw["research_agent"]);
+                Assert.AreEqual(false, raw["share_data"]);
+                Assert.AreEqual("kept", raw["other"]);
+                Assert.AreEqual(false, Preferences.Load().ResearchAgent);
+                Assert.AreEqual(false, Preferences.Research());
+                Assert.IsFalse(Preferences.Share(), "sharing as it was");
+
+                // And on again
+                Assert.IsTrue(Preferences.Update(new Dictionary<string, object> { ["research_agent"] = true }));
+                Assert.AreEqual(true, Preferences.ReadRaw()["research_agent"]);
+                Assert.AreEqual(true, Preferences.Research());
+            }
+            finally
+            {
+                Aura.FolderOverride = folderWas;
+            }
         }
 
         [Test]

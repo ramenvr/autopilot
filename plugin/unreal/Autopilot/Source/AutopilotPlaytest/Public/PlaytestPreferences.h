@@ -8,9 +8,9 @@
  * Autopilot/preferences.json in the user settings folder (PlaytestAura::SettingsDir), and the model keys the first-run
  * setup writes to Autopilot/autopilot.env there.
  *
- *     {"version": 1, "onboarded": true, "share_data": true, "access": "aura" | "own_keys"}
+ *     {"version": 1, "onboarded": true, "share_data": true, "research_agent": true, "access": "aura" | "own_keys"}
  *
- * A missing or unreadable file reads as the defaults (not onboarded, sharing on). Files are written whole, then put in
+ * A missing or unreadable file reads as the defaults (not onboarded, sharing on, the research agent not chosen). Files are written whole, then put in
  * place, and keys the plugin doesn't know are kept.
  */
 struct AUTOPILOTPLAYTEST_API FPlaytestPreferences
@@ -19,6 +19,11 @@ struct AUTOPILOTPLAYTEST_API FPlaytestPreferences
 	bool bOnboarded = false;
 	/** Share runs' data to improve Autopilot (absent: true). */
 	bool bShareData = true;
+	/**
+	 * Whether runs have the research agent (the brain's background reader of the game's code), once the user chose on the
+	 * Settings page. Unset (never chosen): the agent service decides, off in the Aura app's and on in the user's own.
+	 */
+	TOptional<bool> ResearchChoice;
 	/** How the user chose to run it: "aura", "own_keys", or "" (not chosen). */
 	FString Access;
 	/** The file as read (unknown keys are written back as they were). */
@@ -37,6 +42,10 @@ namespace PlaytestPreferences
 
 	/** What every hello says as "share": -PlaytestShare=0|1 on the command line, else preferences.json (default true). */
 	AUTOPILOTPLAYTEST_API bool ShareData();
+
+	/** What a hello says as "research": -PlaytestResearch=0|1 on the command line, else preferences.json's choice; unset when
+	 *  neither says (the hello leaves it out and the agent service decides). */
+	AUTOPILOTPLAYTEST_API TOptional<bool> ResearchAgent();
 
 	/**
 	 * Puts KEY=value lines into autopilot.env in Dir (default: PlaytestAura::SettingsDir()), made if missing: a key already

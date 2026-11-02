@@ -136,6 +136,12 @@ private:
 	void RebuildSettings();
 	TSharedRef<SWidget> MakeUsageRunRow(const TSharedPtr<FAutopilotRun>& Run);
 	TSharedRef<SWidget> MakeDataSharing();
+	/** The card "Research agent": whether runs have the brain's background reader of the game's code (preferences.json
+	 *  research_agent, said in every hello). */
+	TSharedRef<SWidget> MakeResearchAgent();
+	/** What the research agent's switch shows: the user's choice, else what the agent service does without one (off in
+	 *  the Aura app's, which Use with Aura reaches; on in the user's own, signed in to Aura or on their own keys). */
+	bool ResearchShown() const;
 	/** The card "Autopilot in Claude Code & Codex": running Autopilot from the user's own coding agent (autopilot
 	 *  connect), each command with Copy. */
 	TSharedRef<SWidget> MakeCodingAgents();
@@ -162,6 +168,7 @@ private:
 	 *  step, in place of the connect card. Once an editor session, when the tab opens. */
 	void CheckServiceMissing();
 	void SetShareData(bool bShare);
+	void SetResearchAgent(bool bOn);
 
 	// The first-run setup
 	enum ESetupStep : int32 { StepAccount = 0, StepService = 1, StepPrivacy = 2, StepFirstRun = 3 };

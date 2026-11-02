@@ -1,12 +1,14 @@
 // The user's Autopilot choices, for every engine and project on the machine (docs/protocol.md, "Sharing a run's data"):
 // Autopilot/preferences.json in the user settings folder (Aura.Folder, beside brain.json):
 //
-//     {"version": 1, "onboarded": true, "share_data": true, "access": "aura" | "own_keys"}
+//     {"version": 1, "onboarded": true, "share_data": true, "research_agent": true, "access": "aura" | "own_keys"}
+//
+// (research_agent only once the user flipped the Settings page's switch: until then the agent service decides)
 //
 // and the first-run setup's own model keys, Coding Agent and LLM provider in Autopilot/autopilot.env (KEY=value lines), which `autopilot
 // serve` reads (docs/protocol.md, above "Account"). Both
 // are written atomically (a temporary file, then a rename) and merged with what is there (other keys and lines stay).
-// A missing or unreadable preferences.json is the defaults: not onboarded, sharing on.
+// A missing or unreadable preferences.json is the defaults: not onboarded, sharing on, the research agent not chosen.
 
 using System;
 using System.Collections.Generic;
@@ -26,6 +28,10 @@ namespace Autopilot.Playtest
         public bool Onboarded;
         /// <summary>Runs' data is sent to the developers of Autopilot (absent: true).</summary>
         public bool ShareData = true;
+        /// <summary>Runs use the research agent, which reads the game's code while harnesses play: the user's choice,
+        /// or null when not chosen (absent, or not a boolean: the agent service decides, off for the Aura app's
+        /// Autopilot, on for this plugin's own agent service).</summary>
+        public bool? ResearchAgent;
         /// <summary>"aura", "own_keys" or "" (never chosen).</summary>
         public string Access = "";
 
@@ -52,6 +58,7 @@ namespace Autopilot.Playtest
             if (o == null) return p;
             p.Onboarded = o.TryGetValue("onboarded", out var ob) && ob is bool b && b;
             p.ShareData = !(o.TryGetValue("share_data", out var sd) && sd is bool s) || s;
+            p.ResearchAgent = o.TryGetValue("research_agent", out var ra) && ra is bool r ? r : (bool?)null;
             p.Access = o.TryGetValue("access", out var a) && a is string text ? text : "";
             return p;
         }
@@ -78,6 +85,7 @@ namespace Autopilot.Playtest
                 Files.WriteAtomic(path, Json.Pretty(o) + "\n");
                 cached = null;
                 UnsavedShare = null;
+                UnsavedResearch = null;
                 return true;
             }
             catch (Exception e)
@@ -85,12 +93,15 @@ namespace Autopilot.Playtest
                 UnityEngine.Debug.LogWarning($"[Autopilot] Couldn't write {path}: {e.Message}");
                 LastError = e.HResult & 0xFFFF;
                 if (changes.TryGetValue("share_data", out var share) && share is bool b) UnsavedShare = b;
+                if (changes.TryGetValue("research_agent", out var research) && research is bool r) UnsavedResearch = r;
                 return false;
             }
         }
 
         /// <summary>The user's sharing choice when preferences.json couldn't be written (this process only).</summary>
         public static bool? UnsavedShare;
+        /// <summary>The user's research agent choice when preferences.json couldn't be written (this process only).</summary>
+        public static bool? UnsavedResearch;
 
         static Preferences cached;
         static DateTime cachedStamp;
@@ -124,9 +135,14 @@ namespace Autopilot.Playtest
         }
 
         /// <summary>-PlaytestShare=0|1 (also false|true): null when the command line doesn't say.</summary>
-        public static bool? CommandLineShare()
+        public static bool? CommandLineShare() => CommandLineSwitch("PlaytestShare");
+
+        /// <summary>-PlaytestResearch=0|1 (also false|true): null when the command line doesn't say.</summary>
+        public static bool? CommandLineResearch() => CommandLineSwitch("PlaytestResearch");
+
+        static bool? CommandLineSwitch(string name)
         {
-            var v = PlaytestClient.Arg("PlaytestShare").Trim().ToLowerInvariant();
+            var v = PlaytestClient.Arg(name).Trim().ToLowerInvariant();
             if (v == "0" || v == "false" || v == "no" || v == "off") return false;
             if (v == "1" || v == "true" || v == "yes" || v == "on") return true;
             return null;
@@ -137,6 +153,14 @@ namespace Autopilot.Playtest
         public static bool Share()
         {
             return CommandLineShare() ?? UnsavedShare ?? Load().ShareData;
+        }
+
+        /// <summary>What every hello says as "research": -PlaytestResearch when given, else preferences.json's
+        /// research_agent; null when neither says (the hello leaves "research" out and the agent service
+        /// decides).</summary>
+        public static bool? Research()
+        {
+            return CommandLineResearch() ?? UnsavedResearch ?? Load().ResearchAgent;
         }
     }
 
