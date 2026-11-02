@@ -1,4 +1,6 @@
-// view: what the player sees (simpler than Unreal's; see the README for what it leaves out) and watch: how things move.
+// view: what the player sees and what its body feels, as Unreal's (the spatial reads are in ViewSpace.cs: held,
+// openings, ways up, overhead, point blank, a thing's top surface and lane, lights, effects, highlights) and watch: how
+// things move and how they are drawn.
 // A "thing" is a GameObject as a player tells things apart: a renderer's object, taken up through its parents to the
 // highest one that isn't a plain group (an object with nothing but a Transform, like "Pickups" or "Environment").
 
@@ -60,6 +62,14 @@ namespace Autopilot.Playtest
             var maxCount = (int)Json.Num(args, "max_count", 24);
             var onlyList = Json.List(args, "only");
             var only = onlyList != null ? new HashSet<string>(onlyList.Select(o => Convert.ToString(o))) : null;
+            // Asked for: the openings the player sees round it and how far its body could go each way (`openings`), and
+            // the ways up it sees (`ways_up`), within `openings_reach` (cm); how far above the head something is
+            // overhead (`overhead_reach`). A game that never asks pays nothing
+            var openings = Json.Bool(args, "openings", false);
+            var waysUp = Json.Bool(args, "ways_up", false);
+            var openingsReach = (float)(Math.Max(100.0, Json.Num(args, "openings_reach", 3000)) / Frame.Scale);
+            var overheadReach = (float)(Json.Num(args, "overhead_reach", 2000) / Frame.Scale);
+            var floorSize = (float)(Json.Num(args, "floor_size", 4000) / Frame.Scale);  // (wider than this and flat: the ground, left out)
             var camPos = cam.transform.position;
             var planes = GeometryUtility.CalculateFrustumPlanes(cam);
             Vector3 feet = player != null ? Player.Center(player, out var hh, out _) - Vector3.up * hh : camPos;
@@ -72,6 +82,9 @@ namespace Autopilot.Playtest
                 if (floor != null) standingOn = ThingOf(floor.gameObject);
             }
 #endif
+            // What the player holds (as its camera draws it): never one of the things it sees
+            var heldRoots = new List<Transform>();
+            var held = only == null ? Drawn.Held(player, cam, out heldRoots) : new List<object>();
             // The things with a visible body
             var things = new Dictionary<GameObject, Seen>();
             foreach (var r in Loaded.All<Renderer>(FindObjectsInactive.Exclude))
@@ -80,6 +93,7 @@ namespace Autopilot.Playtest
                 if (Ops.IsParticles(r) || r is TrailRenderer || r is LineRenderer) continue;
                 if (Paths.Hidden(r.gameObject) || r.gameObject.layer == 5 /* UI */) continue;
                 if (player != null && r.transform.IsChildOf(player.transform)) continue;
+                if (heldRoots.Any(h => h != null && r.transform.IsChildOf(h))) continue;
                 var thing = ThingOf(r.gameObject);
                 if (only != null && !only.Contains(Paths.NameOf(thing)) && !only.Contains(Paths.Of(thing))) continue;
                 if (!things.TryGetValue(thing, out var seen))
@@ -94,6 +108,8 @@ namespace Autopilot.Playtest
             foreach (var s in things.Values)
             {
                 if (s.Thing == standingOn && only == null) continue;  // (the ground under the feet)
+                var extent = s.Box.extents;
+                if (Mathf.Max(extent.x, extent.z) * 2f > floorSize && extent.y * 2f < floorSize * 0.25f) continue;  // (the ground itself)
                 s.Distance = Mathf.Sqrt(s.Box.SqrDistance(camPos));
                 if (s.Distance > maxDistance) continue;
                 if (!GeometryUtility.TestPlanesAABB(planes, s.Box)) continue;
@@ -105,6 +121,7 @@ namespace Autopilot.Playtest
             // The crosshair: the nearest thing along the view's line, by its drawn box (a pickup is often a trigger,
             // which physics rays pass through), not past a solid collider nearer than it
             GameObject crosshair = null;
+            Transform crosshairPart = null;  // (the collider the view's line meets: a bone's, on a character)
             var ray = new Ray(camPos, cam.transform.forward);
             var nearest = maxDistance;
 #if AUTOPILOT_PHYSICS
@@ -112,6 +129,7 @@ namespace Autopilot.Playtest
             {
                 if (player != null && h.collider.transform.IsChildOf(player.transform)) continue;
                 crosshair = ThingOf(h.collider.gameObject);
+                crosshairPart = h.collider.transform;
                 nearest = h.distance;
                 break;
             }
@@ -123,11 +141,61 @@ namespace Autopilot.Playtest
                 {
                     nearest = d;
                     crosshair = s.Thing;
+                    crosshairPart = null;
+                }
+            }
+#if AUTOPILOT_PHYSICS
+            var probe = player != null ? BodyProbe.Of(player) : null;
+            if (probe != null) foreach (var h in heldRoots) probe.Ignored.Add(h);
+            var touchedThings = new HashSet<GameObject>();
+            var touching = player != null && only == null ? Touching(player, Frame.Yaw(cam.transform.rotation), touchedThings) : null;
+#endif
+            var eye = new ViewSpace.Eye
+            {
+                Cam = cam, At = KitSpace.K(camPos), Yaw = Frame.Yaw(cam.transform.rotation),
+                Fov = Camera.VerticalToHorizontalFieldOfView(cam.fieldOfView, cam.aspect > 0 ? cam.aspect : 16f / 9f),
+            };
+            var me = player != null ? KitSpace.K(Player.Center(player, out _, out _)) : eye.At;
+            var feetK = KitSpace.K(feet).z;
+            // A place on a thing: where it is, how far to turn the view toward it, how far across the floor, how high
+            // against the feet
+            Dictionary<string, object> Place(Vector3 k) => new Dictionary<string, object>
+            {
+                ["at"] = KitSpace.Vec(k),
+                ["turn"] = Math.Round(Frame.Wrap(KitSpace.YawOf2D(eye.At, k) - eye.Yaw)),
+                ["distance"] = Math.Round(KitSpace.Dist2D(k, me) * Frame.Scale),
+                ["height_above_feet"] = Math.Round((k.z - feetK) * Frame.Scale),
+            };
+            // Each listed thing's own box (its top surface, what an opening leads into, the lights placed at it)
+            var boxes = visible.Select(v => OwnBox.Of(v.Thing, v.Parts, v.Box)).ToList();
+            // The lights helpers draw at things' places, each counted for the listed thing whose box (grown a little)
+            // holds it; of several, the nearest
+            var placedOn = new int[visible.Count];
+            var placedBrightness = new float[visible.Count];
+            if (only == null)
+            {
+                foreach (var light in Drawn.PlacedLights(player))
+                {
+                    var best = -1;
+                    var nearestOff = 0f;
+                    for (var i = 0; i < visible.Count; ++i)
+                    {
+                        var off = boxes[i].Distance(light.Key);
+                        if (boxes[i].Holds(light.Key, 1f) && (best < 0 || off < nearestOff))
+                        {
+                            best = i;
+                            nearestOff = off;
+                        }
+                    }
+                    if (best < 0) continue;
+                    ++placedOn[best];
+                    placedBrightness[best] = Mathf.Max(placedBrightness[best], light.Value);
                 }
             }
             var list = new List<object>();
-            foreach (var s in visible)
+            for (var index = 0; index < visible.Count; ++index)
             {
+                var s = visible[index];
                 var vp = cam.WorldToViewportPoint(s.Box.center);
                 var item = new Dictionary<string, object>
                 {
@@ -147,6 +215,32 @@ namespace Autopilot.Playtest
                 var mf = s.Thing.GetComponentInChildren<MeshFilter>();
                 if (mf != null && mf.sharedMesh != null) item["mesh"] = mf.sharedMesh.name;
                 if (vp.x < 0 || vp.x > 1 || vp.y < 0 || vp.y > 1) item["partly_in_view"] = true;
+                // Tipped over (a ramp: a box turned), and its own box when that isn't the box around it
+                var turn = s.Thing.transform.rotation;
+                if (Math.Abs(Frame.Pitch(turn)) >= 1 || Math.Abs(Frame.Roll(turn)) >= 1)
+                    item["tilt"] = new Dictionary<string, object> { ["pitch"] = Math.Round(Frame.Pitch(turn)), ["roll"] = Math.Round(Frame.Roll(turn)) };
+                var own = boxes[index];
+                var worldCenter = KitSpace.K(s.Box.center);
+                var worldHalf = s.Box.extents;  // (Unity's axes, as the own box's half sizes are)
+                if ((own.Center - worldCenter).magnitude > 0.01f || Mathf.Abs(own.Half.x - worldHalf.x) > 0.005f || Mathf.Abs(own.Half.y - worldHalf.y) > 0.005f
+                    || Mathf.Abs(own.Half.z - worldHalf.z) > 0.005f)
+                {
+                    // (Unity's own axes x, y, z are the kit's Y, Z, X: the size told along the kit's)
+                    item["box"] = new Dictionary<string, object>
+                    {
+                        ["center"] = KitSpace.Vec(own.Center),
+                        ["size"] = Frame.Size(own.Half * 2f, 0),
+                        ["rotation"] = new Dictionary<string, object>
+                        {
+                            ["pitch"] = Json.Round(Frame.Pitch(turn), 1), ["yaw"] = Json.Round(Frame.Yaw(turn), 1), ["roll"] = Json.Round(Frame.Roll(turn), 1),
+                        },
+                    };
+                }
+#if AUTOPILOT_PHYSICS
+                if (crosshair == s.Thing && crosshairPart != null && crosshairPart != s.Thing.transform && IsBone(s.Thing, crosshairPart))
+                    item["crosshair_part"] = crosshairPart.name;  // (e.g. Head, Spine2)
+                if (only == null) BodyCenter(item, s, camPos, player);
+#endif
 #if AUTOPILOT_PHYSICS
                 var rb = s.Thing.GetComponentInParent<Rigidbody>();
                 if (rb != null && !rb.isKinematic && rb.linearVelocity.magnitude > 0.01f) item["speed"] = Math.Round(rb.linearVelocity.magnitude * Frame.Scale);
@@ -156,15 +250,39 @@ namespace Autopilot.Playtest
                     item["blocks_player"] = blocks;
                 }
 #endif
+#if AUTOPILOT_PHYSICS
+                if (only == null && !IsCharacter(s.Thing)) ViewSpace.Surface(item, s.Thing, boxes[index], s.Box, probe, eye, Place);
+#endif
                 var look = Appearance(s);
+                if (only == null)
+                {
+                    // Its lights (its own and those placed at it), the effects playing on it, whether it is highlighted
+                    var lightsOn = placedOn[index];
+                    var brightest = placedBrightness[index];
+                    Drawn.OwnLights(s.Thing, ref lightsOn, ref brightest);
+                    if (lightsOn > 0) look["lights"] = new Dictionary<string, object> { ["on"] = lightsOn, ["brightness"] = Json.Round(brightest, 2) };
+                }
+                var effects = Drawn.Effects(s.Thing);
+                if (effects.Count > 0) look["effects"] = effects;
+                if (s.Parts.Any(Drawn.Highlighted)) look["highlighted"] = true;
+                if (Watch.Limp(s.Thing)) look["limp"] = true;
                 if (look.Count > 0) item["look"] = look;
+                // (what it says: its first text, as Godot's; Unity's objects have no separate label)
+                if (look.TryGetValue("texts", out var said) && said is List<object> texts && texts.Count > 0) item["label"] = texts[0];
                 list.Add(item);
             }
             var rot = cam.transform.rotation;
+            var scene = new Dictionary<string, object>();
+            if (only == null)
+            {
+                var sun = Drawn.Sun();
+                if (sun >= 0) scene["sun"] = Json.Round(sun, 2);
+            }
             var result = new Dictionary<string, object>
             {
                 ["visible"] = list,
-                ["scene"] = new Dictionary<string, object>(),
+                ["held"] = held,
+                ["scene"] = scene,
                 ["camera"] = new Dictionary<string, object>
                 {
                     ["location"] = Frame.Point(camPos, 0),
@@ -173,10 +291,13 @@ namespace Autopilot.Playtest
                     ["fov"] = Math.Round(Camera.VerticalToHorizontalFieldOfView(cam.fieldOfView, cam.aspect > 0 ? cam.aspect : 16f / 9f)),
                 },
                 ["crosshair_tested"] = true,
-                ["oriented"] = false,  // (boxes are world-aligned)
+                ["oriented"] = true,  // (each thing's box is the box around it, and `box` its own when it is turned)
                 ["effects_play"] = Rendering,
-                ["omitted"] = new List<object> { "held", "openings", "ways_up", "point_blank", "lane", "top_slope", "lights", "effects", "highlighted", "overhead" },
             };
+#if !AUTOPILOT_PHYSICS
+            // (no Physics module: nothing to probe the room with)
+            result["omitted"] = new List<object> { "openings", "ways_up", "point_blank", "lane", "top_slope", "overhead" };
+#endif
             if (only != null) result["only"] = only.Select(o => (object)o).ToList();
             var body = new Dictionary<string, object>();
             if (player != null)
@@ -193,11 +314,35 @@ namespace Autopilot.Playtest
                     body["floor_slope_degrees"] = Math.Round(Vector3.Angle(floorNormal, Vector3.up));
                 }
 #if AUTOPILOT_PHYSICS
-                if (only == null) body["touching"] = Touching(player, Frame.Yaw(rot));
+                if (touching != null) body["touching"] = touching;
+                if (only == null && probe != null)
+                {
+                    // What is overhead: the first thing straight above the head, and the room up to it; only what the
+                    // player perceives (a thing in view, or one the body is against, or the head nearly touches). With
+                    // openings or ways up asked for, `under`: what is straight above whatever is in view
+                    var head = new Vector3(probe.Me.x, probe.Me.y, probe.Me.z + probe.HalfHeight);
+                    if (overheadReach > 0 && probe.Sight(head, head + new Vector3(0, 0, overheadReach), out var up) && up.Thing != null)
+                    {
+                        var above = up.Thing;
+                        if (visible.Any(v => v.Thing == above) || touchedThings.Contains(above) || up.Distance <= 0.1f)
+                            body["overhead"] = new Dictionary<string, object> { ["thing"] = Paths.NameOf(above), ["clearance"] = Math.Round(up.Distance * Frame.Scale) };
+                        if (openings || waysUp)
+                            body["under"] = new Dictionary<string, object> { ["thing"] = Paths.NameOf(above), ["clearance"] = Math.Round(up.Distance * Frame.Scale) };
+                    }
+                    if (openings || waysUp)
+                    {
+                        var holders = visible.Select((v, i) => new KeyValuePair<GameObject, OwnBox>(v.Thing, boxes[i])).ToList();
+                        ViewSpace.AddOpenings(body, probe, eye, openingsReach, openings, waysUp, holders);
+                    }
+                }
                 if (only == null && Json.Bool(args, "sonar", false))
                 {
                     var sonar = Sonar(player, args, Frame.Yaw(rot));
-                    if (sonar != null) body["sonar"] = sonar;
+                    if (sonar != null)
+                    {
+                        if (probe != null) sonar["point_blank"] = ViewSpace.PointBlank(probe, Frame.Yaw(rot));
+                        body["sonar"] = sonar;
+                    }
                 }
 #endif
             }
@@ -388,8 +533,74 @@ namespace Autopilot.Playtest
             return new Dictionary<string, object> { ["ways"] = ways, ["reach"] = Json.Round(reach * Frame.Scale, 0) };
         }
 
-        /// <summary>What the body is against: colliders within a few centimetres of its shape.</summary>
-        static List<object> Touching(GameObject player, double viewYaw)
+        /// <summary>Whether a transform is a bone of one of the thing's skinned meshes.</summary>
+        static bool IsBone(GameObject thing, Transform t)
+        {
+            foreach (var sk in thing.GetComponentsInChildren<SkinnedMeshRenderer>())
+                if (sk.bones != null && Array.IndexOf(sk.bones, t) >= 0)
+                    return true;
+            return false;
+        }
+
+        /// <summary>A character's (a skinned mesh's) body as seen: rays from the camera through a grid over its box
+        /// against its own colliders, the middle of where they meet it (`body_center`), and how much of it shows past
+        /// what is in front (`body_shown`), as Unreal's: its box's middle is often off its body.</summary>
+        static void BodyCenter(Dictionary<string, object> item, Seen s, Vector3 camPos, GameObject player)
+        {
+            if (s.Thing.GetComponentInChildren<SkinnedMeshRenderer>() == null) return;
+            var colliders = s.Thing.GetComponentsInChildren<Collider>().Where(c => c.enabled && !c.isTrigger).ToArray();
+            if (colliders.Length == 0) return;
+            const int n = 7;
+            var toward = (s.Box.center - camPos).normalized;
+            var right = Vector3.Cross(Vector3.up, toward).normalized;
+            if (right.sqrMagnitude < 1e-6f) right = Vector3.right;
+            var halfWide = Mathf.Max(s.Box.extents.x, s.Box.extents.z);
+            var reach = s.Distance + s.Box.extents.magnitude * 2f + 1f;
+            var sum = Vector3.zero;
+            int hits = 0, shown = 0;
+            for (var i = 0; i < n; ++i)
+            {
+                for (var j = 0; j < n; ++j)
+                {
+                    var through = s.Box.center + right * (((float)i / (n - 1) - 0.5f) * 2f * halfWide) + Vector3.up * (((float)j / (n - 1) - 0.5f) * 2f * s.Box.extents.y);
+                    var ray = new Ray(camPos, (through - camPos).normalized);
+                    RaycastHit best = default;
+                    var hit = false;
+                    foreach (var c in colliders)
+                        if (c.Raycast(ray, out var h, reach) && (!hit || h.distance < best.distance))
+                        {
+                            best = h;
+                            hit = true;
+                        }
+                    if (!hit) continue;
+                    ++hits;
+                    var hidden = false;
+                    foreach (var other in Physics.RaycastAll(ray, best.distance - 0.05f, ~0, QueryTriggerInteraction.Ignore))
+                    {
+                        if (other.collider.transform.IsChildOf(s.Thing.transform) || player != null && other.collider.transform.IsChildOf(player.transform)) continue;
+                        hidden = true;
+                        break;
+                    }
+                    if (hidden) continue;
+                    sum += best.point;
+                    ++shown;
+                }
+            }
+            if (shown == 0) return;
+            item["body_center"] = Frame.Point(sum / shown, 0);
+            if (shown < hits) item["body_shown"] = Json.Round((double)shown / hits, 2);
+        }
+
+        /// <summary>A character (not a surface to stand on): a CharacterController, a NavMeshAgent, or the player.</summary>
+        static bool IsCharacter(GameObject thing)
+        {
+            if (thing.GetComponentInChildren<CharacterController>() != null) return true;
+            return thing.GetComponentsInChildren<Component>().Any(c => c != null && c.GetType().Name == "NavMeshAgent");
+        }
+
+        /// <summary>What the body is against: colliders within a few centimetres of its shape (their things in
+        /// <paramref name="touched"/>).</summary>
+        static List<object> Touching(GameObject player, double viewYaw, HashSet<GameObject> touched)
         {
             var list = new List<object>();
             var center = Player.Center(player, out var halfHeight, out var radius);
@@ -401,6 +612,7 @@ namespace Autopilot.Playtest
                 if (c.transform.IsChildOf(player.transform)) continue;
                 var thing = ThingOf(c.gameObject);
                 if (!seen.Add(thing)) continue;
+                touched.Add(thing);
                 Vector3 closest;
                 try
                 {
@@ -428,7 +640,11 @@ namespace Autopilot.Playtest
 #endif
     }
 
-    /// <summary>watch: objects' transforms (relative to their parents) sampled every frame against the first sample.</summary>
+    /// <summary>watch: objects' transforms (relative to their parents) sampled every frame against the first sample; with
+    /// `drawn`, as Unreal's: a thing's parts a player sees (its root and its `parts` biggest meshes, sampled in the thing's
+    /// own frame, by their own paths) and how it is drawn: "part shown" / "part hidden" (a mesh), "effect started" /
+    /// "effect stopped", "light on" / "light off", "animation started" / "animation ended" (its Animator's clips), "went
+    /// limp" (a ragdoll), each with the `asset` it is about.</summary>
     public static class Watch
     {
         sealed class Sample
@@ -437,24 +653,160 @@ namespace Autopilot.Playtest
             public Transform T;
             public Vector3 Pos, Scale;
             public Quaternion Rot;
+            public int Thing = -1;  // (a part of a watched thing: sampled in its frame)
+            public bool Sampled;
+            public readonly Dictionary<string, double> Found = new Dictionary<string, double>();
+        }
+
+        /// <summary>How a thing is drawn, as watch compares it.</summary>
+        public sealed class Look
+        {
+            public HashSet<string> Parts = new HashSet<string>();
+            public HashSet<string> Effects = new HashSet<string>();
+            public HashSet<string> Animations = new HashSet<string>();
+            public int Lights;
+            public bool Limp;
+        }
+
+        sealed class WatchedThing
+        {
+            public GameObject Thing;
+            public string Path;
+            public Quaternion StartRotation;
+            public bool Framed, Sampled;
+            public Look Last;
+            public readonly List<(double t, string what, string asset)> Found = new List<(double, string, string)>();
+
+            public void Note(double t, string what, string asset)
+            {
+                if (!Found.Any(f => f.what == what && f.asset == asset)) Found.Add((t, what, asset));
+            }
+        }
+
+        static string MeshName(Renderer r)
+        {
+            var mf = r.GetComponent<MeshFilter>();
+            if (mf != null && mf.sharedMesh != null) return mf.sharedMesh.name;
+            if (r is SkinnedMeshRenderer sk && sk.sharedMesh != null) return sk.sharedMesh.name;
+            if (r is SpriteRenderer sr && sr.sprite != null) return sr.sprite.name;
+            return null;
+        }
+
+        static bool Shows(Renderer r) => r != null && r.enabled && r.gameObject.activeInHierarchy && !r.forceRenderingOff && !Ops.IsParticles(r)
+                                         && !(r is TrailRenderer) && !(r is LineRenderer);
+
+        /// <summary>A ragdoll: an animated body (an Animator, now off) most of whose rigidbodies (three or more) move by
+        /// physics, as Unreal's limp (most of a skeletal mesh's bodies simulate).</summary>
+        public static bool Limp(GameObject thing)
+        {
+#if AUTOPILOT_PHYSICS
+            var animator = thing.GetComponentInChildren<Animator>();
+            if (animator == null || animator.isActiveAndEnabled && animator.enabled) return false;
+            var bodies = thing.GetComponentsInChildren<Rigidbody>();
+            if (bodies.Length < 3) return false;
+            return bodies.Count(b => !b.isKinematic) * 2 >= bodies.Length;
+#else
+            return false;
+#endif
+        }
+
+        /// <summary>How a thing is drawn now: its meshes shown, its effects playing, its lights on (its own, and those
+        /// placed at it), its Animator's clips, whether it hangs limp.</summary>
+        public static Look LookOf(GameObject thing, List<KeyValuePair<Vector3, float>> placed)
+        {
+            var look = new Look();
+            foreach (var r in thing.GetComponentsInChildren<Renderer>())
+            {
+                if (!Shows(r)) continue;
+                var name = MeshName(r);
+                if (!string.IsNullOrEmpty(name)) look.Parts.Add(name);
+            }
+            foreach (var e in Drawn.Effects(thing))
+                if (e is Dictionary<string, object> d)
+                    look.Effects.Add((string)d["asset"]);
+            var brightest = 0f;
+            Drawn.OwnLights(thing, ref look.Lights, ref brightest);
+            if (placed != null && placed.Count > 0)
+            {
+                var renderers = thing.GetComponentsInChildren<Renderer>().Where(Shows).ToList();
+                if (renderers.Count > 0)
+                {
+                    var world = renderers[0].bounds;
+                    foreach (var r in renderers) world.Encapsulate(r.bounds);
+                    var box = OwnBox.Of(thing, renderers, world);
+                    look.Lights += placed.Count(l => box.Holds(l.Key, 1f));
+                }
+            }
+            foreach (var animator in thing.GetComponentsInChildren<Animator>())
+            {
+                if (animator == null || !animator.isActiveAndEnabled || animator.runtimeAnimatorController == null) continue;
+                try
+                {
+                    foreach (var clip in animator.GetCurrentAnimatorClipInfo(0))
+                        if (clip.clip != null && clip.weight > 0)
+                            look.Animations.Add(clip.clip.name);
+                }
+                catch (Exception)
+                {
+                    // (an Animator not ready)
+                }
+            }
+            look.Limp = Limp(thing);
+            return look;
+        }
+
+        /// <summary>The parts of a thing watched for motion: its root, when it is drawn or carries what is drawn, and up
+        /// to `count` of its shown meshes, the biggest first, not ones a skeleton carries (a weapon in a hand: that is
+        /// its animation).</summary>
+        static List<Transform> Parts(GameObject thing, int count)
+        {
+            var renderers = thing.GetComponentsInChildren<Renderer>().Where(Shows).ToList();
+            var bones = new HashSet<Transform>();
+            foreach (var sk in thing.GetComponentsInChildren<SkinnedMeshRenderer>())
+                if (sk.bones != null)
+                    foreach (var b in sk.bones)
+                        if (b != null)
+                            bones.Add(b);
+            bool OnSkeleton(Transform t)
+            {
+                for (; t != null && t != thing.transform; t = t.parent)
+                    if (bones.Contains(t))
+                        return true;
+                return false;
+            }
+            var list = new List<Transform>();
+            if (renderers.Count > 0) list.Add(thing.transform);
+            foreach (var r in renderers.Where(r => r.transform != thing.transform && !(r is SkinnedMeshRenderer) && !OnSkeleton(r.transform))
+                         .OrderByDescending(r => r.bounds.extents.sqrMagnitude).Take(count))
+                if (!list.Contains(r.transform))
+                    list.Add(r.transform);
+            return list;
         }
 
         public static void Handle(PlaytestClient client, long id, Dictionary<string, object> args)
         {
             var samples = new List<Sample>();
+            var things = new List<WatchedThing>();
+            var drawn = Json.Bool(args, "drawn", false);
+            var partCount = Math.Max(0, Math.Min(16, (int)Math.Round(Json.Num(args, "parts", 3))));
             foreach (var o in Json.List(args, "objects") ?? new List<object>())
             {
                 var path = Convert.ToString(o);
                 var r = Paths.Resolve(path);
+                if (drawn && r is GameObject thing)
+                {
+                    foreach (var part in Parts(thing, partCount))
+                        samples.Add(new Sample { Path = part == thing.transform ? path : Paths.Of(part.gameObject), T = part, Thing = things.Count });
+                    things.Add(new WatchedThing { Thing = thing, Path = path });
+                    continue;
+                }
                 var t = r is GameObject go ? go.transform : r is Component c ? c.transform : null;
                 if (t == null) continue;
-                samples.Add(new Sample { Path = path, T = t, Pos = t.localPosition, Rot = t.localRotation, Scale = t.localScale });
+                samples.Add(new Sample { Path = path, T = t, Pos = t.localPosition, Rot = t.localRotation, Scale = t.localScale, Sampled = true });
             }
             var turned = Json.Num(args, "turned", 1.0);
             var moved = Json.Num(args, "moved", 2.0);
             var resized = Json.Num(args, "resized", 0.02);
-            var changes = new List<object>();
-            var told = new HashSet<string>();
             client.AddPending(new Pending
             {
                 Id = id,
@@ -462,24 +814,95 @@ namespace Autopilot.Playtest
                 Seconds = Json.Num(args, "seconds", 0.6),
                 Tick = (p, now) =>
                 {
-                    foreach (var s in samples)
+                    var t = Convert.ToDouble(client.GameTime);
+                    var placed = things.Count > 0 ? Drawn.PlacedLights(Player.Find()) : null;
+                    foreach (var w in things)
                     {
-                        if (s.T == null) continue;
-                        void Tell(string what)
+                        if (w.Thing == null) continue;
+                        if (!w.Framed)
                         {
-                            if (!told.Add(s.Path + "\n" + what)) return;
-                            changes.Add(new Dictionary<string, object> { ["t"] = client.GameTime, ["object"] = s.Path, ["what"] = what });
+                            w.Framed = true;
+                            w.StartRotation = w.Thing.transform.rotation;
                         }
-                        var parent = s.T.parent;
-                        var delta = s.T.localPosition - s.Pos;
-                        var dist = (parent != null ? parent.TransformVector(delta) : delta).magnitude * Frame.Scale;
-                        if (dist > moved) Tell("moved");
-                        if (Quaternion.Angle(s.T.localRotation, s.Rot) > turned) Tell("turned");
-                        var sc = s.T.localScale;
-                        if (Changed(sc.x, s.Scale.x, resized) || Changed(sc.y, s.Scale.y, resized) || Changed(sc.z, s.Scale.z, resized)) Tell("changed size");
+                        var look = LookOf(w.Thing, placed);
+                        if (w.Sampled)
+                        {
+                            foreach (var part in look.Parts.Where(x => !w.Last.Parts.Contains(x))) w.Note(t, "part shown", part);
+                            foreach (var part in w.Last.Parts.Where(x => !look.Parts.Contains(x))) w.Note(t, "part hidden", part);
+                            foreach (var e in look.Effects.Where(x => !w.Last.Effects.Contains(x))) w.Note(t, "effect started", e);
+                            foreach (var e in w.Last.Effects.Where(x => !look.Effects.Contains(x))) w.Note(t, "effect stopped", e);
+                            if (look.Lights != w.Last.Lights) w.Note(t, look.Lights > w.Last.Lights ? "light on" : "light off", "");
+                            foreach (var a in look.Animations.Where(x => !w.Last.Animations.Contains(x))) w.Note(t, "animation started", a);
+                            foreach (var a in w.Last.Animations.Where(x => !look.Animations.Contains(x))) w.Note(t, "animation ended", a);
+                            if (look.Limp && !w.Last.Limp) w.Note(t, "went limp", "");
+                        }
+                        w.Sampled = true;
+                        w.Last = look;
+                    }
+                    foreach (var smp in samples)
+                    {
+                        if (smp.T == null) continue;
+                        Vector3 pos, scale;
+                        Quaternion rot;
+                        if (smp.Thing >= 0)
+                        {
+                            // A part of a watched thing: where it is in that thing's frame (as it was turned when the watch
+                            // began), and its size in the world
+                            var w = things[smp.Thing];
+                            if (w.Thing == null) continue;
+                            var inverse = Quaternion.Inverse(w.StartRotation);
+                            pos = inverse * (smp.T.position - w.Thing.transform.position);
+                            rot = inverse * smp.T.rotation;
+                            scale = smp.T.lossyScale;
+                        }
+                        else
+                        {
+                            pos = smp.T.localPosition;
+                            rot = smp.T.localRotation;
+                            scale = smp.T.localScale;
+                        }
+                        if (!smp.Sampled)
+                        {
+                            smp.Sampled = true;
+                            smp.Pos = pos;
+                            smp.Rot = rot;
+                            smp.Scale = scale;
+                            continue;
+                        }
+                        var delta = pos - smp.Pos;
+                        var parent = smp.T.parent;
+                        var dist = (smp.Thing < 0 && parent != null ? parent.TransformVector(delta) : delta).magnitude * Frame.Scale;
+                        if (dist > moved && !smp.Found.ContainsKey("moved")) smp.Found["moved"] = t;
+                        if (Quaternion.Angle(rot, smp.Rot) > turned && !smp.Found.ContainsKey("turned")) smp.Found["turned"] = t;
+                        if ((Changed(scale.x, smp.Scale.x, resized) || Changed(scale.y, smp.Scale.y, resized) || Changed(scale.z, smp.Scale.z, resized))
+                            && !smp.Found.ContainsKey("changed size"))
+                            smp.Found["changed size"] = t;
                     }
                     if (now - p.Start < p.Seconds) return false;
-                    client.Respond(p.Id, new Dictionary<string, object> { ["changes"] = changes });
+                    var changes = new List<(double t, Dictionary<string, object> change)>();
+                    foreach (var smp in samples)
+                    {
+                        foreach (var f in smp.Found)
+                        {
+                            // (parts that go by one path: each change once, the first time)
+                            var same = changes.FindIndex(c => (string)c.change["object"] == smp.Path && (string)c.change["what"] == f.Key && !c.change.ContainsKey("asset"));
+                            if (same >= 0)
+                            {
+                                if (f.Value < changes[same].t) changes[same] = (f.Value, changes[same].change);
+                                continue;
+                            }
+                            changes.Add((f.Value, new Dictionary<string, object> { ["t"] = f.Value, ["object"] = smp.Path, ["what"] = f.Key }));
+                        }
+                    }
+                    foreach (var w in things)
+                        foreach (var f in w.Found)
+                            changes.Add((f.t, new Dictionary<string, object> { ["t"] = f.t, ["object"] = w.Path, ["what"] = f.what, ["asset"] = f.asset }));
+                    var result = new Dictionary<string, object>
+                    {
+                        ["changes"] = changes.OrderBy(c => c.t).Select(c => { c.change["t"] = c.t; return (object)c.change; }).ToList(),
+                    };
+                    if (drawn) result["drawn"] = true;  // (things watched as drawn)
+                    client.Respond(p.Id, result);
                     return true;
                 },
             });

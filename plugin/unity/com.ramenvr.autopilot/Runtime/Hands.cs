@@ -832,6 +832,65 @@ namespace Autopilot.Playtest
 
         // -- the key op ------------------------------------------------------------------------------------
 
+        /// <summary>The key op's name of a legacy KeyCode (a key or a mouse button): its FKey name where it has one.</summary>
+        static string FKeyName(KeyCode code)
+        {
+            if (code == KeyCode.None || code >= KeyCode.JoystickButton0) return null;  // (a joystick's: the gamepad's own names)
+            string first = null;
+            foreach (var pair in fkeys)
+            {
+                var c = pair.Value;
+                if ((c.Kind != Kind.Key && c.Kind != Kind.MouseButton) || c.Code != code) continue;
+                if (fkeyOf.TryGetValue(c.Id, out var canonical) && canonical == pair.Key) return pair.Key;
+                first ??= pair.Key;
+            }
+            return first;
+        }
+
+        /// <summary>The legacy Input Manager's axes as controls, as Unreal lists its legacy mappings: a button as
+        /// {"name", "action": "legacy:Name", "keys", "digital": true}, any other axis as "legacy-axis:Name" (its keys,
+        /// MouseX / MouseY / MouseWheelAxis for the mouse's).</summary>
+        public static List<object> LegacyControls()
+        {
+            var list = new List<object>();
+            foreach (var (name, codes, mouse, button) in LegacyInput.AxisList())
+            {
+                var keys = new List<object>();
+                foreach (var code in codes)
+                {
+                    var key = FKeyName(code);
+                    if (key != null && !keys.Contains(key)) keys.Add(key);
+                }
+                if (mouse >= 0) keys.Add(mouse == 0 ? "MouseX" : mouse == 1 ? "MouseY" : "MouseWheelAxis");
+                if (keys.Count == 0) continue;
+                list.Add(new Dictionary<string, object>
+                {
+                    ["name"] = name, ["action"] = (button ? "legacy:" : "legacy-axis:") + name, ["keys"] = keys, ["digital"] = button,
+                });
+            }
+            return list;
+        }
+
+        /// <summary>input with a legacy button (`legacy:<Name>`, as Unreal's): its first key pressed, held or let go
+        /// through the key op. False for any other action.</summary>
+        static bool Legacy(PlaytestClient client, long id, Dictionary<string, object> args)
+        {
+            var action = Json.Str(args, "action");
+            if (!action.StartsWith("legacy:", StringComparison.Ordinal)) return false;
+            var name = action.Substring(7);
+            var entry = LegacyInput.AxisList().FirstOrDefault(a => a.name == name);
+            var key = entry.keys?.Select(FKeyName).FirstOrDefault(k => k != null);
+            if (key == null)
+            {
+                client.RespondError(id, $"Object {action} does not exist");
+                return true;
+            }
+            var keyArgs = new Dictionary<string, object>(args) { ["key"] = key };
+            keyArgs.Remove("action");
+            KeyOp(client, id, keyArgs);
+            return true;
+        }
+
         static bool TryControl(string name, out Control c)
         {
             if (fkeys.TryGetValue(name, out c)) return true;
@@ -897,11 +956,6 @@ namespace Autopilot.Playtest
                     return;
                 }
 #endif
-                if (mode == "release")
-                {
-                    client.Respond(id, new Dictionary<string, object>());
-                    return;
-                }
                 client.RespondError(id, $"Unknown key {name}");
                 return;
             }
@@ -1195,6 +1249,7 @@ namespace Autopilot.Playtest
         /// <summary>input: {"action": "Map/Action" | "Action", "value": {"X","Y","Z"}, "mode": "press"|"hold"|"release"}</summary>
         public static void InputOp(PlaytestClient client, long id, Dictionary<string, object> args)
         {
+            if (Legacy(client, id, args)) return;
             var name = Json.Str(args, "action");
             var mode = Json.Str(args, "mode", "press");
             EnsureDevices();
@@ -1314,6 +1369,7 @@ namespace Autopilot.Playtest
                     ["bindings"] = a.bindings.Where(b => !b.isComposite).Select(b => (object)((b.isPartOfComposite ? b.name + ":" : "") + b.effectivePath)).ToList(),
                 });
             }
+            list.AddRange(LegacyControls());
             return list;
         }
 
@@ -1371,6 +1427,7 @@ namespace Autopilot.Playtest
 #else
         public static void InputOp(PlaytestClient client, long id, Dictionary<string, object> args)
         {
+            if (Legacy(client, id, args)) return;
             if (Json.Str(args, "mode") == "release")
             {
                 client.Respond(id, new Dictionary<string, object>());
@@ -1381,7 +1438,7 @@ namespace Autopilot.Playtest
 
         public static List<object> Controls()
         {
-            return new List<object>();
+            return LegacyControls();
         }
 #endif
     }

@@ -38,6 +38,11 @@
             "define": "AUTOPILOT_TMP"
         },
         {
+            "name": "com.unity.modules.imageconversion",
+            "expression": "1.0.0",
+            "define": "AUTOPILOT_IMAGECONVERSION"
+        },
+        {
             "name": "com.unity.modules.video",
             "expression": "1.0.0",
             "define": "AUTOPILOT_VIDEO"

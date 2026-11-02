@@ -74,7 +74,8 @@ namespace Autopilot.Playtest.Editor
             var nowLine = Row();
             nowLine.style.alignItems = Align.Center;
             nowLine.Add(Box("now-mark"));
-            nowLine.Add(L(string.IsNullOrEmpty(run.Now) ? StageWords(run.Stage) : run.Now, "now-text grow"));
+            var nowText = L(NowWords(run), "now-text grow");
+            nowLine.Add(nowText);
             now.Add(nowLine);
             box.Add(now);
 
@@ -121,6 +122,8 @@ namespace Autopilot.Playtest.Editor
             liveTick = () =>
             {
                 elapsed.text = AutopilotText.Clock(run.Elapsed);
+                var words = NowWords(run);  // (the index's count and play mode's loading change without a status line)
+                if (nowText.text != words) nowText.text = words;
                 if (stepCount != null) stepCount.text = PolicySteps(run.Steps.Count);
                 foreach (var (stage, label) in times)
                     if (stage == run.Stage) label.text = Mmss(run.StageTime(stage));
@@ -177,6 +180,34 @@ namespace Autopilot.Playtest.Editor
         {
             var s = (long)Math.Max(0, Math.Floor(double.IsNaN(seconds) ? 0 : seconds));
             return s >= 3600 ? $"{s / 3600}:{s / 60 % 60:00}:{s % 60:00}" : $"{s / 60}:{s % 60:00}";
+        }
+
+        public const string WaitingForPlayMode = "Waiting for play mode";
+        public const string IndexingFiles = "Indexing files";
+
+        /// <summary>"Indexing files (12/40)": how far the project index is (as Unreal's words); without a count yet,
+        /// "Indexing files".</summary>
+        public static string IndexingWords(int done, int total) =>
+            total > 0 ? $"{IndexingFiles} ({done.ToString(CultureInfo.InvariantCulture)}/{total.ToString(CultureInfo.InvariantCulture)})" : IndexingFiles;
+
+        /// <summary>The Live page's now-line: what the agent says it does now; else, while the run gets the game ready
+        /// (its Launch and Analyze stages), "Waiting for play mode" while play mode is being entered and the project
+        /// index's count while it is written (EditorHost, CodexExport); else the stage's words.</summary>
+        static string NowWords(AutopilotRun run)
+        {
+            CodexExport.Progress(out var done, out var total);
+            return NowWords(run, EditorHost.WaitingForPlayMode, CodexExport.Running != null, done, total);
+        }
+
+        internal static string NowWords(AutopilotRun run, bool waitingForPlayMode, bool indexing, int done, int total)
+        {
+            if (!string.IsNullOrEmpty(run.Now)) return run.Now;
+            if (run.Active && run.Stage <= 1)
+            {
+                if (waitingForPlayMode) return WaitingForPlayMode;
+                if (indexing) return IndexingWords(done, total);
+            }
+            return StageWords(run.Stage);
         }
 
         static string StageWords(int stage)

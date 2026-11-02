@@ -264,6 +264,22 @@ class Game:
     def ui_act(self, **args):
         return self.request("ui_act", args)
 
+    def pointer(self, screen_x=None, screen_y=None, world=None, object=None):
+        """Put the mouse at a place on the game's view without moving it across (no mouse movement on the way): a
+        screen place (-1..1 from the middle, y up: the numbers view() gives a thing), a point in the kit's frame
+        (`world`) or an object (`object`: where the camera shows it). The mouse buttons pressed after it click there,
+        in the world as on the UI; hold one, point again in steps, release: a drag.
+        -> {"screen_x", "screen_y", "x", "y", "on_screen"} (and a `note` when the game can't do all of that)."""
+        if world is not None:
+            args = {"world": Vec.of(world).ue()}
+        elif object is not None:
+            args = {"object": object}
+        else:
+            args = {"screen_x": float(screen_x or 0.0), "screen_y": float(screen_y or 0.0)}
+        out = self.request("pointer", args)
+        self.log("input", key="pointer", mode="point", value=args)
+        return out
+
     # -- inputs (a player's hands) ---------------------------------------------------------------------
 
     def press(self, key, value=None):

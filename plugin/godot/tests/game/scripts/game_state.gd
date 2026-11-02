@@ -3,12 +3,18 @@ extends Node
 const BASKET_SIZE := 10
 
 var apples := 0
-var stamina := 100
+@export_range(0, 100) var stamina := 100
+var health := 50
+var max_health := 100
 var gate_open := false
 var sound := true
 var brightness := 0.5
 var pace := "Steady"
 var nickname := ""
+var bell_rings := 0
+var swatch_clicks := 0
+var picked := ""
+var mouse_at := Vector2.ZERO
 
 
 func add_apple() -> void:
@@ -21,3 +27,11 @@ func basket_full() -> bool:
 
 func tire(amount: int) -> void:
 	stamina -= amount
+
+
+## Leave n nodes behind in the scene (a leak, for the actor_growth detector).
+func leak(n: int) -> void:
+	for i in n:
+		var litter := Area3D.new()
+		litter.name = "Litter%d" % i
+		get_tree().current_scene.add_child(litter)

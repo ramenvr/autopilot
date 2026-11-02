@@ -307,7 +307,8 @@ class OpEngine(Engine):
         return list((game.request("find", {}) or {}).get("objects") or [])
 
     def transforms(self, game, objects):
-        """{path: {"location", "rotation", "velocity", "center", "extent"} or None (gone)} for these objects."""
+        """{path: {"location", "rotation", "velocity", "center", "extent", "active"?} or None (gone)} for these objects.
+        An object with no place in the world (a Godot Node that isn't spatial) has them null: loc() is None for it."""
         return (game.request("transforms", {"objects": list(objects)}) or {}).get("objects") or {}
 
     def _one(self, game, actor):

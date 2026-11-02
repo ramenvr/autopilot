@@ -27,6 +27,14 @@ namespace Autopilot.Playtest.Editor
         const string StartSceneKey = "AutopilotPlaytest.StartSceneSet";
         const string EditSceneKey = "AutopilotPlaytest.EditScene";
         public const string HeadlessKey = "AutopilotPlaytest.Headless";
+        // Play mode the agent service entered (session start, restart): kept across the script reload, let go when play
+        // mode ends
+        internal const string AgentPlayKey = "AutopilotPlaytest.AgentPlay";
+
+        /// <summary>Whether play mode now is the agent service's (it entered it, and is still connected): its game must
+        /// go on whatever happens in it (ErrorPause).</summary>
+        public static bool AgentPlaying => EditorApplication.isPlayingOrWillChangePlaymode && SessionState.GetBool(AgentPlayKey, false)
+                                           && Client != null && (Client.Connected || Client.WantConnected);
 
         public static readonly EditorHost Instance = new EditorHost();
         public static PlaytestClient Client { get; private set; }
@@ -35,8 +43,9 @@ namespace Autopilot.Playtest.Editor
         {
             public long Id;
             public string Action;  // start | stop | fresh
-            public int Stage;
+            public int Stage;  // (start: -1 while the project index is written before play mode)
             public double Since;
+            public string Map;  // (start: the scene asked for, to enter play mode with once the index is written)
         }
 
         static readonly List<SessionWait> waits = new List<SessionWait>();
@@ -57,6 +66,7 @@ namespace Autopilot.Playtest.Editor
             EditorApplication.delayCall += Restore;
             Ops.EditorLevels = Levels;
             Ops.EditorLoad = LoadInPlayMode;
+            Ops.EditorLoading = () => PlayModeLoading;
         }
 
         // -- the client --------------------------------------------------------------------------------------
@@ -182,6 +192,7 @@ namespace Autopilot.Playtest.Editor
                                 Action = Json.Str(w, "action"),
                                 Stage = (int)Json.Num(w, "stage", 0),
                                 Since = Json.Num(w, "since", EditorApplication.timeSinceStartup),
+                                Map = Json.Str(w, "map"),
                             });
                         }
                     }
@@ -192,6 +203,9 @@ namespace Autopilot.Playtest.Editor
                         Json.Bool(state, "run_active", false), Json.Bool(state, "sent_run", false),
                         Json.Num(state, "connect_timeout", 0), Json.Num(state, "connect_since", 0), Json.Bool(state, "welcomed", false),
                         Json.Bool(state, "with_aura", false), Json.Str(state, "linked_by"));
+                    // (a script reload while the project index was written before play mode: written again, then play)
+                    foreach (var w in waits.Where(w => w.Action == "start" && w.Stage < 0).ToList())
+                        EnterPlayMode(client, w);
                     return;
                 }
             }
@@ -209,7 +223,7 @@ namespace Autopilot.Playtest.Editor
                 SessionState.SetString(StateKey, Json.Write(state));
                 SessionState.SetString(PendingKey, Json.Write(waits.Select(w => (object)new Dictionary<string, object>
                 {
-                    ["id"] = w.Id, ["action"] = w.Action, ["stage"] = w.Stage, ["since"] = w.Since,
+                    ["id"] = w.Id, ["action"] = w.Action, ["stage"] = w.Stage, ["since"] = w.Since, ["map"] = w.Map ?? "",
                 }).ToList()));
             }
             Client.CloseForReload();
@@ -221,6 +235,7 @@ namespace Autopilot.Playtest.Editor
             if (change == PlayModeStateChange.ExitingEditMode) SessionState.SetString(EditSceneKey, OpenScene());
             if (change == PlayModeStateChange.EnteredEditMode)
             {
+                SessionState.EraseBool(AgentPlayKey);
                 Ops.ResetSession();
                 if (SessionState.GetBool(StartSceneKey, false))
                 {
@@ -265,6 +280,11 @@ namespace Autopilot.Playtest.Editor
                 switch (w.Action)
                 {
                     case "start":
+                        if (w.Stage < 0)
+                        {
+                            w.Since = now;  // (the project index is being written: the time to enter play mode counts after it)
+                            continue;
+                        }
                         if (playing && playFrames >= 3 && SceneManager.GetActiveScene().isLoaded)
                         {
                             client.Respond(w.Id, new Dictionary<string, object> { ["running"] = true, ["scene"] = SceneManager.GetActiveScene().path });
@@ -282,6 +302,7 @@ namespace Autopilot.Playtest.Editor
                         if (w.Stage == 0 && !EditorApplication.isPlayingOrWillChangePlaymode)
                         {
                             w.Stage = 1;
+                            SessionState.SetBool(AgentPlayKey, true);
                             EditorApplication.EnterPlaymode();
                         }
                         else if (w.Stage == 1 && playing && playFrames >= 3)
@@ -310,7 +331,9 @@ namespace Autopilot.Playtest.Editor
 
         public bool SessionRunning => EditorApplication.isPlaying;
 
-        public bool WantsInspection => !Application.isBatchMode;
+        /// <summary>The hello asks for every policy step (`inspect`) for the Policy log tab: not in batch mode, and only
+        /// while Show Policy Log is on (PlaytestSettings; from the next connection).</summary>
+        public bool WantsInspection => !Application.isBatchMode && PlaytestSettings.Get().ShowPolicyLog;
 
         public bool Session(PlaytestClient client, long id, string action, Dictionary<string, object> args)
         {
@@ -325,11 +348,16 @@ namespace Autopilot.Playtest.Editor
                 case "start":
                     if (EditorApplication.isPlaying)
                     {
-                        client.Respond(id, new Dictionary<string, object> { ["running"] = true });
+                        // (a scene asked for while another plays: switched to, as Godot's game does)
+                        if (!string.IsNullOrEmpty(map) && !Ops.IsActiveScene(map) && !Ops.IsActiveScene(ScenePath(map)))
+                        {
+                            Ops.Restart(client, id, map);
+                            return true;
+                        }
+                        client.Respond(id, new Dictionary<string, object> { ["running"] = true, ["scene"] = SceneManager.GetActiveScene().path });
                         return true;
                     }
-                    EnterPlayMode(client, map);
-                    waits.Add(new SessionWait { Id = id, Action = "start", Since = EditorApplication.timeSinceStartup });
+                    EnterPlayMode(client, Wait(id, map));
                     return true;
                 case "stop":
                     if (!EditorApplication.isPlaying)
@@ -344,8 +372,7 @@ namespace Autopilot.Playtest.Editor
                 case "restart":
                     if (!EditorApplication.isPlaying)
                     {
-                        EnterPlayMode(client, map);
-                        waits.Add(new SessionWait { Id = id, Action = "start", Since = EditorApplication.timeSinceStartup });
+                        EnterPlayMode(client, Wait(id, map));
                         return true;
                     }
                     if (Json.Bool(args, "fresh", false))
@@ -355,6 +382,7 @@ namespace Autopilot.Playtest.Editor
                         if (!string.IsNullOrEmpty(map)) SetStartScene(map);
                         EditorApplication.ExitPlaymode();
                         waits.Add(new SessionWait { Id = id, Action = "fresh", Since = EditorApplication.timeSinceStartup });
+                        SessionState.SetBool(AgentPlayKey, true);
                         return true;
                     }
                     Ops.Restart(client, id, map);
@@ -363,22 +391,64 @@ namespace Autopilot.Playtest.Editor
             return false;
         }
 
-        static void EnterPlayMode(PlaytestClient client, string map)
+        /// <summary>A session start's wait: answered once play mode plays (TickWaits).</summary>
+        static SessionWait Wait(long id, string map)
         {
-            // The project's export for the codex, while scenes can still be opened (edit mode)
+            var w = new SessionWait { Id = id, Action = "start", Since = EditorApplication.timeSinceStartup, Map = map ?? "" };
+            waits.Add(w);
+            return w;
+        }
+
+        /// <summary>Whether the session is still starting: the project index written before play mode, or play mode
+        /// asked for and not playing yet (the Live page's "Waiting for play mode", `session` status's `loading`).</summary>
+        public static bool PlayModeLoading
+        {
+            get
+            {
+                if (CodexExport.Running != null) return true;
+                if (waits.Any(w => w.Action == "start" || w.Action == "fresh")) return true;
+                return EditorApplication.isPlayingOrWillChangePlaymode && (!EditorApplication.isPlaying || playFrames < 3);
+            }
+        }
+
+        /// <summary>Whether play mode is being entered (asked for, its scripts reloading, its scene loading), not the
+        /// project index before it: the Live page's "Waiting for play mode".</summary>
+        public static bool WaitingForPlayMode => CodexExport.Running == null && PlayModeLoading;
+
+        static void EnterPlayMode(PlaytestClient client, SessionWait wait)
+        {
+            // The project's export for the codex first, while scenes can still be opened (edit mode): in steps across the
+            // editor's updates, the Live page counting its files, Stop ending it (CodexExport.Start); then play mode
             try
             {
                 var dir = Path.Combine(Instance.ProjectDir, "Library", "AutopilotCodex");
                 if (CodexExport.Needed(Instance.ProjectDir) != null)
                 {
                     client.Status("Indexing the project (scenes, prefabs, input)");
-                    CodexExport.Export(dir);
+                    wait.Stage = -1;
+                    CodexExport.Start(dir, job =>
+                    {
+                        wait.Stage = 0;
+                        wait.Since = EditorApplication.timeSinceStartup;
+                        if (!waits.Contains(wait)) return;  // (answered meanwhile)
+                        // (stopped: the run is ending; play mode is entered all the same, so the session start is
+                        // answered as the agent service waits for it, and the stop goes on from there)
+                        if (EditorApplication.isPlayingOrWillChangePlaymode) return;
+                        Play(client, wait.Map);
+                    });
+                    return;
                 }
             }
             catch (Exception e)
             {
+                wait.Stage = 0;
                 Debug.LogWarning("[Autopilot] The project index export failed: " + e.Message);
             }
+            Play(client, wait.Map);
+        }
+
+        static void Play(PlaytestClient client, string map)
+        {
             if (!string.IsNullOrEmpty(map)) SetStartScene(map);
             else
             {
@@ -392,6 +462,7 @@ namespace Autopilot.Playtest.Editor
                 }
             }
             client.Status("Entering play mode");
+            SessionState.SetBool(AgentPlayKey, true);
             EditorApplication.EnterPlaymode();
         }
 
@@ -450,18 +521,13 @@ namespace Autopilot.Playtest.Editor
 
         public bool Export(string dir, Action<int?, string> done)
         {
-            EditorApplication.delayCall += () =>
+            // (in steps across the editor's updates, as before play mode: counted on the Live page, ended by Stop)
+            CodexExport.Start(dir, job =>
             {
-                try
-                {
-                    CodexExport.Export(dir);
-                    done(0, File.Exists(Path.Combine(dir, "summary.txt")) ? null : "the export wrote no summary.txt");
-                }
-                catch (Exception e)
-                {
-                    done(1, "the export failed: " + e.Message);
-                }
-            };
+                if (job.Error != null) done(1, "the export failed: " + job.Error.Message);
+                else if (job.Stopped) done(1, "the export was stopped");
+                else done(0, File.Exists(Path.Combine(dir, "summary.txt")) ? null : "the export wrote no summary.txt");
+            });
             return true;
         }
 

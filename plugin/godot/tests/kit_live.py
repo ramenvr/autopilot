@@ -117,6 +117,21 @@ def run(c, game):
     game.release_all()
     ok = game.restart(map="level")
     c.check("game.restart(map)", ok and game.pawn == "/root/Level/Player" and game.exists("/root/Level/Apple1"))
+    # game.pointer + a click in the world (the bell rings: _input_event picking)
+    time.sleep(0.3)
+    pt = game.pointer(object="/root/Level/Bell")
+    game.press("LeftMouseButton")
+    t0 = time.monotonic()
+    while gs(game, "bell_rings") < 1 and time.monotonic() - t0 < 3:
+        time.sleep(0.05)
+    c.check("game.pointer(object) + press clicks it", pt.get("on_screen") and gs(game, "bell_rings") >= 1, str(pt))
+    c.check("hello features: pointer, levels", {"pointer", "levels"} <= game.features, str(sorted(game.features)))
+    # walk_to a goal up on the deck: a way up the player sees (view's ways_up: the ramp), up it, then on
+    r = drive(control.walk_to(game, "/root/Level/Beehive", within=150, timeout=40), timeout=60)
+    at = game.pose()["at"]
+    c.check("walk_to a raised goal goes up the ramp (ways_up)", r and at.z > 200 and at.dist2d(game.loc("/root/Level/Beehive")) < 200,
+            f"{r and r.why} at={at}")
+    ok = game.restart(map="level")
     ok = game.restart()
     c.check("game.restart() reopens the launch scene (menu: no pawn)", ok is False and game.world == "/root/Menu", game.world)
 

@@ -234,8 +234,15 @@ class FAutopilotSession
 	friend class FAutopilotRunKindTest;
 	friend class FAutopilotActivityTest;
 	friend class FAutopilotResetRunsTest;
+	friend class FAutopilotUsageLedgerTest;
 public:
 	static FAutopilotSession& Get();
+	/** Blueprint Break on Exceptions (Editor Preferences > Experimental) off while Autopilot plays: an Accessed None would
+	 *  stop the game mid-run, and a run reports the error instead (the log_error detector), as Godot's addon lets a game
+	 *  stopped at a script error go on and Unity's holds Error Pause off. Not saved: put back by ReleaseExceptionBreaks
+	 *  (the play session's end, the module's shutdown). */
+	static void HoldExceptionBreaks();
+	static void ReleaseExceptionBreaks();
 
 	void Startup();
 	void Shutdown();
@@ -270,7 +277,8 @@ public:
 	int32 GetRevision() const { return Revision; }
 	/** Bumped when a run's usage changes, or runs come or go: the Settings page refreshes. */
 	int32 GetUsageRevision() const { return UsageRevision; }
-	/** The runs the Settings page counts, oldest first: those a memory reset took off the tab, then GetRuns(). */
+	/** The runs the Settings page counts, oldest first: those gone from the history past MaxSavedRuns (the usage
+	 *  ledger), those a memory reset took off the tab, then GetRuns(). */
 	TArray<TSharedPtr<FAutopilotRun>> GetUsageRuns() const;
 	/** The usage of every run kept (summed model by model), and how many runs have some. */
 	TArray<FPlaytestModelUsage> ProjectUsage(int32& OutRuns) const;
@@ -321,6 +329,9 @@ public:
 
 	static constexpr int32 MaxKeptSteps = 3000;
 	static constexpr int32 MaxSavedRuns = 50;
+	/** How many runs the usage ledger keeps (the Settings page's count past the history's MaxSavedRuns), as Unity's and
+	 *  Godot's do. */
+	static constexpr int32 MaxUsageRuns = 1000;
 
 private:
 	void OnStatus(const FString& Text);
@@ -372,12 +383,25 @@ private:
 	/** Where Reset memory puts the files of the runs it takes off the tab: HistoryDir()/.reset-backup/<time>/ (as the
 	 *  agent service keeps the memory it resets: autopilot/memory.py); Forget deletes it with the rest of Saved/Autopilot. */
 	static const TCHAR* const ResetBackup;
+	/** The usage ledger: the usage and bill of each run whose history file went past MaxSavedRuns (up to
+	 *  MaxUsageRuns, oldest first), HistoryDir()/.usage/ledger.json; Forget deletes it with the rest of Saved/Autopilot. */
+	static FString UsageLedgerPath();
+	void LoadUsageLedger();
+	void SaveUsageLedger() const;
+	/** A run whose history file is deleted (past MaxSavedRuns): its usage and bill kept in the ledger, when it has any. */
+	void Retire(const TSharedPtr<FAutopilotRun>& Run);
+	/** A run as the usage ledger keeps it: when, its kind, words, id, usage and bill. */
+	static TSharedRef<FJsonObject> UsageToJson(const FAutopilotRun& Run);
+	/** The same run in Runs, SetAside and Retired: its id and start. */
+	static FString UsageKey(const FAutopilotRun& Run);
 	static FString HistoryDirOverride;  // (tests: the history's folder instead of the project's; "": the project's)
 	static TSharedRef<FJsonObject> RunToJson(const FAutopilotRun& Run);
 	static TSharedPtr<FAutopilotRun> RunFromJson(const TSharedPtr<FJsonObject>& Object);
 
 	TArray<TSharedPtr<FAutopilotRun>> Runs;
 	TArray<TSharedPtr<FAutopilotRun>> SetAside;  // the runs a memory reset took off the tab, oldest first (their usage)
+	TArray<TSharedPtr<FAutopilotRun>> Retired;  // the usage ledger's runs (gone from the history), oldest first
+	bool bLedgerLoaded = false;  // (Retired read from the ledger: saving it never drops what it held)
 	int32 NextId = 1;
 	int32 AgentStartedRunId = INDEX_NONE;
 	int32 Revision = 0;

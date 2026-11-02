@@ -8,7 +8,10 @@
   `class_name`, scripts extending it too). A script without `class_name` is matched by its file name
   (`game.actors("bat")` for `bat.gd`). `game.actors("group:enemies")`: the nodes in a group (`add_to_group`, or
   `groups=[...]` in a .tscn). `game.all_actors()`: the scene's things (its direct children, physics bodies and areas,
-  instanced scenes), not every mesh and collision shape under them; `game.named("bat")` searches those.
+  instanced scenes), not every mesh and collision shape under them; `game.named("bat")` searches those. A class
+  nothing is (no Godot class, `class_name` or script of that name) is an error, not an empty list. A node without a
+  place (a plain `Node`: a manager, a timer) is there for `game.exists`, with no location; `transforms` says whether a
+  node is `active` (in the tree, processing, visible).
 - **Reads and calls** (`game.get`, `game.props`, `game.call`, `game.describe`) reach script variables, script constants
   (`SPEED`, read only), built-in properties and methods. A property's part with Godot's `a:b` path: `game.get(path,
   "position:y")`. `game.call` takes arguments by name; leave out those with defaults. `game.describe(path)` lists the
@@ -22,32 +25,73 @@
 - **The player**: the physics body the current camera hangs from (else the first node in group `player`). `game.pawn`
   is its path; `game.pose()["at"]` is the middle of its body (its collision shape's centre), the feet `half_height`
   below. `game.controller` is "" (Godot has no controller): use `game.pose()` / `game.view_rotation()` for the view.
+  When the addon picks the wrong node, `game.request("context", {"player": "/root/<Scene>/<Node>"})` makes that node the
+  player (`"player": ""` lets it find it again).
 - **Input**: keys are Unreal names as everywhere (W, SpaceBar, E, LeftMouseButton, MouseX...); the addon turns them into
   Godot input events, so the game's `_input`/`_unhandled_input`, `Input.is_action_pressed` and `Input.get_vector` all
   see them. The game's InputMap actions (project.godot `[input]`, listed with their keys in controls.txt and the codex
   README) can be pressed by name: `game.press("interact")`, `game.hold("sprint")`. Prefer an action to its key when the
   code reads the action. Mouse look: `game.mouse` / `game.turn` move the mouse (`InputEventMouseMotion.relative`).
   Headless, the mouse is never captured: a game that turns its view only while `Input.mouse_mode` is captured won't
-  turn; read its code for that, and call it out rather than guess.
+  turn; read its code for that, and call it out rather than guess. `game.context()["input"]["notes"]` says what else
+  holds for this game.
+- **Pointing and clicking.** `game.pointer(screen_x, screen_y)` puts the mouse there without moving across (-1 to 1 from
+  the middle, y up: the numbers `view` gives a thing), `game.pointer(world=kit point)` or `game.pointer(object=path)`
+  where the camera shows it (a Control: its middle); it answers `{"screen_x", "screen_y", "x", "y" (the viewport's
+  pixels from its bottom left, as Unity's and Unreal's), "on_screen"}`. Then `game.press("LeftMouseButton")` (or `RightMouseButton`) clicks there:
+  a GUI control, or what the game picks in the world under it (`_input_event` on a body or area, or its own ray from
+  `event.position`). To drag (a slider, a selection box): point, `game.hold("LeftMouseButton")`, point again in two or
+  three steps, `game.release(...)`. Until the first point, mouse buttons press at the middle of the view (the
+  crosshair). The addon never moves the real cursor: in a game with a window, code that reads
+  `get_viewport().get_mouse_position()` itself sees the real cursor (headless, the pointer).
+- `game.request("move", {"direction": kit vector, "seconds": s, "via"?: "stick"|"keys"|"controller", "scale"?: -1..1})`
+  walks a direction: `stick` the movement actions pressed with analog strengths (any direction; the default when the
+  game binds actions to W/A/S/D or the arrows), `keys` the keys themselves (8 directions), `controller` the body moved
+  directly at its walk speed (a game whose input can't be reached); a negative scale walks the other way. Answers
+  `{"moved", "via"}`.
 - **Scenes**: `game.restart()` reopens the scene the game started in (a game that boots into a menu: the menu);
   `game.restart(map="res://scenes/level.tscn")` (or the scene file's name, `map="level"`) opens another. Autoloads keep
   their variables across a restart in a running game (as a game's own scene change would): read or reset what the
   verification needs. In the editor, a restart is a fresh game process (autoloads too). Game time (`game.t`) starts at 0
-  in each scene.
+  in each scene. `game.request("levels")` lists the project's scenes (`levels`), the one playing (`playing`) and what a
+  start without a map plays (`open`), headless as in the editor; `session` with a `map` (start or restart) plays that
+  scene, and a map the project hasn't is a 404 before anything changes.
 - **Physics**: a CharacterBody doesn't step up ledges (`movement(game)["step"]` is None, so `reach_up` is the jump's
   peak alone); its `floor_max_angle` is `max_slope`. Walk speed and jump come from the player script's variables or
-  constants (`SPEED`, `JUMP_VELOCITY`...); `movement(game)` says None for what it can't find: read the script then.
-- **`game.view`** here tells: visible things (name, path, class, center, size, distance, screen position,
-  crosshair_on, top/bottom against the feet, look: meshes, lights, animation, 3D texts), the camera (fov horizontal),
-  the body (on_ground, falling, standing_on, touching, floor slope) and, with `sonar=True`, the sonar ways. It never
-  tells `held`, `openings`, `ways_up`, slope ends or lanes, `under`/`overhead`, highlights or effects (the answer's
-  `omitted` lists them): use the codex and `game.locs` / `game.bounds` for those. Without `ways_up`, `walk_to` finds no way
-  up to a raised goal by itself: walk it to the ramp's or stairs' foot and top first.
+  constants (`SPEED`, `JUMP_VELOCITY`...), `air_control` from an `AIR_CONTROL` / `air_control` variable; `movement(game)`
+  says None for what it can't find: read the script then. A CharacterBody climbs only slopes no steeper than
+  `max_slope` and what its shape's rounded bottom rides over (a few centimetres for a capsule): stairs need a ramp-shaped
+  collision under them, which `ways_up` then finds.
+- **`game.view`** in 3D tells what Unreal's does (its `omitted` is empty): visible things (name, path, class, center,
+  size, distance, screen position, crosshair_on and `crosshair_part` (a bone), top/bottom against the feet, `tilt` and
+  their own turned `box`, `blocks_player` when the body is against it, `body_center` / `body_shown` for a character, look:
+  meshes, lights, animation (AnimationPlayer, an AnimationTree's state, an AnimatedSprite), 3D texts, `effects` (particles
+  emitting, by node or effect scene name), `highlighted` (an overlay material), `limp` (a ragdoll)); a top surface's
+  `top_slope_degrees` and, for a walkable slope, `low_end`, `high_end`, `lane` and `uphill`; `held` (what hangs from the
+  camera, from a bone attachment, or a physics body carried under the player); `scene.sun` (the brightest
+  DirectionalLight3D's energy); the camera (fov horizontal); the body (on_ground, falling, standing_on, touching, floor
+  slope, `overhead`; with `openings` or `ways_up` asked, `under`); `openings=True` (and `free`), `ways_up=True` (with
+  `openings_reach`), and `sonar=True`, found with the player's own collision shape, so `walk_to` finds the ramps up to a
+  raised goal by itself. `floor_size` (4000 units): wider than it and flat is the ground, left out. In 2D `omitted` lists
+  what is the 3D body's (held, openings, ways_up, lanes and slopes, under/overhead, look, blocks_player, sonar).
+  `game.request("watch", {"objects": [...], "drawn": True})` notes "part shown"/"part hidden", "effect started"/"effect
+  stopped", "light on"/"light off", "animation started"/"animation ended" and "went limp" besides moves, turns and size.
+- **Findings** the addon reports by itself, as Unreal's: log_error, nan, out_of_world, long_fall, hitch, hud_fraction,
+  `teleport` (a body moved farther in one frame than its speed allows: a suspicion; moving the player with `game.set`
+  counts too), `actor_growth` (the nodes of one kind kept growing for 2 minutes: a leak), `clamp` (a script variable
+  outside its `@export_range`) and `over_max` (a number above its `max_<name>` / `<name>_max` sibling).
 - **`game.screen()`** keys are `<UI>.<Node name>`: `<UI>` is the CanvasLayer or the scene the control belongs to
   (`HUD.ScoreLabel`, `PauseMenu.ResumeButton`). `game.ui()` lists Buttons, CheckBoxes, OptionButtons (combo), Sliders and
-  SpinBoxes (slider), LineEdits (text_input); `ui_act` clicks with the mouse at the control's middle.
+  SpinBoxes (slider), LineEdits and TextEdits (text_input, with their `text`) and the game's own controls that take the
+  mouse themselves (widget: a `_gui_input` of their own); `ui_act` clicks with the mouse at the control's middle, and
+  `set` takes a slider's value, a text, a toggle or a combo's `option`.
 - **2D games**: positions are (x right, y down) pixels as kit (X = x, Y = 0, Z = -y), 1 unit = 1 pixel: kit X is right,
   kit Z is up. `game.view` lists drawn sprites; the 3D controllers that turn the view (walk_to, look_at) don't apply:
   press the movement actions and read `game.loc`.
 - **In the editor**, the brain starts the game itself (the session is started before the harness runs). With no game
-  running, only `game.context()` answers.
+  running, `game.context()` answers, `screen` and `ui` answer empty and `ping`'s game time is 0; the rest wait for a
+  game.
+- **Time**: `game.request("timestep", {"fixed": True, "fps": 30})` makes each frame's game time 1/fps (through
+  Engine.time_scale, set every frame from the frame before's wall time, and the frame rate capped at fps); `fixed: False`
+  puts both back. `context`'s `net` says how the game is networked (`standalone`, `listen_server`, `dedicated_server`,
+  `client`); a client's `pause` pauses only its own copy (its answer says why).

@@ -919,7 +919,9 @@ func _build_first_run() -> void:
 	minutes.alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	minutes.custom_minimum_size = Vector2(HT.px(56), HT.px(28))
 	minutes.get_line_edit().theme_type_variation = "AutopilotMonoField"
-	minutes.value = 10  # (an exploration's minutes of play, its own: the composer's Time limit is every run's)
+	# (an exploration's minutes of play, its own: the composer's Time limit is every run's; the Default Explore Minutes
+	# setting's)
+	minutes.value = host.explore_minutes() if host != null and host.has_method("explore_minutes") else 10
 	m.add_child(minutes)
 	c.add_child(m)
 	var foot := VBoxContainer.new()

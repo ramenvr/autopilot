@@ -259,6 +259,7 @@ namespace Autopilot.Playtest
         static readonly string[] SpeedNames = { "walkSpeed", "moveSpeed", "movementSpeed", "speed", "runSpeed", "maxSpeed", "MoveSpeed", "WalkSpeed", "Speed", "m_WalkSpeed", "m_MoveSpeed", "_moveSpeed", "_speed" };
         static readonly string[] JumpSpeedNames = { "jumpSpeed", "jumpVelocity", "jumpForce", "jumpPower", "JumpSpeed", "JumpForce", "m_JumpSpeed", "_jumpForce" };
         static readonly string[] JumpHeightNames = { "jumpHeight", "JumpHeight", "m_JumpHeight", "_jumpHeight" };
+        static readonly string[] AirControlNames = { "airControl", "AirControl", "m_AirControl", "_airControl", "airControlFactor", "airControlMultiplier" };
         static readonly string[] GravityNames = { "gravity", "Gravity", "gravityValue", "m_Gravity", "_gravity", "gravityScale" };
 
         static bool FindNumber(GameObject player, string[] names, out double value, out string source)
@@ -288,7 +289,13 @@ namespace Autopilot.Playtest
             var player = Find();
             if (player == null) throw new RcError("No player: context {\"player\": path} names it");
             var sources = new Dictionary<string, object>();
-            object walk = null, jump = null, gravity = null, half = null, radius = null, step = null, slope = null;
+            object walk = null, jump = null, gravity = null, half = null, radius = null, step = null, slope = null, air = null;
+            // How much the player steers in the air (0 none, 1 as on the ground), from the script's field when it has one
+            if (FindNumber(player, AirControlNames, out var airControl, out var airSource))
+            {
+                air = Json.Round(airControl, 3);
+                sources["air_control"] = airSource;
+            }
             if (FindNumber(player, SpeedNames, out var speed, out var src))
             {
                 walk = Json.Round(speed * Frame.Scale, 1);
@@ -350,6 +357,7 @@ namespace Autopilot.Playtest
                 ["radius"] = radius,
                 ["step"] = step,
                 ["max_slope"] = slope,
+                ["air_control"] = air,
                 ["sources"] = sources,
             };
         }

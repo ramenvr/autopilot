@@ -85,6 +85,7 @@ namespace Autopilot.Playtest.Editor
             // welcome starts now, across the reload
             state["connect_since"] = System.DateTime.UtcNow.Subtract(System.DateTime.UnixEpoch).TotalSeconds;
             SessionState.SetString("AutopilotPlaytest.Client", Json.Write(state));
+            SessionState.SetBool(EditorHost.AgentPlayKey, true);
             EditorApplication.EnterPlaymode();
         }
     }

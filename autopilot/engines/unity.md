@@ -34,15 +34,17 @@ why=...)`; an object with a CharacterController keeps its own position until it 
 the feet are `movement(game)["half_height"]` lower), the eye is the main camera. `movement(game)` reads the
 CharacterController (half height, radius, step, max slope) and the player script's fields (walk speed from a field
 like `walkSpeed`/`moveSpeed`/`speed`, jump from `jumpSpeed`/`jumpForce` or `jumpHeight`, gravity from `gravity` or
-`Physics.gravity` (`Physics2D.gravity` without the Physics module, else 9.81)); a number it can't find is None: read
+`Physics.gravity` (`Physics2D.gravity` without the Physics module, else 9.81), air control from `airControl`); a number it can't find is None: read
 the script in the codex and use the real one.
 
 **Input.** Keys go in as a keyboard, mouse and gamepad would (the plugin's own Input System devices): FKey names
 (`W`, `SpaceBar`, `E`, `LeftShift`, `Escape`, `One`, `LeftMouseButton`, `MouseX`/`MouseY` in pixels of mouse
 movement, `Gamepad_LeftX`, `Gamepad_FaceButton_Bottom`...). Input System actions by `Map/Action` or name:
 `game.press("Player/Jump")`, `game.hold("Player/Move", value=(0, 1))` (a Vector2: x right, y forward) then
-`game.release("Player/Move")`. `game.context()["controls"]` lists each action with its keys and bindings; the
-codex's `input/` has the action maps. Mouse look goes through the game's own look code: `game.calibrate_look()` once,
+`game.release("Player/Move")`. `game.context()["controls"]` lists each action with its keys and bindings, and the
+legacy Input Manager's axes as `legacy:<Name>` (a button: `game.request("input", {"action": "legacy:Jump"})` presses
+its key) and `legacy-axis:<Name>` (with their keys); the codex's `input/` has the action maps. Releasing a key name
+the game doesn't have is an error. Mouse look goes through the game's own look code: `game.calibrate_look()` once,
 then `game.turn` / `look_at`.
 - Code that reads the legacy Input Manager (`UnityEngine.Input.GetKey`, `GetAxis`, `GetButton`, `GetMouseButton`,
   `mousePosition`...) sees the same keys too: the plugin routes those reads through itself when the game compiles.
@@ -52,9 +54,9 @@ then `game.turn` / `look_at`.
   counts the reads routed; with `"keys": False` nothing reaches the game: act through its own methods with
   `game.call` (report them as direct changes), click its UI, and move the player with
   `game.request("move", {"direction": {...}, "seconds": s})`, which moves its CharacterController at the walk speed.
-- **Pointing and clicking.** `game.request("pointer", {"screen_x": x, "screen_y": y})` puts the mouse there without
-  moving across (-1 to 1 from the middle, y up, the same numbers `view` gives a thing), or `{"world": kit point}`, or
-  `{"object": path}` (where the camera shows it); it answers `{"screen_x", "screen_y", "x", "y", "on_screen"}`. Then
+- **Pointing and clicking.** `game.pointer(screen_x, screen_y)` puts the mouse there without moving across (-1 to 1
+  from the middle, y up, the same numbers `view` gives a thing), or `game.pointer(world=kit point)`, or
+  `game.pointer(object=path)` (where the camera shows it); it answers `{"screen_x", "screen_y", "x", "y", "on_screen"}`. Then
   `game.press("LeftMouseButton")` (or `RightMouseButton`) clicks there, in the world as on the UI. To drag (a selection
   box, a slider): point, `game.hold("LeftMouseButton")`, point again in two or three steps, `game.release(...)`. Games
   often ignore a drag that starts over their HUD, and pan the camera while the pointer is at a screen edge: point well
@@ -64,11 +66,17 @@ then `game.turn` / `look_at`.
   direction of the kit's frame through the game's move action (its gamepad stick: any direction; its keys: 8
   directions), or the CharacterController (`controller`); answers `{"moved", "via"}`.
 
-**UI.** `game.screen()` keys texts `<Canvas>.<object>` (uGUI Text and TextMeshPro on screen-space canvases) and
-`<UIDocument object>.<element>` (UI Toolkit). `game.ui()` lists uGUI and UI Toolkit buttons, toggles, sliders,
-dropdowns and text fields with ids `<Canvas>.<object>`; `game.ui_act(id=...)` clicks them as a mouse would (the
-button's `onClick` runs). Text drawn with `OnGUI` (IMGUI) can't be read or clicked. A world-space canvas is a thing in
-the world: its texts are in `view`'s `look.texts`.
+**UI.** `game.screen()` keys texts `<Canvas>.<object>` (uGUI Text and TextMeshPro on screen-space canvases),
+`<UIDocument object>.<element>` (UI Toolkit) and, for `OnGUI` (IMGUI), `<Script>.Label` / `<Script>.Box` (`#2`, `#3`
+for more) and the buttons' and toggles' words under their ids. `game.ui()` lists uGUI and UI Toolkit buttons, toggles,
+sliders (with `min`, `max`), dropdowns and text fields (with `placeholder`) with ids `<Canvas>.<object>`, and `OnGUI`
+buttons, toggles and text fields as `<Script>.<words>` / `<Script>.TextField` (`"imgui": true`, with `screen_x`,
+`screen_y`); `game.ui_act(id=...)` clicks them as a mouse would (the button's `onClick` runs; an `OnGUI` button returns
+true at its next drawing, a toggle flips; `action="set"` gives a toggle's value or a text field's `text`); a UI Toolkit
+element also takes `right_click` and `drag` (`to`: the element to drop on). `OnGUI` is only drawn while the game
+renders: a batch-mode (`-batchmode`) game calls no `OnGUI`, so none of it is there (`game.context()["imgui"]` says how
+many of the game's `OnGUI` controls are routed and how many were drawn). `game.request("screen", {"ui": True})` gives
+the controls with the texts. A world-space canvas is a thing in the world: its texts are in `view`'s `look.texts`.
 
 **Sessions.** In the editor, the session is play mode: `game.restart()` reloads the scene play mode started with
 (`map=` a scene name or path from the codex's build_scenes.txt), `game.request("session", {"action": "restart",
@@ -76,13 +84,30 @@ the world: its texts are in `view`'s `look.texts`.
 or the one it was launched with. Objects kept with `DontDestroyOnLoad` (game managers, scores) survive a scene reload,
 as they do for the game itself: read their state after a restart instead of assuming it reset. A game that boots
 into a menu: set the harness's `start_map` to the gameplay scene, or click through the menu in setup().
+`game.request("session", {"action": "start", "map": ...})` while another scene plays switches to it; a scene the
+project (a player: the build) hasn't is refused (404) before anything changes. In the editor a script error doesn't
+pause the game while the agent plays it (the Console's Error Pause is held off and put back after): the run reports it
+(`log_error`). `game.context()["net"]` says how a game is networked (Netcode for GameObjects or Mirror): `standalone`,
+`listen_server`, `dedicated_server` or `client` (whose server runs in another process: `pause` can't pause it and
+answers `why`).
 
-**What the plugin leaves out.** `game.view()` tells visible things (name, path, class, center, size, distance,
-screen position, crosshair, `look.parts` mesh names, texts, animation clip) and the body (velocity, on_ground,
-falling, standing_on, touching), with world-aligned boxes, and `game.view(sonar=True)` (`sonar()`, which `walk_to`
-steers by) feels each way with the player's own capsule (a step above the floor) and rays down for drops: `by` wall,
-drop, steep or reach. It has no `held`, `openings`, `ways_up`, `point_blank` or `lane` (listed in its `omitted`), so `walk_to` finds no way
-up to a raised goal by itself: walk it to the ramp's or stairs' foot and top first (from the codex, `game.locs`).
-`walk_to` finds its way round obstacles on the map it feels out with the sonar, as in Unreal. `watch` sees objects move, turn and change size, not meshes appearing or effects. Detectors: errors
-and exceptions in the log, NaN transforms, falling out of the level, long falls, hitches, on-screen counts above their
-maximum.
+**What the plugin tells.** `game.view()` tells as Unreal's: visible things (name, path, class, center, size, `box`
+(its own box when it is turned) and `tilt`, distance, screen position, crosshair and `crosshair_part` (a bone's
+collider), `body_center` / `body_shown` for a character with colliders, `label` (its first text), `look`: `parts` mesh
+names, texts, animation clip, `effects` playing (particle systems and VFX Graph), `lights` (its own and a lamp's beside
+it), `highlighted` (an outline or overlay material), `limp` (a ragdoll)), a thing's top surface (`top_slope_degrees`;
+for a ramp `low_end`, `high_end`, `uphill` and its `lane`), what is `held` (things hanging from the player or its
+camera, as its camera draws them), `scene.sun`, and the body (velocity, on_ground, falling, standing_on, touching,
+`overhead`). With `openings=True` the doorways it sees (`body.openings`, `free`, `under`), with `ways_up=True` the
+ramps and stairs up (`body.ways_up`, with their lanes: `walk_to` climbs to a raised goal by them), and
+`game.view(sonar=True)` (`sonar()`, which `walk_to` steers by) feels each way with the player's own capsule (a step
+above the floor) and rays down for drops: `by` wall, drop, steep or reach, and `point_blank` ahead. All found with the
+player's own CharacterController capsule and colliders: a game whose player has none (no CharacterController or
+capsule) gets no openings, ways up or sonar, and a project without the Physics module none of them (the view's
+`omitted` lists what it can't tell). `watch` sees objects move, turn and change size, and with `drawn=True`
+how a thing is drawn: "part shown" / "part hidden", "effect started" / "effect stopped", "light on" / "light off",
+"animation started" / "animation ended", "went limp". Detectors: errors and exceptions in the log, NaN transforms,
+falling out of the level, long falls, hitches, on-screen counts above their maximum, `teleport` (a character moved
+farther in one frame than its speed allows; never what the agent's own `rc` moved), `actor_growth` (objects of one
+kind growing for 2 minutes), `clamp` (a script's number outside its `[Range]` / `[Min]`) and `over_max` (a number
+above its sibling maximum: `health` above `maxHealth`).

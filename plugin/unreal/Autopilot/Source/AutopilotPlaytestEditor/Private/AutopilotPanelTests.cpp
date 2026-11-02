@@ -5,6 +5,7 @@
 // end of a run: the memory line, the recording kept and copied, or why there is none (Editor.RunEnd); steering only while the game plays, its
 // Rollout (Editor.Steer, and the Live page's steer row in Editor.Layout).
 
+#include "Settings/EditorExperimentalSettings.h"
 #include "Editor.h"
 #include "Editor/EditorPerformanceSettings.h"
 #include "Fonts/FontMeasure.h"
@@ -2865,12 +2866,16 @@ bool FAutopilotResetRunsTest::RunTest(const FString& Parameters)
 	Session.SaveHistory();  // (the project's runs so far: in the project's folder)
 	const TArray<TSharedPtr<FAutopilotRun>> RunsBefore = Session.Runs;
 	const TArray<TSharedPtr<FAutopilotRun>> SetAsideBefore = Session.SetAside;
+	const TArray<TSharedPtr<FAutopilotRun>> RetiredBefore = Session.Retired;
 	const bool bLoadedBefore = Session.bHistoryLoaded;
+	const bool bLedgerBefore = Session.bLedgerLoaded;
 	const FString Dir = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("AutopilotResetRunsTest"), FGuid::NewGuid().ToString());
 	FAutopilotSession::HistoryDirOverride = Dir;
 	Session.Runs.Reset();
 	Session.SetAside.Reset();
+	Session.Retired.Reset();
 	Session.bHistoryLoaded = true;
+	Session.bLedgerLoaded = true;
 
 	auto Make = [&Session](const TCHAR* Prompt, bool bDone, double Usd)
 	{
@@ -2926,9 +2931,132 @@ bool FAutopilotResetRunsTest::RunTest(const FString& Parameters)
 	FAutopilotSession::HistoryDirOverride.Empty();
 	Session.Runs = RunsBefore;
 	Session.SetAside = SetAsideBefore;
+	Session.Retired = RetiredBefore;
 	Session.bHistoryLoaded = bLoadedBefore;
+	Session.bLedgerLoaded = bLedgerBefore;
 	++Session.UsageRevision;
 	Session.Changed();
+	return true;
+}
+
+// The usage ledger: a run whose history file goes past MaxSavedRuns keeps its usage and bill for the Settings page
+// (counted once while it is still listed this session), in the next editor session too, up to MaxUsageRuns; runs with
+// neither aren't kept. As Unity's and Godot's usage ledgers. In a folder of its own, not the project's history.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotUsageLedgerTest, "AutopilotPlaytest.Editor.UsageLedger",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAutopilotUsageLedgerTest::RunTest(const FString& Parameters)
+{
+	FAutopilotSession& Session = FAutopilotSession::Get();
+	if (Session.GetActiveRun().IsValid())
+	{
+		AddWarning(TEXT("A run is going: skipped"));
+		return true;
+	}
+	Session.SaveHistory();  // (the project's runs so far: in the project's folder)
+	const TArray<TSharedPtr<FAutopilotRun>> RunsBefore = Session.Runs;
+	const TArray<TSharedPtr<FAutopilotRun>> SetAsideBefore = Session.SetAside;
+	const TArray<TSharedPtr<FAutopilotRun>> RetiredBefore = Session.Retired;
+	const bool bLoadedBefore = Session.bHistoryLoaded;
+	const bool bLedgerBefore = Session.bLedgerLoaded;
+	const FString Dir = FPaths::Combine(FPaths::ProjectIntermediateDir(), TEXT("AutopilotUsageLedgerTest"), FGuid::NewGuid().ToString());
+	FAutopilotSession::HistoryDirOverride = Dir;
+	Session.Runs.Reset();
+	Session.SetAside.Reset();
+	Session.Retired.Reset();
+	Session.bHistoryLoaded = true;
+	Session.bLedgerLoaded = false;  // (no ledger file in the new folder: an empty one read)
+
+	const int32 Total = FAutopilotSession::MaxSavedRuns + 5;
+	for (int32 i = 0; i < Total; ++i)
+	{
+		TSharedPtr<FAutopilotRun> Run = Session.NewRun(TEXT("explore"), FString::Printf(TEXT("Explore %d"), i));
+		Run->Started = FDateTime(2026, 1, 1) + FTimespan::FromMinutes(i);  // (each its own start)
+		Run->RunId = Run->Started.ToString(TEXT("%Y%m%d-%H%M%S"));
+		Run->bDone = true;
+		if (i % 5 != 4)  // (every fifth: no bill, never in the ledger)
+		{
+			Run->Bill.bKnown = true;
+			Run->Bill.bBilled = true;
+			Run->Bill.Usd = 0.5;
+		}
+		Session.Unsaved.Add(Run->Id);
+	}
+	// (the first 5 went past MaxSavedRuns as the later ones began: 4 of them billed)
+	TestEqual(TEXT("ledger: the billed runs past the history"), Session.Retired.Num(), 4);
+	TestTrue(TEXT("ledger: written"), IFileManager::Get().FileExists(*FAutopilotSession::UsageLedgerPath()));
+	int32 Billed = 0;
+	double Bill = Session.ProjectBill(Billed);
+	const int32 BilledAll = Total - Total / 5;
+	TestTrue(TEXT("this session: each billed run counted once"), Billed == BilledAll && FMath::IsNearlyEqual(Bill, 0.5 * BilledAll));
+	Session.SaveHistory();
+
+	// The next editor session: 50 runs listed, the 4 before them still counted
+	Session.Runs.Reset();
+	Session.Retired.Reset();
+	Session.bHistoryLoaded = false;
+	Session.bLedgerLoaded = false;
+	Session.LoadHistory();
+	TestEqual(TEXT("next session: the newest runs listed"), Session.GetRuns().Num(), FAutopilotSession::MaxSavedRuns);
+	Billed = 0;
+	Bill = Session.ProjectBill(Billed);
+	TestTrue(TEXT("next session: every billed run still counted"), Billed == BilledAll && FMath::IsNearlyEqual(Bill, 0.5 * BilledAll));
+	TestTrue(TEXT("next session: the oldest counted"), Session.GetUsageRuns().Num() > 0
+		&& Session.GetUsageRuns()[0]->Prompt == TEXT("Explore 0"));
+
+	// Up to MaxUsageRuns: the oldest go
+	Session.Retired.Reset();
+	for (int32 i = 0; i < FAutopilotSession::MaxUsageRuns + 3; ++i)
+	{
+		TSharedPtr<FAutopilotRun> Run = MakeShared<FAutopilotRun>();
+		Run->Started = FDateTime(2025, 1, 1) + FTimespan::FromMinutes(i);
+		Run->RunId = FString::Printf(TEXT("old-%d"), i);
+		Run->Bill.bKnown = true;
+		Run->Bill.Usd = 0.01;
+		Session.Retired.Add(Run);
+	}
+	TSharedPtr<FAutopilotRun> Newest = MakeShared<FAutopilotRun>();
+	Newest->Started = FDateTime(2025, 6, 1);
+	Newest->RunId = TEXT("newest");
+	Newest->Bill.bKnown = true;
+	Session.Retire(Newest);
+	TestTrue(TEXT("cap: MaxUsageRuns kept, the oldest gone"), Session.Retired.Num() == FAutopilotSession::MaxUsageRuns
+		&& Session.Retired[0]->RunId == TEXT("old-4") && Session.Retired.Last()->RunId == TEXT("newest"));
+
+	Session.Unsaved.Reset();
+	IFileManager::Get().DeleteDirectory(*FPaths::GetPath(Dir), false, true);
+	FAutopilotSession::HistoryDirOverride.Empty();
+	Session.Runs = RunsBefore;
+	Session.SetAside = SetAsideBefore;
+	Session.Retired = RetiredBefore;
+	Session.bHistoryLoaded = bLoadedBefore;
+	Session.bLedgerLoaded = bLedgerBefore;
+	++Session.UsageRevision;
+	Session.Changed();
+	return true;
+}
+
+// Blueprint Break on Exceptions held off while Autopilot plays (the game goes on past an Accessed None; the run reports
+// it), the user's setting back after; a setting already off stays off, and nothing is saved.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotExceptionBreaksTest, "AutopilotPlaytest.Editor.ExceptionBreaks",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAutopilotExceptionBreaksTest::RunTest(const FString& Parameters)
+{
+	UEditorExperimentalSettings* Settings = GetMutableDefault<UEditorExperimentalSettings>();
+	const bool bBefore = Settings->bBreakOnExceptions;
+	FAutopilotSession::ReleaseExceptionBreaks();  // (none held before)
+	Settings->bBreakOnExceptions = true;
+	FAutopilotSession::HoldExceptionBreaks();
+	TestFalse(TEXT("held: off while Autopilot plays"), Settings->bBreakOnExceptions);
+	FAutopilotSession::HoldExceptionBreaks();  // (a restart: held once)
+	FAutopilotSession::ReleaseExceptionBreaks();
+	TestTrue(TEXT("released: the user's setting back"), Settings->bBreakOnExceptions);
+	Settings->bBreakOnExceptions = false;
+	FAutopilotSession::HoldExceptionBreaks();
+	FAutopilotSession::ReleaseExceptionBreaks();
+	TestFalse(TEXT("off already: stays off"), Settings->bBreakOnExceptions);
+	Settings->bBreakOnExceptions = bBefore;
 	return true;
 }
 

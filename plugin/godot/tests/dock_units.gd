@@ -594,8 +594,7 @@ func run_checks() -> void:
 		and fake.sent.is_empty(), fake.sent)
 	t = _texts(dock._mem_ask)
 	check("the confirmation: Reset memory?, what it does, Reset memory (filled red) and Cancel", "Reset memory?" in t
-		and "The agent forgets what it has learned about this game." in t and "Reset memory
-Cancel" in t
+		and "The agent forgets what it has learned about this game." in t and "Reset memory\nCancel" in t
 		and _button_in(dock._mem_ask, "Reset memory").theme_type_variation == "AutopilotDangerFillSm"
 		and (dock._mem_ask.get_theme_stylebox("panel") as StyleBoxFlat).border_color == HT.RED_LINE, t)
 	check("Cancel: the Memory row again, nothing sent", _press_shown(dock._footer, "Cancel") and not dock._mem_ask.visible
@@ -1201,6 +1200,8 @@ Cancel" in t
 	fixes_checks()
 	assistants_checks()
 	history_checks()
+	parity_checks()
+	await flash_checks()
 	await layout_checks()
 
 	dock.queue_free()
@@ -3380,3 +3381,217 @@ func activity_checks() -> void:
 	check("history: the events read back", back != null and back.feed.size() == r.feed.size() and back.last_activity_id == 7
 		and back.find_activity(2).get("result") == "Got 3 lines back in 1.2 s" and int(back.find_activity(2).get("stage", -1)) == 2,
 		back.feed.size() if back != null else null)
+
+
+## A stand-in for the editor's settings (EditorSettings): the project metadata and the Editor Settings, kept in
+## dictionaries; settings_changed as the editor emits it when a setting is changed there.
+class FakeEditorSettings:
+	extends RefCounted
+	signal settings_changed
+	var meta := {}
+	var values := {}
+	var infos := {}
+	var initial := {}
+
+	func get_project_metadata(section: String, key: String, default):
+		return meta.get(section + "/" + key, default)
+
+	func set_project_metadata(section: String, key: String, value) -> void:
+		meta[section + "/" + key] = value
+
+	func has_setting(name: String) -> bool:
+		return values.has(name)
+
+	func get_setting(name: String):
+		return values.get(name)
+
+	func set_setting(name: String, value) -> void:
+		values[name] = value
+
+	func set_initial_value(name: String, value, _update_current: bool) -> void:
+		initial[name] = value
+
+	func add_property_info(info: Dictionary) -> void:
+		infos[info.name] = info
+
+
+## The parity items: the Design brief and Show Policy Log (the Settings page, the start frames, the hello's inspect,
+## the Policy log tab), the dock's settings in the Editor Settings (both ways), the ⋮ menu, and the Live page's
+## "Waiting for the game to start".
+func parity_checks() -> void:
+	var fake := FakeLink.new()
+	bridge.link = fake
+	dock.active = null
+	bridge.run_active = false
+	var es := FakeEditorSettings.new()
+	es.meta["autopilot/url"] = "ws://example.test:9/v1/bridge"
+	dock.editor_settings = es
+	dock._mirror_settings()
+	check("Editor Settings: every setting shown under autopilot/, with the project's values",
+		es.values.get("autopilot/connection/agent_service_url") == "ws://example.test:9/v1/bridge"
+		and es.values.get("autopilot/runs/default_explore_minutes") == 10 and es.values.get("autopilot/runs/design_brief") == ""
+		and es.values.get("autopilot/policy_log/show_policy_log") == true and es.values.has("autopilot/agent_service/agent_service_command")
+		and es.values.has("autopilot/runs/time_limit_minutes") and es.values.has("autopilot/connection/use_with_aura")
+		and es.infos.get("autopilot/connection/access_token", {}).get("hint") == PROPERTY_HINT_PASSWORD
+		and es.infos.get("autopilot/runs/design_brief", {}).get("hint") == PROPERTY_HINT_MULTILINE_TEXT, es.values)
+	# the Settings page's Design brief and Show Policy Log, kept in the metadata and shown in the Editor Settings
+	dock.settings_open = true
+	dock._render()
+	var page = dock._settings_page
+	check("Settings page: Design brief, laid out as every setting", _setting_plate(page, "Design brief", SettingsPage.BRIEF_TEXT, "TextEdit"))
+	check("Settings page: Show Policy Log, a switch", _setting_plate(page, "Show Policy Log", SettingsPage.POLICY_TEXT, "CheckBox")
+		and page.policy_switch.button_pressed and page.policy_switch.text == "Policy log shown")
+	page.brief_box.text = "The player has three lives; each coin is worth 10 points."
+	page.brief_box.text_changed.emit()
+	check("the brief kept as typed, and in the Editor Settings", dock.design_brief() == "The player has three lives; each coin is worth 10 points."
+		and es.values.get("autopilot/runs/design_brief") == "The player has three lives; each coin is worth 10 points.", es.meta)
+	# a change in the Editor Settings comes back to the dock
+	es.values["autopilot/runs/default_explore_minutes"] = 25
+	es.values["autopilot/agent_service/agent_service_command"] = "py -m autopilot"
+	es.settings_changed.emit()
+	check("Editor Settings changed: the dock follows (explore minutes, the command)", dock.explore_minutes() == 25
+		and dock.service_command() == "py -m autopilot" and dock._svc_cmd.text == "py -m autopilot", es.meta)
+	dock.set_service_command("")
+	dock.settings_open = false
+	# the start frames carry the brief
+	welcome(["steer"])
+	type_prompt("Verify that the coin counter goes up")
+	dock._on_run()
+	var starts: Array = fake.sent.filter(func(f): return f.get("type") == "start")
+	check("a composer run carries the brief (design_brief)", starts.size() == 1
+		and starts[0].run.get("design_brief") == "The player has three lives; each coin is worth 10 points."
+		and starts[0].run.get("kind") == "auto", starts)
+	_end_run()
+	fake.sent.clear()
+	dock.explore_from_setup(dock.explore_minutes())
+	starts = fake.sent.filter(func(f): return f.get("type") == "start")
+	check("an Explore run carries the brief (brief) and the Default Explore Minutes", starts.size() == 1
+		and starts[0].run.get("brief") == "The player has three lives; each coin is worth 10 points." and starts[0].run.get("minutes") == 25, starts)
+	# Waiting for the game to start: the Analyze stage, the game asked for and not up yet
+	var r = dock.active
+	r.stage = 1
+	r.now_text = "Reading the game's code"
+	bridge._starting = true
+	dock.shown = r
+	dock.tab = "main"
+	dock._render()
+	check("Live: Waiting for the game to start, while the game comes up in Analyze", dock._l_now.text == "Waiting for the game to start",
+		dock._l_now.text)
+	bridge._starting = false
+	dock._update_live_clock()
+	check("Live: the agent's own line once the game is up", dock._l_now.text == "Reading the game's code", dock._l_now.text)
+	r.stage = 2
+	bridge._starting = true
+	dock._render()
+	check("Live: no waiting line past Analyze", dock._l_now.text == "Reading the game's code", dock._l_now.text)
+	bridge._starting = false
+	# Show Policy Log off: no Policy log tab, the hello asks for no steps
+	r.add_step({"type": "jev", "call": 1, "t": 1.0, "decided": {"summary": "kept: walk"}})
+	dock._render()
+	check("Policy log tab shown with steps (the setting on)", dock._tab_policy.visible)
+	dock.tab = "policy"
+	dock.set_show_policy_log(false)
+	check("Show Policy Log off: no Policy log tab, its page left", not dock._tab_policy.visible and dock.tab == "main"
+		and es.values.get("autopilot/policy_log/show_policy_log") == false)
+	fake.sent.clear()
+	bridge._send_hello()
+	check("Show Policy Log off: the hello's inspect is false", fake.sent.size() == 1 and fake.sent[0].get("inspect") == false, fake.sent)
+	es.values["autopilot/policy_log/show_policy_log"] = true
+	es.settings_changed.emit()
+	fake.sent.clear()
+	bridge._send_hello()
+	check("Show Policy Log on again from the Editor Settings: inspect true", dock.show_policy_log() and fake.sent[0].get("inspect") == true)
+	_end_run()
+	# the ⋮ menu: Connect or Disconnect, Settings, Rerun setup, Reset memory…
+	var items: Array = dock.menu_items().map(func(i): return i[0])
+	check("the ⋮ menu's items", items == ["Disconnect", "Settings", "Rerun setup", "Reset memory…"], items)
+	check("the ⋮ button beside the gear, in both heads", dock._mores.size() == 2 and dock._mores.any(func(b): return b.is_visible_in_tree()))
+	dock.open_menu(dock._mores[0])
+	check("the menu opens with its items", dock._menu != null and dock._menu.item_count == 4 and dock._menu.visible)
+	dock._menu.hide()
+	dock.menu_action(1)
+	check("menu Settings opens the Settings page", dock.settings_open)
+	dock.menu_action(1)
+	check("menu Settings again closes it", not dock.settings_open)
+	dock.menu_action(3)
+	check("menu Reset memory… asks in place", dock._reset == "ask" and dock._mem_ask.visible)
+	dock._reset = ""
+	dock._render_footer()
+	dock.menu_action(0)
+	check("menu Disconnect disconnects", not fake.want and dock.menu_items()[0][0] == "Connect"
+		and dock.menu_items()[3][2] == false)
+	dock.menu_action(0)
+	check("menu Connect connects again (or starts the agent service to)", fake.want or dock._connect_when_ready,
+		[fake.want, dock._connect_when_ready, dock._auto_service()])
+	dock.editor_settings = null
+	es.meta.clear()
+	# the editor kept awake while a run goes (its sleep between frames), as it was after, however the run ends
+	OS.low_processor_usage_mode_sleep_usec = 50000
+	welcome(["steer"])
+	bridge.run_active = true
+	bridge._process(0.0)
+	check("a run going: the editor kept awake", bridge.awake and OS.low_processor_usage_mode_sleep_usec == bridge.AWAKE_SLEEP_USEC,
+		OS.low_processor_usage_mode_sleep_usec)
+	OS.low_processor_usage_mode_sleep_usec = 100000  # (the editor lost focus meanwhile: set again)
+	bridge._process(0.0)
+	check("kept awake again after the editor set its sleep", OS.low_processor_usage_mode_sleep_usec == bridge.AWAKE_SLEEP_USEC)
+	bridge._on_brain_frame({"type": "_closed", "was_connected": true})
+	bridge.link.close()
+	bridge._process(0.0)
+	check("the connection lost mid-run: the editor's sleep back as it was", not bridge.awake and OS.low_processor_usage_mode_sleep_usec == 50000,
+		OS.low_processor_usage_mode_sleep_usec)
+
+
+## Every shown control under node and its place on screen (for the flash checks).
+func _rects(node: Control) -> Dictionary:
+	var out := {}
+	for c in node.find_children("*", "Control", true, false):
+		if c.is_visible_in_tree():
+			out[c.get_instance_id()] = c.get_global_rect()
+	return out
+
+
+## Whether new content shows a frame before it is laid out (Unreal's tab needed SSettle for it): the content swapped
+## in (the Live page for a new run, the Result when the result comes, the Feed tab), its controls' places as the frame
+## was drawn (as the next frame begins) against where they are three frames later. Godot sorts a container's
+## children deferred, but within the same frame, before it is drawn: nothing moves after.
+func flash_checks() -> void:
+	var fake := FakeLink.new()
+	bridge.link = fake
+	welcome(["steer"])
+	dock.size = Vector2(900, 700)
+	dock.active = null
+	bridge.run_active = false
+	var swaps := {
+		"a new run's Live page": func() -> Control:
+			type_prompt("Verify that the gate opens when the lever is pulled")
+			dock._on_run()
+			for i in 6:
+				dock._on_activity({"type": "activity", "id": i + 1, "t": 1.0 + i, "kind": "read", "stage": "analyze", "text": "Line %d of what the agent does" % i})
+			return dock._live,
+		"the Result as it comes": func() -> Control:
+			bridge._on_brain_frame({"type": "result", "result": {"verdict": "CONFIRMED", "reason": "The gate opened at once.",
+				"evidence": ["gate_open: false → true"]}})
+			return dock._result,
+		"the Feed tab": func() -> Control:
+			dock._set_tab("feed")
+			return dock._feed_area,
+	}
+	for name in swaps:
+		await process_frame
+		var page: Control = swaps[name].call()
+		# (the next frame begins once this one is drawn: its controls' places then are those it was drawn with; headless,
+		# RenderingServer.frame_pre_draw is never emitted)
+		await process_frame
+		var drawn := _rects(page)
+		for i in 3:
+			await process_frame
+		var later := _rects(page)
+		var moved := []
+		for id in later:
+			if not drawn.has(id) or drawn[id] != later[id]:
+				var c = instance_from_id(id)
+				moved.append("%s %s -> %s" % [c.get_class() if c else "?", drawn.get(id), later[id]])
+		check("no flash: %s laid out before it is drawn (%d controls)" % [name, later.size()], later.size() > 5 and moved.is_empty(),
+			moved.slice(0, 6))
+	dock._set_tab("main")

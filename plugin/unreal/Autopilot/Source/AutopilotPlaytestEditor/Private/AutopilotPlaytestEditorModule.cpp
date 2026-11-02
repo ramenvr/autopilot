@@ -12,6 +12,7 @@
 #include "SPlaytestPanel.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "Widgets/Docking/SDockTab.h"
 #include "WorkspaceMenuStructure.h"
 #include "WorkspaceMenuStructureModule.h"
@@ -65,6 +66,7 @@ namespace
 	 *  unsaved changes and all. */
 	void StartPie(const FString& Map, TFunction<void(bool, const FString&)> Done)
 	{
+		FAutopilotSession::HoldExceptionBreaks();  // (an Accessed None mustn't stop the run's game: put back at its end)
 		if (PieReady())
 		{
 			Done(true, FString());
@@ -108,6 +110,15 @@ namespace
 		}
 		if (Action == TEXT("start"))
 		{
+			// Playing already, but another level asked for: that one, as a restart in it (as Unity's and Godot's)
+			FString Package, Error;
+			const UPlaytestSubsystem* Bridge = UPlaytestSubsystem::Get();
+			if (!Map.IsEmpty() && PieReady() && Bridge && PlaytestLevels::Resolve(Map, Package, Error)
+				&& Package != PlaytestLevels::PackageOf(Bridge->GetGameWorld()))
+			{
+				HandleSession(TEXT("restart"), Map, Done);
+				return;
+			}
 			StartPie(Map, Done);
 		}
 		else if (Action == TEXT("stop"))
@@ -151,9 +162,20 @@ public:
 		}
 		FAutopilotStyle::Initialize();
 		FAutopilotSession::Get().Startup();  // (the runs are kept whether the tab is open or not)
+		EndPieHandle = FEditorDelegates::EndPIE.AddLambda([](bool) { FAutopilotSession::ReleaseExceptionBreaks(); });
 		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(TabName, FOnSpawnTab::CreateLambda([](const FSpawnTabArgs&)
 		{
-			return SNew(SDockTab).TabRole(ETabRole::NomadTab)[SNew(SPlaytestPanel)];
+			TSharedRef<SPlaytestPanel> Panel = SNew(SPlaytestPanel);
+			TWeakPtr<SPlaytestPanel> Weak = Panel;
+			return SNew(SDockTab).TabRole(ETabRole::NomadTab)
+				.OnExtendContextMenu_Lambda([Weak](FMenuBuilder& Menu)  // (the tab's right-click menu: Connect, Settings…)
+				{
+					if (TSharedPtr<SPlaytestPanel> P = Weak.Pin())
+					{
+						P->ExtendTabMenu(Menu);
+					}
+				})
+				[Panel];
 		}))
 		.SetDisplayName(LOCTEXT("TabTitle", "Autopilot"))
 		.SetTooltipText(LOCTEXT("TabTooltip", "Autopilot: an AI agent that tests your game. Verify claims, play goals and explore the game for bugs"))
@@ -173,6 +195,8 @@ public:
 				Bridge->SessionRequested = nullptr;
 			}
 		}
+		FEditorDelegates::EndPIE.Remove(EndPieHandle);
+		FAutopilotSession::ReleaseExceptionBreaks();
 		FAutopilotSession::Get().Shutdown();
 		UToolMenus::UnRegisterStartupCallback(this);
 		UToolMenus::UnregisterOwner(this);
@@ -184,6 +208,8 @@ public:
 	}
 
 private:
+	FDelegateHandle EndPieHandle;
+
 	void RegisterMenus()
 	{
 		FToolMenuOwnerScoped Owner(this);

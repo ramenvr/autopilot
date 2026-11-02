@@ -280,7 +280,8 @@ While a run is going, the tab shows:
 
 Each run in the history says when it started, how long it took and its harness attempts (e.g. **Oct 19 13:25 · 03:26
 · 2 attempts**). The run history (the last 50 runs) is kept in `Saved/Autopilot/Runs/`, so closing the tab or the editor loses
-nothing. Each run's report files are written to `Saved/Playtest/<date-time>/`.
+nothing. Older runs leave the history but keep their usage and bill for the Settings page (up to 1000 runs, in
+`Saved/Autopilot/Runs/.usage/ledger.json`), as Unity's and Godot's do. Each run's report files are written to `Saved/Playtest/<date-time>/`.
 
 **Settings** (the gear beside **New run**; **Back to runs** closes it) also lists **This project**'s runs with usage or
 a bill (**Time**, **Prompt**, **Billed**; **No usage yet.** when there are none; plain rows, nothing to pick): what Autopilot was billed for each through Aura (the agent service says it when the run is
@@ -380,7 +381,14 @@ It needs a game that renders, in a window that is drawn:
 The agent uses the game's own controls, whichever input system the game uses (Enhanced Input actions, or
 the legacy action and axis mappings in Project Settings > Input). It also uses the game's UI: buttons, tabs,
 item slots, list entries, check boxes and combo boxes can be clicked, right-clicked and dragged, even when
-the game runs headless.
+the game runs headless. It can point the mouse at a place on the game's view (a spot on screen, a point in the
+world or an object) and click or drag there: the game's own mouse reads (`GetMousePosition`,
+`GetHitResultUnderCursor`, click events) see that place, and a click over the game's UI goes to that UI as the
+mouse's would. Your computer's own cursor doesn't move.
+
+While Autopilot plays in the editor, Blueprint Break on Exceptions (Editor Preferences > Experimental) is held off so
+an "Accessed None" doesn't stop the game mid-run (the run reports it: `log_error`); your setting is back when the
+play session ends.
 
 Besides that, the plugin runs bug detectors inside the engine every frame, so short glitches between the
 agent's steps are caught too:

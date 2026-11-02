@@ -1199,10 +1199,11 @@ namespace Autopilot.Playtest.Editor
         /// <summary>Steer's tooltip before the Rollout.</summary>
         public const string SteerWaitHint = "You can steer once the game is playing";
 
-        /// <summary>The run the composer's text asks for (always real time: no turn_based), and how it is shown.</summary>
+        /// <summary>The run the composer's text asks for (always real time: no turn_based), and how it is shown; with
+        /// the Design Brief setting when it says anything.</summary>
         public static Dictionary<string, object> ComposerFrame(PlaytestSettings s, out string shown)
         {
-            return ComposerFrame(s.Prompt, s.TimeLimitMinutes, out shown);
+            return ComposerFrame(s.Prompt, s.TimeLimitMinutes, s.DesignBrief, out shown);
         }
 
         /// <summary>The run the text asks for, its kind the agent service's to read (kind "auto": its run_kind says
@@ -1210,10 +1211,29 @@ namespace Autopilot.Playtest.Editor
         /// the agent service's own). Shown as typed.</summary>
         public static Dictionary<string, object> ComposerFrame(string text, int timeLimitMinutes, out string shown)
         {
+            return ComposerFrame(text, timeLimitMinutes, "", out shown);
+        }
+
+        /// <summary>As above, with the Design Brief (<paramref name="designBrief"/>: how the game is meant to work) as
+        /// design_brief when it says anything, as Unreal's composer sends it.</summary>
+        public static Dictionary<string, object> ComposerFrame(string text, int timeLimitMinutes, string designBrief, out string shown)
+        {
             var t = (text ?? "").Trim();
             shown = t;  // (the typed words, never rewritten)
             var frame = new Dictionary<string, object> { ["kind"] = "auto", ["prompt"] = t };
             if (timeLimitMinutes > 0) frame["time_limit_minutes"] = PlaytestSettings.ClampTimeLimit(timeLimitMinutes);
+            var brief = (designBrief ?? "").Trim();
+            if (brief.Length > 0) frame["design_brief"] = brief;
+            return frame;
+        }
+
+        /// <summary>An Explore run of <paramref name="minutes"/> minutes of play (its kind said in the frame: the agent
+        /// service doesn't read it from words), with the Design Brief as its brief when it says anything, as Unreal's.</summary>
+        public static Dictionary<string, object> ExploreFrame(int minutes, string designBrief)
+        {
+            var frame = new Dictionary<string, object> { ["kind"] = "explore", ["minutes"] = Math.Max(1, minutes) };
+            var brief = (designBrief ?? "").Trim();
+            if (brief.Length > 0) frame["brief"] = brief;
             return frame;
         }
 
@@ -1255,6 +1275,8 @@ namespace Autopilot.Playtest.Editor
         public const string ResetOffline = "Not connected: connect first to reset the memory";
         public const string ResetBusy = "A run is going: reset the memory once it is done";
         public const string NoScene = "Open the scene to show this finding in it";
+        /// <summary>A bundled font couldn't be read (AutopilotUI.FontsFound): the editor's font is drawn instead.</summary>
+        public const string FontMissing = "A bundled font couldn’t be read: using the editor’s font";
         public const string NothingNear = "Nothing in the open scene near that place";
         public const string ShowingPlace = "Showing the place in the open scene";
         public static string NotABug(string name) => $"Told the agent: {name} is not a bug";

@@ -238,6 +238,7 @@ def test_menu(g):
     g.req("ui_act", {"id": "MenuDoc.CreditsButton"})
     check("ui_act: UI Toolkit button click (its clicked handler ran once)", g.get("Menu:/MenuDoc|MenuToolkit", "creditsClicks") == 1,
           g.get("Menu:/MenuDoc|MenuToolkit", "creditsClicks"))
+    test_imgui(g)
     _, err = g.try_req("ui_act", {"id": "MenuCanvas.Nope"})
     check("ui_act: missing element error", err and "no element" in err, err)
     changes = g.link.session_changes
@@ -245,6 +246,19 @@ def test_menu(g):
     ok = g.wait_for("the level", lambda: g.req("context").get("world", "").endswith("Main.unity"), 15)
     check("ui_act: Start button opens the level", ok)
     check("session event on the scene change", g.wait_for("session event", lambda: g.link.session_changes > changes, 5), g.link.session_changes)
+
+
+def test_imgui(g):
+    """The menu's OnGUI box (MenuImgui): its GUI and GUILayout calls are routed through the bridge (context's imgui
+    calls); a batch-mode player calls no OnGUI at all (so nothing is drawn, nor read), which the EditMode tests'
+    ImguiTests cover by drawing the same controls in an IMGUI pass of their own."""
+    ctx = g.req("context")
+    imgui = ctx.get("imgui") or {}
+    check("context: the game's OnGUI controls routed through the bridge (MenuImgui's 6)", imgui.get("calls", 0) >= 6, imgui)
+    check("context: a batch-mode player draws no OnGUI (Unity calls none)", g.get("Menu:/MenuImgui|MenuImgui", "drawn") == 0
+          and imgui.get("drawn") == 0, (imgui, g.get("Menu:/MenuImgui|MenuImgui", "drawn")))
+    texts = g.req("screen")["texts"]
+    check("screen: no OnGUI texts while nothing is drawn", not any(k.startswith("MenuImgui.") for k in texts), texts)
 
 
 def test_level(g):
@@ -608,6 +622,79 @@ def test_sessions(g, editor):
     check("session status running", g.req("session", {"action": "status"})["running"] is True)
 
 
+def test_parity(g):
+    """What Unity tells and does as Unreal's: the detectors teleport, clamp, over_max and actor_growth; watch with
+    `drawn` (an effect stopping, a mesh hidden, a light going off); the legacy Input Manager's controls and `input`
+    with legacy:<Name>; a session start with a map while another scene plays, and a scene the build hasn't refused;
+    `screen` with `ui`; sliders' ranges and fields' placeholders; context's `net`; movement's `air_control`; errors
+    for a release of an unknown key and a record with no action."""
+    player = "Main:/Player"
+    hazard = "Main:/Hazard|Hazard"
+    g.req("detectors", {"enabled": True, "property_every": 0.25, "growth_seconds": 20})
+    before = len(g.link.findings)
+    teleport(g, player, {"x": 0, "y": 1.08, "z": 0})
+    time.sleep(0.5)
+    check("detector teleport: quiet when the agent moves the player (rc)", not [x for x in g.link.findings[before:] if x.get("detector") == "teleport"])
+    g.call(hazard, "Blink")
+    f = g.wait_for("teleport finding", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "teleport"], 5)
+    check("detector teleport: the game moves the player 17 m in one frame", f and f[0]["severity"] == "suspicion" and f[0]["signature"] == "teleport:PlayerController"
+          and f[0]["details"]["moved"] > 1600 and f[0]["details"]["allowed"] >= 1000, f[0] if f else None)
+    g.set(hazard, "stamina", 150)
+    f = g.wait_for("clamp finding", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "clamp"], 5)
+    check("detector clamp: a [Range(0, 100)] field at 150", f and f[0]["signature"] == "clamp:Hazard.stamina" and f[0]["details"]["clamp"] == "[0, 100]"
+          and f[0]["summary"] == "Hazard stamina is 150, outside its allowed range 0..100", f[0] if f else None)
+    g.set(hazard, "health", 150)
+    f = g.wait_for("over_max finding", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "over_max"], 5)
+    check("detector over_max: health above maxHealth", f and f[0]["signature"] == "over_max:Hazard.health" and f[0]["details"]["max_property"] == "maxHealth"
+          and f[0]["details"]["max"] == 100, f[0] if f else None)
+
+    # watch with drawn: the lamp off (the block's light), the sparks stopped and the beacon's mesh hidden
+    g.call(hazard, "GoOut")
+    w = g.req("watch", {"objects": ["Main:/Level/Beacon", "Main:/Level/Block"], "drawn": True, "seconds": 1.5}, timeout=10)
+    seen = {(c["object"], c["what"], c.get("asset")) for c in w.get("changes", [])}
+    check("watch drawn: answered as drawn", w.get("drawn") is True, w)
+    check("watch drawn: the beacon's sparks stopped, its mesh hidden; the block's light off",
+          {("Main:/Level/Beacon", "effect stopped", "Sparks"), ("Main:/Level/Beacon", "part hidden", "Cylinder"), ("Main:/Level/Block", "light off", "")} <= seen, sorted(seen))
+
+    # actor_growth (20 s here: 2 minutes by default): sparks piling up
+    g.call(hazard, "Spawn", perSecond=20, seconds=40)
+    f = g.wait_for("actor_growth finding", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "actor_growth"], 45, every=1.0)
+    check("detector actor_growth: objects of one kind growing all the time", f and f[0]["signature"] == "actor_growth:Spark" and f[0]["details"]["to"] >= 2 * f[0]["details"]["from"],
+          f[0] if f else None)
+    g.req("detectors", {"growth_seconds": 120, "property_every": 0.5})
+
+    ctx = g.req("context")
+    legacy = {c["action"]: c for c in ctx.get("controls", []) if str(c.get("action", "")).startswith("legacy")}
+    check("context controls: the Input Manager's axes (legacy:Jump, legacy-axis:Horizontal)",
+          legacy.get("legacy:Jump", {}).get("keys") == ["SpaceBar"] and legacy.get("legacy:Jump", {}).get("digital") is True
+          and legacy.get("legacy:Fire1", {}).get("keys") == ["LeftControl", "LeftMouseButton"]
+          and "D" in legacy.get("legacy-axis:Horizontal", {}).get("keys", []), {k: v.get("keys") for k, v in legacy.items()})
+    check("context net: standalone", ctx.get("net") == {"mode": "standalone"}, ctx.get("net"))
+    check("movement: air_control (none in the course's script)", "air_control" in g.req("movement"), g.req("movement"))
+    jumps = g.get(player, "jumps")
+    g.wait_for("on ground", lambda: g.pose().get("on_ground") is True, 5)
+    g.req("input", {"action": "legacy:Jump"})
+    check("input legacy:Jump presses its key (the player jumps)", g.wait_for("jumped", lambda: g.get(player, "jumps") > jumps, 3) is not None)
+    _, err = g.try_req("key", {"key": "NoSuchKey", "mode": "release"})
+    check("key: releasing an unknown key is an error", err and "Unknown key NoSuchKey" in err, err)
+    _, err = g.try_req("record", {})
+    check("record with no action is an error", err == "record wants action start or stop", err)
+    shown = g.req("screen", {"ui": True})
+    check("screen ui: the texts and the controls", "texts" in shown and isinstance(shown.get("ui"), list), list(shown))
+    _, err = g.try_req("session", {"action": "start", "map": "Nowhere"})
+    check("session start with a scene the build hasn't: refused (404) before anything changes", err and "No scene Nowhere" in err
+          and g.req("context")["world"].endswith("Main.unity"), err)
+    r = g.req("session", {"action": "start", "map": "Menu"}, timeout=60)
+    check("session start map=Menu while the level plays: switches to it", r.get("scene", "").endswith("Menu.unity")
+          and g.req("context")["world"].endswith("Menu.unity"), r)
+    els = {e["id"]: e for e in g.req("ui")["elements"]}
+    check("ui: a slider's range and a text field's placeholder", els.get("MenuCanvas.VolumeSlider", {}).get("min") == 0 and els.get("MenuCanvas.VolumeSlider", {}).get("max") == 1
+          and els.get("MenuCanvas.NameField", {}).get("placeholder") == "Enter text...", (els.get("MenuCanvas.VolumeSlider"), els.get("MenuCanvas.NameField")))
+    _, err = g.try_req("ui_act", {"id": "MenuDoc.CreditsButton", "action": "right_click"})
+    check("ui_act: right_click on a UI Toolkit button", err is None, err)
+    g.req("session", {"action": "restart", "map": "Main"}, timeout=60)
+
+
 def test_levels_editor(g):
     """The editor plays the scene asked for (`session` `map`, through playModeStartScene) while the scene open in it
     stays open, and its own Play plays that one again afterwards (docs/protocol.md, The level a run plays)."""
@@ -727,6 +814,7 @@ def run_player(args):
         test_world(g, orbs)
         test_legacy(g)  # (its keys reach the player too: after the checks that need it where test_input left it)
         test_sessions(g, editor=False)
+        test_parity(g)
         run_events(g)
         if not args.skip_codex:
             test_codex(g)
@@ -761,6 +849,7 @@ def run_editor(args):
         test_input(g, orbs)
         test_world(g, orbs)
         test_legacy(g)  # (its keys reach the player too: after the checks that need it where test_input left it)
+        test_error_pause(g)
         t = time.time()
         r = g.req("session", {"action": "restart", "fresh": True}, timeout=120)
         check("editor: fresh restart (out of play mode and in)", r.get("running") is True and len(g.req("find", {"class": "Collectible"})["objects"]) == 4,
@@ -772,6 +861,19 @@ def run_editor(args):
     finally:
         proc.kill()
         brain.close()
+
+
+def test_error_pause(g):
+    """The Console's Error Pause on while the agent plays: held off, so a script error doesn't pause the game."""
+    console = "type:UnityEditor.LogEntries"
+    g.call(console, "SetConsoleFlag", bit=4, value=True)
+    held = g.wait_for("Error Pause held off", lambda: (g.get(console, "consoleFlags") & 4) == 0, 5)
+    check("editor: the Console's Error Pause is held off while the agent plays", held is not None, g.get(console, "consoleFlags"))
+    frames = g.get("type:UnityEngine.Time", "frameCount")
+    g.call("type:UnityEngine.Debug", "LogError", message="Autopilot smoke: a script error in the game")
+    time.sleep(1.0)
+    check("editor: a script error doesn't pause the game", g.get("type:UnityEditor.EditorApplication", "isPaused") is False
+          and g.get("type:UnityEngine.Time", "frameCount") > frames + 5, g.get("type:UnityEngine.Time", "frameCount") - frames)
 
 
 def run_ci(args):

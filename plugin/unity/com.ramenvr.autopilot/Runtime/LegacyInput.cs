@@ -32,6 +32,19 @@ namespace Autopilot.Playtest
         }
     }
 
+    /// <summary>Put on each assembly the IL post-processor rewrote: how many of its GUI and GUILayout controls are drawn
+    /// through Imgui (Imgui.cs).</summary>
+    [AttributeUsage(AttributeTargets.Assembly)]
+    public sealed class ImguiRewrittenAttribute : Attribute
+    {
+        public readonly int Calls;
+
+        public ImguiRewrittenAttribute(int calls)
+        {
+            Calls = calls;
+        }
+    }
+
     public static class LegacyInput
     {
         /// <summary>A brain is connected: the bridge's input counts (Hands.Tick sets it every frame).</summary>
@@ -274,6 +287,33 @@ namespace Autopilot.Playtest
 
         public static int AxisCount => axes.Count;
 
+        /// <summary>The project's Input Manager axes as controls: each name, its keys and mouse buttons (KeyCodes), its
+        /// mouse movement (0 x, 1 y, 2 the wheel; -1 none), and whether it is a button (keys pressing it one way only).</summary>
+        public static List<(string name, List<KeyCode> keys, int mouse, bool button)> AxisList()
+        {
+            AxesNamed(null);  // (a build: its baked axes read)
+            var list = new List<(string, List<KeyCode>, int, bool)>();
+            foreach (var pair in axes)
+            {
+                var keys = new List<KeyCode>();
+                var mouse = -1;
+                var button = true;
+                foreach (var a in pair.Value)
+                {
+                    if (a.Type == 1 && a.Index >= 0 && a.Index <= 2) mouse = a.Index;
+                    if (a.Type != 0) button = false;
+                    if (a.Neg != KeyCode.None || a.AltNeg != KeyCode.None) button = false;
+                    foreach (var k in new[] { a.Pos, a.Neg, a.AltPos, a.AltNeg })
+                        if (k != KeyCode.None && !keys.Contains(k))
+                            keys.Add(k);
+                }
+                if (keys.Count == 0 && mouse < 0) continue;  // (a joystick's axis alone: the gamepad's, as its keys say)
+                if (keys.Count == 0) button = false;
+                list.Add((pair.Key, keys, mouse, button));
+            }
+            return list;
+        }
+
         static List<Axis> AxesNamed(string name)
         {
             if (!axesLoaded && !buildChecked && !Application.isEditor)
@@ -441,6 +481,17 @@ namespace Autopilot.Playtest
 
         static List<(string name, int calls)> rewritten;
         static int assembliesSeen;
+        static int imguiCalls;
+
+        /// <summary>The game's GUI and GUILayout control calls drawn through Imgui (every assembly's).</summary>
+        public static int ImguiCalls
+        {
+            get
+            {
+                Rewritten();
+                return imguiCalls;
+            }
+        }
 
         /// <summary>The game's assemblies whose UnityEngine.Input calls come here, with how many calls each.</summary>
         public static List<(string name, int calls)> Rewritten()
@@ -453,12 +504,15 @@ namespace Autopilot.Playtest
             if (rewritten != null && all.Count == assembliesSeen) return rewritten;
             assembliesSeen = all.Count;
             rewritten = new List<(string, int)>();
+            imguiCalls = 0;
             foreach (var asm in all)
             {
                 try
                 {
                     foreach (var attr in asm.GetCustomAttributes(typeof(LegacyInputRewrittenAttribute), false))
                         rewritten.Add((asm.GetName().Name, ((LegacyInputRewrittenAttribute)attr).Calls));
+                    foreach (var attr in asm.GetCustomAttributes(typeof(ImguiRewrittenAttribute), false))
+                        imguiCalls += ((ImguiRewrittenAttribute)attr).Calls;
                 }
                 catch
                 {

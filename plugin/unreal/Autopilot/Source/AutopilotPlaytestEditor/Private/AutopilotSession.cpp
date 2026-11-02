@@ -11,6 +11,7 @@
 #include "PlaytestSubsystem.h"
 #include "Policies/CondensedJsonPrintPolicy.h"
 #include "Serialization/JsonSerializer.h"
+#include "Settings/EditorExperimentalSettings.h"
 
 #define LOCTEXT_NAMESPACE "Autopilot"
 
@@ -80,6 +81,33 @@ namespace
 const TCHAR* const FAutopilotSession::MemoryLine = TEXT("Memory updated");
 const TCHAR* const FAutopilotSession::ResetBackup = TEXT(".reset-backup");
 FString FAutopilotSession::HistoryDirOverride;
+
+namespace
+{
+	TOptional<bool> HeldBreakOnExceptions;  // the user's setting while Autopilot holds it off
+}
+
+void FAutopilotSession::HoldExceptionBreaks()
+{
+	UEditorExperimentalSettings* Settings = GetMutableDefault<UEditorExperimentalSettings>();
+	if (Settings && !HeldBreakOnExceptions.IsSet() && Settings->bBreakOnExceptions)
+	{
+		HeldBreakOnExceptions = Settings->bBreakOnExceptions;
+		Settings->bBreakOnExceptions = false;  // (not saved: the user's setting stays theirs)
+	}
+}
+
+void FAutopilotSession::ReleaseExceptionBreaks()
+{
+	if (HeldBreakOnExceptions.IsSet())
+	{
+		if (UEditorExperimentalSettings* Settings = GetMutableDefault<UEditorExperimentalSettings>())
+		{
+			Settings->bBreakOnExceptions = HeldBreakOnExceptions.GetValue();
+		}
+		HeldBreakOnExceptions.Reset();
+	}
+}
 
 FString FAutopilotSession::NoRecordingWhy(const TSharedPtr<FJsonObject>& Result)
 {
@@ -791,9 +819,11 @@ void FAutopilotSession::Forget()
 {
 	Runs.Reset();
 	SetAside.Reset();
+	Retired.Reset();
 	Unsaved.Reset();
 	KeptSteps = 0;
 	bHistoryLoaded = true;  // (nothing to load: it is gone)
+	bLedgerLoaded = true;
 	++UsageRevision;
 	Changed();
 	const FString Saved = FPaths::ProjectSavedDir();
@@ -840,9 +870,12 @@ void FAutopilotSession::LoadHistory()
 		}
 	}
 	Loaded.Sort([](const TSharedPtr<FAutopilotRun>& A, const TSharedPtr<FAutopilotRun>& B) { return A->Started < B->Started; });
-	// Only the newest are kept
+	// The usage ledger first: a run going past MaxSavedRuns now joins it
+	LoadUsageLedger();
+	// Only the newest are kept (the others' usage and bill stay in the ledger)
 	while (Loaded.Num() > MaxSavedRuns)
 	{
+		Retire(Loaded[0]);
 		IFileManager::Get().Delete(*FPaths::Combine(Dir, Loaded[0]->HistoryFile), false, true, true);
 		Loaded.RemoveAt(0);
 	}
@@ -883,11 +916,119 @@ void FAutopilotSession::LoadHistory()
 		}
 	}
 	SetAside.Sort([](const TSharedPtr<FAutopilotRun>& A, const TSharedPtr<FAutopilotRun>& B) { return A->Started < B->Started; });
-	if (Loaded.Num() || SetAside.Num())
+	if (Loaded.Num() || SetAside.Num() || Retired.Num())
 	{
 		++UsageRevision;
 		Changed();
 	}
+}
+
+FString FAutopilotSession::UsageLedgerPath()
+{
+	return FPaths::Combine(HistoryDir(), TEXT(".usage"), TEXT("ledger.json"));
+}
+
+FString FAutopilotSession::UsageKey(const FAutopilotRun& Run)
+{
+	return Run.RunId + TEXT("|") + Run.Started.ToIso8601();
+}
+
+TSharedRef<FJsonObject> FAutopilotSession::UsageToJson(const FAutopilotRun& Run)
+{
+	TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+	O->SetStringField(TEXT("run_id"), Run.RunId);
+	O->SetStringField(TEXT("started"), Run.Started.ToIso8601());
+	O->SetStringField(TEXT("kind"), Run.Kind);
+	O->SetStringField(TEXT("prompt"), Run.Prompt);
+	O->SetStringField(TEXT("verdict"), Run.Verdict);
+	if (Run.Usage.Num())
+	{
+		TSharedRef<FJsonObject> Usage = MakeShared<FJsonObject>();
+		Usage->SetBoolField(TEXT("final"), Run.bUsageFinal);
+		Usage->SetArrayField(TEXT("models"), PlaytestUsage::ToJson(Run.Usage));
+		O->SetObjectField(TEXT("usage"), Usage);
+	}
+	if (Run.Bill.bKnown)
+	{
+		O->SetObjectField(TEXT("bill"), PlaytestAccount::BillToJson(Run.Bill));
+	}
+	return O;
+}
+
+void FAutopilotSession::LoadUsageLedger()
+{
+	Retired.Reset();
+	bLedgerLoaded = true;
+	FString Text;
+	TSharedPtr<FJsonObject> Object;
+	const TArray<TSharedPtr<FJsonValue>>* Items = nullptr;
+	if (!FFileHelper::LoadFileToString(Text, *UsageLedgerPath())
+		|| !FJsonSerializer::Deserialize(TJsonReaderFactory<>::Create(Text), Object) || !Object.IsValid()
+		|| !Object->TryGetArrayField(TEXT("runs"), Items) || !Items)
+	{
+		return;
+	}
+	for (const TSharedPtr<FJsonValue>& Item : *Items)
+	{
+		const TSharedPtr<FJsonObject>* J = nullptr;
+		if (Item.IsValid() && Item->TryGetObject(J) && J)
+		{
+			if (TSharedPtr<FAutopilotRun> Run = RunFromJson(*J))
+			{
+				Run->Id = NextId++;
+				Retired.Add(Run);
+			}
+		}
+	}
+	Retired.Sort([](const TSharedPtr<FAutopilotRun>& A, const TSharedPtr<FAutopilotRun>& B) { return A->Started < B->Started; });
+}
+
+void FAutopilotSession::SaveUsageLedger() const
+{
+	TArray<TSharedPtr<FJsonValue>> Items;
+	for (const TSharedPtr<FAutopilotRun>& Run : Retired)
+	{
+		Items.Add(MakeShared<FJsonValueObject>(UsageToJson(*Run)));
+	}
+	TSharedRef<FJsonObject> O = MakeShared<FJsonObject>();
+	O->SetNumberField(TEXT("version"), 1);
+	O->SetArrayField(TEXT("runs"), Items);
+	FString Text;
+	FJsonSerializer::Serialize(O, TJsonWriterFactory<TCHAR, TCondensedJsonPrintPolicy<TCHAR>>::Create(&Text));
+	// Written whole, then put in place (as the runs' files are)
+	const FString Path = UsageLedgerPath();
+	const FString Temp = Path + TEXT(".tmp");
+	IFileManager::Get().MakeDirectory(*FPaths::GetPath(Path), true);
+	if (!FFileHelper::SaveStringToFile(Text, *Temp, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM)
+		|| !IFileManager::Get().Move(*Path, *Temp, true, true))
+	{
+		UE_LOG(LogAutopilotSession, Warning, TEXT("[Autopilot] Couldn't save the usage to %s"), *Path);
+	}
+}
+
+void FAutopilotSession::Retire(const TSharedPtr<FAutopilotRun>& Run)
+{
+	if (!Run.IsValid() || (!Run->Usage.Num() && !Run->Bill.bKnown))
+	{
+		return;
+	}
+	if (!bLedgerLoaded)
+	{
+		LoadUsageLedger();
+	}
+	const FString Key = UsageKey(*Run);
+	if (Retired.ContainsByPredicate([&Key](const TSharedPtr<FAutopilotRun>& R) { return UsageKey(*R) == Key; }))
+	{
+		return;
+	}
+	Retired.Add(Run);
+	Retired.Sort([](const TSharedPtr<FAutopilotRun>& A, const TSharedPtr<FAutopilotRun>& B) { return A->Started < B->Started; });
+	while (Retired.Num() > MaxUsageRuns)
+	{
+		Retired.RemoveAt(0);
+	}
+	SaveUsageLedger();
+	++UsageRevision;
 }
 
 void FAutopilotSession::OnMemoryCleared(bool bOk)
@@ -1010,11 +1151,12 @@ TSharedPtr<FAutopilotRun> FAutopilotSession::NewRun(const FString& Kind, const F
 	Run->HistoryFile = FString::Printf(TEXT("%s-%d.json"), *Run->RunId, Run->Id);
 	Runs.Add(Run);
 	++UsageRevision;
-	// Only the newest are kept on disk
+	// Only the newest are kept on disk (the others' usage and bill stay in the ledger)
 	if (Runs.Num() > MaxSavedRuns)
 	{
-		const FString& Old = Runs[Runs.Num() - 1 - MaxSavedRuns]->HistoryFile;
-		IFileManager::Get().Delete(*FPaths::Combine(HistoryDir(), Old), false, true, true);
+		const TSharedPtr<FAutopilotRun>& Old = Runs[Runs.Num() - 1 - MaxSavedRuns];
+		Retire(Old);
+		IFileManager::Get().Delete(*FPaths::Combine(HistoryDir(), Old->HistoryFile), false, true, true);
 	}
 	Changed(Run.Get());
 	return Run;
@@ -1874,7 +2016,25 @@ void FAutopilotSession::OnBill(const TSharedPtr<FJsonObject>& Message)
 
 TArray<TSharedPtr<FAutopilotRun>> FAutopilotSession::GetUsageRuns() const
 {
-	TArray<TSharedPtr<FAutopilotRun>> All = SetAside;
+	// (a run past MaxSavedRuns this session is in Runs and in the ledger both: counted once)
+	TSet<FString> Listed;
+	for (const TSharedPtr<FAutopilotRun>& Run : SetAside)
+	{
+		Listed.Add(UsageKey(*Run));
+	}
+	for (const TSharedPtr<FAutopilotRun>& Run : Runs)
+	{
+		Listed.Add(UsageKey(*Run));
+	}
+	TArray<TSharedPtr<FAutopilotRun>> All;
+	for (const TSharedPtr<FAutopilotRun>& Run : Retired)
+	{
+		if (!Listed.Contains(UsageKey(*Run)))
+		{
+			All.Add(Run);
+		}
+	}
+	All.Append(SetAside);
 	All.Append(Runs);
 	return All;
 }

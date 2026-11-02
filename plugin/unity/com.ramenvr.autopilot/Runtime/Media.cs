@@ -117,7 +117,7 @@ namespace Autopilot.Playtest
         /// <summary>record {"action": "start", "fps", "max_dim", "quality"} | {"action": "stop"}.</summary>
         public static void Record(PlaytestClient client, long id, Dictionary<string, object> args)
         {
-            var action = Json.Str(args, "action", "start");
+            var action = Json.Str(args, "action");
             if (action == "stop")
             {
                 client.Respond(id, new Dictionary<string, object> { ["recording"] = false, ["frames"] = Stop() });
@@ -125,7 +125,7 @@ namespace Autopilot.Playtest
             }
             if (action != "start")
             {
-                client.RespondError(id, $"record: unknown action {action} (start or stop)");
+                client.RespondError(id, "record wants action start or stop");
                 return;
             }
             var why = NoPicture(client);

@@ -1900,6 +1900,38 @@ namespace Autopilot.Playtest.Tests
             }
         }
 
+        /// <summary>Unreal needed SSettle (Slate showed new content a frame before its layout); UI Toolkit lays a panel
+        /// out, and dispatches the geometry changes its pages fit themselves on (the stage names, the attempt squares),
+        /// again until it is settled, in the same update, before that update repaints. So a content swap (Live to Result
+        /// and back, a new run's Live page) is drawn first as it settles: one layout pass after the swap leaves nothing
+        /// for a second one to move.</summary>
+        [Test]
+        public void ASwappedPageIsSettledInItsFirstLayout()
+        {
+            var now = AutopilotText.UnixNow;
+            var run = new AutopilotRun { Id = "layout-swap", Kind = "goal", Started = now - 200, Prompt = "Reach the gate", Stage = AutopilotText.StageRollout, Attempt = 3, AttemptLines = 3 };
+            AutopilotSession.Runs.Add(run);
+            foreach (var size in new[] { new Vector2Int(320, 700), new Vector2Int(900, 400) })
+            {
+                var view = Show(size, v => v.SelectedId = run.Id);
+                foreach (var swap in new[] { "result", "live" })
+                {
+                    run.Ended = swap == "result" ? now : 0;
+                    if (swap == "result") run.Result = new Dictionary<string, object> { ["achieved"] = true, ["reason"] = "Reached the gate at 1:12." };
+                    view.Refresh(true);
+                    validate.Invoke(panel, null);  // (one update's layout, as the frame that first draws it has)
+                    var first = host.Query<VisualElement>().ToList().Select(e => e.worldBound).ToList();
+                    validate.Invoke(panel, null);
+                    var settled = host.Query<VisualElement>().ToList().Select(e => e.worldBound).ToList();
+                    Assert.AreEqual(first.Count, settled.Count, $"{swap} at {size}");
+                    for (var i = 0; i < first.Count; ++i)
+                        Assert.IsTrue(first[i] == settled[i] || float.IsNaN(first[i].x) && float.IsNaN(settled[i].x),
+                            $"{swap} at {size.x}x{size.y}: an element moved after the first layout ({first[i]} -> {settled[i]})");
+                }
+            }
+            run.Ended = now;
+        }
+
         [Test]
         public void StageNamesAreNeverCut()
         {

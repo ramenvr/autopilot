@@ -19,6 +19,9 @@ editor in batch mode running the plugin's Headless.Run (it opens the scene, ente
 
 import os
 import re
+import subprocess
+import sys
+import time
 
 from ..kit.geom import Vec, wrap
 from .base import CODEX_OWN, OpEngine, safe_rel
@@ -71,6 +74,70 @@ def built_from(exe):
             if os.path.isfile(os.path.join(folder, "ProjectSettings", "ProjectVersion.txt")):
                 return os.path.normpath(folder)
     return None
+
+
+def editor_for(folder):
+    """The Unity editor of the version the project was last opened with (Unity Hub's folder for it), else EDITOR."""
+    try:
+        with open(os.path.join(folder, "ProjectSettings", "ProjectVersion.txt"), encoding="utf-8") as f:
+            m = re.search(r"^m_EditorVersion:\s*(\S+)", f.read(), re.M)
+    except OSError:
+        m = None
+    if m and "AUTOPILOT_UNITY" not in os.environ:
+        hub = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(EDITOR))), m.group(1), "Editor",
+                           os.path.basename(EDITOR))
+        if os.path.isfile(hub):
+            return hub
+    return EDITOR
+
+
+def project_open(folder):
+    """Whether a Unity editor has the project open: it holds Temp/UnityLockfile (Windows: open with no sharing;
+    macOS, Linux: an flock)."""
+    lock = os.path.join(folder, "Temp", "UnityLockfile")
+    if not os.path.exists(lock):
+        return False
+    try:
+        with open(lock, "a") as f:
+            if sys.platform != "win32":
+                import fcntl
+
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(f, fcntl.LOCK_UN)
+                except OSError:
+                    return True
+    except OSError:
+        return True
+    return False
+
+
+def has_plugin(folder):
+    """Whether the project has the Autopilot package (listed in Packages/manifest.json, or embedded)."""
+    if os.path.isdir(os.path.join(folder, "Packages", OWN_PACKAGE)):
+        return True
+    try:
+        with open(os.path.join(folder, "Packages", "manifest.json"), encoding="utf-8") as f:
+            return f'"{OWN_PACKAGE}"' in f.read()
+    except OSError:
+        return False
+
+
+def export_project(folder, out, timeout=1800):
+    """The plugin's scene/asset export of a project not open in an editor, into out (a batch-mode editor running
+    CodexExport.Run; its log beside it). Returns the editor's exit code (-1: it took longer than timeout)."""
+    from .. import processes
+
+    os.makedirs(out, exist_ok=True)
+    cmd = [editor_for(folder), "-batchmode", "-nographics", "-projectPath", folder, "-executeMethod",
+           "Autopilot.Playtest.Editor.CodexExport.Run", "-out", out, "-logFile", os.path.join(out, "export.log")]
+    p = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **processes.GROUP)
+    processes.track(p)
+    try:
+        return p.wait(timeout)
+    except subprocess.TimeoutExpired:
+        processes.kill(p)
+        return -1
 
 
 def _skipped(name):
@@ -178,6 +245,24 @@ class Unity(OpEngine):
 
     def has_export(self, codex_root):
         return os.path.exists(os.path.join(codex_root, "summary.txt"))
+
+    def build_local(self, project, codex_root, export=True):
+        """The project's files from this machine's disk, and its scene/asset export made by the plugin in a batch-mode
+        editor (CodexExport.Run) when the project isn't open in a Unity editor (an open project is locked; its editor
+        makes the export before play mode), as Unreal's codex runs its commandlet."""
+        super().build_local(project, codex_root, export)
+        if not export or self.has_export(codex_root):
+            return
+        folder = self.project_folder(project)
+        if project_open(folder):
+            print("codex: the project is open in a Unity editor: no scene/asset export from here (its editor makes it)")
+            return
+        if not has_plugin(folder):
+            print(f"codex: the project has no {OWN_PACKAGE} package: no scene/asset export")
+            return
+        t0 = time.time()
+        code = export_project(folder, codex_root)
+        print(f"codex: Unity export exit {code} in {time.time() - t0:.0f}s")
 
     no_export_note = ("note: no scene/asset export in the codex (the Unity plugin makes it in the editor before play "
                       "mode, or a player runs the editor headless on its project: neither happened)")
