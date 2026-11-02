@@ -7,7 +7,7 @@ import types
 
 import pytest
 
-from autopilot import aura, bridge, cli
+from autopilot import aura, bridge, cli, vision
 from autopilot.agents import opencode
 
 
@@ -826,8 +826,8 @@ def test_run_prompt_plays_with_the_agent_aura_names_and_has_auras_claude_describ
 class GoingOnAura(FakeAura):
     """Aura with POST /api/autopilot/runs/free: `free` answers it (the free part's token and agent by default)."""
 
-    def __init__(self, free=None):
-        super().__init__(picked_model_aura(None).start)
+    def __init__(self, free=None, start=None):
+        super().__init__(start or picked_model_aura(None).start)
         self.free = free or Answer(200, {"token": "grt1.free-token", "cap_usd": 2, "agent": {
             "name": "opencode", "provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "required": True}})
 
@@ -892,6 +892,8 @@ def run_going_on(monkeypatch, tmp_path, http, first):
         seen.append({"agent": os.environ.get("AUTOPILOT_OPENCODE_PROVIDER") and "opencode" or "claude",
                      "key": os.environ.get("TYPESAFE_API_KEY"), "asked": asked, "timeout": timeout,
                      "describer": describer.provider, "proxied": os.environ.get("OPENROUTER_BASE_URL"),
+                     "seen_by": describer.route and {"root": describer.route[1], "key": describer.route[2],
+                                                     "model": describer.route[3], "named": describer.named},
                      "going_on": (run_dir / "going_on.json").exists()})
         run_dir.mkdir(parents=True, exist_ok=True)
         if len(seen) == 1:
@@ -985,3 +987,114 @@ def test_run_prompt_passes_disable_premium_models_on_to_aura(through_aura, monke
     monkeypatch.setattr(cli.aura.requests, "Session", lambda: started)
     cli.run_prompt(Plugin(), "Open the gate", kind="goal", aura_model="auto", disable_premium_models=True)
     assert started.calls[0][1]["disable_premium_models"] is True
+
+
+# -- the model that describes the run's frames (its answer's `vision`) ------------------------------------------------
+
+GOOGLE_RELAY = "https://aura.test/api/autopilot/llm/google/v1beta"
+
+
+def vision_aura(agent, vision):
+    """picked_model_aura with a Google relay too, its answer naming `vision`."""
+    http = picked_model_aura(agent)
+    http.start._body["relay"]["google"] = GOOGLE_RELAY
+    if vision is not None:
+        http.start._body["vision"] = vision
+    return http
+
+
+def test_only_a_vision_model_auras_relay_has_is_taken():
+    relay = {"anthropic": "a", "typesafe": "t", "openrouter": "o", "google": "g"}
+    assert aura.vision_of({"provider": "google", "model": " gemini-3.1-flash-lite "}, relay) == {
+        "provider": "google", "model": "gemini-3.1-flash-lite"}
+    assert aura.vision_of({"provider": "anthropic", "model": "claude-sonnet-5-5"}, relay)["model"] == \
+        "claude-sonnet-5-5"
+    assert aura.vision_of({"provider": "openai", "model": "gpt-6-mini"}, relay) is None  # (no relay for it)
+    assert aura.vision_of({"provider": "deepseek", "model": "d"}, {**relay, "deepseek": "d"}) is None
+    for bad in (None, "google", [], {}, {"provider": "google"}, {"provider": "google", "model": "  "},
+                {"provider": "google", "model": 7}, {"provider": 3, "model": "m"}, {"model": "gemini"}):
+        assert aura.vision_of(bad, relay) is None
+    assert aura.vision_of({"provider": "google", "model": "g"}, None) is None
+
+
+def test_a_run_aura_names_no_vision_for_is_described_by_opus_through_the_anthropic_relay(through_aura, monkeypatch):
+    for answer in (None, {"provider": "mistral", "model": "pixtral"}, "gemini"):
+        run = aura.Run("aura-session", "goal", http=vision_aura(None, answer)).start()
+        assert run.vision is None and cli.describer_model(run, "openrouter") == ("anthropic", None)
+        with run:
+            assert "GOOGLE_BASE_URL" not in os.environ and "GEMINI_API_KEY" not in os.environ
+            route, _ = vision.route("anthropic", None, cli.describer_model(run, "anthropic")[1])
+            assert route[1:4] == ("https://aura.test/api/autopilot/llm/anthropic", "grt1.run-token", vision.MODEL)
+    assert cli.describer_model(None, "openai") == ("openai", None)  # (the user's own keys: the agent's provider)
+
+
+def test_the_vision_provider_gets_the_relay_and_run_token_beside_the_agents_and_both_are_put_back(through_aura,
+                                                                                                  monkeypatch):
+    monkeypatch.setattr(aura, "bun_ready", lambda: True)
+    monkeypatch.setenv("GEMINI_API_KEY", "the-users-own")
+    monkeypatch.setenv("GOOGLE_API_KEY", "the-users-other")
+    http = vision_aura({"name": "opencode", "provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+                       {"provider": "google", "model": "gemini-3.1-flash-lite"})
+    run = aura.Run("aura-session", "goal", http=http, model="deepseek-v4-pro").start()
+    assert run.vision == {"provider": "google", "model": "gemini-3.1-flash-lite"}
+    assert cli.describer_model(run, "openrouter") == ("google", "gemini-3.1-flash-lite")
+    with run:
+        assert os.environ["OPENROUTER_BASE_URL"] == "https://aura.test/api/autopilot/llm/openrouter/v1"
+        assert os.environ["GOOGLE_BASE_URL"] == GOOGLE_RELAY
+        for k in vision.ROUTES["google"][2]:
+            assert os.environ[k] == "grt1.run-token"  # (none of the user's own is used instead)
+        route, _ = vision.route("google", None, "gemini-3.1-flash-lite")
+        assert route == ("gemini", GOOGLE_RELAY, "grt1.run-token", "gemini-3.1-flash-lite", None)
+    assert os.environ["GEMINI_API_KEY"] == "the-users-own" and os.environ["GOOGLE_API_KEY"] == "the-users-other"
+    assert "GOOGLE_BASE_URL" not in os.environ and "GOOGLE_GENERATIVE_AI_API_KEY" not in os.environ
+    # An OpenAI one beside Claude Code: its key variables (Codex's too) are the run's
+    monkeypatch.setenv("OPENAI_API_KEY", "the-users-own")
+    http = vision_aura(None, {"provider": "openai", "model": "gpt-6-mini"})
+    run = aura.Run("aura-session", "goal", http=http).start()
+    with run:
+        assert os.environ["OPENAI_BASE_URL"] == "https://aura.test/api/autopilot/llm/openai/v1"
+        assert os.environ["OPENAI_API_KEY"] == os.environ["CODEX_API_KEY"] == "grt1.run-token"
+        assert "AUTOPILOT_OPENCODE_PROVIDER" not in os.environ
+    assert os.environ["OPENAI_API_KEY"] == "the-users-own" and "OPENAI_BASE_URL" not in os.environ
+
+
+def test_going_on_free_switches_the_describer_to_the_free_parts_vision_and_key(through_aura, monkeypatch):
+    monkeypatch.setattr(aura, "bun_ready", lambda: True)
+    free = Answer(200, {"token": "grt1.free-token", "agent": {
+        "name": "opencode", "provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "required": True},
+        "vision": {"provider": "google", "model": "gemini-3.1-flash-lite"}})
+    start = vision_aura(None, {"provider": "anthropic", "model": "claude-sonnet-5-5"}).start
+    run = aura.Run("aura-session", "goal", http=GoingOnAura(free, start)).start()
+    with run:
+        assert run.vision == {"provider": "anthropic", "model": "claude-sonnet-5-5"}
+        os.environ["GOOGLE_BASE_URL"] = "http://127.0.0.1:9/google"  # (a proxy the run's telemetry may have set)
+        assert run.go_on_free() is True
+        assert run.vision == {"provider": "google", "model": "gemini-3.1-flash-lite"}
+        assert os.environ["GEMINI_API_KEY"] == os.environ["GOOGLE_API_KEY"] == "grt1.free-token"
+        assert os.environ["GOOGLE_BASE_URL"] == GOOGLE_RELAY  # (the run hadn't set Google's root: now it does)
+    # A free part Aura names no vision for is described by Opus again
+    free = Answer(200, {"token": "grt1.free-token", "agent": {
+        "name": "opencode", "provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "required": True}})
+    run = aura.Run("aura-session", "goal", http=GoingOnAura(free, start)).start()
+    with run:
+        assert run.go_on_free() is True and run.vision is None
+        assert cli.describer_model(run, "openrouter") == ("anthropic", None)
+
+
+def test_the_describer_follows_the_vision_aura_names_before_and_after_the_run_goes_on(through_aura, monkeypatch,
+                                                                                    tmp_path):
+    free = Answer(200, {"token": "grt1.free-token", "agent": {
+        "name": "opencode", "provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "required": True},
+        "vision": {"provider": "google", "model": "gemini-3.1-flash-lite"}})
+    start = vision_aura(None, {"provider": "anthropic", "model": "claude-sonnet-5-5"}).start
+    seen, _ = run_going_on(monkeypatch, tmp_path, GoingOnAura(free, start), CUT_OFF)
+    assert [s["describer"] for s in seen] == ["anthropic", "google"]
+    first, then = seen[0]["seen_by"], seen[1]["seen_by"]
+    assert first["model"] == "claude-sonnet-5-5" and first["named"] and first["key"] == "grt1.run-token"
+    assert first["root"].startswith("http://127.0.0.1:")  # (through the run's proxy: counted there)
+    assert then["model"] == "gemini-3.1-flash-lite" and then["named"] and then["key"] == "grt1.free-token"
+    assert then["root"].startswith("http://127.0.0.1:") and then["root"].endswith("/google")
+    # An older Aura names none: Opus 5.5 on both parts, as before
+    seen, _ = run_going_on(monkeypatch, tmp_path, GoingOnAura(), CUT_OFF)
+    assert [(s["describer"], s["seen_by"]["model"], s["seen_by"]["named"]) for s in seen] == [
+        ("anthropic", vision.MODEL, False)] * 2
