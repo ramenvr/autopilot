@@ -184,9 +184,14 @@ restarts; entries from before bills load as before). Then **Share runs to improv
 or *Data sharing off* beside it (*Enabling this sends
 recordings, screenshots, and agent traces and memories to the developers of Autopilot. For runs from your own Claude
 Code or Codex, the agent traces are its conversation during the run.*, as in the setup; a change applies from the next
-connection). Then **Autopilot in Claude Code & Codex**: how to run Autopilot through your own Claude Code or Codex, on
+connection). Then **Research agent**, where the research agent (a model that reads the game's code while harnesses
+play) is turned on or off with the same switch, *Research agent on* or *Research agent off* beside it (*Enabling the
+research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.*). Until
+you flip it, it shows what runs do by default: until you choose, runs through the Aura app (Use with Aura) go without
+it; runs on this plugin's own agent service have it, signed in to Aura or on your own keys. Once flipped, your choice
+is saved and wins either way; a change applies from the next connection). Then **Autopilot in Claude Code & Codex**: how to run Autopilot through your own Claude Code or Codex, on
 your Claude or ChatGPT subscription: the commands that set each up, run once in a terminal (`autopilot connect claude`,
-`autopilot connect codex`, each with **Copy**). Each of these three cards is its title, a line on what it is for, then its control. Last,
+`autopilot connect codex`, each with **Copy**). Each of these four cards is its title, a line on what it is for, then its control. Last,
 **Uninstall Autopilot** (its **Uninstall** button), which removes Autopilot from this computer (see [Removing
 Autopilot](#removing-autopilot)).
 
@@ -252,8 +257,11 @@ optionally, a first exploration run (10 minutes unless changed), which is safe t
 **Finish** (or **Next**) writes `Autopilot/preferences.json` in your user settings folder (`%LOCALAPPDATA%` on Windows,
 `~/Library/Application Support` on macOS, `$XDG_CONFIG_HOME` or `~/.config` elsewhere; the folder `brain.json` is in):
 `{"version": 1, "onboarded": true, "share_data": true|false, "access": "aura"|"own_keys"}` (merged with what is
-there), shared by the Unreal, Unity and Godot plugins, then connects. Every connection's hello says `share` from it; a
-change applies from the next connection (the window connects again by itself when no run is going). Until the setup is
+there), shared by the Unreal, Unity and Godot plugins, then connects. `"research_agent": true|false` is absent until
+you choose on the Settings page's Research agent switch (merged the same way; a value that isn't a boolean counts as
+not chosen); until you choose, runs through the Aura app (Use with Aura) go without it; runs on this plugin's own
+agent service have it, signed in to Aura or on your own keys. Every connection's hello
+says `share` from it, and `research` only once you have chosen (left out, the agent service decides); a change applies from the next connection (the window connects again by itself when no run is going). Until the setup is
 done the editor doesn't connect by itself; from then on it always does (see [Connecting](#connecting)).
 
 Set up, but the agent service is gone from this computer (`uv tool uninstall autopilot` by hand, say): the first time
@@ -446,6 +454,7 @@ A batch-mode editor started with `-Playtest=...` does the same even without `-ex
 | `-PlaytestConnectTimeout=seconds` | how long to wait for the brain's welcome (default `120`; `0` waits for ever). With none in that time the game writes `result.json` (`{"error": "Couldn’t connect to the playtest service at <url> within <n> s (<why>)", "exit_code": 1}`) to the report folder and exits 1, instead of retrying for ever. In the editor the time counts from entering play mode, across the script reload |
 | `-PlaytestProject=path`, `-PlaytestUnity=path` | player only: the project folder and the Unity editor used to build the project index (default: the ones recorded at build time) |
 | `-PlaytestShare=0\|1` | whether this run's data is sent to the developers of Autopilot; without it, `share_data` in `Autopilot/preferences.json` (on when the file doesn't say). A headless game never shows the first-run setup |
+| `-PlaytestResearch=0\|1` | whether this run uses the research agent (sent as the hello's `research`, a choice); without it, `research_agent` in `Autopilot/preferences.json`, and when that is absent the hello leaves `research` out: off through the Aura app (Use with Aura), on with this plugin's own agent service |
 | `-PlaytestSteps=`, `-PlaytestAttempts=` | passed on to the brain for brains that use them; Autopilot ignores them |
 
 Exit codes:
@@ -517,7 +526,7 @@ unless it sets its own frame rate.
 | `Runtime/Detectors.cs` | bug detectors: log errors, NaN, falling out of the world, long falls, hitches, HUD counters |
 | `Runtime/Media.cs` | `record` (the `frame` messages) and `capture`: the game's view read back without waiting, encoded off the main thread |
 | `Runtime/Account.cs` | the agent service's `account` frame (with its period `bill`, `out_of_credits` and BYOK `coding_agent` and `llm_provider`), the Coding Agents (`CodingAgents`) and LLM providers (`LlmProviders`), the Aura sign-in's states (`aura_sign_in` frames), and bills as shown (`Billing`: money, the period's dates) |
-| `Runtime/Preferences.cs` | `Autopilot/preferences.json` (sharing, the first-run setup's choices) and `Autopilot/autopilot.env` (own model keys, the Coding Agent and the LLM provider) |
+| `Runtime/Preferences.cs` | `Autopilot/preferences.json` (sharing, the research agent, the first-run setup's choices) and `Autopilot/autopilot.env` (own model keys, the Coding Agent and the LLM provider) |
 | `Runtime/Codex.cs` | serving the project's files and the export (`codex_manifest`, `codex_read`) |
 | `Runtime/Frame.cs` | conversion to the kit frame (centimetres, Z up) |
 | `Runtime/Json.cs` | a small JSON reader and writer |

@@ -574,16 +574,29 @@ func write(path: String, text: String) -> void:
 	f.close()
 
 
+## A research agent choice as a word: "on", "off", or "none" (not chosen: null).
+func _choice(v) -> String:
+	if typeof(v) != TYPE_BOOL:
+		return "none" if typeof(v) == TYPE_NIL else "not a choice: %s" % str(v)
+	return "on" if v else "off"
+
+
 func prefs_tests(dir: String) -> void:
 	var path := Prefs.file(Prefs.PREFERENCES)
 	check("settings folder is Autopilot/ in the user settings folder (redirected here)",
 		path.replace("\\", "/").begins_with(dir.replace("\\", "/")) and path.ends_with("Autopilot/preferences.json"), path)
 	check("no preferences.json: not onboarded, sharing on", not Prefs.onboarded(Prefs.load_preferences()) and Prefs.share_data(Prefs.load_preferences()))
 	check("no preferences.json: share for a run is on", Prefs.share_for_run(""))
+	check("no preferences.json: the research agent not chosen, for a run neither", _choice(Prefs.research_agent(Prefs.load_preferences())) == "none"
+		and _choice(Prefs.research_for_run("")) == "none")
 	write(path, "{not json")
-	check("corrupt preferences.json: the defaults", Prefs.load_preferences() == {} and Prefs.share_data(Prefs.load_preferences()))
-	write(path, JSON.stringify({"version": 1, "share_data": "no", "other_engine": {"x": 1}}))
+	check("corrupt preferences.json: the defaults", Prefs.load_preferences() == {} and Prefs.share_data(Prefs.load_preferences())
+		and _choice(Prefs.research_agent(Prefs.load_preferences())) == "none")
+	write(path, JSON.stringify({"version": 1, "share_data": "no", "research_agent": "off", "other_engine": {"x": 1}}))
 	check("share_data not a boolean: sharing on", Prefs.share_data(Prefs.load_preferences()))
+	check("research_agent not a boolean: not chosen", _choice(Prefs.research_agent(Prefs.load_preferences())) == "none"
+		and _choice(Prefs.research_agent({"research_agent": 0})) == "none" and _choice(Prefs.research_agent({"research_agent": 1.0})) == "none"
+		and _choice(Prefs.research_for_run("")) == "none")
 	check("save_preferences: OK", Prefs.save_preferences({"onboarded": true, "share_data": false, "access": "own_keys"}) == OK)
 	var p := Prefs.load_preferences()
 	check("save_preferences merges (other keys kept, version 1)", typeof(p.get("other_engine")) == TYPE_DICTIONARY and p.other_engine.get("x") == 1 and p.version == 1
@@ -593,6 +606,27 @@ func prefs_tests(dir: String) -> void:
 	check("-PlaytestShare=1 overrides the file", Prefs.share_for_run("1"))
 	Prefs.save_preferences({"share_data": true})
 	check("-PlaytestShare=0 overrides the file", not Prefs.share_for_run("0") and Prefs.share_for_run(""))
+	check("save_preferences: research_agent off, OK", Prefs.save_preferences({"research_agent": false}) == OK)
+	p = Prefs.load_preferences()
+	check("research_agent saved and read back, merged (other keys kept)", p.get("research_agent") == false
+		and _choice(Prefs.research_agent(p)) == "off" and p.share_data == true and p.access == "own_keys" and p.onboarded == true
+		and typeof(p.get("other_engine")) == TYPE_DICTIONARY and p.version == 1, p)
+	check("research_agent false: a run's choice is off", _choice(Prefs.research_for_run("")) == "off")
+	check("-PlaytestResearch=1 overrides the file", _choice(Prefs.research_for_run("1")) == "on" and _choice(Prefs.research_for_run("on")) == "on")
+	Prefs.save_preferences({"research_agent": true})
+	check("-PlaytestResearch=0 overrides the file", _choice(Prefs.research_for_run("0")) == "off"
+		and _choice(Prefs.research_for_run("false")) == "off" and _choice(Prefs.research_for_run("")) == "on")
+	check("research_agent true: chosen on, sharing as it was", _choice(Prefs.research_agent(Prefs.load_preferences())) == "on"
+		and Prefs.share_data(Prefs.load_preferences()))
+	Prefs.save_preferences({"research_agent": null})
+	check("not chosen: the command line still chooses", _choice(Prefs.research_for_run("")) == "none"
+		and _choice(Prefs.research_for_run("0")) == "off" and _choice(Prefs.research_for_run("1")) == "on"
+		and _choice(Prefs.research_for_run("maybe")) == "none")
+	# what the Settings page's switch shows: the choice, else off through the Aura app (Use with Aura), on otherwise
+	check("research switch shows: not chosen, Use with Aura on: off", not SettingsPage.research_shown(null, true))
+	check("research switch shows: not chosen, Use with Aura off: on", SettingsPage.research_shown(null, false))
+	check("research switch shows: the choice beats Use with Aura", SettingsPage.research_shown(true, true)
+		and not SettingsPage.research_shown(false, false))
 	check("merged: null removes a key", not Prefs.merged({"access": "aura", "a": 1}, {"access": null}).has("access"))
 
 

@@ -1132,7 +1132,8 @@ def main(argv=None):
     # An Autopilot the Aura app starts (AUTOPILOT_AURA_URL set for it) says where it listens under Aura's own name,
     # which only plugins set to Use with Aura read; one started with --aura is the user's own Autopilot, found as any
     # other
-    announce_as = aura.BRAIN_FILE if aura.enabled() and not getattr(args, "aura", False) else bridge.BRAIN_FILE
+    aura.mark_app(aura.enabled() and not getattr(args, "aura", False))
+    announce_as = aura.BRAIN_FILE if aura.from_app() else bridge.BRAIN_FILE
     # --aura: runs go through Aura whatever the first-run setup says (Aura's own server unless AUTOPILOT_AURA_URL names
     # another); else the setup's choice decides, before every run (autopilot/account.py)
     if getattr(args, "aura", False):

@@ -556,6 +556,13 @@ void UPlaytestSubsystem::SendHello()
 	// Whether the user shares runs' data (preferences.json, or -PlaytestShare): read at every hello, so a change on the
 	// Settings page holds from the next connection
 	Hello->SetBoolField(TEXT("share"), PlaytestPreferences::ShareData());
+	// Whether runs have the research agent, once the user chose (the Settings page's switch; -PlaytestResearch): until
+	// then the agent service decides (off in the Aura app's, Use with Aura; on in the user's own, signed in to Aura or not)
+	const TOptional<bool> Research = PlaytestPreferences::ResearchAgent();
+	if (Research.IsSet())
+	{
+		Hello->SetBoolField(TEXT("research"), Research.GetValue());
+	}
 	Hello->SetStringField(TEXT("engine_version"), FEngineVersion::Current().ToString(EVersionComponent::Patch));
 	Hello->SetStringField(TEXT("project"), FApp::GetProjectName());
 	// The project's own GUID (DefaultGame.ini, made with the project and committed with it): a stable id a brain can

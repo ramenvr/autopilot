@@ -234,8 +234,8 @@ Rules:
   answer is also written whole to the file the job names). For many files at once ("which of these deal damage, and
   how much?"); what the answers point to is still checked in the game.
 
-Background reading: while you work, and above all while a harness plays, a reader goes through the game's code for
-you: it checks the harness that plays against the code, and explains from the code what each episode showed. Its
+Background reading (when the run has it): while you work, and above all while a harness plays, a reader
+goes through the game's code for you: it checks the harness that plays against the code, and explains from the code what each episode showed. Its
 findings come with your tool results (all of them in {run}/findings.md). Use what bears on the next harness: what was
 found while harness N played belongs in harness N+1.
 
@@ -1810,8 +1810,8 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
 def start_reading(session, describer=None):
     """The brain's own reading for the run: llm and llm_map in probes (an llm.Reader on the describer's provider, its
     calls counted in the run's usage) and the background researcher (agents/researcher.py), told of each batch the
-    export brings (codex.Indexer). Neither when no model can be reached; the researcher not when
-    AUTOPILOT_RESEARCHER=0."""
+    export brings (codex.Indexer). Neither when no model can be reached; the researcher only when the run has it
+    (researcher.enabled: the user's choice on the plugin's Settings page, else off in the Aura app's Autopilot)."""
     from .. import llm
     from . import researcher
 
@@ -1826,7 +1826,10 @@ def start_reading(session, describer=None):
     session.reader = llm.Reader(reading, session.root, os.path.join(session.run_dir, "results"), note=session.note)
     if session.sandbox is not None:
         session.sandbox.reader = session.reader
-    if researcher.enabled():
+    hello = getattr(getattr(session.game, "link", None), "hello", None)
+    if not researcher.enabled(hello):
+        session.note("researcher: off (the user's choice, or the Aura app's Autopilot with none)")
+    else:
         session.researcher = researcher.Researcher(session, reading)
         if idx is not None:
             idx.listeners.append(session.researcher.arrived)

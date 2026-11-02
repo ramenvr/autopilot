@@ -286,6 +286,26 @@ def test_the_researcher_only_wakes_for_files_that_bear_on_the_request(tmp_path, 
     r.stop()
 
 
+def test_the_researcher_is_the_users_choice_else_off_in_the_aura_apps_autopilot(monkeypatch):
+    from autopilot import aura
+
+    monkeypatch.delenv("AUTOPILOT_RESEARCHER", raising=False)
+    monkeypatch.setattr(aura, "_app", False)
+    # Nothing chosen (an older plugin, or the switch never flipped), the user's own Autopilot: on, also when its runs go
+    # through Aura (signed in to Aura in the plugin)
+    monkeypatch.setenv("AUTOPILOT_AURA_URL", "https://aura.example")
+    assert researchermod.enabled(None) and researchermod.enabled({"share": True})
+    # The Aura app's Autopilot (what plugins set to Use with Aura reach): off
+    aura.mark_app(True)
+    assert not researchermod.enabled({"share": True})
+    # The Settings page's switch, said in the hello, wins either way
+    assert researchermod.enabled({"research": True})
+    aura.mark_app(False)
+    assert not researchermod.enabled({"research": False})
+    monkeypatch.setenv("AUTOPILOT_RESEARCHER", "0")
+    assert not researchermod.enabled({"research": True})
+
+
 def test_the_level_snapshot_is_taken_aside_and_arrives_as_a_batch(tmp_path, monkeypatch):
     idx = make_indexer(tmp_path, ExportingPlugin({}, []), monkeypatch)
     idx.start()

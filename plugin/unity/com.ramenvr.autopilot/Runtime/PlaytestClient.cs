@@ -641,6 +641,10 @@ namespace Autopilot.Playtest
                 // whether the user shares runs' data (preferences.json's share_data; -PlaytestShare overrides it)
                 ["share"] = Preferences.Share(),
             };
+            // whether runs use the research agent, only once chosen (preferences.json's research_agent; -PlaytestResearch
+            // overrides it): left out, the agent service decides (off for the Aura app's, on otherwise)
+            var research = Preferences.Research();
+            if (research.HasValue) hello["research"] = research.Value;
             var id = Host.ProjectId;
             if (!string.IsNullOrEmpty(id)) hello["project_id"] = id;
             if (Host.WantsInspection) hello["inspect"] = true;

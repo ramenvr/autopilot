@@ -1,8 +1,8 @@
 ## The dock's new pages built and driven without an editor or a game (headless, run by units.py): the first-run setup
 ## (its stepper; BYOK keys to autopilot.env; the agent service started, installed or missing, with a stand-in launcher that
 ## runs nothing; the Aura sign-in driven by aura_sign_in frames; the Aura app; Finish to preferences.json), usage and bill frames
-## kept on the run going on, the Settings page with its Account corner (account frames, the Aura bill, out of Aura credits) and Data sharing
-## box, the footer, and the settings. The link to the agent service is a stand-in that keeps what is sent (no socket). The editor bridge is the
+## kept on the run going on, the Settings page with its Account corner (account frames, the Aura bill, out of Aura credits), Data sharing
+## box and Research agent switch, the footer, and the settings. The link to the agent service is a stand-in that keeps what is sent (no socket). The editor bridge is the
 ## real one, over a stand-in debugger; the user settings folder is
 ## UNITS_DIR (a temporary folder).
 extends SceneTree
@@ -215,6 +215,26 @@ func _button_in(node: Node, text: String) -> Button:
 		if shown:
 			return c
 	return null
+
+
+## The Settings page's Research agent switch (its tooltip the plate's title), or null.
+func _research_switch() -> CheckBox:
+	for c in dock._settings_page.find_children("*", "CheckBox", true, false):
+		if c.tooltip_text == SettingsPage.RESEARCH_TITLE:
+			return c
+	return null
+
+
+## The editor's hello as it would be sent now (the stand-in link made connected for it, then as it was; the hello not
+## kept among what was sent).
+func _editor_hello() -> Dictionary:
+	var was_connected: bool = bridge.link.connected
+	bridge.link.connected = true
+	bridge._send_hello()
+	var hellos: Array = bridge.link.sent.filter(func(f): return f.get("type") == "hello")
+	bridge.link.sent = bridge.link.sent.filter(func(f): return f.get("type") != "hello")
+	bridge.link.connected = was_connected
+	return hellos[-1] if not hellos.is_empty() else {}
 
 
 ## The Settings page's Delete Autopilot's memories box (the removal asking), or null.
@@ -990,6 +1010,70 @@ Cancel" in t
 	box.button_pressed = true
 	check("sharing box: toggled on, it says Data sharing on", box.text == "Data sharing on", box.text)
 	check("sharing box writes share_data", Prefs.load_preferences().get("share_data") == true and Prefs.load_preferences().get("access") == "own_keys")
+	# the Research agent switch: preferences.json research_agent, written only when flipped; not chosen, it shows what the
+	# agent service then does: off through the Aura app's (Use with Aura), on with this plugin's own (signed in to Aura or
+	# on the user's own keys alike)
+	var account_was: Dictionary = bridge.account
+	var with_aura_was: bool = dock._with_aura()
+	dock._set_meta("use_with_aura", false)  # (the setting itself: no reconnecting here)
+	bridge.account = {}
+	dock._render_usage()
+	t = _texts(dock._settings_page)
+	var research := _research_switch()
+	check("Research agent plate: its title in mono caps, its words", "RESEARCH AGENT" in t
+		and SettingsPage.RESEARCH == "Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost."
+		and SettingsPage.RESEARCH in t, t)
+	check("Research agent plate: title, subtitle, then the control",
+		_setting_plate(dock._settings_page, "Research agent", SettingsPage.RESEARCH, "CheckBox"))
+	check("research switch: nothing chosen, Use with Aura off (BYOK): on; it says Research agent on, 8 px to its right, its tooltip the plate's title",
+		research != null and research.button_pressed and research.text == "Research agent on"
+		and research.theme_type_variation == "AutopilotSwitch" and research.get_theme_constant("h_separation") == HT.px(8)
+		and research.tooltip_text == "Research agent", [research.text, research.tooltip_text] if research else null)
+	Prefs.save_preferences({"access": "aura"})
+	bridge.account = {"type": "account", "mode": "aura", "email": "dev@example.org", "signed_in": true}
+	dock._render_usage()
+	check("research switch: nothing chosen, Use with Aura off, signed in to Aura (an Aura account frame, access aura): on",
+		_research_switch().button_pressed and _research_switch().text == "Research agent on", _research_switch().text)
+	bridge.account = {}
+	dock._render_usage()
+	check("research switch: nothing chosen, Use with Aura off, access aura and no account frame: on",
+		_research_switch().button_pressed and _research_switch().text == "Research agent on", _research_switch().text)
+	dock._set_meta("use_with_aura", true)
+	dock._render_usage()
+	check("research switch: nothing chosen, Use with Aura on (the Aura app's agent service): off",
+		not _research_switch().button_pressed and _research_switch().text == "Research agent off", _research_switch().text)
+	check("research switch: shown, not chosen (no research_agent in preferences.json)", not Prefs.load_preferences().has("research_agent"),
+		Prefs.load_preferences())
+	var hello := _editor_hello()
+	check("the editor's hello: no research while not chosen, share there", not hello.has("research") and hello.get("share") == true, hello)
+	_research_switch().button_pressed = true
+	var rp := Prefs.load_preferences()
+	check("research switch: flipped on with Use with Aura on, research_agent true saved, merged (sharing and access kept)",
+		typeof(rp.get("research_agent")) == TYPE_BOOL and rp.research_agent == true and rp.get("share_data") == true
+		and rp.get("access") == "aura", rp)
+	check("research switch: the choice beats Use with Aura: on", _research_switch().button_pressed
+		and _research_switch().text == "Research agent on", _research_switch().text)
+	hello = _editor_hello()
+	check("the editor's hello: research true once chosen, next to share", hello.get("research") == true and hello.get("share") == true, hello)
+	dock._set_meta("use_with_aura", false)
+	dock._render_usage()
+	research = _research_switch()
+	research.button_pressed = false
+	check("research switch: flipped off, it says Research agent off", research.text == "Research agent off", research.text)
+	rp = Prefs.load_preferences()
+	check("research switch: research_agent false saved", typeof(rp.get("research_agent")) == TYPE_BOOL and rp.research_agent == false, rp)
+	check("research switch: the choice beats this plugin's own agent service: off", not _research_switch().button_pressed
+		and _research_switch().text == "Research agent off", _research_switch().text)
+	hello = _editor_hello()
+	check("the editor's hello: research false once chosen", hello.get("research") == false and hello.has("research"), hello)
+	Prefs.save_preferences({"research_agent": "no"})
+	dock._render_usage()
+	check("research switch: research_agent not a boolean is not chosen: on with Use with Aura off", _research_switch().button_pressed)
+	check("the editor's hello: research_agent not a boolean, no research", not _editor_hello().has("research"))
+	Prefs.save_preferences({"research_agent": null, "access": "own_keys"})
+	dock._set_meta("use_with_aura", with_aura_was)
+	bridge.account = account_was
+	dock._render_usage()
 	check("Settings page: no Time limit (the composer's is every run's)", not "TIME LIMIT" in t
 		and not "Set the default time limit for runs." in t and not "\nmin\n" in t
 		and dock._settings_page.find_children("*", "SpinBox", true, false).is_empty(), t)
@@ -1360,7 +1444,8 @@ func removal_checks() -> void:
 	var t := _texts(dock._settings_page)
 	check("Settings: Remove Autopilot, last, no paragraph", "UNINSTALL AUTOPILOT" in t and not SettingsPage.REMOVE_TEXT in t
 		and not "training data" in t.to_lower() and "Uninstall" in t
-		and t.rfind("UNINSTALL AUTOPILOT") > t.rfind(SettingsPage.SHARING), t)
+		and t.rfind("UNINSTALL AUTOPILOT") > t.rfind(SettingsPage.SHARING)
+		and t.rfind("UNINSTALL AUTOPILOT") > t.rfind(SettingsPage.RESEARCH), t)
 	dock._settings_page.show_data([], true, "", {"kind": "none", "busy": true})
 	var b: Button = null
 	for c in dock._settings_page.find_children("*", "Button", true, false):
@@ -1919,7 +2004,7 @@ func assistants_checks() -> void:
 	check("the setup done: the run shown", dock._run_page.visible and dock.active != null and dock.shown == dock.active)
 	_end_run("Verify that the gate opens")
 
-	# the Settings page: Autopilot in Claude Code & Codex, after Data sharing, before Uninstall
+	# the Settings page: Autopilot in Claude Code & Codex, after Data sharing and Research agent, before Uninstall
 	_plain_view()
 	dock.settings_open = true
 	dock._render()
@@ -1932,9 +2017,18 @@ func assistants_checks() -> void:
 	check("Settings: Autopilot in Claude Code & Codex, its words", "AUTOPILOT IN CLAUDE CODE & CODEX" in t and intro in t
 		and "autopilot connect claude" in t and "autopilot connect codex" in t, t)
 	check("Settings: nothing under the commands", not "Then ask it" in t and not "Runs still use" in t, t)
-	check("Settings: after Data sharing, before Uninstall", t.find(CONSENT) >= 0
-		and t.find(CONSENT) < t.find("AUTOPILOT IN CLAUDE CODE & CODEX")
+	check("Settings: Data sharing, Research agent, then Claude Code & Codex, before Uninstall", t.find(CONSENT) >= 0
+		and t.find(CONSENT) < t.find("RESEARCH AGENT")
+		and t.find("RESEARCH AGENT") < t.find("AUTOPILOT IN CLAUDE CODE & CODEX")
 		and t.find("AUTOPILOT IN CLAUDE CODE & CODEX") < t.find("UNINSTALL AUTOPILOT"), t)
+	var titles := []
+	for p in dock._settings_page._v.get_children():
+		var caps: Array = p.find_children("*", "Label", true, false).filter(func(l): return l.theme_type_variation == "AutopilotCaps")
+		titles.append(caps[0].text if not caps.is_empty() else "")
+	var at_sharing := titles.find("SHARE RUNS TO IMPROVE AUTOPILOT")
+	check("Settings: the plates in order, Research agent right after Data sharing", at_sharing >= 0
+		and titles.slice(at_sharing) == ["SHARE RUNS TO IMPROVE AUTOPILOT", "RESEARCH AGENT", "AUTOPILOT IN CLAUDE CODE & CODEX",
+			"UNINSTALL AUTOPILOT"], titles)
 	check("Settings: no other words about it (no MCP, no Jev)", not "MCP" in t and not "Jev" in t)
 	var copies := []
 	for b in dock._settings_page.find_children("*", "Button", true, false):

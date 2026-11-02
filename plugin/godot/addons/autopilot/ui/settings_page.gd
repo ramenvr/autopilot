@@ -3,14 +3,16 @@
 ## what Autopilot billed the account this period and Aura's words when the team is out of credits; the agent service's
 ## line; Add credits, Rerun setup, Sign out, Sign in again), the
 ## project's runs ("This project · N runs", what Aura billed for them, and each run: its time, prompt and bill), the
-## Data sharing choice (preferences.json share_data), Claude Code and Codex (running Autopilot from the user's own
-## coding agent: the commands that set it up, to copy) and, last, Remove Autopilot (from this computer, confirmed in
-## place). The data comes from the dock (show_data()); the numbers from ui/usage.gd.
+## Data sharing choice (preferences.json share_data), the Research agent choice (preferences.json research_agent),
+## Claude Code and Codex (running Autopilot from the user's own coding agent: the commands that set it up, to copy) and,
+## last, Remove Autopilot (from this computer, confirmed in place). The data comes from the dock (show_data()); the
+## numbers from ui/usage.gd.
 @tool
 extends VBoxContainer
 
 signal back
 signal share_toggled(on: bool)
+signal research_toggled(on: bool)
 ## The Account plate's buttons: "setup" (Rerun setup: the first-run setup from its first step), "sign_out" (confirmed),
 ## "sign_in", "cancel_sign_in", and on the agent service's line "install", "open_log"
 signal account_action(action: String)
@@ -35,7 +37,13 @@ const ASSISTANTS_COMMANDS := ["autopilot connect claude", "autopilot connect cod
 const SHARING_TITLE := "Share runs to improve Autopilot"
 const SHARING_ON := "Data sharing on"  # (the switch's words, as it stands)
 const SHARING_OFF := "Data sharing off"
-## The setting plates' spacing (Sharing, Claude Code & Codex): title to subtitle, subtitle to its control,
+## The Research agent plate: the agent service's research agent during runs (preferences.json research_agent)
+const RESEARCH_TITLE := "Research agent"
+const RESEARCH := ("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, "
+	+ "but at a higher cost.")
+const RESEARCH_ON := "Research agent on"  # (the switch's words, as it stands)
+const RESEARCH_OFF := "Research agent off"
+## The setting plates' spacing (Sharing, Research agent, Claude Code & Codex): title to subtitle, subtitle to its control,
 ## between the command rows
 const TITLE_GAP := 6.0
 const CONTROL_GAP := 10.0
@@ -115,9 +123,9 @@ func _plate(row := false, sep := 10.0, border := HT.RULE, margins := Vector4(14,
 ## The page's plates, built again. entries: the runs with usage or a bill ({"id", "started_unix", "kind", "prompt",
 ## "verdict", "usage", "bill"}, oldest first, listed newest first); share:
 ## preferences.json's share_data; note: a line under the sharing choice ("" for none); account: the Account plate
-## (account_view()).
-func show_data(entries: Array, share: bool, note := "", account := {}) -> void:
-	_last = [entries, share, note, account]
+## (account_view()); research: what the Research agent switch shows (research_shown()).
+func show_data(entries: Array, share: bool, note := "", account := {}, research := true) -> void:
+	_last = [entries, share, note, account, research]
 	_busy = account.get("busy", false) == true
 	for c in _scroll.get_children():
 		_scroll.remove_child(c)
@@ -131,6 +139,7 @@ func show_data(entries: Array, share: bool, note := "", account := {}) -> void:
 		_v.add_child(_account_card(account))
 	_v.add_child(_runs_list(entries))
 	_v.add_child(_sharing_card(share, note))
+	_v.add_child(_research_card(research))
 	_v.add_child(_assistants_card())
 	_v.add_child(_remove_card())
 
@@ -151,22 +160,37 @@ func _setting_card(title: String, subtitle: String, control: Control) -> PanelCo
 func _sharing_card(share: bool, note: String) -> PanelContainer:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", HT.px(ROW_GAP))
-	var share_box := CheckBox.new()
-	share_box.theme_type_variation = "AutopilotSwitch"
-	share_box.tooltip_text = SHARING_TITLE
-	share_box.add_theme_constant_override("h_separation", HT.px(8))
-	share_box.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
-	share_box.button_pressed = share
-	share_box.text = SHARING_ON if share else SHARING_OFF
-	share_box.toggled.connect(func(on: bool) -> void:
-		share_box.text = SHARING_ON if on else SHARING_OFF
-		share_toggled.emit(on))
-	box.add_child(share_box)
+	box.add_child(_switch(share, SHARING_TITLE, SHARING_ON, SHARING_OFF, share_toggled))
 	if note != "":
 		var n := _label(note, "AutopilotMonoDim")
 		n.add_theme_color_override("font_color", HT.RED)
 		box.add_child(n)
 	return _setting_card(SHARING_TITLE, SHARING, box)
+
+
+## Research agent: the switch (research_shown(): preferences.json research_agent once chosen) with "Research agent
+## on/off" to its right, as the sharing switch is; flipping it saves the choice.
+func _research_card(research: bool) -> PanelContainer:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", HT.px(ROW_GAP))
+	box.add_child(_switch(research, RESEARCH_TITLE, RESEARCH_ON, RESEARCH_OFF, research_toggled))
+	return _setting_card(RESEARCH_TITLE, RESEARCH, box)
+
+
+## A setting's switch: its words to its right, 8 px away (on_words or off_words as it stands: pressing them flips it
+## too), its tooltip the plate's title; flipping it emits the signal given (share_toggled, research_toggled).
+func _switch(on: bool, title: String, on_words: String, off_words: String, emits: Signal) -> CheckBox:
+	var b := CheckBox.new()
+	b.theme_type_variation = "AutopilotSwitch"
+	b.tooltip_text = title
+	b.add_theme_constant_override("h_separation", HT.px(8))
+	b.size_flags_horizontal = Control.SIZE_SHRINK_BEGIN
+	b.button_pressed = on
+	b.text = on_words if on else off_words
+	b.toggled.connect(func(now: bool) -> void:
+		b.text = on_words if now else off_words
+		emits.emit(now))
+	return b
 
 
 ## Autopilot in Claude Code & Codex: running Autopilot from the user's own coding agent, set up once with a command
@@ -376,6 +400,15 @@ static func account_view(frame: Dictionary, access, with_aura: bool, service_lin
 	elif access == "own_keys":
 		view.kind = "own_keys"
 	return view
+
+
+## What the Research agent switch shows: choice (preferences.json research_agent: a boolean once the user flipped it,
+## null before) when made; otherwise what the agent service does then: off through the Aura app's agent service (with_aura:
+## Use with Aura), on with this plugin's own (signed in to Aura or on the user's own keys alike).
+static func research_shown(choice, with_aura: bool) -> bool:
+	if typeof(choice) == TYPE_BOOL:
+		return choice
+	return not with_aura
 
 
 ## The Account plate's tag for the kind: [text, tag kind].
@@ -615,5 +648,5 @@ func _dim(text: String) -> Label:
 
 
 func _rebuild() -> void:
-	if _last.size() == 4:
-		show_data(_last[0], _last[1], _last[2], _last[3])
+	if _last.size() == 5:
+		show_data(_last[0], _last[1], _last[2], _last[3], _last[4])

@@ -66,11 +66,11 @@ def main():
     a = ap.parse_args()
     c = Checks()
     brain = Brain(a.port)
-    # a user settings folder of its own (Autopilot/preferences.json: sharing off), never the user's
+    # a user settings folder of its own (Autopilot/preferences.json: sharing and the research agent off), never the user's
     settings = tempfile.mkdtemp(prefix="godot_editor_settings_")
     os.makedirs(os.path.join(settings, "Autopilot"))
     with open(os.path.join(settings, "Autopilot", "preferences.json"), "w", encoding="utf-8") as f:
-        json.dump({"version": 1, "onboarded": False, "share_data": False}, f)
+        json.dump({"version": 1, "onboarded": False, "share_data": False, "research_agent": False}, f)
     editor = start_godot(["--editor", "--path", project()], log=a.log,
                          env={"AUTOPILOT_PLAYTEST_URL": brain.url, "AUTOPILOT_PLAYTEST_AUTOCONNECT": "1", "AUTOPILOT_PLAYTEST_TOKEN": "editor-token",
                               "LOCALAPPDATA": settings, "XDG_CONFIG_HOME": settings})
@@ -100,9 +100,9 @@ def run(c, brain, link, guard):
     c.check("editor hello", h.get("engine") == "godot" and h.get("host") == "editor" and len(h.get("project_id", "").replace("-", "")) == 32, str(h))
     auth = brain.headers[-1].get("Authorization") or brain.headers[-1].get("authorization")
     c.check("editor sends the Bearer token", auth == "Bearer editor-token", auth)
-    c.check("editor hello: media, levels, and share from preferences.json (connected though not onboarded: headless)",
-            {"media", "levels"} <= set(h.get("features", [])) and h.get("share") is False,
-            str({k: h.get(k) for k in ("features", "share")}))
+    c.check("editor hello: media, levels, share and research from preferences.json (connected though not onboarded: headless)",
+            {"media", "levels"} <= set(h.get("features", [])) and h.get("share") is False and h.get("research") is False,
+            str({k: h.get(k) for k in ("features", "share", "research")}))
     lv = req("levels")
     c.check("levels: the project's scenes, the main scene open, none playing",
             {"res://scenes/menu.tscn", "res://scenes/level.tscn", "res://scenes/level2d.tscn"} <= set(lv["levels"])

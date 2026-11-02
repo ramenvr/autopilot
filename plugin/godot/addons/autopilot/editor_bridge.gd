@@ -144,6 +144,7 @@ func _send_hello() -> void:
 	var version := "1.0.0"
 	if cfg.load("res://addons/autopilot/plugin.cfg") == OK:
 		version = str(cfg.get_value("plugin", "version", version))
+	var prefs := Prefs.load_preferences()
 	var h := {"type": "hello", "protocol": Link.PROTOCOL, "plugin_version": version, "engine": "godot",
 		"engine_version": Engine.get_version_info().string, "project": str(ProjectSettings.get_setting("application/config/name", "")),
 		"host": "editor", "inspect": true,
@@ -151,7 +152,12 @@ func _send_hello() -> void:
 		# `session` playing the `map` asked for
 		"features": ["media", "levels"],
 		# whether the user shares runs' data (Autopilot/preferences.json; read again at every connection)
-		"share": Prefs.share_data(Prefs.load_preferences())}
+		"share": Prefs.share_data(prefs)}
+	# whether the agent service runs its research agent, only once the user chose (preferences.json research_agent);
+	# left out, the agent service decides (off for the Aura app's, on for this plugin's own)
+	var research = Prefs.research_agent(prefs)
+	if typeof(research) == TYPE_BOOL:
+		h.research = research
 	var pid := str(ProjectSettings.get_setting("autopilot/project_id", ""))
 	if pid != "":
 		h.project_id = pid

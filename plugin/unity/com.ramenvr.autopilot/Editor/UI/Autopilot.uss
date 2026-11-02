@@ -843,17 +843,21 @@
 .autopilot .bill-row { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
 .autopilot .bill-row > .bill-amount { margin-left: 4px; }
 .autopilot .keys-line { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 11px; color: #a4a8b0; }
-/* a setting's card (Share runs, Autopilot in Claude Code & Codex): its title, the line under it (as the sharing
-   text), its control; the same gaps in each (AutopilotView.SettingCard) */
+/* a setting's card (Share runs, Research agent, Autopilot in Claude Code & Codex): its title, the line under it (as
+   the sharing text), its control; the same gaps in each (AutopilotView.SettingCard) */
 .autopilot .setting > .setting-title { margin-bottom: 6px; }
 .autopilot .setting > .setting-line { margin-bottom: 10px; }
 .autopilot .setting-control { align-items: flex-start; }
 .autopilot .setting-control > .connect-command { align-self: stretch; }
 .autopilot .setting-control > .next { margin-top: 6px; }
-/* the sharing switch: its words (Data sharing on/off) 8 px from the pill, checked or not */
+/* the sharing and research agent switches: their words (Data sharing on/off, Research agent on/off) 8 px from the
+   pill, checked or not */
 .autopilot .switch.share-toggle .unity-toggle__checkmark,
 .autopilot .switch.share-toggle .unity-toggle__input:checked > .unity-toggle__checkmark,
-.autopilot .switch.share-toggle:checked .unity-toggle__checkmark { margin-right: 8px; }
+.autopilot .switch.share-toggle:checked .unity-toggle__checkmark,
+.autopilot .switch.research-toggle .unity-toggle__checkmark,
+.autopilot .switch.research-toggle .unity-toggle__input:checked > .unity-toggle__checkmark,
+.autopilot .switch.research-toggle:checked .unity-toggle__checkmark { margin-right: 8px; }
 /* the first-run setup's Minutes */
 .autopilot .time-limit-field { width: 56px; }
 

@@ -59,6 +59,7 @@ namespace Autopilot.Playtest.Tests
                 Assert.AreEqual("aura", client.LinkedBy);
                 Assert.AreEqual("hello", Json.Str(wire.Sent[0], "type"));
                 Assert.AreEqual("unity", Json.Str(wire.Sent[0], "engine"));
+                Assert.AreEqual(Preferences.Share(), wire.Sent[0]["share"], "the user's sharing choice");
                 Assert.IsFalse(wire.Sent[0].ContainsKey("resume"));
                 client.LinkReceive(Welcome);
                 client.LinkReceive("{\"type\": \"request\", \"id\": 7, \"op\": \"ping\", \"args\": {}}");
@@ -72,6 +73,45 @@ namespace Autopilot.Playtest.Tests
             finally
             {
                 client.Shutdown();
+            }
+        }
+
+        /// <summary>The hello says "research" only once the user chose (preferences.json's research_agent): left out
+        /// before, so the agent service decides.</summary>
+        [Test]
+        public void TheHelloSaysResearchOnlyOnceChosen()
+        {
+            var folderWas = Aura.FolderOverride;
+            var folder = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "autopilot-hello-test-" + Guid.NewGuid().ToString("N"));
+            Aura.FolderOverride = folder;  // (never the user's own preferences.json)
+            try
+            {
+                Dictionary<string, object> Hello()
+                {
+                    var wire = new Wire();
+                    var client = Linked(wire);
+                    try
+                    {
+                        return wire.OfType("hello").First();
+                    }
+                    finally
+                    {
+                        client.Shutdown();
+                    }
+                }
+
+                Assert.IsFalse(Hello().ContainsKey("research"), "no preferences.json: not chosen");
+                Preferences.Update(new Dictionary<string, object> { ["onboarded"] = true, ["research_agent"] = "yes" });
+                Assert.IsFalse(Hello().ContainsKey("research"), "not a boolean: not chosen");
+                Preferences.Update(new Dictionary<string, object> { ["research_agent"] = false });
+                Assert.AreEqual(false, Hello()["research"], "chosen off");
+                Preferences.Update(new Dictionary<string, object> { ["research_agent"] = true });
+                Assert.AreEqual(true, Hello()["research"], "chosen on");
+            }
+            finally
+            {
+                Aura.FolderOverride = folderWas;
+                if (System.IO.Directory.Exists(folder)) System.IO.Directory.Delete(folder, true);
             }
         }
 

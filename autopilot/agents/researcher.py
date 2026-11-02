@@ -12,7 +12,10 @@ events, one pass each (several waiting at once are one pass):
     files arrived              the export's new files that bear on the request or the harness (codex.Indexer)
 
 Each pass is a fresh conversation (the request, the harness as it is, notes.md, the findings so far and the event),
-of at most TURNS model turns. AUTOPILOT_RESEARCHER=0 turns it off.
+of at most TURNS model turns. The user chooses on the plugin's Settings page (the hello's `research`, from
+preferences.json research_agent); until they do, runs from the Aura app's Autopilot go without it and runs from the
+user's own (the plugin's agent service, signed in to Aura or on their own keys) have it. AUTOPILOT_RESEARCHER=0 turns it
+off whatever was chosen.
 """
 
 import fnmatch
@@ -60,8 +63,17 @@ TOOLS = (
 )
 
 
-def enabled():
-    return (os.environ.get("AUTOPILOT_RESEARCHER") or "").strip() != "0"
+def enabled(hello=None):
+    """Whether a run has the researcher: what the user chose in the plugin (hello `research`), else off in the Aura
+    app's Autopilot (aura.from_app) and on in the user's own; never with AUTOPILOT_RESEARCHER=0."""
+    from .. import aura
+
+    if (os.environ.get("AUTOPILOT_RESEARCHER") or "").strip() == "0":
+        return False
+    chosen = (hello or {}).get("research")
+    if isinstance(chosen, bool):
+        return chosen
+    return not aura.from_app()
 
 
 class Researcher:

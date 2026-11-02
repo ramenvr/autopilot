@@ -108,6 +108,11 @@ namespace PlaytestPreferences
 		Prefs.Raw = Json;
 		Json->TryGetBoolField(TEXT("onboarded"), Prefs.bOnboarded);
 		Json->TryGetBoolField(TEXT("share_data"), Prefs.bShareData);
+		bool bResearch = false;
+		if (Json->TryGetBoolField(TEXT("research_agent"), bResearch))
+		{
+			Prefs.ResearchChoice = bResearch;
+		}
 		Json->TryGetStringField(TEXT("access"), Prefs.Access);
 		return Prefs;
 	}
@@ -129,6 +134,10 @@ namespace PlaytestPreferences
 		Json->SetNumberField(TEXT("version"), 1);
 		Json->SetBoolField(TEXT("onboarded"), Prefs.bOnboarded);
 		Json->SetBoolField(TEXT("share_data"), Prefs.bShareData);
+		if (Prefs.ResearchChoice.IsSet())
+		{
+			Json->SetBoolField(TEXT("research_agent"), Prefs.ResearchChoice.GetValue());
+		}
 		if (!Prefs.Access.IsEmpty())
 		{
 			Json->SetStringField(TEXT("access"), Prefs.Access);
@@ -147,22 +156,38 @@ namespace PlaytestPreferences
 		return bOk;
 	}
 
+	namespace
+	{
+		/** -Name=0|1 (or false/true, no/yes, off/on) on the command line: 0 or 1; -1 when it isn't there or says neither. */
+		int32 CommandLineSwitch(const TCHAR* Name)
+		{
+			FString Given;
+			if (FParse::Value(FCommandLine::Get(), Name, Given))
+			{
+				Given = Given.TrimQuotes().TrimStartAndEnd().ToLower();
+				if (Given == TEXT("0") || Given == TEXT("false") || Given == TEXT("no") || Given == TEXT("off"))
+				{
+					return 0;
+				}
+				if (Given == TEXT("1") || Given == TEXT("true") || Given == TEXT("yes") || Given == TEXT("on"))
+				{
+					return 1;
+				}
+			}
+			return -1;
+		}
+	}
+
 	bool ShareData()
 	{
-		FString Given;
-		if (FParse::Value(FCommandLine::Get(), TEXT("PlaytestShare="), Given))
-		{
-			Given = Given.TrimQuotes().TrimStartAndEnd().ToLower();
-			if (Given == TEXT("0") || Given == TEXT("false") || Given == TEXT("no") || Given == TEXT("off"))
-			{
-				return false;
-			}
-			if (Given == TEXT("1") || Given == TEXT("true") || Given == TEXT("yes") || Given == TEXT("on"))
-			{
-				return true;
-			}
-		}
-		return Load().bShareData;
+		const int32 Given = CommandLineSwitch(TEXT("PlaytestShare="));
+		return Given >= 0 ? Given == 1 : Load().bShareData;
+	}
+
+	TOptional<bool> ResearchAgent()
+	{
+		const int32 Given = CommandLineSwitch(TEXT("PlaytestResearch="));
+		return Given >= 0 ? TOptional<bool>(Given == 1) : Load().ResearchChoice;
 	}
 
 	FString MergeKeys(const FString& Existing, const TArray<TPair<FString, FString>>& Keys)

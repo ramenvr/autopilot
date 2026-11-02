@@ -3283,6 +3283,30 @@ TSharedRef<SWidget> SPlaytestPanel::MakeDataSharing()
 		SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth()[Toggle]);
 }
 
+TSharedRef<SWidget> SPlaytestPanel::MakeResearchAgent()
+{
+	// (as the sharing card: the switch under its name, and beside it "Research agent on" / "Research agent off")
+	const FText Name = LOCTEXT("ResearchAgent", "Research agent");
+	TSharedRef<SCheckBox> Toggle = AutopilotUI::Switch([this]() { return ResearchShown(); }, [this](bool bOn) { SetResearchAgent(bOn); },
+		AutopilotUI::Body(TAttribute<FText>::CreateLambda([this]()
+		{
+			return ResearchShown() ? LOCTEXT("ResearchOn", "Research agent on") : LOCTEXT("ResearchOff", "Research agent off");
+		}), 13.f, AutopilotColor::Text(), false, EAutopilotFont::BodyMedium), 8.f);
+	Toggle->SetToolTipText(Name);
+	return SettingCard(Name,
+		LOCTEXT("ResearchWhat", "Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost."),
+		SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth()[Toggle]);
+}
+
+bool SPlaytestPanel::ResearchShown() const
+{
+	if (Prefs.ResearchChoice.IsSet())
+	{
+		return Prefs.ResearchChoice.GetValue();
+	}
+	return !GetDefault<UPlaytestSettings>()->bUseWithAura;
+}
+
 TSharedRef<SWidget> SPlaytestPanel::MakeCodingAgents()
 {
 	// Its name, what it is for, each command with Copy (in a well, as a link is)
@@ -3372,6 +3396,7 @@ void SPlaytestPanel::RebuildSettings()
 			])
 	];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeDataSharing()];
+	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeResearchAgent()];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeCodingAgents()];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeRemoveSection()];
 }
@@ -3390,6 +3415,23 @@ void SPlaytestPanel::SetShareData(bool bShare)
 		SaySaveFailed();
 	}
 	Prefs.bShareData = bShare;
+	ReconnectIfIdle();  // (the hello says it)
+}
+
+void SPlaytestPanel::SetResearchAgent(bool bOn)
+{
+	FPlaytestPreferences Now = PlaytestPreferences::Load();
+	Now.ResearchChoice = bOn;
+	Now.bOnboarded = Now.bOnboarded || Prefs.bOnboarded;
+	if (PlaytestPreferences::Save(Now))
+	{
+		Prefs = PlaytestPreferences::Load();
+	}
+	else
+	{
+		SaySaveFailed();
+	}
+	Prefs.ResearchChoice = bOn;
 	ReconnectIfIdle();  // (the hello says it)
 }
 

@@ -131,9 +131,9 @@ USAGE = {"type": "usage", "final": False, "models": [
     {"kind": "decision", "model": "test-decision", "calls": 50, "input": 5000, "output": 50}]}
 
 
-def media_and_share(c, port, name, args, prefs, want_share):
-    """A headless game: hello says `share` (preferences.json in a user settings folder of its own, -PlaytestShare
-    over it) and no "media" (nothing is drawn headless); record and capture answer 409, record stop succeeds, and
+def media_and_share(c, port, name, args, prefs, want_share, want_research=None):
+    """A headless game: hello says `share`, and `research` only once chosen (want_research None: no `research`)
+    (preferences.json in a user settings folder of its own, -PlaytestShare and -PlaytestResearch over it) and no "media" (nothing is drawn headless); record and capture answer 409, record stop succeeds, and
     usage frames are taken without trouble."""
     seen = {}
 
@@ -178,6 +178,10 @@ def media_and_share(c, port, name, args, prefs, want_share):
     hello = seen.get("hello", {})
     c.check(f"{name}: exit code 0", code == 0, f"got {code}")
     c.check(f"{name}: hello share {want_share}", hello.get("share") is want_share, str(hello.get("share")))
+    if want_research is None:
+        c.check(f"{name}: hello has no research (not chosen)", "research" not in hello, str(hello.get("research")))
+    else:
+        c.check(f"{name}: hello research {want_research}", hello.get("research") is want_research, str(hello.get("research")))
     if prefs is None:
         c.check("headless hello: features without media", "media" not in hello.get("features", []) and "timed_hold" in hello.get("features", []),
                 str(hello.get("features")))
@@ -238,9 +242,15 @@ def main():
     refused_at_once(c, a.port + 7)
     connect_timeout(c, a.port + 8)
     media_and_share(c, a.port + 9, "no preferences.json", [], None, True)
-    media_and_share(c, a.port + 10, "share_data false", [], {"version": 1, "onboarded": True, "share_data": False}, False)
-    media_and_share(c, a.port + 11, "-PlaytestShare=1 over share_data false", ["-PlaytestShare=1"],
-                    {"version": 1, "share_data": False}, True)
+    media_and_share(c, a.port + 10, "share_data and research_agent false", [],
+                    {"version": 1, "onboarded": True, "share_data": False, "research_agent": False}, False, False)
+    media_and_share(c, a.port + 11, "-PlaytestShare=1 -PlaytestResearch=1 over both false", ["-PlaytestShare=1", "-PlaytestResearch=1"],
+                    {"version": 1, "share_data": False, "research_agent": False}, True, True)
+    media_and_share(c, a.port + 12, "--playtest-research=0 over research_agent true", ["--playtest-research=0"],
+                    {"version": 1, "research_agent": True}, True, False)
+    media_and_share(c, a.port + 13, "research_agent not a boolean, --playtest-share=0", ["--playtest-share=0"],
+                    {"version": 1, "research_agent": "yes"}, False)
+    media_and_share(c, a.port + 14, "-PlaytestResearch=1, nothing chosen", ["-PlaytestResearch=1"], None, True, True)
     print(f"({time.monotonic() - t0:.0f}s)")
     sys.exit(0 if c.summary() else 1)
 
