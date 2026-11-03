@@ -122,6 +122,13 @@ namespace Autopilot.Playtest
         public bool BrainSteers { get; private set; }
         // Whether the user can steer the run going now
         public bool CanSteer => Connected && RunActive && BrainSteers;
+        /// <summary>Whether a run is using the game now: one is going, or the brain asked the game something in the
+        /// last <see cref="RunUseSeconds"/> (a run this side didn't hear start). Only then do the detectors and the log
+        /// events work: when nothing would read what they find, the user's own play sessions don't pay for them.</summary>
+        public bool RunUsingGame => Connected && (RunActive || (lastRequestAt.HasValue && Now - lastRequestAt.Value < RunUseSeconds));
+        const double RunUseSeconds = 30.0;
+        double? lastRequestAt;  // when the brain's last request came (none on this connection: null)
+        bool detectorsOn;  // they worked on the last frame: they start afresh when on again
         // The welcome's features had "account": the brain says how it runs and signs in to Aura when asked
         // (docs/protocol.md, Account)
         public bool BrainHasAccount { get; private set; }
@@ -601,6 +608,8 @@ namespace Autopilot.Playtest
 
         internal void TestReceive(string json) => HandleMessage(json);
 
+        internal void TestRequestAge(double seconds) => lastRequestAt = Now - seconds;
+
         /// <summary>The connection's number now: a message made for one (on a worker thread) isn't sent on another.</summary>
         public int ConnectionGeneration => Volatile.Read(ref generation);
 
@@ -869,6 +878,8 @@ namespace Autopilot.Playtest
             Hands.Tick(Connected, RunActive);
             if (!Connected)
             {
+                lastRequestAt = null;
+                detectorsOn = false;
                 LogCapture.Drain();
                 events.Clear();
                 PumpLink();
@@ -891,10 +902,13 @@ namespace Autopilot.Playtest
             }
             Media.Tick(this);
             var lines = LogCapture.Drain();
+            var detect = RunUsingGame;
+            if (detect && !detectorsOn) Detectors.Reset();  // (afresh: what was seen before this run isn't this run's)
+            detectorsOn = detect;
             var sent = 0;
             foreach (var line in lines)
             {
-                if (!Application.isPlaying) break;
+                if (!Application.isPlaying || !detect) break;
                 if (++sent <= MaxLogEventsPerFrame)
                 {
                     QueueEvent(new Dictionary<string, object>
@@ -907,8 +921,8 @@ namespace Autopilot.Playtest
                     });
                 }
             }
-            if (lines.Count > 0 && Application.isPlaying) Detectors.OnLogLines(lines);
-            if (Application.isPlaying) Detectors.Tick();
+            if (lines.Count > 0 && Application.isPlaying && detect) Detectors.OnLogLines(lines);
+            if (Application.isPlaying && detect) Detectors.Tick();
             if (now - lastHeartbeat >= 1.0)
             {
                 lastHeartbeat = now;
@@ -1026,6 +1040,7 @@ namespace Autopilot.Playtest
             {
                 case "request":
                 {
+                    lastRequestAt = Now;  // (a run is using the game: RunUsingGame)
                     var id = (long)Json.Num(m, "id", 0);
                     var op = Json.Str(m, "op");
                     var args = Json.Obj(m, "args") ?? new Dictionary<string, object>();

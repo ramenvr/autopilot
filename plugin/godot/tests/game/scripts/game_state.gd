@@ -17,6 +17,15 @@ var picked := ""
 var mouse_at := Vector2.ZERO
 
 
+func _ready() -> void:
+	if OS.get_environment("GODOT_TEST_ERRORS") != "":  # (tests/gate_test.py counts what the addon sends of these)
+		var timer := Timer.new()
+		timer.wait_time = 0.5
+		timer.autostart = true
+		timer.timeout.connect(func() -> void: push_error("planted error"))
+		add_child(timer)
+
+
 func add_apple() -> void:
 	apples = mini(apples + 1, BASKET_SIZE)
 

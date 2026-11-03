@@ -1,7 +1,7 @@
 """Run every test of the Godot addon, one at a time, on one fresh copy of the test game (tests/game with the addon,
 assembled and imported headless in a temporary folder, deleted at the end). Needs only AUTOPILOT_GODOT.
 
-    .venv\\Scripts\\python.exe plugin\\godot\\tests\\run_all.py [units smoke ci_test kit_live editor_test]
+    .venv\\Scripts\\python.exe plugin\\godot\\tests\\run_all.py [units smoke ci_test kit_live editor_test gate_test]
 
 Exit code 0 when every script passes.
 """
@@ -16,7 +16,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import assemble  # noqa: E402
 
-SCRIPTS = ["units", "smoke", "ci_test", "kit_live", "editor_test"]
+SCRIPTS = ["units", "smoke", "ci_test", "kit_live", "editor_test", "gate_test"]
 
 
 def main():

@@ -76,6 +76,14 @@ func configure(args: Dictionary) -> void:
 			config[k] = float(args[k])
 
 
+## Start afresh (the host's detectors were off, or a run began): what was seen before isn't this run's. The scene counts
+## as new on the next tick, with its time to settle.
+func restart() -> void:
+	errors.drain()
+	counts.clear()
+	_scene = null
+
+
 ## Log events and findings for this frame. emit(event_dict) sends an event; t: game time; real_dt: the frame's wall
 ## time; paused: whether the game is paused.
 func tick(emit: Callable, t: float, real_dt: float, paused: bool) -> void:

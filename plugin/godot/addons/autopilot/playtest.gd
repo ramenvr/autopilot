@@ -20,6 +20,7 @@ const Sight = preload("lib/sight.gd")
 const Ui = preload("lib/ui.gd")
 const Codex = preload("lib/codex.gd")
 const Detectors = preload("lib/detectors.gd")
+const RUN_USE_SECONDS := 30.0  # how long after the brain's last request a run counts as using the game
 const Link = preload("lib/link.gd")
 const Media = preload("lib/media.gd")
 const Prefs = preload("lib/prefs.gd")
@@ -37,6 +38,9 @@ var media
 var link = null  # direct mode: our own connection to the brain
 var relay := false  # the editor's dock relays for us
 var active := false  # a brain is there (welcomed, or the editor attached)
+var run_active := false  # a run is going: told by the dock, or known here (the hello carried one, a `cli` brain)
+var _last_request_at := -1.0  # when the brain last asked this game something (-1: not yet on this connection)
+var _detecting := false  # the detectors worked on the last frame: they start afresh when on again
 
 var game_time := 0.0
 var _scene: Node = null
@@ -279,11 +283,14 @@ func _on_editor_message(message: String, data: Array) -> bool:
 		"attach":
 			relay = true
 			active = true
+			_last_request_at = -1.0
 			_prepare_headless()
 			if detectors == null:
 				detectors = Detectors.new(self, world, ui)
 			if data.size() > 0 and typeof(data[0]) == TYPE_STRING:
 				var cfg = JSON.parse_string(data[0])
+				if typeof(cfg) == TYPE_DICTIONARY:
+					run_active = bool(cfg.get("run_active", false))
 				if typeof(cfg) == TYPE_DICTIONARY and typeof(cfg.get("detectors")) == TYPE_DICTIONARY:
 					detectors.configure(cfg.detectors)
 				# a recording the brain started in an earlier play session of this connection goes on in this one
@@ -295,6 +302,10 @@ func _on_editor_message(message: String, data: Array) -> bool:
 			_release_all()
 			media.stop()
 			active = false
+			run_active = false
+			return true
+		"run":
+			run_active = data.size() > 0 and bool(data[0])
 			return true
 		"record_stop":
 			media.stop()
@@ -314,6 +325,12 @@ func _scene_path() -> String:
 
 
 # --- the frame --------------------------------------------------------------------------------------
+
+## Whether a run is using the game now: one is going, or the brain asked this game something in the last
+## RUN_USE_SECONDS (a run this side didn't hear start).
+func run_using_game(now: float) -> bool:
+	return active and (run_active or (_last_request_at >= 0.0 and now - _last_request_at < RUN_USE_SECONDS))
+
 
 func _process(delta: float) -> void:
 	var now := _now()
@@ -351,8 +368,14 @@ func _process(delta: float) -> void:
 			i += 1
 	_tick_codex()
 	media.tick(now)
-	if detectors:
+	# The detectors work only while a run uses the game: in the user's own play sessions nothing reads what they find,
+	# and their sweeps over the scene cost frames
+	var detect := run_using_game(now)
+	if detectors and detect:
+		if not _detecting:
+			detectors.restart()  # (afresh: what was seen before this run isn't this run's)
 		detectors.tick(emit_event, game_time, real_dt, tree.paused)
+	_detecting = detect
 	if now - _heartbeat_at >= 1.0:
 		_heartbeat_at = now
 		emit_event({"kind": "heartbeat", "t": t_value(), "fps": Engine.get_frames_per_second(), "paused": tree.paused})
@@ -378,8 +401,10 @@ func _poll_link(now: float) -> void:
 				link.role = str(frame.get("role", ""))
 				active = true
 				_welcomed = true
+				_last_request_at = -1.0
 				if not cli_run.is_empty():
 					_run_asked = true  # (its hello carried the run)
+				run_active = not cli_run.is_empty() or link.role == "cli"
 				print("AutopilotPlaytest: connected (%s)" % link.role)
 			"status":
 				print("AutopilotPlaytest: %s" % frame.get("text", ""))
@@ -398,6 +423,7 @@ func _poll_link(now: float) -> void:
 					_fail_run("the brain sent an error: %s" % link.problem, false)
 			"_closed":
 				active = false
+				run_active = false
 				_release_all()
 				media.stop()  # (a recording never outlives its connection)
 				var welcomed := _welcomed
@@ -428,6 +454,7 @@ func _fail_run(message: String, log_error := true) -> void:
 
 
 func _handle_result(frame: Dictionary) -> void:
+	run_active = false
 	var result: Dictionary = frame.get("result", {}) if typeof(frame.get("result")) == TYPE_DICTIONARY else {}
 	var dir := _write_report(result, frame.get("files", {}))
 	print("AutopilotPlaytest: run finished. Report: %s" % dir)
@@ -479,6 +506,7 @@ func _exit(code: int) -> void:
 # --- requests ---------------------------------------------------------------------------------------
 
 func _handle_request(frame: Dictionary) -> void:
+	_last_request_at = _now()  # (a run is using the game: run_using_game)
 	var id = frame.get("id")
 	if typeof(id) == TYPE_FLOAT:
 		id = int(id)

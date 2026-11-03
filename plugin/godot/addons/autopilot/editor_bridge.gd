@@ -51,6 +51,7 @@ var debugger  # debugger.gd
 var inspect := true
 var link = Link.new()
 var run_active := false
+var _run_told := false  # what the game running now was last told of run_active
 var brain_steers := false  # the welcome's features had "steer": the user can steer a run while it plays
 ## What the agent server remembers about this project (its memory_state on this connection; memory_known false until
 ## one came, and again once the connection closes): the earlier runs it keeps, whether it has notes and code of its own
@@ -314,10 +315,15 @@ func _process(_delta: float) -> void:
 	var now := _now()
 	for frame in link.poll():
 		_on_brain_frame(frame)
+	# the game's detectors work while a run does: it hears when that changes
+	if _game_ready and run_active != _run_told:
+		_run_told = run_active
+		debugger.send(_game_session, "run", [run_active])
 	# attach to a game that started, until it answers (its autoload may not be listening yet)
 	if _game_session >= 0 and not _game_ready and now < _attach_until and now >= _attach_at:
 		_attach_at = now + 0.5
-		var cfg := {"detectors": _detector_config}
+		var cfg := {"detectors": _detector_config, "run_active": run_active}
+		_run_told = run_active
 		if _record != null:
 			cfg.record = _record.merged({"n": _record_next}, true)  # (the recording goes on in this play session)
 		debugger.send(_game_session, "attach", [JSON.stringify(cfg)])
