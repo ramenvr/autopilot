@@ -391,8 +391,9 @@ While Autopilot plays in the editor, Blueprint Break on Exceptions (Editor Prefe
 an "Accessed None" doesn't stop the game mid-run (the run reports it: `log_error`); your setting is back when the
 play session ends.
 
-Besides that, the plugin runs bug detectors inside the engine every frame, so short glitches between the
-agent's steps are caught too:
+Besides that, while a run plays, the plugin runs bug detectors inside the engine every frame, so short glitches
+between the agent's steps are caught too. They are off in your own Play sessions, with no run going, so your game
+plays at its normal speed:
 
 | detector | fires when |
 |---|---|

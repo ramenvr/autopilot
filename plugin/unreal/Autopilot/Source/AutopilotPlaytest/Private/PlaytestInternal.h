@@ -189,12 +189,36 @@ private:
 	void CheckGrowth(UWorld* World, double GameTime);
 	void CheckProperties(UWorld* World, double GameTime);
 	void CheckHud(UWorld* World, double GameTime);
-	void CheckObjectProperties(UObject* Object, const AActor* Actor, double GameTime);
 	bool IsProjectClass(const UClass* Class) const;
+
+	/** One numeric property CheckProperties reads on each object of a class: its name, its ClampMin/ClampMax, and its
+	 *  Max partner (MaxHealth for Health, HealthMax for Health), each found once per class. */
+	struct FPropertyCheck
+	{
+		const FProperty* Property = nullptr;
+		FString Name;
+		FString Min;  // ClampMin as written ("" none)
+		FString Max;
+		TOptional<double> MinValue;
+		TOptional<double> MaxValue;
+		const FProperty* MaxProperty = nullptr;
+		FString MaxName;
+	};
+	/** What CheckProperties reads on the objects of one class (none: not the game's own class, or no numbers). */
+	struct FClassChecks
+	{
+		TArray<FPropertyCheck> Properties;
+	};
+	/** A class's checks, made on its first object of this sweep. They hold FProperty pointers, which a Blueprint
+	 *  compile frees: kept for one sweep only (one call, so nothing compiles in between). */
+	const FClassChecks& ChecksOf(const UClass* Class, TMap<const UClass*, FClassChecks>& Plans, TMap<const UClass*, bool>& Project) const;
+	bool IsProjectClassCached(const UClass* Class, TMap<const UClass*, bool>& Project) const;
+	void CheckObjectProperties(const FClassChecks& Checks, UObject* Object, const AActor* Actor, double GameTime);
 
 	UPlaytestSubsystem& Bridge;
 	TMap<FString, int32> Seen;  // signature -> times seen
 	TWeakObjectPtr<UWorld> World;
+	FDelegateHandle ActorDestroyedHandle;  // on World (removed by Reset)
 	double SessionStartReal = 0;
 	double LastGameTime = -1;
 	double NextActorCheck = 0;

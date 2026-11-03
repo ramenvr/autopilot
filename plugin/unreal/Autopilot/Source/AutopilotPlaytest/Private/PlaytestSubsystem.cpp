@@ -163,6 +163,8 @@ namespace
 {
 	constexpr double MaxBackoff = 30.0;
 	constexpr int32 MaxLogEventsPerSecond = 50;
+	/** How long after the agent service's last request a run counts as using the game (IsRunUsingGame). */
+	constexpr double RunUseSeconds = 30.0;
 	const TCHAR* DefaultUrl = TEXT("ws://127.0.0.1:8765/v1/bridge");
 
 	double Now()
@@ -251,6 +253,10 @@ void UPlaytestSubsystem::Deinitialize()
 	if (GLog && LogCapture.IsValid())
 	{
 		GLog->RemoveOutputDevice(LogCapture.Get());
+	}
+	if (Detectors.IsValid())
+	{
+		Detectors->Reset();  // (its handler on the game's world goes: the world may outlive this subsystem)
 	}
 	bWantConnected = false;
 	if (AgentService.IsValid())
@@ -394,6 +400,11 @@ bool UPlaytestSubsystem::IsConnected() const
 	return bConnected;
 }
 
+bool UPlaytestSubsystem::IsRunUsingGame() const
+{
+	return bConnected && (bRunActive || (LastRequestAt >= 0 && Now() - LastRequestAt < RunUseSeconds));
+}
+
 void UPlaytestSubsystem::OpenSocket()
 {
 	if (Socket.IsValid())
@@ -470,6 +481,7 @@ void UPlaytestSubsystem::OpenSocket()
 			This->bConnected = true;
 			This->bWelcomedHere = false;
 			This->bBrainAccount = false;
+			This->LastRequestAt = -1.0;
 			++This->ConnectionSerial;
 			This->Backoff = 1.0;
 			This->SendHello();
@@ -827,6 +839,7 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 	const FString Type = Message->GetStringField(TEXT("type"));
 	if (Type == TEXT("request"))
 	{
+		LastRequestAt = Now();  // (a run is using the game: IsRunUsingGame)
 		const int64 Id = (int64)Message->GetNumberField(TEXT("id"));
 		const TSharedPtr<FJsonObject>* Args = nullptr;
 		TSharedPtr<FJsonObject> ArgsObj = Message->TryGetObjectField(TEXT("args"), Args) && Args ? *Args : MakeShared<FJsonObject>();
@@ -1393,6 +1406,7 @@ bool UPlaytestSubsystem::Tick(float DeltaTime)
 	if (!bConnected)
 	{
 		LogCapture->bEnabled = false;
+		bDetectorsOn = false;
 		LogCapture->Take();
 		OutgoingEvents.Reset();
 		return true;
@@ -1411,9 +1425,17 @@ bool UPlaytestSubsystem::Tick(float DeltaTime)
 
 	UWorld* World = GetGameWorld();
 	const double GameNow = World ? World->GetTimeSeconds() : -1.0;
-	LogCapture->bEnabled = World != nullptr;
+	// The detectors and the log capture work only while a run uses the game: in the user's own Play sessions nothing
+	// reads what they find, and on a big level their sweeps over every actor cost frames (IsRunUsingGame)
+	const bool bDetect = IsRunUsingGame();
+	if (bDetect && !bDetectorsOn)
+	{
+		Detectors->Reset();  // (afresh: what was seen before this run isn't this run's)
+	}
+	bDetectorsOn = bDetect;
+	LogCapture->bEnabled = World != nullptr && bDetect;
 	TArray<FPlaytestLogCapture::FLine> Lines = LogCapture->Take();
-	if (Lines.Num())
+	if (Lines.Num() && bDetect)
 	{
 		int32 Sent = 0;
 		for (const FPlaytestLogCapture::FLine& Line : Lines)
@@ -1433,7 +1455,7 @@ bool UPlaytestSubsystem::Tick(float DeltaTime)
 		Detectors->OnLogLines(Lines, GameNow);
 	}
 
-	if (World)
+	if (World && bDetect)
 	{
 		Detectors->Tick(World, RealDelta);
 	}
