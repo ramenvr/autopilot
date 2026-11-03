@@ -7,7 +7,9 @@
 #include "AutopilotStyle.h"
 #include "Modules/ModuleManager.h"
 #include "PlayInEditorDataTypes.h"
+#include "Kismet2/DebuggerCommands.h"
 #include "PlaytestLevels.h"
+#include "PlaytestRunInput.h"
 #include "PlaytestSubsystem.h"
 #include "SPlaytestPanel.h"
 #include "Styling/AppStyle.h"
@@ -162,6 +164,22 @@ public:
 		}
 		FAutopilotStyle::Initialize();
 		FAutopilotSession::Get().Startup();  // (the runs are kept whether the tab is open or not)
+		// During a run the game doesn't get the person's keys (PlaytestRunInput); the editor's Stop shortcut still stops play
+		PlaytestRunInput::EditorKey() = [](const FKeyEvent& Event)
+		{
+			if (!GEditor || !GEditor->PlayWorld || !FPlayWorldCommands::IsRegistered())
+			{
+				return false;
+			}
+			const FModifierKeysState& Mods = Event.GetModifierKeys();
+			const FInputChord Chord(Event.GetKey(), Mods.IsShiftDown(), Mods.IsControlDown(), Mods.IsAltDown(), Mods.IsCommandDown());
+			if (!FPlayWorldCommands::Get().StopPlaySession.IsValid() || !FPlayWorldCommands::Get().StopPlaySession->HasActiveChord(Chord))
+			{
+				return false;
+			}
+			GEditor->RequestEndPlayMap();
+			return true;
+		};
 		EndPieHandle = FEditorDelegates::EndPIE.AddLambda([](bool) { FAutopilotSession::ReleaseExceptionBreaks(); });
 		FGlobalTabmanager::Get()->RegisterNomadTabSpawner(TabName, FOnSpawnTab::CreateLambda([](const FSpawnTabArgs&)
 		{
@@ -195,6 +213,7 @@ public:
 				Bridge->SessionRequested = nullptr;
 			}
 		}
+		PlaytestRunInput::EditorKey() = nullptr;
 		FEditorDelegates::EndPIE.Remove(EndPieHandle);
 		FAutopilotSession::ReleaseExceptionBreaks();
 		FAutopilotSession::Get().Shutdown();

@@ -387,6 +387,15 @@ world or an object) and click or drag there: the game's own mouse reads (`GetMou
 `GetHitResultUnderCursor`, click events) see that place, and a click over the game's UI goes to that UI as the
 mouse's would. Your computer's own cursor doesn't move.
 
+**While a run plays, the game gets the agent's input alone.** Your own keyboard, mouse and gamepads don't reach the
+game: a key or stick while the game has focus, or the mouse over the game's view, is held off before anything else in
+the engine sees it, so nothing you press (or a controller in your hands) mixes with the agent's input. The rest of the
+editor still answers you as usual, and its Stop shortcut (Escape by default) still stops play. The game's view doesn't
+take your mouse during a run either: a game that captures and hides the mouse (an input mode of Game Only, say) would
+otherwise lock your cursor inside the editor the moment it came to the front, wherever you were working. The game still
+turns with the agent's mouse movement, and gets its own mouse settings back when the run ends (the next click in its
+view takes the mouse, as it would). Between runs your input reaches the game as usual.
+
 While Autopilot plays in the editor, Blueprint Break on Exceptions (Editor Preferences > Experimental) is held off so
 an "Accessed None" doesn't stop the game mid-run (the run reports it: `log_error`); your setting is back when the
 play session ends.
@@ -572,6 +581,7 @@ The plugin has three modules:
 | `Private/PlaytestOpsSession.cpp` | `context`, `session` (start, stop, restart; in the `map` asked for), `levels`, `pause`, `timestep`, `ping` |
 | `Public/PlaytestLevels.h`, `Private/PlaytestLevels.cpp` | the project's levels, and the one a run asks for by path or name (Play In Editor's map override) |
 | `Private/PlaytestOpsInput.cpp` | `input`, `move`, `key`: input actions, movement, and keys held between frames |
+| `Private/PlaytestRunInput.cpp` | while a run plays: your own keyboard, mouse and gamepads held off the game, and the mouse not taken by its view |
 | `Private/PlaytestOpsUI.cpp` | `screen`, `ui`, `ui_act` |
 | `Private/PlaytestOpsView.cpp` | `view`: what the player sees and what its body feels |
 | `Private/PlaytestOpsOpenings.cpp`, `Private/PlaytestOpsSonar.cpp` | view's `openings` and `ways_up`, and its `sonar` |

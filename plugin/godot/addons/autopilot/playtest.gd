@@ -8,7 +8,7 @@
 ##  - the editor's Playtest dock attaches to this play session over the editor's debugger connection: the dock holds the
 ##    one link to the brain (hello host "editor") and relays requests here, and this answers them back the same way.
 ## Ops: docs/protocol.md, plus find/transforms/pose/movement (plugin/godot/README.md); `record` and `capture` (the
-## game's picture) in lib/media.gd.
+## game's picture) in lib/media.gd. While a run goes, the game gets Autopilot's input alone (lib/isolation.gd).
 extends Node
 
 const Values = preload("lib/values.gd")
@@ -23,6 +23,7 @@ const Detectors = preload("lib/detectors.gd")
 const Link = preload("lib/link.gd")
 const Media = preload("lib/media.gd")
 const Prefs = preload("lib/prefs.gd")
+const Isolation = preload("lib/isolation.gd")
 
 const CAPTURE := "autopilot"
 const KEY_TAP_SECONDS := 0.05
@@ -34,9 +35,11 @@ var sight
 var ui
 var detectors
 var media
+var isolation  # lib/isolation.gd: the root's last child, the gate the person's input stops at during a run
 var link = null  # direct mode: our own connection to the brain
 var relay := false  # the editor's dock relays for us
 var active := false  # a brain is there (welcomed, or the editor attached)
+var run := false  # the editor says a run is going (its "run" messages; on the command line: the run asked there)
 
 var game_time := 0.0
 var _scene: Node = null
@@ -45,7 +48,7 @@ var _events := []
 var _pending := []  # deferred answers: {"id", "op", "tick": Callable(now) -> bool}
 var _held := {}  # key name -> {"spec", "value", "rate", "renewed"}
 var _lease := 1.0
-var _pressed_actions := {}  # actions move pressed (Input.action_press), released with the keys
+var _pressed_actions := {}  # actions move pressed (Input.action_press) -> strength, released with the keys
 var _heartbeat_at := 0.0
 var _last_real := 0.0
 var _codex_thread: Thread = null
@@ -71,6 +74,7 @@ var _cli_deadline := 0.0
 var _exiting := false
 var _run_asked := false  # the command line's run went to a brain (asked once: never again on a new connection)
 var _welcomed := false  # the brain welcomed the connection now open
+var _cli_done := false  # the command line's run has its result
 
 
 func _ready() -> void:
@@ -81,6 +85,8 @@ func _ready() -> void:
 	sight = Sight.new(self, world)
 	ui = Ui.new(self)
 	media = Media.new(self)
+	isolation = Isolation.new(self)
+	get_tree().root.add_child.call_deferred(isolation)  # (the root is busy adding the autoloads now)
 	_parse_command_line()
 	if EngineDebugger.is_active():
 		EngineDebugger.register_message_capture(CAPTURE, _on_editor_message)
@@ -103,6 +109,7 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	isolation.set_on(false)
 	if detectors:
 		detectors.shutdown()
 	if EngineDebugger.is_active() and EngineDebugger.has_capture(CAPTURE):
@@ -289,12 +296,21 @@ func _on_editor_message(message: String, data: Array) -> bool:
 				# a recording the brain started in an earlier play session of this connection goes on in this one
 				if typeof(cfg) == TYPE_DICTIONARY and typeof(cfg.get("record")) == TYPE_DICTIONARY and not media.recording:
 					media.start(cfg.record, int(cfg.record.get("n", 0)))
+				if typeof(cfg) == TYPE_DICTIONARY:
+					run = cfg.get("run") == true
+			_isolate()
 			EngineDebugger.send_message(CAPTURE + ":ready", [JSON.stringify({"scene": _scene_path(), "t": t_value()})])
 			return true
 		"detach":
+			active = false
+			_isolate()
 			_release_all()
 			media.stop()
-			active = false
+			return true
+		"run":
+			# a run started or ended in the editor (sent as it changes, before the requests that follow it)
+			run = data.size() > 0 and data[0] == true
+			_isolate()
 			return true
 		"record_stop":
 			media.stop()
@@ -311,6 +327,20 @@ func _on_editor_message(message: String, data: Array) -> bool:
 func _scene_path() -> String:
 	var s := get_tree().current_scene
 	return s.scene_file_path if s else ""
+
+
+## The game gets Autopilot's input alone while a brain is there and a run goes (as Unity's: connected, running, in
+## play; this process is the play session): the editor's run, or the run asked on the command line until its result.
+func _isolate() -> void:
+	var running := run if relay else (not cli_run.is_empty() and _welcomed and not _cli_done)
+	isolation.set_on(active and running)
+
+
+func _notification(what: int) -> void:
+	# The game's window lost focus: Godot lets go of the keys and actions held (Input.release_pressed_events), Autopilot's
+	# with the person's. In a run, Autopilot's go down again.
+	if what == NOTIFICATION_APPLICATION_FOCUS_OUT and isolation and isolation.on:
+		_reassert_held()
 
 
 # --- the frame --------------------------------------------------------------------------------------
@@ -338,6 +368,8 @@ func _process(delta: float) -> void:
 	_flush_events()
 	if link:
 		_poll_link(now)
+	_isolate()
+	isolation.tick(now)
 	if not active:
 		_events.clear()
 		return
@@ -428,6 +460,8 @@ func _fail_run(message: String, log_error := true) -> void:
 
 
 func _handle_result(frame: Dictionary) -> void:
+	_cli_done = true
+	_isolate()
 	var result: Dictionary = frame.get("result", {}) if typeof(frame.get("result")) == TYPE_DICTIONARY else {}
 	var dir := _write_report(result, frame.get("files", {}))
 	print("AutopilotPlaytest: run finished. Report: %s" % dir)
@@ -604,7 +638,8 @@ func context() -> Dictionary:
 		"game_name": str(ProjectSettings.get_setting("application/config/name", "")), "host": "editor" if relay else "game",
 		"engine": "godot", "session_running": s != null, "paused": get_tree().paused, "game_time": Frame.r2(game_time),
 		"project_dir": ProjectSettings.globalize_path("res://"), "controls": Keys.controls(),
-		"input": Keys.input_caps(DisplayServer.get_name() == "headless", Input.mouse_mode, _move_actions().any(func(a): return a != "")),
+		"input": Keys.input_caps(DisplayServer.get_name() == "headless", Input.mouse_mode, _move_actions().any(func(a): return a != ""),
+			isolation.on),
 		"net": net(), "player_found_by": "context's player" if world.chosen != "" and p != null else ""}
 
 
@@ -735,9 +770,10 @@ func _fix_step(real_dt: float) -> void:
 
 # --- the player's hands -----------------------------------------------------------------------------
 
+## Autopilot's event to the game, as the operating system's are: Input.parse_input_event, flushed at once (headless,
+## nothing else flushes them; windowed, they land this frame), and let through the run's gate (lib/isolation.gd).
 func _deliver(ev: InputEvent) -> void:
-	Input.parse_input_event(ev)
-	Input.flush_buffered_events()  # headless, nothing else flushes them (and windowed, they land this frame)
+	isolation.deliver(ev)
 
 
 func _crosshair() -> Vector2:
@@ -985,6 +1021,23 @@ func _release_all() -> void:
 	_pressed_actions.clear()
 
 
+## The actions move presses, pressed again (a joypad event matched by one of them, or the window losing focus, let go
+## of them).
+func _reassert_actions() -> void:
+	for a in _pressed_actions:
+		if InputMap.has_action(a):
+			Input.action_press(a, float(_pressed_actions[a]))
+
+
+## Everything Autopilot holds, down again: its held keys, buttons and joypad controls, and the actions move presses.
+func _reassert_held() -> void:
+	for name in _held:
+		var h: Dictionary = _held[name]
+		if not Keys.is_axis(h.spec) or h.spec.kind == "joy_axis":
+			_send_key(h.spec, true, float(h.get("value", 1.0)))
+	_reassert_actions()
+
+
 ## `input`: an InputMap action by name ({"action": "jump", "value"?: {"X"..} or a number, "mode"}). press: down,
 ## then up a moment later; hold: down until release (no lease, as Unreal's continuous injection).
 func input_op(id, args: Dictionary):
@@ -1118,7 +1171,7 @@ func _drive(strengths: Array, actions: Array, keys_down: Dictionary) -> void:
 		if a != "":
 			if s > 0.01:
 				Input.action_press(a, s)
-				_pressed_actions[a] = true
+				_pressed_actions[a] = s
 			elif _pressed_actions.has(a):
 				Input.action_release(a)
 				_pressed_actions.erase(a)

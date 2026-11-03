@@ -34,7 +34,10 @@
   code reads the action. Mouse look: `game.mouse` / `game.turn` move the mouse (`InputEventMouseMotion.relative`).
   Headless, the mouse is never captured: a game that turns its view only while `Input.mouse_mode` is captured won't
   turn; read its code for that, and call it out rather than guess. `game.context()["input"]["notes"]` says what else
-  holds for this game.
+  holds for this game. During a run the person's own keyboard, mouse and gamepads don't reach the game, so what moves
+  is what you pressed; the game's key and mouse bindings are bound to Autopilot's keyboard and mouse meanwhile (an
+  event's `device` reads 1016 and 1032, not Godot's 16 and 32): code that checks an event's device for those can miss
+  your input, call it out.
 - **Pointing and clicking.** `game.pointer(screen_x, screen_y)` puts the mouse there without moving across (-1 to 1 from
   the middle, y up: the numbers `view` gives a thing), `game.pointer(world=kit point)` or `game.pointer(object=path)`
   where the camera shows it (a Control: its middle); it answers `{"screen_x", "screen_y", "x", "y" (the viewport's

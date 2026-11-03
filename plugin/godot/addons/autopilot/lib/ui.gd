@@ -194,7 +194,7 @@ func _push_mouse(c: Control, button: int, double := false) -> void:
 	var motion := InputEventMouseMotion.new()
 	motion.position = pos
 	motion.global_position = pos
-	vp.push_input(motion, true)
+	host.isolation.push(vp, motion)  # (let through the run's gate: lib/isolation.gd)
 	for pressed in [true, false]:
 		var ev := InputEventMouseButton.new()
 		ev.button_index = button
@@ -203,7 +203,7 @@ func _push_mouse(c: Control, button: int, double := false) -> void:
 		ev.position = pos
 		ev.global_position = pos
 		ev.button_mask = (1 << (button - 1)) if pressed else 0
-		vp.push_input(ev, true)
+		host.isolation.push(vp, ev)
 
 
 func act(args: Dictionary) -> Array:

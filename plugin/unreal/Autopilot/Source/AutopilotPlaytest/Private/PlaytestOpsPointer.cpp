@@ -20,6 +20,7 @@
 #include "Misc/App.h"
 #include "PlaytestInternal.h"
 #include "PlaytestJson.h"
+#include "PlaytestRunInput.h"
 #include "Slate/SceneViewport.h"
 #include "Widgets/SViewport.h"
 #include "Widgets/SWindow.h"
@@ -304,6 +305,7 @@ namespace
 			}
 			const FPointerEvent Move(Device(), FSlateApplication::CursorPointerIndex, Abs, AbsBefore, Pointer.Pressed, EKeys::Invalid,
 				0.f, FModifierKeysState());
+			PlaytestRunInput::FOwnEvents Own;
 			FSlateApplication::Get().ProcessMouseMoveEvent(Move);
 		}
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -347,12 +349,14 @@ namespace
 			Pointer.UiDown.Remove(Key);
 			if (bLaidOut)
 			{
+				PlaytestRunInput::FOwnEvents Own;
 				FSlateApplication::Get().ProcessMouseButtonUpEvent(ButtonEvent(Abs, Key));
 			}
 			return true;
 		}
 		if (Event == IE_Pressed && bLaidOut && UiUnder(Client, Abs))
 		{
+			PlaytestRunInput::FOwnEvents Own;
 			FSlateApplication::Get().ProcessMouseButtonDownEvent(nullptr, ButtonEvent(Abs, Key));
 			Pointer.UiDown.Add(Key);
 			return true;
@@ -380,6 +384,7 @@ namespace
 				for (const FKey& Key : TSet<FKey>(Pointer.UiDown))
 				{
 					Pointer.Pressed.Remove(Key);
+					PlaytestRunInput::FOwnEvents Own;
 					FSlateApplication::Get().ProcessMouseButtonUpEvent(ButtonEvent(Abs, Key));
 				}
 			}

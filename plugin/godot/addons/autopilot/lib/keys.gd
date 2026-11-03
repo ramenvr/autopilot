@@ -185,8 +185,10 @@ static func action_for_key(name: String) -> String:
 ## Godot input events (Input.parse_input_event), so the game's _input / _unhandled_input / _gui_input, Input's actions
 ## and its own mouse position see them; `move` presses the movement actions ("actions") or, with none bound to
 ## W/A/S/D or the arrows, the keys ("keys"). `notes`: what an agent should know here.
-static func input_caps(headless: bool, mouse_mode := Input.MOUSE_MODE_VISIBLE, move_actions := true) -> Dictionary:
+static func input_caps(headless: bool, mouse_mode := Input.MOUSE_MODE_VISIBLE, move_actions := true, isolated := false) -> Dictionary:
 	var notes := []
+	if isolated:
+		notes.append("A run is going: the person's own keyboard, mouse and gamepads don't reach the game, only these ops do. The game's key and mouse bindings are bound to Autopilot's keyboard and mouse meanwhile (an event's device reads 1016 for its keys and 1032 for its mouse, not Godot's 16 and 32).")
 	if headless:
 		notes.append("The game runs headless: the mouse is never captured (Input.mouse_mode stays visible), so a game that turns its view only while the mouse is captured won't turn; get_viewport().get_mouse_position() reports the pointer.")
 	else:

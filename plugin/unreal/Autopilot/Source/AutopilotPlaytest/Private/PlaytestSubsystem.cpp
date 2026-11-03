@@ -27,6 +27,7 @@
 #include "PlaytestInternal.h"
 #include "PlaytestJson.h"
 #include "PlaytestPreferences.h"
+#include "PlaytestRunInput.h"
 #include "PlaytestSettings.h"
 #include "UObject/Package.h"
 #include "WebSocketsModule.h"
@@ -243,6 +244,7 @@ void UPlaytestSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UPlaytestSubsystem::Deinitialize()
 {
 	FTSTicker::GetCoreTicker().RemoveTicker(TickHandle);
+	PlaytestRunInput::Shutdown();
 	PlaytestCodex::Shutdown();  // (an export still running ends with the game)
 	if (Media.IsValid())
 	{
@@ -1386,6 +1388,7 @@ bool UPlaytestSubsystem::Tick(float DeltaTime)
 		HandleMessage(Message);
 	}
 	PlaytestOps::TickKeys(*this, DeltaTime);  // held keys and axes, every frame (all let go once disconnected)
+	PlaytestRunInput::Update(bConnected && bRunActive && GetGameWorld() != nullptr);  // (the person's input off the game while a run plays)
 	PumpInspect();  // (also once disconnected: what was already received still arrives)
 	Media->Tick();  // (also once disconnected: a recording ends with its connection)
 	NoteLaunchMap();  // (connected or not: the map launched with, before any travel)

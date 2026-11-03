@@ -15,7 +15,7 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from harness import GODOT, project, require_setup  # noqa: E402
 
-SCRIPTS = ["units.gd", "dock_units.gd"]
+SCRIPTS = ["units.gd", "dock_units.gd", "isolation_units.gd"]
 
 
 def settings_env(folder):

@@ -4,6 +4,8 @@
 ##    play_custom_scene / stop_playing_scene); `codex_manifest`/`codex_read` are answered here, from the project's files;
 ##  - every other request goes to the running game's autoload over the editor's debugger connection (debugger.gd), and
 ##    the game's answers and events come back the same way, passed on to the brain unchanged;
+##  - whether a run is going goes to the game too ("run" messages, as it changes, and in the attach), so that while one
+##    goes the game gets Autopilot's input alone (lib/isolation.gd);
 ##  - with no game running, `context` and `ping` are answered here (session_running false) and the rest get an error;
 ##  - `record` is followed here: a recording goes on in the next play session of the same connection (each is a new
 ##    game process) unless the brain stopped it, `stop` is answered here, and the game's pictures come over the debugger
@@ -86,6 +88,7 @@ var _record = null  # the brain's `record` start args while it records (kept acr
 var _record_frames := 0  # frames passed on since that start
 var _record_next := 0  # the next frame's number (a new play session goes on from it)
 var _record_starts := {}  # request id -> args of the `record` starts forwarded to the game, until it answers
+var _run_told = null  # whether a run goes, as the game was last told (null: not told yet)
 
 
 func _ready() -> void:
@@ -189,6 +192,7 @@ func start_run(run: Dictionary) -> void:
 		return
 	link.send({"type": "start", "run": run})
 	run_active = true
+	_tell_run()
 	run_changed.emit(true)
 	status("Run started")
 
@@ -314,10 +318,12 @@ func _process(_delta: float) -> void:
 	var now := _now()
 	for frame in link.poll():
 		_on_brain_frame(frame)
+		_tell_run()  # (a run that started or ended with this frame: told before the requests after it go)
+	_tell_run()  # (disconnected meanwhile, say)
 	# attach to a game that started, until it answers (its autoload may not be listening yet)
 	if _game_session >= 0 and not _game_ready and now < _attach_until and now >= _attach_at:
 		_attach_at = now + 0.5
-		var cfg := {"detectors": _detector_config}
+		var cfg := {"detectors": _detector_config, "run": run_active}
 		if _record != null:
 			cfg.record = _record.merged({"n": _record_next}, true)  # (the recording goes on in this play session)
 		debugger.send(_game_session, "attach", [JSON.stringify(cfg)])
@@ -532,6 +538,7 @@ func _on_request(frame: Dictionary) -> void:
 			if not _game_ready:
 				_respond_error(id, "no picture: no game is running", 409)
 				return
+	_tell_run()
 	if _game_ready and debugger.send(_game_session, "request", [JSON.stringify(frame)]):
 		_forwarded[id] = true
 		return
@@ -716,6 +723,7 @@ func _wait_ready(id, gen: int) -> void:
 func _on_session_started(session_id: int) -> void:
 	_game_session = session_id
 	_game_ready = false
+	_run_told = null
 	_attach_at = 0.0
 	_attach_until = _now() + SESSION_TIMEOUT
 	if EditorInterface.is_playing_scene():
@@ -745,6 +753,16 @@ func _on_session_breaked(session_id: int) -> void:
 func _detach() -> void:
 	if _game_session >= 0:
 		debugger.send(_game_session, "detach", [])
+	_run_told = null
+
+
+## Tell the game whether a run goes, when that changed since it was told: while one goes, the game gets Autopilot's
+## input alone (lib/isolation.gd), and between runs the person's input reaches it again.
+func _tell_run() -> void:
+	if not _game_ready or _run_told == run_active:
+		return
+	if debugger.send(_game_session, "run", [run_active]):
+		_run_told = run_active
 
 
 func _on_game_message(message: String, data: Array, session_id: int) -> void:
@@ -754,6 +772,7 @@ func _on_game_message(message: String, data: Array, session_id: int) -> void:
 		"ready":
 			if not _game_ready:
 				_game_ready = true
+				_run_told = null
 				_game_gen += 1
 				if is_connected_to_brain():
 					link.send({"type": "events", "events": [{"kind": "session", "t": 0.0, "running": true, "scene": _playing()}], "t": 0.0})

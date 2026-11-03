@@ -195,6 +195,16 @@ def run(c, brain, link, guard):
     time.sleep(0.3)
     c.check("relayed pause", req("ping")["game_time"] == t1 and req("context")["paused"] is True)
     req("pause", {"paused": False})
+    # a run is going (this agent server's welcome, role "cli"): the editor told the game, which takes Autopilot's input
+    # alone; the run's result ends it there too, and a run started from elsewhere (run_started) starts it again
+    notes = lambda: " ".join(req("context")["input"]["notes"])
+    c.check("in a run the game takes Autopilot's input alone (told by the editor)", "A run is going" in notes(), notes()[:160])
+    link.send({"type": "result", "result": {"kind": "verify", "verdict": "CONFIRMED", "reason": "test"}})
+    c.check("the run's result: the game takes the person's input again", until(lambda: "A run is going" not in notes(), 5))
+    link.send({"type": "run_started", "run": {"kind": "explore", "by": "test"}})
+    c.check("a run started elsewhere: Autopilot's input alone again", until(lambda: "A run is going" in notes(), 5))
+    r = req("move", {"direction": {"X": -1, "Y": 0, "Z": 0}, "seconds": 0.5})
+    c.check("relayed move in the run", r["moved"] > 150, str(r))
 
     # the mailbox's script error stops the game in the debugger; the editor lets it go on while the brain plays
     req("rc", {"verb": "property", "body": {"objectPath": "/root/Level/Player", "propertyName": "position",
@@ -221,6 +231,7 @@ def run(c, brain, link, guard):
     c.check("restart: a new game process, fresh state", r.get("running") is True and new and gs == 0
             and link.session_changes >= changes + 2, f"{r} new={new} apples={gs}")
     c.check("restart replays the scene played (main)", req("context")["world"] == "/root/Menu")
+    c.check("a restarted game is told at its attach that the run goes", "A run is going" in notes(), notes()[:160])
     r = req("session", {"action": "restart", "map": "level2d"}, timeout=90)
     c.check("restart with a map plays that scene (the answer says it)", r == {"running": True, "scene": "res://scenes/level2d.tscn"}
             and req("context")["world"] == "/root/Level2D", str(r))
