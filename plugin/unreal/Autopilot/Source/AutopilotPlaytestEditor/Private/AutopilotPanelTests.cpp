@@ -2060,11 +2060,11 @@ bool FAutopilotFirstRunTest::RunTest(const FString& Parameters)
 	// The account creation page's server: autopilot.env's, else the download's settings.env, else Aura's
 	{
 		FScratchDir Service;
-		TestEqual(TEXT("sign-up page: Aura's"), PlaytestAura::SignUpUrl(Dir.Path, Service.Path), FString(TEXT("https://app.tryaura.dev/auth/signup")));
+		TestEqual(TEXT("sign-up page: Aura's"), PlaytestAura::SignUpUrl(Dir.Path, Service.Path), FString(TEXT("https://app.tryaura.dev/auth/signup?src=autopilot")));
 		FFileHelper::SaveStringToFile(TEXT("AUTOPILOT_AURA_SERVER=https://beta.example/\n"), *FPaths::Combine(Service.Path, TEXT("settings.env")));
-		TestEqual(TEXT("sign-up page: the download's"), PlaytestAura::SignUpUrl(Dir.Path, Service.Path), FString(TEXT("https://beta.example/auth/signup")));
+		TestEqual(TEXT("sign-up page: the download's"), PlaytestAura::SignUpUrl(Dir.Path, Service.Path), FString(TEXT("https://beta.example/auth/signup?src=autopilot")));
 		FFileHelper::SaveStringToFile(TEXT("AUTOPILOT_AURA_SERVER=https://own.example\n"), *FPaths::Combine(Dir.Path, TEXT("autopilot.env")));
-		TestEqual(TEXT("sign-up page: autopilot.env's"), PlaytestAura::SignUpUrl(Dir.Path, Service.Path), FString(TEXT("https://own.example/auth/signup")));
+		TestEqual(TEXT("sign-up page: autopilot.env's"), PlaytestAura::SignUpUrl(Dir.Path, Service.Path), FString(TEXT("https://own.example/auth/signup?src=autopilot")));
 		IFileManager::Get().Delete(*FPaths::Combine(Dir.Path, TEXT("autopilot.env")));
 	}
 

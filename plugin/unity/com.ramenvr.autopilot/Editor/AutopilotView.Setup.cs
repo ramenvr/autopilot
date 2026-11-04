@@ -257,7 +257,7 @@ namespace Autopilot.Playtest.Editor
             Refresh(true);
         }
 
-        /// <summary>Aura's account creation page (&lt;server&gt;/auth/signup) on the Aura server the sign-in goes to:
+        /// <summary>Aura's account creation page (&lt;server&gt;/auth/signup?src=autopilot) on the Aura server the sign-in goes to:
         /// autopilot.env's AUTOPILOT_AURA_SERVER, else the one the package was built for (AgentService~/settings.env),
         /// else Aura's own (https://app.tryaura.dev).</summary>
         public static string SignUpUrl(string envPath = null, string installerDir = null)
@@ -267,7 +267,7 @@ namespace Autopilot.Playtest.Editor
             var dir = installerDir ?? AgentService.InstallerDir();
             if (string.IsNullOrWhiteSpace(server) && dir != null) server = AutopilotEnv.Value(key, System.IO.Path.Combine(dir, "settings.env"));
             server = (server ?? "").Trim().TrimEnd('/');
-            return (server.Length > 0 ? server : "https://app.tryaura.dev") + "/auth/signup";
+            return (server.Length > 0 ? server : "https://app.tryaura.dev") + "/auth/signup?src=autopilot";
         }
 
         void UseAuraApp()

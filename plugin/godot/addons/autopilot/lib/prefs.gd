@@ -220,7 +220,7 @@ static func env_value(text: String, name: String) -> String:
 	return found
 
 
-## Aura's account creation page (<server>/auth/signup) on the Aura server the sign-in goes to: autopilot.env's
+## Aura's account creation page (<server>/auth/signup?src=autopilot) on the Aura server the sign-in goes to: autopilot.env's
 ## AUTOPILOT_AURA_SERVER, else the one the download was built for (settings.env in the installer's folder,
 ## installer_dir), else Aura's own (https://app.tryaura.dev).
 static func sign_up_url(installer_dir: String, env_path := "") -> String:
@@ -229,7 +229,7 @@ static func sign_up_url(installer_dir: String, env_path := "") -> String:
 		if server == "" and p != "" and FileAccess.file_exists(p):
 			server = env_value(FileAccess.get_file_as_string(p), "AUTOPILOT_AURA_SERVER")
 	server = server.strip_edges().rstrip("/")
-	return (server if server != "" else "https://app.tryaura.dev") + "/auth/signup"
+	return (server if server != "" else "https://app.tryaura.dev") + "/auth/signup?src=autopilot"
 
 
 ## One of LLM_PROVIDERS for v (the dropdown's pick): anthropic for anything else.

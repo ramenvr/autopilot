@@ -450,11 +450,11 @@ namespace Autopilot.Playtest.Tests
             try
             {
                 var env = Path.Combine(dir, "autopilot.env");
-                Assert.AreEqual("https://app.tryaura.dev/auth/signup", AutopilotView.SignUpUrl(env, dir));
+                Assert.AreEqual("https://app.tryaura.dev/auth/signup?src=autopilot", AutopilotView.SignUpUrl(env, dir));
                 File.WriteAllText(Path.Combine(dir, "settings.env"), "AUTOPILOT_AURA_SERVER=https://beta.example/\n");
-                Assert.AreEqual("https://beta.example/auth/signup", AutopilotView.SignUpUrl(env, dir));
+                Assert.AreEqual("https://beta.example/auth/signup?src=autopilot", AutopilotView.SignUpUrl(env, dir));
                 File.WriteAllText(env, "AUTOPILOT_AURA_SERVER=https://own.example\n");
-                Assert.AreEqual("https://own.example/auth/signup", AutopilotView.SignUpUrl(env, dir));
+                Assert.AreEqual("https://own.example/auth/signup?src=autopilot", AutopilotView.SignUpUrl(env, dir));
             }
             finally
             {

@@ -473,7 +473,7 @@ func run_checks() -> void:
 	var opened_urls := []
 	dock._setup.open_url = func(u: String): opened_urls.append(u)
 	check("Create Account: Aura's account creation page opened, nothing asked of the agent service",
-		press(dock._setup, "Create Account") and opened_urls.size() == 1 and opened_urls[0].ends_with("/auth/signup") and fake.sent.is_empty(),
+		press(dock._setup, "Create Account") and opened_urls.size() == 1 and opened_urls[0].ends_with("/auth/signup?src=autopilot") and fake.sent.is_empty(),
 		[opened_urls, fake.sent])
 	t = setup_text()
 	var sign_in_buttons := []
@@ -497,8 +497,8 @@ func run_checks() -> void:
 	server_said.append(Prefs.sign_up_url(signup_dir, signup_env))
 	FileAccess.open(signup_env, FileAccess.WRITE).store_string("AUTOPILOT_AURA_SERVER=https://own.example\n")
 	server_said.append(Prefs.sign_up_url(signup_dir, signup_env))
-	check("the account creation page: Aura's, the download's, autopilot.env's", server_said == ["https://app.tryaura.dev/auth/signup",
-		"https://beta.example/auth/signup", "https://own.example/auth/signup"], server_said)
+	check("the account creation page: Aura's, the download's, autopilot.env's", server_said == ["https://app.tryaura.dev/auth/signup?src=autopilot",
+		"https://beta.example/auth/signup?src=autopilot", "https://own.example/auth/signup?src=autopilot"], server_said)
 	for signup_file in ["autopilot.env", "settings.env"]:
 		DirAccess.remove_absolute(signup_dir.path_join(signup_file))
 	DirAccess.remove_absolute(signup_dir)

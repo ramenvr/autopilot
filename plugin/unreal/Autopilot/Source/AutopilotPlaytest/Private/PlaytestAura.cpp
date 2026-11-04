@@ -37,7 +37,7 @@ namespace PlaytestAura
 		{
 			Server.LeftChopInline(1);
 		}
-		return (Server.IsEmpty() ? FString(TEXT("https://app.tryaura.dev")) : Server) + TEXT("/auth/signup");
+		return (Server.IsEmpty() ? FString(TEXT("https://app.tryaura.dev")) : Server) + TEXT("/auth/signup?src=autopilot");
 	}
 
 	namespace

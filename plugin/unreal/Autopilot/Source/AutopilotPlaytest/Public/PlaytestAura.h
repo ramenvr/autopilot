@@ -13,7 +13,7 @@ namespace PlaytestAura
 	AUTOPILOTPLAYTEST_API extern const TCHAR* DownloadUrl;
 
 	/**
-	 * Aura's account creation page (<server>/auth/signup) on the Aura server the sign-in goes to: autopilot.env's
+	 * Aura's account creation page (<server>/auth/signup?src=autopilot) on the Aura server the sign-in goes to: autopilot.env's
 	 * AUTOPILOT_AURA_SERVER (in KeysDir, "": the user settings folder), else the one the download was built for (the
 	 * plugin's AgentService/settings.env, or AgentServiceDir's), else Aura's own (https://app.tryaura.dev).
 	 */
