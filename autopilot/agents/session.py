@@ -1049,7 +1049,9 @@ class Session:
             # let go and the game paused it can't drive the player any more
             threading.Thread(target=work, name="probe", daemon=True).start()
             if not done.wait(seconds):
-                late = ("\nTHE TIME FOR READING AND PROBING RAN OUT DURING THE PROBE AND IT WAS CUT OFF HERE: the keys "
+                late = (f"\nTHE RUN'S TIME RAN OUT DURING THE PROBE AND IT WAS CUT OFF HERE: the keys were let go and "
+                        f"the game paused; what it printed until then is above. {TIME_UP}" if self.time_up() else
+                        "\nTHE TIME FOR READING AND PROBING RAN OUT DURING THE PROBE AND IT WAS CUT OFF HERE: the keys "
                         "were let go and the game paused; what it printed until then is above. Write the harness now "
                         "from what you know and call run_harness." if seconds < PROBE_SECONDS else
                         f"\nTHE PROBE TOOK MORE THAN {PROBE_SECONDS:.0f} s AND WAS CUT OFF HERE: the keys were let go "
@@ -1870,6 +1872,11 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
     session = Session(game, project, prompt, run_id or time.strftime("%Y%m%d-%H%M%S"), say=say, client=client,
                       activity=activity)
     session.budget = float(timeout or default_timeout())
+    # Reading and probing keep to half of the time a run has for play. The agent isn't told the run's time, so without
+    # this a short run could go all on probes and end with no episode played
+    left = session.time_left()
+    if left:
+        session.research_budget = min(session.research_budget, round(left / 2))
     session.play_seconds = float(play_seconds) if play_seconds else None
     stopped = stop or (lambda: False)
     session.stop = lambda: bool(stopped()) or session.out_of_time()

@@ -89,7 +89,9 @@ def run_one(item, args, root):
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **processes.GROUP)
     processes.track(game)
     try:
-        deadline = started + args.minutes * 60
+        # (a run's budget starts once the game is up, over a minute from here: the wait has to outlast it, or a run
+        # that ends at its time is killed while it writes its report)
+        deadline = started + args.minutes * 60 + 180
         while time.time() < deadline and brain.poll() is None:
             time.sleep(2)
         timed_out = brain.poll() is None

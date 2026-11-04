@@ -600,6 +600,31 @@ def test_time_up_leaves_a_way_to_report_with_no_episode(game, tmp_path, monkeypa
     assert s.report is not None
 
 
+def test_a_short_run_keeps_time_to_play(game, tmp_path, monkeypatch):
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    monkeypatch.delenv("AUTOPILOT_RESEARCH_SECONDS", raising=False)
+    short = session.open_session(game, "fake", "Win", "r1", timeout=420)
+    assert short.research_budget == round((420 - session.REPORT_SECONDS) / 2)
+    usual = session.open_session(game, "fake", "Win", "r2", timeout=1800)
+    assert usual.research_budget == session.RESEARCH_SECONDS
+
+
+def test_a_probe_cut_off_at_the_end_of_the_run_says_so(game, tmp_path, monkeypatch):
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    s = session.Session(game, "fake", "Win", "r1")
+    s.budget = 600.0
+    s.started = time.time() - (600 - session.REPORT_SECONDS) + 0.3
+    s.looking = True
+    out = s.probe("time.sleep(2)", seconds=1)
+    assert "THE RUN'S TIME RAN OUT" in out and "READING AND PROBING" not in out and "Call report now" in out
+
+
 def test_an_agent_that_stops_with_time_left_isnt_asked_for_more(game, tmp_path, monkeypatch):
     from autopilot import codex
     from autopilot.agents import session
