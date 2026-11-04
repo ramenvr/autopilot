@@ -28,7 +28,7 @@ Each run:
      agent's, and may be another provider than the agent's); without `vision` (an older Aura, a run the Autopilot tab
      started with no model picked), by Opus 5.5 through Aura's Anthropic relay. A run that goes on on the free
      allowance (go_on_free) describes with the `vision` of that answer from then on.
-  4. Saves the game's memory to Aura (autopilot/aura_memory.py; fetched back before a run on a machine without it), then
+  4. Saves the game's memory to Aura (autopilot/aura_memory.py; what other folders saved is fetched before a run), then
      finishes the run (POST .../api/autopilot/runs/finish): Aura bills it by those tokens. A run never finished (the
      editor closed) is billed by Aura once its token expires.
 
@@ -358,7 +358,7 @@ class Run:
         return self.agent["name"] if self.agent else AGENT
 
     def restore_memory(self, folder):
-        """Keep the project's memory in `folder` from now on, fetching Aura's copy first if this machine has none."""
+        """Keep the project's memory in `folder` from now on, first bringing in what other folders saved."""
         self.memory_folder = folder
         if self.memory:
             self.memory.restore(folder)

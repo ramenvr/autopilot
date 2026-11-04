@@ -1,36 +1,59 @@
 """A game's memory kept with Aura, for runs through Aura (autopilot/aura.py): the same files on every machine of the
 team.
 
-What runs learned in the memory folder (memory/<project>/: notes.md, lib.py, runs/) is copied to Aura's storage after
-every run and copied back before a run on a machine that has none of it (a new machine, a reinstall). The codex
-(codex/, the game's code as text) never is: every run rebuilds it from the game, and Autopilot doesn't store whole
-codebases. A save removes any codex an older Autopilot stored there. Aura keeps the memory per team and
-project, behind the run's token (POST <AUTOPILOT_AURA_URL>/api/autopilot/memory, ops list / sign / delete): the brain
-sends and fetches the files themselves over short-lived signed URLs Aura gives it, and never holds the storage's
-credentials.
+What runs learned in the memory folder (memory/<project>/: notes.md, lib.py, runs/) is kept the same in every folder
+that syncs the project, in both directions: a new machine, a reinstall, or a second Autopilot on one computer with
+its own folder. The codex (codex/, the game's code as text) never is: every run rebuilds it from the game, and
+Autopilot doesn't store whole codebases. A save removes any codex an older Autopilot stored there. Aura keeps the
+memory per team and project, behind the run's token (POST <AUTOPILOT_AURA_URL>/api/autopilot/memory, ops list / sign /
+delete): the brain sends and fetches the files themselves over short-lived signed URLs Aura gives it, and never holds
+the storage's credentials.
 
-    restore(folder)  before the run: when the folder has never been synced and holds nothing runs learned, the
-                     stored files (all but runs older than the RECENT_RUNS most recent) are fetched into it.
-    save(folder)     after the run: files that are new or changed are sent, and files this machine had synced but
-                     has since removed (Delete memory in the Autopilot tab, memory.forget) are removed from Aura too.
+    restore(folder)  before every run: what other folders stored since this one last synced is brought in. With
+                     nothing new it costs one listing: a file is only read when its stored MD5 has moved.
+    save(folder)     after the run: the same first, then what is new or changed here is sent, and files this folder
+                     had synced but has since removed are removed from Aura too.
 
-A restore is all or nothing: the files are fetched into a staging folder beside the projects' and moved in only once
-every one has arrived. One that fails (Aura or the storage unreachable, a quota, the disk) leaves the folder as it was
-and marks the restore pending in SYNC_FILE. While it is pending, the run goes on from the memory the machine has, a
-save sends only files Aura doesn't hold (never one over a stored file this machine never had: the stored notes.md
-stays the team's), and the next run's restore tries again, even over what that run learned: the stored notes.md and
-lib.py replace this machine's, which are kept aside in <memory>/.restore-backup/<project>/<time>/ (never read).
+Each file is compared three ways: this folder, Aura's copy, and the copy both last agreed on (the MD5s in SYNC_FILE).
+
+    changed in one place           the change is taken: sent, or fetched over the local file
+    changed in both, notes.md      merged by line (merge_notes): every line either side has survives, once. A line one
+                                   side removed may come back from the other: a merge can't tell, and never drops one
+    changed in both, lib.py or     Aura's copy stays where it is, because other folders build on it, and this folder's
+    a run's file                   goes to runs/conflict-<hash>/<path>, so it is synced and read like an earlier run
+    changed in both, the rest      Aura's copy is taken (.codex-seen.json.gz: a run rebuilds it); this folder's goes to
+                                   <memory>/.restore-backup/<project>/<time>/ (never read)
+    removed from Aura              removed here too, moved to .restore-backup, unless it changed here since: then it
+                                   is sent again
+    removed here                   removed from Aura, unless Aura's copy changed since: then it is fetched again
+
+A folder that holds memory but has never synced, or was last synced by an older Autopilot (which overwrote stored
+files and so left no copy both agreed on), goes through the same comparison with no agreed copy: it merges rather
+than replacing either side. Nothing is fetched for runs older than the RECENT_RUNS most recent, which stay stored.
+
+Everything is fetched into a staging folder before anything in the memory folder changes, so a sync that fails leaves
+the folder as it was: the run goes on from the memory it has, and the next sync tries again. The storage has no
+conditional write, so a save lists right before sending and checks the listing after: a file another folder sent
+first is merged rather than overwritten, and one that lost a race stays unsynced until the next sync merges it. Only
+two saves landing inside one upload can still lose the earlier one's change.
+
+A Reset memory (memory.forget) moves the stored learned files aside and leaves RESET_ID, a stored file naming the
+reset. A folder that hasn't seen that reset moves the learned files it had synced to memory.RESET_BACKUP, its edits
+to them included, so a stale folder never sends them back, and then fetches what was learned since. A file it never
+synced was learned after the reset and is kept. Older Autopilots reset without RESET_ID: their reset reaches other
+folders as files removed from Aura. A store that is wholly empty for a folder that has synced is never taken for a
+reset: it was erased, or the run's account now has another store, so the folder's memory is sent to it.
 
 Runs with the user's own keys keep it the same way when the user shares their runs (install_memory): with this
 machine's install token (autopilot/training.py), in Aura's storage for this install, so its Reset memory reaches a
 stored copy too. Each copy has its own SYNC_FILE, and a reset is passed on to each copy once (RESET_MARK says which have
-it).
+it), whether it was pressed in this folder or reached it through the other copy.
 
 A save or a restore that fails for a reason that passes (the network, Aura or the storage busy or down:
 autopilot/retry.py) is tried again at once, after short waits that double from RETRY_SECONDS (both happen while the run
 starts or ends); one refused (a quota, a bad token) is reported as below.
 
-What was synced last is in the folder's SYNC_FILE, so a cleared memory stays cleared. Never synced: the codex, SCRATCH
+Never synced: the codex, SCRATCH
 folders (Claude Code's own folder, which holds the session's transcript, and bytecode caches), LOCAL_ONLY files (where
 the project is on this machine) and files over MAX_FILE_BYTES. A failure is reported and the run goes on: memory is a
 copy, never what a run depends on.
@@ -44,6 +67,7 @@ import os
 import shutil
 import tempfile
 import time
+import uuid
 
 import requests
 
@@ -51,8 +75,11 @@ from . import memory, retry
 
 SYNC_FILE = ".aura-sync.json"
 INSTALL_SYNC_FILE = ".install-sync.json"  # the copy kept for this install (runs with the user's own keys)
+SYNC_VERSION = 2  # a sync file with no version: an older Autopilot's, whose MD5s are no copy both sides agreed on
+RESET_ID = ".memory-reset-id"  # stored, never in a folder: names the last reset, for the folders that haven't seen it
+NOTES = "notes.md"  # the one file merged line by line
 # (project.json: where the project is on this machine; .training-sync.json: what shared run data was sent)
-LOCAL_ONLY = ("project.json", SYNC_FILE, INSTALL_SYNC_FILE, ".training-sync.json", memory.RESET_MARK)
+LOCAL_ONLY = ("project.json", SYNC_FILE, INSTALL_SYNC_FILE, ".training-sync.json", memory.RESET_MARK, RESET_ID)
 TELEMETRY = "telemetry"  # a run's shared data (autopilot/telemetry.py): sent by autopilot/training.py, never synced
 MEDIA = "media"  # a run's recording when its data isn't shared (autopilot/media.py): this machine's only
 CODEX = "codex"  # the game's code as text (autopilot/codex.py): this machine's only, rebuilt by every run
@@ -62,8 +89,9 @@ BATCH = 100  # files per sign or delete request (Aura's limit)
 WORKERS = 8  # transfers at once
 TIMEOUT = 120.0  # seconds for one request or one file's transfer
 RETRY_SECONDS = 2.0  # the first wait before a save or restore is tried again (2, 4, 8 s): the run waits for it
-# Beside the projects' folders, like memory.RESET_BACKUP: a restore's staging, and this machine's files a retried
-# restore replaced (<memory>/.restore-backup/<project>/<time>/). Autopilot never reads either
+SAVE_ROUNDS = 3  # a save's tries at catching up with folders saving at the same time, before it sends what it can
+# Beside the projects' folders, like memory.RESET_BACKUP: a sync's staging, and the files a sync replaced that exist
+# nowhere else (<memory>/.restore-backup/<project>/<time>/). Autopilot never reads either
 RESTORE_STAGING = ".restore-staging"
 RESTORE_BACKUP = ".restore-backup"
 
@@ -88,8 +116,12 @@ def md5_of(path):
 def synced_files(folder):
     """{relative path: full path} of the files that are synced: memory.files() less the local-only ones and the
     codex."""
-    return {rel: full for rel, full in memory.files(folder).items()
-            if rel not in LOCAL_ONLY and not is_telemetry(rel) and not is_codex(rel)}
+    return {rel: full for rel, full in memory.files(folder).items() if is_synced(rel)}
+
+
+def is_synced(rel):
+    """Whether a path is one a sync moves, in either direction."""
+    return rel not in LOCAL_ONLY and not is_telemetry(rel) and not is_codex(rel)
 
 
 def is_codex(rel):
@@ -104,8 +136,40 @@ def is_telemetry(rel):
     return len(parts) >= 4 and parts[0] == "runs" and parts[2] in (TELEMETRY, MEDIA)
 
 
+def merge_notes(stored, local):
+    """notes.md changed on both sides, as bytes: Aura's copy with the lines only this folder has put in, in this
+    folder's order, each after the nearest line before it that both have (at the end when there is none). The same
+    inputs give the same bytes, a line both have is never repeated, and merging an already merged copy changes nothing.
+    None when one isn't text (kept as a conflict instead)."""
+    try:
+        merged, ours = stored.decode("utf-8").splitlines(), local.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        return None
+    have = {line.rstrip() for line in merged}
+    at, blanks, added = len(merged), [], False
+    for line in ours:
+        key = line.rstrip()
+        if not key:
+            blanks.append(line)
+        elif key in have:
+            blanks = []
+            at = next((i + 1 for i, m in enumerate(merged) if m.rstrip() == key), at)
+        else:
+            merged[at:at] = [*blanks, line]
+            at += len(blanks) + 1
+            blanks, added = [], True
+            have.add(key)
+    return "\n".join(merged).encode("utf-8") + b"\n" if added else stored
+
+
+def conflict_path(rel, md5):
+    """Where this folder's copy of a file changed on both sides goes: a run's folder, so it is synced, listed for the
+    next run (by its prompt.txt) and reset like one, named by what it holds, so the same conflict never makes two."""
+    return f"runs/conflict-{base64.b64decode(md5).hex()[:8]}/{rel}"
+
+
 def recent(paths, keep=RECENT_RUNS):
-    """The paths a restore fetches: all but the runs older than the `keep` most recent (runs/<id>/..., by id, which
+    """The paths a sync fetches: all but the runs older than the `keep` most recent (runs/<id>/..., by id, which
     starts with the run's time)."""
     runs = sorted({p.split("/")[1] for p in paths if p.startswith("runs/") and p.count("/") >= 2}, reverse=True)
     dropped = set(runs[keep:])
@@ -137,9 +201,14 @@ class MemorySync:
             raise SyncError(f"HTTP {r.status_code}: {r.text[:300]}", passing=r.status_code in retry.STATUSES)
         return r.json()
 
+    def _list(self):
+        """({path: md5} of what Aura stores for the project, whether that is all of it)."""
+        answer = self._call({"op": "list"})
+        return {f["path"]: f.get("md5") for f in answer.get("files", [])}, not answer.get("truncated")
+
     def listing(self):
         """{path: md5} of what Aura stores for the project."""
-        return {f["path"]: f.get("md5") for f in self._call({"op": "list"}).get("files", [])}
+        return self._list()[0]
 
     def _transfer(self, signed, work):
         """work(signed file): True, or (why it failed, its HTTP status)."""
@@ -189,57 +258,123 @@ class MemorySync:
     # -- the two steps ----------------------------------------------------------------------------------------
 
     def restore(self, folder):
-        """Fetch the stored memory into a folder that has never been synced and holds nothing runs learned, or whose
-        last restore failed (pending). All or nothing: on a failure the folder stays as it was and the restore stays
-        pending for the next run. Returns how many files were fetched (0: nothing to do). Never raises."""
-        pending = _restore_pending(folder, self.sync_file)
-        if not pending and (os.path.exists(os.path.join(folder, self.sync_file)) or any(memory.state(folder).values())):
-            return 0
+        """Before a run: bring in what other folders stored since this one last synced, passing on a reset made here
+        first. All or nothing: on a failure the folder stays as it was and the next sync tries again. Returns how many
+        files were fetched (0: nothing to do). Never raises."""
 
         def attempt():
-            staging = None
-            try:
-                stored = self.listing()
-                if not stored:
-                    if pending:
-                        _write_baseline(folder, {}, self.sync_file)  # (nothing to restore any more)
-                    return 0
-                fetched = recent(sorted(p for p in stored if not is_telemetry(p) and not is_codex(p)))
-                # What this machine lacks, and (a retried restore, after a run went on without it) what runs learned
-                # that it holds otherwise than Aura: the stored copy is the one earlier runs built on
-                wanted = [p for p in fetched if not os.path.exists(_inside(folder, p))
-                          or (is_learned(p) and md5_of(_inside(folder, p)) != stored[p])]
-                if wanted:
-                    self.say("Fetching what earlier runs learned about this game")
-                    parent = os.path.dirname(os.path.abspath(folder))
-                    os.makedirs(os.path.join(parent, RESTORE_STAGING), exist_ok=True)
-                    staging = tempfile.mkdtemp(prefix=os.path.basename(folder) + "-",
-                                               dir=os.path.join(parent, RESTORE_STAGING))
-                    self._get_all(wanted, staging)
-                    _move_in(staging, folder, wanted)
-                # (what this machine now has: older runs it didn't fetch stay stored and are never removed from here)
-                _write_baseline(folder, {p: stored[p] for p in fetched}, self.sync_file)
-                print(f"Memory restored from Aura: {len(wanted)} files")
-                return len(wanted)
-            finally:
-                if staging:
-                    shutil.rmtree(staging, ignore_errors=True)
+            self.pass_on_reset(folder)
+            fetched = self._reconcile(folder, *self._list())
+            if fetched:
+                print(f"Memory restored from Aura: {fetched} files")
+            return fetched
 
         try:
             return retry.call(attempt, "fetching the memory from Aura", RETRY_SECONDS, sleep=self.sleep)
         except Exception as e:  # noqa: BLE001 - the run goes on from the memory this machine has
             print(f"Couldn't restore the memory from Aura (the next run tries again): {type(e).__name__}: {e}")
-            try:
-                _write_baseline(folder, _read_baseline(folder, self.sync_file), self.sync_file, pending=True)
-            except OSError as mark:
-                print(f"Couldn't note the restore as pending: {mark}")
             return 0
+
+    def _reconcile(self, folder, stored, complete=True):
+        """Bring the folder up to `stored` (the module's table). What it leaves for a save to send: files changed only
+        here. complete: whether `stored` is all of it (else nothing is taken as removed). Returns how many files were
+        fetched; raises what failed, with the folder as it was."""
+        record = _sync_record(folder, self.sync_file)
+        synced = _read_baseline(folder, self.sync_file)
+        if not stored and not synced:
+            return 0
+        agreed = record.get("version") == SYNC_VERSION
+        reset_id = stored.get(RESET_ID) or record.get("reset")
+        baseline, reset = synced, []
+        if reset_id != record.get("reset"):
+            reset = [p for p in synced if is_learned(p) and os.path.exists(_inside(folder, p))]
+            baseline = {p: m for p, m in synced.items() if not is_learned(p)}
+
+        files = {p: m for p, m in stored.items() if is_synced(p)}
+        fetchable = set(recent(sorted(files)))
+        after = dict(baseline)
+        take, merge, conflict, replace, removed = [], [], [], [], []
+        for p, m in files.items():
+            if m is None or m == baseline.get(p):
+                continue
+            full = _inside(folder, p)
+            if p in reset or not os.path.exists(full):
+                if p in fetchable:
+                    take.append(p)
+                else:
+                    after.pop(p, None)
+                continue
+            if os.path.getsize(full) > MAX_FILE_BYTES:
+                continue
+            local = md5_of(full)
+            if local == m:
+                after[p] = m
+            elif agreed and local == baseline.get(p):
+                take.append(p)
+            elif p == NOTES:
+                merge.append(p)
+            elif is_learned(p):
+                conflict.append(p)
+            else:
+                replace.append(p)
+        if not stored:
+            after = {}
+        elif complete:
+            for p, m in baseline.items():
+                if p not in stored:
+                    after.pop(p)
+                    full = _inside(folder, p)
+                    if os.path.exists(full) and md5_of(full) == m:
+                        removed.append(p)
+
+        wanted = take + merge + conflict + replace
+        if not (wanted or reset or removed) and after == synced and agreed and reset_id == record.get("reset"):
+            return 0
+        staging = None
+        try:
+            if wanted:
+                self.say("Fetching what earlier runs learned about this game")
+                parent = os.path.dirname(os.path.abspath(folder))
+                os.makedirs(os.path.join(parent, RESTORE_STAGING), exist_ok=True)
+                staging = tempfile.mkdtemp(prefix=os.path.basename(folder) + "-",
+                                           dir=os.path.join(parent, RESTORE_STAGING))
+                self._get_all(wanted, staging)
+            _keep_aside(folder, reset, memory.RESET_BACKUP)
+            if reset:
+                self._note_reset(folder)
+            _keep_aside(folder, removed + replace, RESTORE_BACKUP)
+            for p in merge:
+                with open(_inside(staging, p), "rb") as f:
+                    theirs = f.read()
+                with open(_inside(folder, p), "rb") as f:
+                    ours = f.read()
+                merged = merge_notes(theirs, ours)
+                if merged is None:
+                    conflict.append(p)
+                    continue
+                with open(_inside(staging, p), "wb") as f:
+                    f.write(merged)
+                take.append(p)
+            for p in conflict:
+                kept = conflict_path(p, md5_of(_inside(folder, p)))
+                _place(_inside(folder, p), _inside(folder, kept))
+                with open(_inside(folder, kept[:-len(p)] + "prompt.txt"), "w", encoding="utf-8") as f:
+                    f.write(f"{p} as one folder had it when another changed it too (the other's is the one in use)")
+            for p in take + conflict + replace:
+                _place(_inside(staging, p), _inside(folder, p))
+                after[p] = files[p]
+            _write_baseline(folder, after, self.sync_file, reset=reset_id)
+            return len(wanted)
+        finally:
+            if staging:
+                shutil.rmtree(staging, ignore_errors=True)
 
     def pass_on_reset(self, folder):
         """A Reset memory made on this machine (memory.forget), passed on to this stored copy, once: Aura moves the
         project's learned files (notes.md, lib.py, runs/) aside, where no run reads them (op "reset"), never deleting
-        them. The mark lists the copies that have it (`passed`), so the other copy gets it at its next save. Raises
-        SyncError when Aura couldn't (the mark stays as it was, and the next save tries again)."""
+        them, and RESET_ID tells the other folders. The mark lists the copies that have it (`passed`), so the other
+        copy gets it at its next sync. Raises SyncError when Aura couldn't (the mark stays as it was, and the next sync
+        tries again)."""
         path = os.path.join(folder, memory.RESET_MARK)
         try:
             with open(path, encoding="utf-8") as f:
@@ -249,12 +384,36 @@ class MemorySync:
         if not isinstance(mark, dict) or self.copy in (mark.get("passed") or []):
             return 0
         moved = int(self._call({"op": "reset"}).get("moved") or 0)
+        reset_id = self._send_reset_id()
         mark["passed"] = [*(mark.get("passed") or []), self.copy]
         with open(path, "w", encoding="utf-8") as f:
             json.dump(mark, f)
-        _write_baseline(folder, {}, self.sync_file)  # (nothing learned is synced now)
+        _write_baseline(folder, {}, self.sync_file, reset=reset_id)  # (nothing learned is synced now)
         print(f"Memory reset with Aura too: {moved} files kept aside")
         return moved
+
+    def _send_reset_id(self):
+        """Store a new RESET_ID. Returns its MD5."""
+        with tempfile.TemporaryDirectory() as temp:
+            full = os.path.join(temp, RESET_ID)
+            with open(full, "w", encoding="utf-8") as f:
+                json.dump({"id": uuid.uuid4().hex, "at": time.time()}, f)
+            md5 = md5_of(full)
+            self._put_all([(RESET_ID, full, md5)])
+        return md5
+
+    def _note_reset(self, folder):
+        """A reset that reached this folder through this copy: the folder's other copy gets it at its next sync."""
+        path = os.path.join(folder, memory.RESET_MARK)
+        try:
+            with open(path, encoding="utf-8") as f:
+                mark = json.load(f)
+        except (OSError, ValueError):
+            mark = None
+        mark = mark if isinstance(mark, dict) else {"at": time.time()}
+        mark["passed"] = [*(mark.get("passed") or []), self.copy]
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(mark, f)
 
     def save(self, folder):
         """Send what changed since Aura's copy and remove what this machine removed. Returns (sent, removed); never
@@ -270,32 +429,34 @@ class MemorySync:
     def _save(self, folder):
         """One try of save(): raises what failed."""
         self.pass_on_reset(folder)
-        # (a restore that failed: this machine never had the stored files, so it sends only what Aura doesn't hold)
-        pending = _restore_pending(folder, self.sync_file)
+        for _ in range(SAVE_ROUNDS):  # (a fetch takes time: list again, right before sending)
+            stored, complete = self._list()
+            if not self._reconcile(folder, stored, complete):
+                break
         local = synced_files(folder)
-        stored = self.listing()
+        baseline = _read_baseline(folder, self.sync_file)
         changed = []
         for rel, full in sorted(local.items()):
-            if os.path.getsize(full) > MAX_FILE_BYTES or (pending and rel in stored):
-                continue
+            if os.path.getsize(full) > MAX_FILE_BYTES or stored.get(rel) != baseline.get(rel):
+                continue  # (too big to store, or another folder got there first: the next sync merges it)
             m = md5_of(full)
             if stored.get(rel) != m:
                 changed.append((rel, full, m))
-        baseline = _read_baseline(folder, self.sync_file)
         # (and any codex an older Autopilot stored, from whichever machine: the codex is never kept with Aura)
-        gone = sorted({p for p in baseline if p not in local and p in stored} | {p for p in stored if is_codex(p)})
+        gone = sorted({p for p, m in baseline.items() if p not in local and p in stored and stored[p] == m}
+                      | {p for p in stored if is_codex(p)})
         if changed or gone:
             self.say("Saving what this run learned")
         self._put_all(changed)
         self._delete_all(gone)
-        # What this machine has synced: its own files that Aura now holds as they are here. A later save removes
-        # from Aura only what was in this list and is gone from here, never what other machines added
-        sent = {rel: m for rel, _, m in changed}
-        if pending:  # (only what it sent: what Aura holds otherwise isn't this machine's to remove)
-            _write_baseline(folder, sent, self.sync_file, pending=True)
-        else:
-            _write_baseline(folder, {rel: sent.get(rel) or stored[rel] for rel in local
-                                     if rel in sent or rel in stored}, self.sync_file)
+        # What both now agree on. A file another folder overwrote in the meantime stays as it was, so the next sync
+        # merges it. A later save removes from Aura only what is in this list and gone from here, never what other
+        # folders added
+        kept = self.listing() if changed else {}
+        for p in gone:
+            baseline.pop(p, None)
+        baseline.update({rel: m for rel, _, m in changed if kept.get(rel) == m})
+        _write_baseline(folder, baseline, self.sync_file, reset=_sync_record(folder, self.sync_file).get("reset"))
         print(f"Memory saved to Aura: {len(changed)} files sent, {len(gone)} removed")
         return len(changed), len(gone)
 
@@ -314,19 +475,18 @@ def is_learned(rel):
     return rel in memory.LEARNED or ("/" in rel and rel.split("/")[0] in memory.LEARNED)
 
 
-def _move_in(staging, folder, paths):
-    """Move a restore's fetched files from staging into the memory folder. A file this machine has there already is
-    moved aside first, to <memory>/.restore-backup/<project>/<time>/."""
-    backup = os.path.join(os.path.dirname(os.path.abspath(folder)), RESTORE_BACKUP, os.path.basename(folder),
+def _place(source, target):
+    """Move a file, making the target's folder."""
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    os.replace(source, target)
+
+
+def _keep_aside(folder, paths, backups):
+    """Move files out of the memory folder to <memory>/<backups>/<project>/<time>/, which Autopilot never reads."""
+    backup = os.path.join(os.path.dirname(os.path.abspath(folder)), backups, os.path.basename(folder),
                           time.strftime("%Y%m%d-%H%M%S"))
     for p in paths:
-        full = _inside(folder, p)
-        if os.path.exists(full):
-            kept = _inside(backup, p)
-            os.makedirs(os.path.dirname(kept), exist_ok=True)
-            os.replace(full, kept)
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        os.replace(_inside(staging, p), full)
+        _place(_inside(folder, p), _inside(backup, p))
 
 
 def _sync_record(folder, sync_file):
@@ -345,16 +505,12 @@ def _read_baseline(folder, sync_file=SYNC_FILE):
         return {}
 
 
-def _restore_pending(folder, sync_file=SYNC_FILE):
-    """Whether this copy's last restore into the folder failed (and the next run tries again)."""
-    return _sync_record(folder, sync_file).get("restore") == "pending"
-
-
-def _write_baseline(folder, files, sync_file=SYNC_FILE, pending=False):
+def _write_baseline(folder, files, sync_file=SYNC_FILE, reset=None):
+    """What this folder and the stored copy agree on; `reset`: the MD5 of the RESET_ID it has seen."""
     os.makedirs(folder, exist_ok=True)
     tmp = os.path.join(folder, sync_file + ".tmp")
     with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"files": files, **({"restore": "pending"} if pending else {})}, f)
+        json.dump({"version": SYNC_VERSION, "files": files, **({"reset": reset} if reset else {})}, f)
     os.replace(tmp, os.path.join(folder, sync_file))
 
 

@@ -680,7 +680,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             hello = getattr(link, "hello", None) or {}
             key = hello.get("project_id") or hello.get("project") or project  # (the project's key, as Aura keeps it)
             # With the user's own keys, a shared run's memory is kept with Aura for this install, as a run through
-            # Aura's is for the team (fetched first on a machine without it; saved after the result)
+            # Aura's is for the team (what other folders saved is fetched first; saved after the result)
             if run is None and share:
                 kept = aura_memory.install_memory(key, say=lambda text: link.status(text))
                 if kept:
