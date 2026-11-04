@@ -1362,6 +1362,25 @@ def test_the_sandboxed_agent_is_told_the_level_started_over(game, tmp_path, monk
         sb.close()
 
 
+def test_a_session_that_goes_on_keeps_numbering_episodes_in_the_sandbox(game, tmp_path, monkeypatch):
+    """Episodes play in the sandbox's process: counted from 0 there, a later session would write its harness and trace
+    over the first ones and report too few episodes."""
+    from autopilot.agents import session
+
+    crate_session(game, tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTOPILOT_SANDBOX", "process")
+    run_dir = tmp_path / "fake" / "runs" / "r1"
+    (run_dir / "harness1.py").write_text("the first episode's", encoding="utf-8")
+    session.go_on(str(run_dir), {"episodes": 1})
+    s = session.open_session(game, "fake", "Open the crate", "r1", client=FakeJev("open_crate"))
+    try:
+        s.run_harness(15)
+        assert s.episodes == 2 and (run_dir / "harness2.py").exists()
+        assert (run_dir / "harness1.py").read_text(encoding="utf-8") == "the first episode's"
+    finally:
+        s.sandbox.close()
+
+
 def test_system_prompt_fills_the_research_and_agents_parts(game):
     from autopilot.agents import session
 

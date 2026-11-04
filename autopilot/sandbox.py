@@ -470,6 +470,9 @@ def child_main():
             elif msg["method"] == "state":
                 reply["value"] = {"episodes": session.episodes, "played": session.played,
                                   "most_decisions": session.most_decisions, "writes": runtime.jsonable(game.writes)}
+            elif msg["method"] == "go_on":  # (a later session of the run: its episodes keep their numbers)
+                session.episodes = msg["kwargs"]["episodes"]
+                reply["value"] = True
             elif msg["method"] in ("pause", "release_all"):
                 getattr(game, msg["method"])(**msg.get("kwargs", {}))
                 reply["value"] = True

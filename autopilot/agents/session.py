@@ -1849,6 +1849,8 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
                                              level=getattr(game, "level", None), say=session.say,
                                              activity=session.activity)
         session.note(f"sandbox: {session.sandbox.kind}")
+        if session.episodes:  # (episodes play in its process: a new one must not take an earlier one's number)
+            session.sandbox.call("go_on", timeout=30, episodes=session.episodes)
     start_reading(session, describer)
     return session
 
