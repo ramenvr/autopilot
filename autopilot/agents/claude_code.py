@@ -22,7 +22,6 @@ import traceback
 
 from .. import engines
 from .session import (
-    EFFORT,
     PACKAGE,
     PROBING,
     READING,
@@ -36,6 +35,7 @@ from .session import (
     system_prompt,
     watch_steering,
 )
+from .session import effort as effort_for
 from .session import model as model_for
 
 
@@ -179,7 +179,7 @@ def researcher(model, game_tools=()):
 
     return AgentDefinition(description=RESEARCHER_DESCRIPTION, prompt=RESEARCHER_PROMPT, tools=list(LOOKUP),
                            disallowedTools=WRITE + [AGENT] + list(game_tools), model=model, maxTurns=RESEARCH_TURNS,
-                           effort=EFFORT)
+                           effort=effort_for(model))
 
 
 def _guard(session):
@@ -309,7 +309,7 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
     builtin = LOOKUP + WRITE + ([AGENT] if n_researchers else [])
     options = ClaudeAgentOptions(
         model=model,
-        effort=EFFORT,
+        effort=effort_for(model),
         settings=fast_settings(model),
         system_prompt=system,
         cwd=session.root,

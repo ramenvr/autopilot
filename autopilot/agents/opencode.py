@@ -209,7 +209,7 @@ def host_config(session, tools_url, model, system, provider=None, fast=None):
         "directory": os.path.realpath(session.root),
         "provider": provider,
         "model": model,
-        "variant": sessionmod.EFFORT,  # (the model's variant of that name, when it has one: its thinking effort)
+        "variant": sessionmod.effort(model),  # (the model's variant of that name, when it has one: its thinking effort)
         "fast": bool(fast and "opus" in model.lower()),
         "system": system,
         "permissions": permissions(session.root, session.run_rel),

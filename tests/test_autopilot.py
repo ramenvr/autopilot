@@ -543,6 +543,22 @@ def test_clock_nudges_toward_a_report(game, tmp_path, monkeypatch):
     assert "nearly up" in s.clock()
 
 
+def test_opus_thinks_harder_in_the_users_own_plugin(monkeypatch):
+    from autopilot import aura
+    from autopilot.agents import session
+
+    monkeypatch.delenv("AUTOPILOT_EFFORT", raising=False)
+    monkeypatch.setattr(aura, "_app", False)
+    opus = {session.MODELS[p] for p in ("anthropic", "opencode", "openrouter")}
+    assert {session.effort(name) for name in opus} == {"high"}  # (its name at each provider)
+    assert session.effort(session.MODELS["openai"]) == session.effort(None) == "medium"
+    monkeypatch.setattr(aura, "_app", True)  # (the Aura app's Autopilot)
+    assert {session.effort(name) for name in opus} == {"medium"}
+    monkeypatch.setattr(aura, "_app", False)
+    monkeypatch.setenv("AUTOPILOT_EFFORT", "low")  # (what the user set wins, on a model of any provider)
+    assert session.effort("claude-opus-5-5") == session.effort("gpt-6.1-sol") == "low"
+
+
 def test_the_claude_code_agent_has_no_turn_limit_unless_asked(monkeypatch):
     """A run is held to its time limit: a limit on turns, which the agent isn't told of, ended one with 17 minutes left,
     between its last edit and the report it was about to make."""

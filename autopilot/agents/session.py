@@ -33,7 +33,9 @@ from . import feed
 # Each LLM provider's model (OpenCode's provider ids; "opencode" is OpenCode Zen, "google" Gemini)
 MODELS = {"anthropic": "claude-opus-5-5", "openai": "gpt-6.1-sol", "opencode": "claude-opus-5-5",
           "openrouter": "anthropic/claude-opus-5.5", "deepseek": "deepseek-v4-pro", "google": "gemini-4-argon"}
-EFFORT = os.environ.get("AUTOPILOT_EFFORT", "medium")  # how hard the model thinks per turn
+EFFORT = "medium"  # how hard the model thinks per turn, unless effort() says otherwise
+OPUS_EFFORT = "high"  # ... Opus 5.5's, in the user's own plugin
+OPUS = re.compile(r"opus-5[-.]5", re.I)  # (its name at every provider: see MODELS)
 TIMEOUT = 30 * 60.0  # one request's whole budget, in seconds, when neither the run nor AUTOPILOT_TIMEOUT says
 MAX_EPISODE = 360.0  # the longest episode (seconds of play) one run_harness may ask for
 MIN_JEV_DECISIONS = 3  # a report needs an episode in which Jev chose among 2+ options at least this often
@@ -356,6 +358,18 @@ def fast_mode():
     """Whether an Opus model plays in fast mode (the same model, ~2x faster output at twice the price per token):
     on unless AUTOPILOT_FAST=0, read as the environment says it now (autopilot.env is loaded before every run)."""
     return (os.environ.get("AUTOPILOT_FAST") or "").strip() != "0"
+
+
+def effort(name):
+    """How hard the model called name thinks per turn: AUTOPILOT_EFFORT as the environment says it now (autopilot.env
+    is loaded before every run), else OPUS_EFFORT for Opus 5.5 in the user's own plugin (signed in to Aura or on their
+    own keys; not the Aura app's Autopilot, aura.from_app), else EFFORT."""
+    from .. import aura
+
+    chosen = (os.environ.get("AUTOPILOT_EFFORT") or "").strip()
+    if chosen:
+        return chosen
+    return OPUS_EFFORT if OPUS.search(name or "") and not aura.from_app() else EFFORT
 
 
 def default_timeout():

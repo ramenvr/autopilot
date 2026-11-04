@@ -100,7 +100,7 @@ def test_the_host_config_carries_the_tools_instructions_and_model(session, monke
     assert "runs/r1/harness.py" in system and "no shell and no web" in system and "{run}" not in system
     cfg = opencode.host_config(session, "http://127.0.0.1:1/t", "claude-opus-5-5", system, fast=True)
     assert cfg["directory"] == os.path.realpath(session.root) and cfg["provider"] == "anthropic"
-    assert cfg["fast"] is True and cfg["variant"] == sessionmod.EFFORT and cfg["system"] == system
+    assert cfg["fast"] is True and cfg["variant"] == "high" and cfg["system"] == system
     assert [t["name"] for t in cfg["tools"]] == ["probe", "run_harness", "snapshot", "describe_frames",
                                                  "restart_level", "report"]
     assert cfg["tools"][0]["input"]["required"] == ["code"] and "shell" not in cfg["keep_tools"]

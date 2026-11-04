@@ -33,7 +33,7 @@ def test_the_researcher_reads_the_codex_and_nothing_else():
     assert d.tools == ["Read", "Grep", "Glob"]
     assert not any(t.startswith("mcp__game__") or t in ("Write", "Edit", "Agent") for t in d.tools)
     assert set(d.disallowedTools) >= {"Write", "Edit", "Agent", *game_tools}
-    assert d.model == "claude-opus-5-5" and d.maxTurns == cc.RESEARCH_TURNS and d.effort == cc.EFFORT
+    assert d.model == "claude-opus-5-5" and d.maxTurns == cc.RESEARCH_TURNS and d.effort == "high"
     assert "codex/" in d.prompt and "can't run or touch" in d.prompt and "Cite the file" in d.prompt
     assert "Codex-only" in d.description
 

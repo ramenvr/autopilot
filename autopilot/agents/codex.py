@@ -258,7 +258,8 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
     with open(spec, "w", encoding="utf-8") as f:
         json.dump({"url": server.url, "tools": mcp_tools()}, f)
     events = Events(session, say=session.say)
-    effort = ReasoningEffort(sessionmod.EFFORT) if sessionmod.EFFORT in {e.value for e in ReasoningEffort} else None
+    level = sessionmod.effort(model)
+    effort = ReasoningEffort(level) if level in {e.value for e in ReasoningEffort} else None
     message = sessionmod.first_message(session)
 
     done = sessionmod.watch_steering(session)
