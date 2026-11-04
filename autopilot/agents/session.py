@@ -66,6 +66,11 @@ NEWS_INLINE = PROBE_RESULT
 # The kinds of activity event whose call the agent makes and whose result the tool's body sends later, with `ends`
 # naming the call's id (Session.activity)
 CALL_KINDS = ("probe", "episode", "look")
+# What a tool result opens or ends with when the level started over during the tool (Session.started_over). It is said
+# outright rather than listed: much of what a run did to the level was done by pressing keys, which leave no record
+STARTED_OVER = ("THE LEVEL STARTED OVER: the game stopped and started again as the level begins. All that probes and "
+                "earlier episodes did to it is gone: doors they opened are shut, enemies they killed are back. An "
+                "executor written in a moment a probe set up meets the level as it really starts only from here.\n")
 
 PACKAGE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the autopilot package
 KIT_DOC = os.path.join(PACKAGE, "KIT.md")
@@ -134,8 +139,12 @@ How to work:
    action) gets one probe: do the step once, read the numbers that settle it, and write the harness; no chain, no
    fight measurement unless the claim is about a fight, no plan, and run_harness straight away (check_harness is for
    a plan's harness). The chain rule, the plan and check_harness are for requests of several steps. A direct change
-   in a probe is listed in the result as a research change; run_harness restarts the level by default, so play
-   starts clean of it.
+   in a probe is listed in the result as a research change. Nothing a probe did outlasts a restart, a key it pressed
+   no more than a direct change, and run_harness restarts by default (the game stops and starts again as the level
+   begins): a door a probe opened is shut again, an enemy it killed is back. What a probe got past is still a step
+   for the harness, done as the probe did it (from where it stood, in that order) before walking on: a route walked
+   with the door already open says nothing about getting through the door. Before a long episode relies on such a
+   step, try its executor on the level as it starts (see check_harness below).
 3. Write {run}/harness.py (a subclass of autopilot.kit.Harness; see the kit below). Build executors from the kit's
    controllers (walk_to, look_at, jump_to, melee, keep_away, track...): they are tested; write your own movement or
    aiming only where none fits. A request with more than one step gets a `plan` (kit.Step list, in order, each with
@@ -161,9 +170,10 @@ How to work:
    change to the play in the report.
 5. When the request is settled (the goal reached; a claim shown true or false; the exploration done) or more tries
    won't help, call `report` right away: an episode that settles it is enough (don't polish the harness after it).
-   Every tool result tells the time used of your budget. Before that, update notes.md with verified facts a later
-   request on this game needs (controls, mechanics, numbers, pitfalls; short lines, no guesses) and move reusable
-   harness code into lib.py.
+   Every tool result tells the time used of your budget. You are out of time only when it says time is nearly up:
+   until then time is no reason to stop, and a report that stops early says its real reason (what more tries wouldn't
+   change, and why). Before that, update notes.md with verified facts a later request on this game needs (controls,
+   mechanics, numbers, pitfalls; short lines, no guesses) and move reusable harness code into lib.py.
 
 The request is one of:
 - a goal ("repair the X", "reach the end", "win a round"): make Jev achieve it in play. Report achieved or
@@ -224,7 +234,9 @@ Rules:
 {research}
 - `check_harness(file="harness.py", seconds=..., restart=True, only=None)`: tries this run's harness without Jev
   (setup, the first observation with its facts, status, plan step and options, then each option's executor alone)
-  and reports how each went; `only`: the option names to try.
+  and reports how each went; `only`: the option names to try. For a step far into the level: restart it, get to
+  the step's start in a probe (`teleport`), then `check_harness(restart=False, only=[...])`, or `run` the executor
+  itself when its option isn't legal yet: it meets what is really there, not what an earlier probe left.
 - `codex`: the game's files as the plugin's export indexes them (it may still be running as you start: see the
   briefing). `codex.status()`: how far it is; `codex.arrivals()`: every batch of files it brought, each file with a
   line on what it is; `codex.files("blueprints/**/BP_*.txt")`: the codex's files now.
@@ -289,7 +301,8 @@ TOOL_SPECS = (
      {"type": "object", "properties": {"code": {"type": "string"}}, "required": ["code"]}),
     ("run_harness",
      f"Run this request's harness.py on the live game for `seconds` of play (5-{MAX_EPISODE:.0f}; default restart: "
-     "the level starts over first; restart=false continues play from where it is, and the plan's progress of the "
+     "the level starts over first, all that probes and earlier episodes did to it gone; restart=false continues "
+     "play from where it is, and the plan's progress of the "
      "episode before is handed to the harness's resume()) with Jev deciding. Returns a summary: how each option "
      "fared, the timeline, where the plan got, what Jev saw, errors. The full trace is saved beside harness.py as "
      "traceN.jsonl. frames_fps: the frames a second the episode is filmed at for describe_frames "
@@ -313,7 +326,8 @@ TOOL_SPECS = (
          "questions": {"type": "array", "items": {"type": "string"}}, "frames": {"type": "integer"}},
       "required": ["questions"]}),
     ("restart_level",
-     "Start the level over (fresh state, the player respawned). level: play this level instead (a path from the "
+     "Start the level over (fresh state, the player respawned, all that probes and episodes did to it gone). level: "
+     "play this level instead (a path from the "
      "briefing's list of the project's levels): it plays from then on, every restart starting it over.",
      {"type": "object", "properties": {"level": {"type": "string"}}}),
     ("report",
@@ -468,6 +482,8 @@ class Session:
         # next episode continues play from where it is (run_harness restart=False)
         self.progress = None
         self.writes_after_play = 0  # len(game.writes) when the last episode ended (research changes since: see probe)
+        self.restarts_told = 0  # game.restarts when the agent was last told of one (started_over)
+        self.touched = False  # a probe or an episode has run since the level last started over
         # Whether a player pawn has been seen in this run: a continuation without one is refused only when there was
         # one (dead, a menu); a game played without a pawn at all (a strategy game's camera) continues as it is
         self.pawn_seen = False
@@ -859,7 +875,8 @@ class Session:
             line += (" Time is nearly up: call report now with what the episodes so far show (INCONCLUSIVE if the "
                      "request isn't settled).")
         elif self.report is None and share >= 0.7:
-            line += " Wrap up: once an episode settles the request, report."
+            line += (f" {(self.budget - used) / 60:.0f} min left: go on with the request, and report once an episode "
+                     "settles it.")
         return line
 
     def note(self, text):
@@ -1014,7 +1031,18 @@ class Session:
                 f"Got {lines} line{'s' if lines != 1 else ''} back in {dt:.1f} s")
         self.activity("probe", what, detail=text or "(no output)", ends="probe",
                       log=f"probe ({dt:.1f}s):\n{code}\n-> {text[:2000]}")
-        return _cut(text or "(no output)", 12000)
+        over = self.started_over()  # (a probe's game.restart or check_harness)
+        self.touched = True
+        return _cut(text or "(no output)", 12000) + ("\n" + over if over else "")
+
+    def started_over(self):
+        """STARTED_OVER when the level has started over since the agent was last told, "" when it hasn't or when
+        nothing had been done to the level yet (the run's first restart undoes nothing)."""
+        new = self.game.restarts > self.restarts_told
+        self.restarts_told = self.game.restarts
+        told = STARTED_OVER if new and self.touched else ""
+        self.touched = self.touched and not new
+        return told
 
     def run_harness(self, seconds, restart=True, file="harness.py", until=None, frames_fps=None):
         if frames_fps and self.describer is not None:
@@ -1172,7 +1200,9 @@ class Session:
         if self.most_decisions < MIN_JEV_DECISIONS:
             note += (f"Note: Jev made {decisions} decisions in this episode; report needs an episode with at least "
                      f"{MIN_JEV_DECISIONS} (decisions among 2+ options), so this one can't settle the request.\n")
-        return (note + f"Episode {n} ({self.run_rel}/trace{n}.jsonl; harness saved as harness{n}.py)\n"
+        over = self.started_over()  # (first: it says how to read all below it)
+        self.touched = True
+        return (over + note + f"Episode {n} ({self.run_rel}/trace{n}.jsonl; harness saved as harness{n}.py)\n"
                 + _cut(summary, 14000))
 
     def _no_episode(self, text):
@@ -1404,6 +1434,8 @@ class Session:
                                                   if target else "")
             where = f" in {target}" if target else ""
             reply = f"Restarted{where}." if ok else f"Restarted{where}, but no player appeared within 20 s."
+            over = self.started_over()
+            reply += f"\n{over}" if over else ""
         if target and str(reply).startswith("Restarted"):
             self.game.level = target  # (every later restart starts it over)
             if info is not None:

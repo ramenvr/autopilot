@@ -46,6 +46,7 @@ class Game:
         self.turn_asked = 0.0  # degrees of yaw the mouse was moved to turn the view, all told
         self.keys = dict(self.engine.keys)
         self.writes = []  # state the harness changed directly (reported: only for verification setups)
+        self.restarts = 0  # times the level started over (Session.started_over tells the agent)
         # The level the run plays when it isn't the one open in the editor (autopilot/levels.py): every restart
         # starts it over. level_info: how it was chosen (a levels.Level, for the agent's briefing)
         self.level = None
@@ -426,6 +427,7 @@ class Game:
         if map:
             args["map"] = map
         self.request("session", args, timeout=60)
+        self.restarts += 1
         self._ctx = None
         deadline = time.monotonic() + wait_for_pawn
         while time.monotonic() < deadline:

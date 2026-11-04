@@ -534,12 +534,24 @@ def test_clock_nudges_toward_a_report(game, tmp_path, monkeypatch):
 
     monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
     s = session.Session(game, "fake", "Win", "r1")
-    s.budget = 100.0
-    assert "Wrap up" not in s.clock()
-    s.started -= 75
-    assert "Wrap up" in s.clock()
-    s.started -= 20
+    s.budget = 3600.0
+    assert "min left" not in s.clock()
+    s.started -= 2600  # (72%: with 17 minutes left it isn't time to stop, whatever the request's state)
+    clock = s.clock()
+    assert "17 min left: go on with the request" in clock and "report now" not in clock
+    s.started -= 700
     assert "nearly up" in s.clock()
+
+
+def test_the_claude_code_agent_has_no_turn_limit_unless_asked(monkeypatch):
+    """A run is held to its time limit: a limit on turns, which the agent isn't told of, ended one with 17 minutes left,
+    between its last edit and the report it was about to make."""
+    from autopilot.agents import claude_code
+
+    monkeypatch.delenv("AUTOPILOT_TURNS", raising=False)
+    assert claude_code.max_turns() is None
+    monkeypatch.setenv("AUTOPILOT_TURNS", "40")
+    assert claude_code.max_turns() == 40
 
 
 def test_play_exits_only_once_the_runs_data_is_sent(monkeypatch):
@@ -1279,6 +1291,59 @@ def test_probe_writes_are_research_in_the_report(game, tmp_path, monkeypatch):
     game.writes[-1]["in_play"] = True
     report = session.finish(s, time.time(), None, "")
     assert report["level_modified"] and report["research_modified"] == []
+
+
+def crate_session(game, tmp_path, monkeypatch):
+    """A session whose harness.py opens the crate (the episode ends once it is open)."""
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    s = session.Session(game, "fake", "Open the crate", "r1", client=FakeJev("open_crate"))
+    src = open(__file__, encoding="utf-8").read()
+    (tmp_path / "fake" / "runs" / "r1").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "fake" / "runs" / "r1" / "harness.py").write_text(
+        "from autopilot.kit import *\n\n" + src[src.index("class CrateHarness"):src.index("@pytest.fixture")],
+        encoding="utf-8")
+    return s
+
+
+def test_the_agent_is_told_the_level_started_over(game, tmp_path, monkeypatch):
+    """A restart undoes what a probe did, keys pressed included, so the result that had one says so, whether or not any
+    direct change was recorded: the door a probe opened with F is shut in the episode."""
+    from autopilot.agents import session
+
+    told = session.STARTED_OVER
+    s = crate_session(game, tmp_path, monkeypatch)
+    assert told not in s.run_harness(15)  # (the run's first restart: nothing had been done to the level)
+    assert told not in s.run_harness(15, restart=False)  # (play went on)
+    assert game.writes == []
+    assert s.run_harness(15).startswith(told)  # (first: it says how to read the summary)
+    assert told not in s.probe("print('read only')")
+    reply = s.restart_level()
+    assert reply.startswith("Restarted.") and told in reply
+    assert s.restart_level() == "Restarted."  # (nothing done since the last one)
+    assert s.probe("print('still fresh')").endswith("still fresh\n")
+    assert told in s.probe("game.restart()")  # (in a probe, as check_harness does)
+    assert told not in s.probe("print('told once')")
+    out = s.probe("print(check_harness(only=[]))")
+    assert "setup() ran" in out and out.endswith(told)
+
+
+def test_the_sandboxed_agent_is_told_the_level_started_over(game, tmp_path, monkeypatch):
+    """The game's restarts are counted in the child, whose results the agent reads."""
+    from autopilot import sandbox
+    from autopilot.agents import session
+
+    crate_session(game, tmp_path, monkeypatch)
+    monkeypatch.setenv("AUTOPILOT_SANDBOX", "process")
+    root = os.path.join(str(tmp_path), "fake")
+    sb = sandbox.Sandbox(game.link, FakeJev("open_crate"), "fake", "Open the crate", "r1", root, str(tmp_path))
+    try:
+        assert session.STARTED_OVER not in sb.call("probe", code="print('look')", seconds=5, timeout=60)
+        assert sb.call("run_harness", seconds=15, timeout=120).startswith(session.STARTED_OVER)
+    finally:
+        sb.close()
 
 
 def test_system_prompt_fills_the_research_and_agents_parts(game):
