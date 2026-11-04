@@ -15,6 +15,7 @@
 #include "PlaytestJson.h"
 #include "PlaytestSubsystem.h"
 #include "ProjectDescriptor.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
 
@@ -180,6 +181,15 @@ void FPlaytestDetectors::Configure(const TSharedPtr<FJsonObject>& Args)
 
 void FPlaytestDetectors::Reset()
 {
+	if (UWorld* W = World.Get(); W && ActorDestroyedHandle.IsValid())
+	{
+#if ENGINE_MAJOR_VERSION > 5 || ENGINE_MINOR_VERSION >= 5
+		W->RemoveOnActorDestroyedHandler(ActorDestroyedHandle);
+#else
+		W->RemoveOnActorDestroyededHandler(ActorDestroyedHandle);
+#endif
+	}
+	ActorDestroyedHandle.Reset();
 	Seen.Reset();
 	Pawns.Reset();
 	GrowthSamples.Reset();
@@ -266,7 +276,7 @@ void FPlaytestDetectors::Tick(UWorld* InWorld, double RealDelta)
 		Reset();
 		World = InWorld;
 		TWeakObjectPtr<UWorld> WeakWorld = InWorld;
-		InWorld->AddOnActorDestroyedHandler(FOnActorDestroyed::FDelegate::CreateLambda([this, WeakWorld](AActor* Actor)
+		ActorDestroyedHandle = InWorld->AddOnActorDestroyedHandler(FOnActorDestroyed::FDelegate::CreateLambda([this, WeakWorld](AActor* Actor)
 		{
 			// The engine destroys what falls below KillZ at once: check here, since a sampled check may miss it
 			UWorld* W = WeakWorld.Get();
@@ -430,13 +440,21 @@ void FPlaytestDetectors::CheckActors(UWorld* InWorld, double GameTime)
 
 void FPlaytestDetectors::CheckGrowth(UWorld* InWorld, double GameTime)
 {
-	TMap<FString, int32> Counts;
+	// (counted by class, then named once per class: an open world has tens of thousands of actors)
+	TMap<const UClass*, int32> ByClass;
 	for (TActorIterator<AActor> It(InWorld); It; ++It)
 	{
 		if (IsValid(*It))
 		{
-			++Counts.FindOrAdd(ClassLabel(*It));
+			++ByClass.FindOrAdd(It->GetClass());
 		}
+	}
+	TMap<FString, int32> Counts;
+	for (const TPair<const UClass*, int32>& Class : ByClass)
+	{
+		FString Label = Class.Key->GetName();
+		Label.RemoveFromEnd(TEXT("_C"));
+		Counts.FindOrAdd(Label) += Class.Value;
 	}
 	GrowthSamples.Add(MoveTemp(Counts));
 	const int32 Needed = FMath::Max(2, FMath::RoundToInt(GrowthSeconds / 10.0) + 1);
@@ -475,6 +493,10 @@ void FPlaytestDetectors::CheckGrowth(UWorld* InWorld, double GameTime)
 
 void FPlaytestDetectors::CheckProperties(UWorld* InWorld, double GameTime)
 {
+	// What to read on each class is worked out once per class (ChecksOf), not once per object: an open world holds
+	// thousands of the same Blueprint, and this runs every PropertyEvery seconds
+	TMap<const UClass*, FClassChecks> Plans;
+	TMap<const UClass*, bool> Project;
 	for (TActorIterator<AActor> It(InWorld); It; ++It)
 	{
 		AActor* Actor = *It;
@@ -482,74 +504,158 @@ void FPlaytestDetectors::CheckProperties(UWorld* InWorld, double GameTime)
 		{
 			continue;
 		}
-		if (IsProjectClass(Actor->GetClass()))
 		{
-			CheckObjectProperties(Actor, Actor, GameTime);
+			const FClassChecks& Checks = ChecksOf(Actor->GetClass(), Plans, Project);  // (used before the next ChecksOf adds to Plans)
+			if (Checks.Properties.Num())
+			{
+				CheckObjectProperties(Checks, Actor, Actor, GameTime);
+			}
 		}
 		for (UActorComponent* Component : Actor->GetComponents())
 		{
-			if (IsValid(Component) && IsProjectClass(Component->GetClass()))
+			if (!IsValid(Component))
 			{
-				CheckObjectProperties(Component, Actor, GameTime);
+				continue;
+			}
+			const FClassChecks& Checks = ChecksOf(Component->GetClass(), Plans, Project);
+			if (Checks.Properties.Num())
+			{
+				CheckObjectProperties(Checks, Component, Actor, GameTime);
 			}
 		}
 	}
 }
 
-void FPlaytestDetectors::CheckObjectProperties(UObject* Object, const AActor* Actor, double GameTime)
+bool FPlaytestDetectors::IsProjectClassCached(const UClass* Class, TMap<const UClass*, bool>& Project) const
 {
-	UClass* Class = Object->GetClass();
-	for (TFieldIterator<FProperty> It(Class); It; ++It)
+	if (const bool* Found = Project.Find(Class))
 	{
-		FProperty* Property = *It;
-		if (!IsProjectClass(Property->GetOwnerClass()))
+		return *Found;
+	}
+	return Project.Add(Class, IsProjectClass(Class));
+}
+
+const FPlaytestDetectors::FClassChecks& FPlaytestDetectors::ChecksOf(const UClass* Class, TMap<const UClass*, FClassChecks>& Plans,
+	TMap<const UClass*, bool>& Project) const
+{
+	if (const FClassChecks* Found = Plans.Find(Class))
+	{
+		return *Found;
+	}
+	FClassChecks Checks;
+	if (Class && IsProjectClassCached(Class, Project))
+	{
+		// A Max partner is found as PlaytestJson::FindProperty finds a property: by its name, else by the name it was
+		// authored with (a Blueprint variable's), any case; the first in the class's order wins
+		TMap<FString, const FProperty*> ByName;
+		TMap<FString, const FProperty*> ByAuthored;
+		for (TFieldIterator<FProperty> It(Class); It; ++It)
 		{
-			continue;  // engine plumbing
+			ByName.FindOrAdd(It->GetName().ToLower(), *It);
+			ByAuthored.FindOrAdd(It->GetAuthoredName().ToLower(), *It);
 		}
+		auto Find = [&ByName, &ByAuthored](const FString& Name) -> const FProperty*
+		{
+			const FString Key = Name.ToLower();
+			if (const FProperty* const* Found = ByName.Find(Key))
+			{
+				return *Found;
+			}
+			const FProperty* const* Found = ByAuthored.Find(Key);
+			return Found ? *Found : nullptr;
+		};
+		auto IsNumber = [](const FProperty* Property)
+		{
+			const FByteProperty* Byte = CastField<FByteProperty>(Property);
+			return CastField<FNumericProperty>(Property) && Property->ArrayDim == 1 && !(Byte && Byte->Enum);
+		};
+		for (TFieldIterator<FProperty> It(Class); It; ++It)
+		{
+			const FProperty* Property = *It;
+			if (!IsNumber(Property) || !IsProjectClassCached(Property->GetOwnerClass(), Project))
+			{
+				continue;  // engine plumbing, or not a number
+			}
+			FPropertyCheck Check;
+			Check.Property = Property;
+			Check.Name = Property->GetAuthoredName();
+#if WITH_METADATA
+			if (const FString* Min = Property->FindMetaData(TEXT("ClampMin")))
+			{
+				Check.Min = *Min;
+				if (Min->IsNumeric())
+				{
+					Check.MinValue = FCString::Atod(**Min);
+				}
+			}
+			if (const FString* Max = Property->FindMetaData(TEXT("ClampMax")))
+			{
+				Check.Max = *Max;
+				if (Max->IsNumeric())
+				{
+					Check.MaxValue = FCString::Atod(**Max);
+				}
+			}
+#endif
+			if (!Check.Name.StartsWith(TEXT("Max"), ESearchCase::CaseSensitive) && !Check.Name.EndsWith(TEXT("Max"), ESearchCase::CaseSensitive))
+			{
+				const FProperty* MaxProperty = Find(TEXT("Max") + Check.Name);
+				if (!MaxProperty)
+				{
+					MaxProperty = Find(Check.Name + TEXT("Max"));
+				}
+				if (MaxProperty && MaxProperty != Property && IsNumber(MaxProperty))
+				{
+					Check.MaxProperty = MaxProperty;
+					Check.MaxName = MaxProperty->GetAuthoredName();
+				}
+			}
+			if (Check.MinValue.IsSet() || Check.MaxValue.IsSet() || Check.MaxProperty)
+			{
+				Checks.Properties.Add(MoveTemp(Check));  // (one with nothing to compare against can't report)
+			}
+		}
+	}
+	return Plans.Add(Class, MoveTemp(Checks));
+}
+
+void FPlaytestDetectors::CheckObjectProperties(const FClassChecks& Checks, UObject* Object, const AActor* Actor, double GameTime)
+{
+	auto Where = [Object, Actor]()
+	{
+		return Object == Actor ? ClassLabel(Actor) : FString::Printf(TEXT("%s.%s"), *ClassLabel(Actor), *Object->GetName());
+	};
+	for (const FPropertyCheck& Check : Checks.Properties)
+	{
 		double Value = 0;
-		if (!NumericValue(Property, Object, Value))
+		if (!NumericValue(Check.Property, Object, Value))
 		{
 			continue;
 		}
-		const FString Name = Property->GetAuthoredName();
-		const FString Where = Object == Actor ? ClassLabel(Actor) : FString::Printf(TEXT("%s.%s"), *ClassLabel(Actor), *Object->GetName());
-#if WITH_METADATA
-		const FString* Min = Property->FindMetaData(TEXT("ClampMin"));
-		const FString* Max = Property->FindMetaData(TEXT("ClampMax"));
-		const bool bBelow = Min && Min->IsNumeric() && Value < FCString::Atod(**Min) - 1e-4;
-		const bool bAbove = Max && Max->IsNumeric() && Value > FCString::Atod(**Max) + 1e-4;
+		const bool bBelow = Check.MinValue.IsSet() && Value < Check.MinValue.GetValue() - 1e-4;
+		const bool bAbove = Check.MaxValue.IsSet() && Value > Check.MaxValue.GetValue() + 1e-4;
 		if (bBelow || bAbove)
 		{
 			TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
-			Details->SetStringField(TEXT("property"), Name);
+			Details->SetStringField(TEXT("property"), Check.Name);
 			Details->SetField(TEXT("value"), PlaytestJson::Number(Value));
-			Details->SetStringField(TEXT("clamp"), FString::Printf(TEXT("[%s, %s]"), Min ? **Min : TEXT(""), Max ? **Max : TEXT("")));
+			Details->SetStringField(TEXT("clamp"), FString::Printf(TEXT("[%s, %s]"), *Check.Min, *Check.Max));
 			Report(TEXT("clamp"), TEXT("warning"),
-				FString::Printf(TEXT("%s %s is %s, outside its allowed range %s..%s"), *Where, *Name, *FormatNumber(Value),
-					Min ? **Min : TEXT(""), Max ? **Max : TEXT("")),
-				FString::Printf(TEXT("clamp:%s.%s"), *ClassLabel(Object), *Name), GameTime, Actor, Details);
-		}
-#endif
-		if (Name.StartsWith(TEXT("Max"), ESearchCase::CaseSensitive) || Name.EndsWith(TEXT("Max"), ESearchCase::CaseSensitive))
-		{
-			continue;
-		}
-		const FProperty* MaxProperty = PlaytestJson::FindProperty(Class, TEXT("Max") + Name);
-		if (!MaxProperty)
-		{
-			MaxProperty = PlaytestJson::FindProperty(Class, Name + TEXT("Max"));
+				FString::Printf(TEXT("%s %s is %s, outside its allowed range %s..%s"), *Where(), *Check.Name, *FormatNumber(Value),
+					*Check.Min, *Check.Max),
+				FString::Printf(TEXT("clamp:%s.%s"), *ClassLabel(Object), *Check.Name), GameTime, Actor, Details);
 		}
 		double MaxValue = 0;
-		if (MaxProperty && MaxProperty != Property && NumericValue(MaxProperty, Object, MaxValue) && MaxValue > 0 && Value > MaxValue + 1e-4)
+		if (Check.MaxProperty && NumericValue(Check.MaxProperty, Object, MaxValue) && MaxValue > 0 && Value > MaxValue + 1e-4)
 		{
 			TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
-			Details->SetStringField(TEXT("property"), Name);
+			Details->SetStringField(TEXT("property"), Check.Name);
 			Details->SetField(TEXT("value"), PlaytestJson::Number(Value));
-			Details->SetStringField(TEXT("max_property"), MaxProperty->GetAuthoredName());
+			Details->SetStringField(TEXT("max_property"), Check.MaxName);
 			Details->SetField(TEXT("max"), PlaytestJson::Number(MaxValue));
 			Report(TEXT("over_max"), TEXT("warning"),
-				FString::Printf(TEXT("%s %s is %s, above %s %s"), *Where, *Name, *FormatNumber(Value), *MaxProperty->GetAuthoredName(), *FormatNumber(MaxValue)),
-				FString::Printf(TEXT("over_max:%s.%s"), *ClassLabel(Object), *Name), GameTime, Actor, Details);
+				FString::Printf(TEXT("%s %s is %s, above %s %s"), *Where(), *Check.Name, *FormatNumber(Value), *Check.MaxName, *FormatNumber(MaxValue)),
+				FString::Printf(TEXT("over_max:%s.%s"), *ClassLabel(Object), *Check.Name), GameTime, Actor, Details);
 		}
 	}
 }

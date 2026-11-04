@@ -323,7 +323,7 @@ func _process(_delta: float) -> void:
 	# attach to a game that started, until it answers (its autoload may not be listening yet)
 	if _game_session >= 0 and not _game_ready and now < _attach_until and now >= _attach_at:
 		_attach_at = now + 0.5
-		var cfg := {"detectors": _detector_config, "run": run_active}
+		var cfg := {"detectors": _detector_config, "run_active": run_active}
 		if _record != null:
 			cfg.record = _record.merged({"n": _record_next}, true)  # (the recording goes on in this play session)
 		debugger.send(_game_session, "attach", [JSON.stringify(cfg)])

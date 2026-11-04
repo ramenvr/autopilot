@@ -64,6 +64,12 @@ public:
 	bool WantsConnection() const { return bWantConnected; }
 	const FString& GetUrl() const { return Url; }
 	bool IsRunActive() const { return bRunActive; }
+	/**
+	 * Whether a run is using the game now: one is going (IsRunActive), or the agent service asked the game something
+	 * in the last half minute (a run this side didn't hear start). Only then do the detectors and the log capture
+	 * work: when nothing would read what they find, the user's own Play sessions don't pay for them.
+	 */
+	bool IsRunUsingGame() const;
 	/** What the agent service remembers about this project (its memory_state on this connection; false until one
 	 *  came): the earlier runs it keeps, whether it has notes and code of its own for the game. Nothing at all: the
 	 *  next run is cold. */
@@ -283,6 +289,8 @@ private:
 	bool bConnected = false;
 	int32 ConnectionSerial = 0;
 	bool bRunActive = false;
+	double LastRequestAt = -1.0;  // when the agent service's last request came (FPlatformTime::Seconds; -1: none on this connection)
+	bool bDetectorsOn = false;  // the detectors worked on the last tick (IsRunUsingGame): they start afresh when on again
 	bool bBrainSteers = false;  // the welcome's features had "steer"
 	bool bBrainAccount = false;  // ... "account"
 	bool bWelcomedHere = false;  // a welcome came on this connection

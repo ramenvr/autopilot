@@ -126,7 +126,7 @@ func set_run(on: bool) -> void:
 	pt.active = true
 	pt.cli_run = {"kind": "verify"}
 	pt._welcomed = true
-	pt._cli_done = not on
+	pt.run_active = on
 	pt._isolate()
 
 
