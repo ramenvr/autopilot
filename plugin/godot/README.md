@@ -457,11 +457,13 @@ In Godot the editor and the running game are separate processes. The agent expec
   is let go, as Autopilot's holds are at both turns. Not covered: code connected to the window's `window_input` signal
   (Godot emits it before any node), an embedded popup or dialog of the game that is open (Godot hands it its events
   before any node), and code that reads `get_viewport().get_mouse_position()`, which in a game with a window reads the
-  real cursor. The mouse mode stays the game's: Godot couples the mode a script reads with the operating system's grab
-  (a captured or confined mouse is clipped to the game's window, a captured one centred there, even when the window
-  doesn't have focus), and a script can't have one without the other, so a game that captures the mouse during a run
-  still holds the cursor as it does outside one (the game's own logic often turns the view only while it reads
-  `MOUSE_MODE_CAPTURED`). The run itself never changes the mouse mode or takes the focus;
+  real cursor. The game doesn't take your mouse during a run either: a captured or confined mouse would lock your
+  cursor in the game's window even when another window is in front, so during a run the operating system's mouse stays
+  free. Your game still reads the mouse mode it asked for, so mouse look that works only while it reads
+  `MOUSE_MODE_CAPTURED` goes on working: as the game starts, the addon points its GDScript's reads and writes of the
+  mouse mode at itself, in memory (`lib/mouse_reads.gd`; no file changes, and the lines stay where they are). After
+  the run the game takes the mouse again at the next click in its window. In a C# game, or an exported one, the mouse
+  reads as visible during a run instead, so mouse look that needs it captured won't turn;
 - a GDScript runtime error normally stops an editor-run game in the debugger. While the agent is connected, the editor
   lets the game continue at once (the error still reaches the agent as a `log` event and a `log_error` finding).
   Without a connection the game stays stopped for you, as usual.
@@ -637,8 +639,8 @@ is the 3D body's and has no 2D meaning here: `held`, `openings`, `ways_up`, `lan
 
 **Headless** (`--headless`), physics, raycasts, `test_move`, `Camera3D.unproject_position` / `is_position_in_frustum`
 and GUI input all work as with a display (the tests below check this). What differs: the root viewport is 64x64 until
-the addon resizes it; mouse capture is ignored (`Input.mouse_mode` stays visible, so a game that only turns its view
-while the mouse is captured won't turn); effects don't run (`effects_play` false; `look.effects` still lists the
+the addon resizes it; the mouse is never really captured (a game's GDScript still reads the mode it asked for, so a
+game that only turns its view while the mouse is captured turns; a C# game reads it as visible and won't); effects don't run (`effects_play` false; `look.effects` still lists the
 particles the game set emitting); and nothing flushes `Input.parse_input_event` events (the addon flushes them
 itself).
 
@@ -703,7 +705,7 @@ deleting the folder first leaves the autoload in `project.godot`, pointing at a 
 | **Reset memory…** says the memory was not reset | A run is going: the agent service resets memory only between runs. Stop the run (or let it finish) and try again. |
 | The **Policy** tab stays empty | Policy steps are sent only to a dock on the agent service's own machine. |
 | A command-line run exits with 1 | Read `result.json`'s `error` (or the game's lines starting with `AutopilotPlaytest:`): no welcome from the server within the connect timeout (`--playtest-connect-timeout`, 120 s by default), the server sent an error, or the connection closed before the result. |
-| The game doesn't turn its view headless | It probably turns only while the mouse is captured, which headless Godot ignores. |
+| The game doesn't turn its view headless | It probably turns only while the mouse is captured, and it's a C# game: GDScript reads the mode it asked for, C# reads it as visible. |
 
 ## Security
 

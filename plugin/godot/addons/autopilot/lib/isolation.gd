@@ -23,8 +23,10 @@
 ## device; while the game's window doesn't have focus the person's joypads are left out by Godot itself (Input.ignore_
 ## joypad_on_unfocused_application, on during a run), and while it has focus their events are swallowed and countered
 ## here as the rest (an action bound to a joypad control can still see a press and release in the same frame then).
-## The mouse mode is the game's own: Godot grabs the cursor for a captured or confined mouse (the game's logic often
-## turns the view only while it reads MOUSE_MODE_CAPTURED), and a script can't keep one without the other.
+## The game's view doesn't take the mouse: a captured or confined mouse locks the desktop's cursor in the game's window,
+## whichever window is in front. During a run such a mode is off (the mouse visible) while the game goes on reading the
+## mode it asked for (lib/mouse_reads.gd). After the run the game takes the mouse again at the next click in its window,
+## not by itself: the person may be working elsewhere.
 extends Node
 
 const KEYBOARD := 1016  # Autopilot's keyboard and mouse during a run (Godot's own are 16 and 32; 0-15 are joypads)
@@ -42,6 +44,8 @@ var _counter_ids := {}  # instance ids of the joypad counter events (their devic
 var _swapped := {}  # action -> {instance id of our binding: the game's binding it stands for}
 var _joy_unfocused_before := false
 var _rebind_at := 0.0
+var _game_mouse := -1  # the mouse mode the game asked for, while the run has it off (-1: nothing held off)
+var _waiting_click := false  # the run is over: the game takes the mouse at the next click in its window
 
 # What Autopilot has down (its events, never the person's): what a counter event puts back
 var _keys := {}  # keycode -> true
@@ -75,7 +79,12 @@ func set_on(want: bool) -> void:
 		_rebind()
 		_settle()
 		keep_last()
+		_waiting_click = false
+		_hold_mouse()
 	else:
+		_waiting_click = _game_mouse >= 0 and not _no_window()
+		if not _waiting_click and not _no_window():
+			_game_mouse = -1
 		_unbind()
 		Input.set_ignore_joypad_on_unfocused_application(_joy_unfocused_before)
 		on = false
@@ -87,6 +96,7 @@ func tick(now: float) -> void:
 	if not on:
 		return
 	keep_last()
+	_hold_mouse()
 	if now >= _rebind_at:
 		_rebind_at = now + 0.5
 		_rebind()
@@ -96,6 +106,44 @@ func keep_last() -> void:
 	var root := get_tree().root if is_inside_tree() else null
 	if root and get_parent() == root and get_index() != root.get_child_count() - 1:
 		root.move_child(self, -1)
+
+
+## A mouse mode that would lock the desktop's cursor goes off, again whenever the game sets one.
+func _hold_mouse() -> void:
+	if _traps(Input.mouse_mode):
+		_game_mouse = Input.mouse_mode
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+
+
+static func _traps(mode: int) -> bool:
+	return mode == Input.MOUSE_MODE_CAPTURED or mode == Input.MOUSE_MODE_CONFINED or mode == Input.MOUSE_MODE_CONFINED_HIDDEN
+
+
+static func _no_window() -> bool:
+	return DisplayServer.get_name() == "headless"
+
+
+## The mouse mode as the game knows it: the one it asked for, whether or not it holds the mouse now.
+func game_mouse() -> int:
+	return _game_mouse if _game_mouse >= 0 else Input.mouse_mode
+
+
+## The game sets the mouse mode (lib/mouse_reads.gd). One that would lock the cursor waits while the run goes and until
+## the click after it; with no window (headless) the game just reads what it asked for, as the engine would ignore it.
+func set_game_mouse(mode: int) -> void:
+	if _traps(mode) and (on or _waiting_click or _no_window()):
+		_game_mouse = mode
+		return
+	_game_mouse = -1
+	_waiting_click = false
+	Input.mouse_mode = mode as Input.MouseMode
+
+
+func _give_back_mouse() -> void:
+	_waiting_click = false
+	if _game_mouse >= 0:
+		Input.mouse_mode = _game_mouse as Input.MouseMode
+	_game_mouse = -1
 
 
 # --- Autopilot's own events -------------------------------------------------------------------------
@@ -174,7 +222,11 @@ static func _bit(button: int) -> int:
 # --- the gate ---------------------------------------------------------------------------------------
 
 func _input(event: InputEvent) -> void:
-	if not on or _ours > 0:
+	if _ours > 0:
+		return
+	if not on:
+		if _waiting_click and event is InputEventMouseButton and event.pressed:
+			_give_back_mouse()  # (the person clicked in the game's window: as it would, it takes the mouse)
 		return
 	if _countering > 0 and (event.device == INTERNAL or _counter_ids.has(event.get_instance_id())):
 		get_viewport().set_input_as_handled()

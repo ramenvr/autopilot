@@ -25,6 +25,7 @@ const Link = preload("lib/link.gd")
 const Media = preload("lib/media.gd")
 const Prefs = preload("lib/prefs.gd")
 const Isolation = preload("lib/isolation.gd")
+const MouseReads = preload("lib/mouse_reads.gd")
 
 const CAPTURE := "autopilot"
 const KEY_TAP_SECONDS := 0.05
@@ -37,6 +38,14 @@ var ui
 var detectors
 var media
 var isolation  # lib/isolation.gd: the root's last child, the gate the person's input stops at during a run
+## The mouse mode as the game knows it: what the game's own scripts read and write (lib/mouse_reads.gd). An int: they
+## may use Input's enum or DisplayServer's.
+var game_mouse_mode: int:
+	get:
+		return isolation.game_mouse() if isolation else Input.mouse_mode
+	set(value):
+		set_game_mouse_mode(value)
+var mouse_routed := {"routed": 0, "failed": []}  # lib/mouse_reads.gd: what it did at the game's start
 var link = null  # direct mode: our own connection to the brain
 var relay := false  # the editor's dock relays for us
 var active := false  # a brain is there (welcomed, or the editor attached)
@@ -89,6 +98,8 @@ func _ready() -> void:
 	media = Media.new(self)
 	isolation = Isolation.new(self)
 	get_tree().root.add_child.call_deferred(isolation)  # (the root is busy adding the autoloads now)
+	if OS.has_feature("editor"):
+		mouse_routed = MouseReads.reroute()
 	_parse_command_line()
 	if EngineDebugger.is_active():
 		EngineDebugger.register_message_capture(CAPTURE, _on_editor_message)
@@ -337,6 +348,13 @@ func _scene_path() -> String:
 ## play; this process is the play session): the editor's run, or the run asked on the command line until its result.
 func _isolate() -> void:
 	isolation.set_on(active and run_active)
+
+
+func set_game_mouse_mode(mode: int) -> void:
+	if isolation:
+		isolation.set_game_mouse(mode)
+	else:
+		Input.mouse_mode = mode as Input.MouseMode
 
 
 func _notification(what: int) -> void:
@@ -657,7 +675,7 @@ func context() -> Dictionary:
 		"game_name": str(ProjectSettings.get_setting("application/config/name", "")), "host": "editor" if relay else "game",
 		"engine": "godot", "session_running": s != null, "paused": get_tree().paused, "game_time": Frame.r2(game_time),
 		"project_dir": ProjectSettings.globalize_path("res://"), "controls": Keys.controls(),
-		"input": Keys.input_caps(DisplayServer.get_name() == "headless", Input.mouse_mode, _move_actions().any(func(a): return a != ""),
+		"input": Keys.input_caps(DisplayServer.get_name() == "headless", game_mouse_mode, _move_actions().any(func(a): return a != ""),
 			isolation.on),
 		"net": net(), "player_found_by": "context's player" if world.chosen != "" and p != null else ""}
 

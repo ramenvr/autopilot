@@ -60,6 +60,7 @@ func _initialize() -> void:
 	await between_runs()
 	await in_a_run()
 	await after_the_run()
+	await mouse_mode()
 	print("\n%d/%d checks passed" % [passed, passed + failed])
 	quit(0 if failed == 0 else 1)
 
@@ -119,6 +120,47 @@ func real_joy_axis(device: int, axis: int, value: float) -> void:
 
 func op(name: String, args: Dictionary):
 	return pt.dispatch(1, name, args)
+
+
+# --- the game's reads and writes of the mouse mode ----------------------------------------------
+
+## What the operating system has: not a read the addon could route (lib/mouse_reads.gd only changes the game's scripts,
+## and this file is the game's too).
+func os_mouse() -> int:
+	return Input.get("mouse_mode")
+
+
+func mouse_mode() -> void:
+	var path := "res://scripts/mouse_user.gd"
+	var user: Node = (load(path) as GDScript).new()
+	current_scene.add_child(user)
+	var on_disk := FileAccess.get_file_as_string(path)
+	check("the game's script that touches the mouse mode is routed", pt.mouse_routed.routed >= 1 and pt.mouse_routed.failed.is_empty(),
+		str(pt.mouse_routed))
+	check("... in memory: its file doesn't change, and in memory it does", on_disk.contains("Input.mouse_mode")
+		and not on_disk.contains("AutopilotPlaytest") and user.get_script().source_code.contains("AutopilotPlaytest.game_mouse_mode"))
+	check("... the lines stay where they are", user.get_script().source_code.count("\n") == on_disk.count("\n"))
+	check("the addon's own scripts aren't routed", not (load("res://addons/autopilot/lib/isolation.gd") as GDScript).source_code.contains("AutopilotPlaytest.game_mouse"))
+	set_run(true)
+	for setter in ["set_property", "set_call", "set_display"]:
+		user.set_property(Input.MOUSE_MODE_VISIBLE)
+		user.call(setter, Input.MOUSE_MODE_CAPTURED)
+		check("in a run, %s: the game reads captured all three ways" % setter, user.read_property() == Input.MOUSE_MODE_CAPTURED
+			and user.read_getter() == Input.MOUSE_MODE_CAPTURED and user.read_display() == Input.MOUSE_MODE_CAPTURED, str(user.read_property()))
+		check("... and the operating system's mouse stays free", os_mouse() == Input.MOUSE_MODE_VISIBLE, str(os_mouse()))
+		check("... compared with either enum, or kept in a typed variable", user.display_captured() and user.input_captured()
+			and user.held_in_typed_var() == Input.MOUSE_MODE_CAPTURED)
+	user.set_property(Input.MOUSE_MODE_VISIBLE)
+	check("in a run the game can show the mouse: it reads what it set last", user.read_property() == Input.MOUSE_MODE_VISIBLE)
+	user.set_property(Input.MOUSE_MODE_CONFINED)
+	check("in a run a confined mouse waits too", user.read_property() == Input.MOUSE_MODE_CONFINED and os_mouse() == Input.MOUSE_MODE_VISIBLE)
+	user.set_property(Input.MOUSE_MODE_HIDDEN)
+	set_run(false)
+	gate.set_game_mouse(Input.MOUSE_MODE_VISIBLE)
+	user.set_property(Input.MOUSE_MODE_CAPTURED)
+	check("headless, with no run: the game reads what it asked for", user.read_property() == Input.MOUSE_MODE_CAPTURED)
+	gate.set_game_mouse(Input.MOUSE_MODE_VISIBLE)
+	user.queue_free()
 
 
 func set_run(on: bool) -> void:

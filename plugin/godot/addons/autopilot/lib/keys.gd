@@ -187,10 +187,12 @@ static func action_for_key(name: String) -> String:
 ## W/A/S/D or the arrows, the keys ("keys"). `notes`: what an agent should know here.
 static func input_caps(headless: bool, mouse_mode := Input.MOUSE_MODE_VISIBLE, move_actions := true, isolated := false) -> Dictionary:
 	var notes := []
+	if isolated and not headless and mouse_mode == Input.MOUSE_MODE_CAPTURED:
+		notes.append("During the run the mouse isn't really captured, so the person keeps their cursor: the game's GDScript still reads captured and mouse motion turns the view as usual, but a C# game reads the mouse as visible.")
 	if isolated:
 		notes.append("A run is going: the person's own keyboard, mouse and gamepads don't reach the game, only these ops do. The game's key and mouse bindings are bound to Autopilot's keyboard and mouse meanwhile (an event's device reads 1016 for its keys and 1032 for its mouse, not Godot's 16 and 32).")
 	if headless:
-		notes.append("The game runs headless: the mouse is never captured (Input.mouse_mode stays visible), so a game that turns its view only while the mouse is captured won't turn; get_viewport().get_mouse_position() reports the pointer.")
+		notes.append("The game runs headless: the mouse is never really captured. The game's GDScript reads the mouse mode it asked for, so a game that turns its view only while the mouse is captured still turns; a C# game reads it as visible and won't. get_viewport().get_mouse_position() reports the pointer.")
 	else:
 		notes.append("Point before clicking (pointer): the mouse buttons press where the pointer is (the middle of the view until it is set), as events; a game that reads the mouse position with get_viewport().get_mouse_position() itself sees the real cursor, which the addon never moves.")
 	if mouse_mode == Input.MOUSE_MODE_CAPTURED:
