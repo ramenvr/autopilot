@@ -6,7 +6,8 @@
 ## and a scene loaded later uses these scripts. While a run goes the game reads the mode it asked for and its window
 ## holds nothing; any other time the calls do what they did.
 ## GDScript only, and only where the source is there (a game run from the editor, not an exported one). A C# game, or a
-## script this can't reload, reads the mouse as visible during a run.
+## script this can't reload, reads the mouse as visible during a run. The text of a string that quotes one of these
+## calls changes with it.
 extends RefCounted
 
 const SKIP := ["res://.godot", "res://addons/autopilot"]
@@ -16,12 +17,15 @@ const WRITE := "AutopilotPlaytest.set_game_mouse_mode("
 static var _kept := []  # the scripts changed: kept loaded, so what loads them later gets these
 
 
-## Route every script of the game's. Returns how many were changed, and those that couldn't be.
+## Route every script of the game's. Returns how many were changed, those that couldn't be, and what it took.
 static func reroute() -> Dictionary:
-	var out := {"routed": 0, "failed": []}
+	var started := Time.get_ticks_usec()
+	var out := {"routed": 0, "failed": [], "ms": 0.0}
 	var routes := _routes()
 	for path in _scripts("res://"):
 		var source := FileAccess.get_file_as_string(path)
+		if not source.contains("mouse_"):
+			continue  # (nearly every script: this runs at each start of the game, so they cost a read and no more)
 		var changed := source
 		for route in routes:
 			changed = route[0].sub(changed, route[1], true)
@@ -39,6 +43,7 @@ static func reroute() -> Dictionary:
 			continue
 		_kept.append(script)
 		out.routed += 1
+	out.ms = (Time.get_ticks_usec() - started) / 1000.0
 	return out
 
 

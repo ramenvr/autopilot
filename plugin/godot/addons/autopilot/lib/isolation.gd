@@ -44,8 +44,12 @@ var _counter_ids := {}  # instance ids of the joypad counter events (their devic
 var _swapped := {}  # action -> {instance id of our binding: the game's binding it stands for}
 var _joy_unfocused_before := false
 var _rebind_at := 0.0
+var _held_check_at := 0.0
 var _game_mouse := -1  # the mouse mode the game asked for, while the run has it off (-1: nothing held off)
 var _waiting_click := false  # the run is over: the game takes the mouse at the next click in its window
+# Started by the editor during a run: until the editor attaches, the game can't be told of the run, and a mouse it
+# captured in its first frames would lock the cursor and move it to the game's window.
+var _starting_in_run := OS.get_environment("AUTOPILOT_RUN_GOING") == "1"
 
 # What Autopilot has down (its events, never the person's): what a counter event puts back
 var _keys := {}  # keycode -> true
@@ -93,10 +97,16 @@ func set_on(want: bool) -> void:
 ## Every frame: stay the root's last child (the first to get input: a node the game added to the root since would get
 ## it before this), and bind to Autopilot's devices any key or mouse binding the game added since (twice a second).
 func tick(now: float) -> void:
+	hold_while_starting()
 	if not on:
 		return
 	keep_last()
 	_hold_mouse()
+	# The game's window lost the focus (the person went to another window) and Godot let go of every key, Autopilot's
+	# too: what it holds goes down again, whatever let it go. (Not every frame: a tap's key is down for two.)
+	if host and now >= _held_check_at and _lost_held():
+		_held_check_at = now + 0.1
+		host._reassert_held()
 	if now >= _rebind_at:
 		_rebind_at = now + 0.5
 		_rebind()
@@ -106,6 +116,25 @@ func keep_last() -> void:
 	var root := get_tree().root if is_inside_tree() else null
 	if root and get_parent() == root and get_index() != root.get_child_count() - 1:
 		root.move_child(self, -1)
+
+
+## Whether something Autopilot pressed isn't down in Input any more.
+func _lost_held() -> bool:
+	for code in _keys:
+		if not Input.is_key_pressed(code):
+			return true
+	for code in _physical:
+		if not Input.is_physical_key_pressed(code):
+			return true
+	if (Input.get_mouse_button_mask() & _mask) != _mask:
+		return true
+	for button in _joy_buttons:
+		if not Input.is_joy_button_pressed(0, button):
+			return true
+	for action in host._pressed_actions:
+		if InputMap.has_action(action) and not Input.is_action_pressed(action):
+			return true
+	return false
 
 
 ## A mouse mode that would lock the desktop's cursor goes off, again whenever the game sets one.
@@ -131,12 +160,29 @@ func game_mouse() -> int:
 ## The game sets the mouse mode (lib/mouse_reads.gd). One that would lock the cursor waits while the run goes and until
 ## the click after it; with no window (headless) the game just reads what it asked for, as the engine would ignore it.
 func set_game_mouse(mode: int) -> void:
-	if _traps(mode) and (on or _waiting_click or _no_window()):
+	if _traps(mode) and (on or _waiting_click or _starting_in_run or _no_window()):
 		_game_mouse = mode
 		return
 	_game_mouse = -1
 	_waiting_click = false
 	Input.mouse_mode = mode as Input.MouseMode
+
+
+## A game started in a run, before the editor attached: a mouse a script captured before lib/mouse_reads.gd routed it
+## (an autoload listed before the addon's) goes off now, and every frame until then.
+func hold_while_starting() -> void:
+	if _starting_in_run:
+		_hold_mouse()
+
+
+## The editor attached: what it says of the run holds from now on (no run going after all: the game has the mouse it
+## asked for).
+func attached() -> void:
+	if _starting_in_run and not on:
+		_starting_in_run = false
+		if not _no_window():
+			_give_back_mouse()
+	_starting_in_run = false
 
 
 func _give_back_mouse() -> void:

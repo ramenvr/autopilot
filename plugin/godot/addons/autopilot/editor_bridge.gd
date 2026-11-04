@@ -27,6 +27,8 @@ signal connection_changed(connected: bool)
 signal finding_received(finding: Dictionary)
 signal result_received(result: Dictionary, dir: String)
 signal run_changed(running: bool)
+
+const RUN_GOING_ENV := "AUTOPILOT_RUN_GOING"
 ## A run_started frame: a run the tab didn't start (the user's own Claude Code or Codex started it through `autopilot
 ## mcp`), its fields a start frame's and `by`; before run_changed(true). Not sent while a run is going.
 signal run_started_elsewhere(run: Dictionary)
@@ -759,6 +761,8 @@ func _detach() -> void:
 ## Tell the game whether a run goes, when that changed since it was told: while one goes, the game gets Autopilot's
 ## input alone (lib/isolation.gd), and between runs the person's input reaches it again.
 func _tell_run() -> void:
+	# (a game started now inherits this: it knows of the run from its first frame, before it can attach)
+	OS.set_environment(RUN_GOING_ENV, "1" if run_active else "")
 	if not _game_ready or _run_told == run_active:
 		return
 	if debugger.send(_game_session, "run", [run_active]):

@@ -45,7 +45,7 @@ var game_mouse_mode: int:
 		return isolation.game_mouse() if isolation else Input.mouse_mode
 	set(value):
 		set_game_mouse_mode(value)
-var mouse_routed := {"routed": 0, "failed": []}  # lib/mouse_reads.gd: what it did at the game's start
+var mouse_routed := {"routed": 0, "failed": [], "ms": 0.0}  # lib/mouse_reads.gd: what it did at the game's start
 var link = null  # direct mode: our own connection to the brain
 var relay := false  # the editor's dock relays for us
 var active := false  # a brain is there (welcomed, or the editor attached)
@@ -98,6 +98,7 @@ func _ready() -> void:
 	media = Media.new(self)
 	isolation = Isolation.new(self)
 	get_tree().root.add_child.call_deferred(isolation)  # (the root is busy adding the autoloads now)
+	isolation.hold_while_starting()  # (first: the routing takes a while in a big project, and the cursor is locked meanwhile)
 	if OS.has_feature("editor"):
 		mouse_routed = MouseReads.reroute()
 	_parse_command_line()
@@ -313,6 +314,7 @@ func _on_editor_message(message: String, data: Array) -> bool:
 				if typeof(cfg) == TYPE_DICTIONARY and typeof(cfg.get("record")) == TYPE_DICTIONARY and not media.recording:
 					media.start(cfg.record, int(cfg.record.get("n", 0)))
 			_isolate()
+			isolation.attached()
 			EngineDebugger.send_message(CAPTURE + ":ready", [JSON.stringify({"scene": _scene_path(), "t": t_value()})])
 			return true
 		"detach":

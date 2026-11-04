@@ -454,6 +454,12 @@ namespace
 			{
 				SendAxis(PC, Held.Key, Held.bRate ? Held.Value * DeltaTime : Held.Value, DeltaTime);
 			}
+			else if (!Held.Key.IsMouseButton() && PC->PlayerInput && !PC->IsInputKeyDown(Held.Key))
+			{
+				// The game's view lost the focus (the person clicked elsewhere in the editor, or left it) and the engine let
+				// go of every key: this one is still held. (A mouse button may be down in the game's UI, not here.)
+				SendKey(PC, Held.Key, IE_Pressed);
+			}
 		}
 		for (const FName& Name : Expired)
 		{

@@ -73,6 +73,17 @@ namespace
 	}
 }
 
+// What the engine does to the keys when the game's view loses the focus, on demand (a live check of a run's held keys)
+static FAutoConsoleCommand GAutopilotTestFlushKeys(TEXT("Autopilot.Test.FlushKeys"),
+	TEXT("Lets go of every key of the game being played, as the engine does when its view loses the focus."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		if (APlayerController* PC = PlayController())
+		{
+			PC->FlushPressedKeys();
+		}
+	}));
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotRunInputTest, "AutopilotPlaytest.Editor.RunInput",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 

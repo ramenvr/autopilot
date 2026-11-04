@@ -463,7 +463,8 @@ In Godot the editor and the running game are separate processes. The agent expec
   `MOUSE_MODE_CAPTURED` goes on working: as the game starts, the addon points its GDScript's reads and writes of the
   mouse mode at itself, in memory (`lib/mouse_reads.gd`; no file changes, and the lines stay where they are). After
   the run the game takes the mouse again at the next click in its window. In a C# game, or an exported one, the mouse
-  reads as visible during a run instead, so mouse look that needs it captured won't turn;
+  reads as visible during a run instead, so mouse look that needs it captured won't turn. You can change windows during
+  a run: Godot lets go of every key when the game's window loses the focus, and what the agent holds goes down again;
 - a GDScript runtime error normally stops an editor-run game in the debugger. While the agent is connected, the editor
   lets the game continue at once (the error still reaches the agent as a `log` event and a `log_error` finding).
   Without a connection the game stays stopped for you, as usual.

@@ -394,7 +394,9 @@ editor still answers you as usual, and its Stop shortcut (Escape by default) sti
 take your mouse during a run either: a game that captures and hides the mouse (an input mode of Game Only, say) would
 otherwise lock your cursor inside the editor the moment it came to the front, wherever you were working. The game still
 turns with the agent's mouse movement, and gets its own mouse settings back when the run ends (the next click in its
-view takes the mouse, as it would). Between runs your input reaches the game as usual.
+view takes the mouse, as it would). You can leave the editor or click elsewhere in it during a run: the engine lets go
+of every key when the game's view loses the focus, and the keys the agent holds go down again. Between runs your input
+reaches the game as usual.
 
 While Autopilot plays in the editor, Blueprint Break on Exceptions (Editor Preferences > Experimental) is held off so
 an "Accessed None" doesn't stop the game mid-run (the run reports it: `log_error`); your setting is back when the

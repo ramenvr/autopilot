@@ -60,6 +60,7 @@ func _initialize() -> void:
 	await between_runs()
 	await in_a_run()
 	await after_the_run()
+	await held_through_focus_loss()
 	await mouse_mode()
 	print("\n%d/%d checks passed" % [passed, passed + failed])
 	quit(0 if failed == 0 else 1)
@@ -122,6 +123,32 @@ func op(name: String, args: Dictionary):
 	return pt.dispatch(1, name, args)
 
 
+# --- the game's window loses the focus: Godot lets go of every key, Autopilot's too ---------------
+
+func held_through_focus_loss() -> void:
+	set_run(true)
+	op("key", {"key": "W", "mode": "hold"})
+	await frames(2)
+	check("Autopilot holds W", Input.is_action_pressed("move_forward") and Input.is_key_pressed(KEY_W))
+	gate._ours += 1  # (as Input.release_pressed_events does, which a script can't call: not the person's, so not countered)
+	var up := InputEventKey.new()
+	up.keycode = KEY_W
+	up.physical_keycode = KEY_W
+	up.pressed = false
+	Input.parse_input_event(up)
+	Input.flush_buffered_events()
+	Input.action_release("move_forward")
+	gate._ours -= 1
+	check("the window lost the focus: W is up", not Input.is_action_pressed("move_forward"))
+	gate._held_check_at = 0.0
+	await create_timer(0.25).timeout
+	check("Autopilot's W goes down again, still held", Input.is_action_pressed("move_forward") and Input.is_key_pressed(KEY_W))
+	op("key", {"mode": "release_all"})
+	await frames(2)
+	check("and it lets go when Autopilot does", not Input.is_action_pressed("move_forward"))
+	set_run(false)
+
+
 # --- the game's reads and writes of the mouse mode ----------------------------------------------
 
 ## What the operating system has: not a read the addon could route (lib/mouse_reads.gd only changes the game's scripts,
@@ -159,6 +186,14 @@ func mouse_mode() -> void:
 	gate.set_game_mouse(Input.MOUSE_MODE_VISIBLE)
 	user.set_property(Input.MOUSE_MODE_CAPTURED)
 	check("headless, with no run: the game reads what it asked for", user.read_property() == Input.MOUSE_MODE_CAPTURED)
+	gate.set_game_mouse(Input.MOUSE_MODE_VISIBLE)
+	# a game the editor started in a run: it holds the mouse off before the editor can attach and say so
+	gate._starting_in_run = true
+	gate.set_game_mouse(Input.MOUSE_MODE_CAPTURED)
+	check("started in a run, before the attach: the game reads captured", user.read_property() == Input.MOUSE_MODE_CAPTURED)
+	check("... and the operating system's mouse stays free", os_mouse() == Input.MOUSE_MODE_VISIBLE, str(os_mouse()))
+	gate.attached()
+	check("the attach ends the wait", not gate._starting_in_run)
 	gate.set_game_mouse(Input.MOUSE_MODE_VISIBLE)
 	user.queue_free()
 
