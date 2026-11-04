@@ -458,6 +458,7 @@ def child_main():
     session = Session(game, init["project"], init["prompt"], init["run_id"], say=link.status, client=RemoteJev(link))
     session.forward = lambda event: out({"type": "activity", "event": event})  # (the parent's feed has it)
     session.stop = stopped.is_set
+    session.budget = 0  # (the run's time is the parent's: it closes play itself, and gives episodes their end)
     session.recorder = RemoteRecorder(link)
     session.reader = RemoteReader(link)
     pool = futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="call")

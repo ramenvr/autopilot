@@ -227,6 +227,7 @@ def test_the_agent_changes_the_level_with_restart_level(no_codex):
     notes = []
     session = types.SimpleNamespace(steered=False, steering=types.SimpleNamespace(pending=lambda: False),
                                     sandbox=None, game=game, note=notes.append, started_over=lambda: "",
+                                    time_up=lambda: False,
                                     activity=lambda kind, text, detail=None, log=None, **k: notes.append(log))
     game.restart = lambda map=None, wait_for_pawn=20.0: plugin.request(
         "session", {"action": "restart", **({"map": map or game.level} if map or game.level else {})}) and True

@@ -227,7 +227,7 @@ def run_turns(thread, message, events, session, deadline, effort):
         if events.ended not in (None, "completed"):
             return f"the model's turn {events.ended}: {events.error or 'no reason given'}"
         # (the user steered after the last tool result, with no tool call left to carry it: on as asked)
-        message = session.steer_note().strip()
+        message = session.next_message()
     return None
 
 

@@ -437,7 +437,7 @@ def run_host(cmd, config, message, env, events, session, deadline, err, cwd=HOST
             if idle.get("outcome") not in (None, "succeeded"):
                 return f"the model's turn {idle.get('outcome')}: {idle.get('error') or 'no reason given'}"
             # (the user steered after the last tool result, with no tool call left to carry it: on as asked)
-            steer = session.steer_note().strip()
+            steer = session.next_message()
             if not steer:
                 return None
             idle_now = False

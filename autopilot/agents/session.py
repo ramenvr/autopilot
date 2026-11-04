@@ -40,6 +40,7 @@ TIMEOUT = 30 * 60.0  # one request's whole budget, in seconds, when neither the 
 MAX_EPISODE = 360.0  # the longest episode (seconds of play) one run_harness may ask for
 MIN_JEV_DECISIONS = 3  # a report needs an episode in which Jev chose among 2+ options at least this often
 PLAY_GRACE = 90.0  # once an exploration's play time is up, the seconds its agent has to report before the run ends
+REPORT_SECONDS = 90.0  # what's kept of a run's budget for its report: play and probes close this long before its end
 # The longest one probe may run (wall seconds). A probe that drove the player through a whole goal, or read every
 # unit of a strategy game, ran 8-9 minutes in trials with the agent waiting on it. Past this the keys are let go, the
 # game paused, and what it printed so far comes back with a note. AUTOPILOT_PROBE_SECONDS overrides it
@@ -172,9 +173,10 @@ How to work:
    change to the play in the report.
 5. When the request is settled (the goal reached; a claim shown true or false; the exploration done) or more tries
    won't help, call `report` right away: an episode that settles it is enough (don't polish the harness after it).
-   Every tool result tells the time used of your budget. You are out of time only when it says time is nearly up:
-   until then time is no reason to stop, and a report that stops early says its real reason (what more tries wouldn't
-   change, and why). Before that, update notes.md with verified facts a later request on this game needs (controls,
+   Every tool result tells the time used of your budget, so you can size an episode to it. Time is never a reason to
+   stop: when it is up the run closes play and probes and asks you for the report, and an episode still playing ends
+   there. Until then go on, and a report that stops early says its real reason (what more tries wouldn't change, and
+   why). Before you report, update notes.md with verified facts a later request on this game needs (controls,
    mechanics, numbers, pitfalls; short lines, no guesses) and move reusable harness code into lib.py.
 
 The request is one of:
@@ -454,6 +456,10 @@ class Steering:
         return items
 
 
+# What the agent is told once the run's time is up (Session.time_up): with the clock, and on its own when it stopped
+TIME_UP = ("Time is up: play and probes are closed. Call report now with what the episodes so far show (INCONCLUSIVE "
+           "if the request isn't settled).")
+
 STEER_NOTE = """The user, watching the game, steers: {said}
 Take it as a change to the request from now on (what to do next, how, what to stop doing). Revise the harness for it
 and go on from the game as it is now: the level is not restarted any more in this run (run_harness continues where
@@ -517,6 +523,8 @@ class Session:
         self.research_up = False  # (their end is logged once)
         self.sandbox = None  # autopilot.sandbox.Sandbox: model-written code runs there (see _remote)
         self.stop = lambda: False  # true once the run must end (the user pressed Stop, the budget ran out)
+        self.report_asked = False  # the agent stopped with the time up and was asked for the report (next_message)
+        self.reported_at_time_up = False  # the run closed play before the agent reported: for the report, in fact
         self.steering = Steering()
         self.play_seconds = None  # an exploration's minutes of play, in seconds (None: only the budget bounds play)
         self.play_started = None  # time.time() when the run first played (its minutes of play count from there)
@@ -834,6 +842,15 @@ class Session:
         quoted = "\n".join(f'"{s}"' for s in said)
         return "\n\n" + STEER_NOTE.format(said=quoted)
 
+    def next_message(self):
+        """What the agent is sent once it has stopped: what the user typed, or, once the run's time is up and it hasn't
+        reported, the request for the report (once: an agent that stops again ends the run without one)."""
+        steer = self.steer_note().strip()
+        if steer or self.report is not None or self.report_asked or not self.time_up():
+            return steer
+        self.report_asked = True
+        return TIME_UP
+
     def _remote(self, method, **kwargs):
         """Session.<method> in the sandbox's process; its counters copied back."""
         try:
@@ -854,6 +871,19 @@ class Session:
             return None
         return self.play_seconds - (time.time() - self.play_started if self.play_started else 0.0)
 
+    def time_left(self):
+        """The seconds until the run's time is up: the budget less what its report takes (REPORT_SECONDS, or a third of
+        a short budget). None: the run has no budget."""
+        if not self.budget:
+            return None
+        return self.budget - min(REPORT_SECONDS, self.budget / 3) - (time.time() - self.started)
+
+    def time_up(self):
+        """Whether the run's time is up: play and probes are closed, and the agent is asked for the report. The budget
+        itself ends the run (each agent's implement), whether or not it reported."""
+        left = self.time_left()
+        return left is not None and left <= 0
+
     def out_of_time(self):
         """Whether an exploration's play time is up and its agent has had PLAY_GRACE to report since: the run ends."""
         left = self.play_left()
@@ -862,8 +892,9 @@ class Session:
     def clock(self):
         """The time used, for every tool result: the implementer can't see a clock otherwise."""
         used = time.time() - self.started
-        share = used / self.budget if self.budget else 0.0
         line = f"[time: {used / 60:.1f} of {self.budget / 60:.0f} min used]"
+        if self.report is None and self.time_up():
+            return f"{line} {TIME_UP}"
         left = self.play_left()
         if left is not None:
             line = (f"[time: {used / 60:.1f} min used; play: {max(0.0, self.play_seconds - left) / 60:.1f} of "
@@ -884,13 +915,6 @@ class Session:
                          f"(the run ends in {max(0.0, PLAY_GRACE + left):.0f} s).")
             elif self.report is None and left < 0.3 * self.play_seconds:
                 line += f" {left:.0f} s of play left: make the next episode the last, then report."
-            return line
-        if self.report is None and share >= 0.9:
-            line += (" Time is nearly up: call report now with what the episodes so far show (INCONCLUSIVE if the "
-                     "request isn't settled).")
-        elif self.report is None and share >= 0.7:
-            line += (f" {(self.budget - used) / 60:.0f} min left: go on with the request, and report once an episode "
-                     "settles it.")
         return line
 
     def note(self, text):
@@ -972,8 +996,13 @@ class Session:
     def probe(self, code, keep_running=False, seconds=None):
         """The probe tool's body. seconds: the longest it may run; by default PROBE_SECONDS, or what is left of the
         time for reading and probing when that is less (the sandbox's child is passed the parent's). Refused once that
-        time is up, until an episode has played."""
+        time is up, until an episode has played, and once the run's own time is up."""
         if seconds is None:
+            if self.time_up():
+                text = f"Not run. {TIME_UP}"
+                self.activity("probe", "Not run: the run's time is up", detail=text, ends="probe",
+                              log="probe: refused, the run's time is up")
+                return text
             if self.research_over():
                 text = (f"Not run: the {self.research_budget / 60:g} minutes of reading and probing before the first "
                         f"episode are up. Write {self.run_rel}/harness.py from what you know now and call run_harness; "
@@ -981,8 +1010,8 @@ class Session:
                 self.activity("probe", "Not run: the time for trying things before the harness is up", detail=text,
                               ends="probe", log="probe: refused, the time for reading and probing is up")
                 return text
-            left = self.research_left()
-            seconds = PROBE_SECONDS if left is None else max(1.0, min(PROBE_SECONDS, left))
+            left = [x for x in (self.research_left(), self.time_left()) if x is not None]
+            seconds = max(1.0, min([PROBE_SECONDS] + left))
         if self.sandbox:
             return self._remote("probe", code=code, keep_running=keep_running, seconds=seconds)
         with self.probe_lock:
@@ -1076,7 +1105,13 @@ class Session:
                 return (f"No episode: the exploration's {self.play_seconds / 60:.0f} minutes of play are used up. Call "
                         "report now with what the episodes so far showed.")
             seconds = min(float(seconds), left)
-        until = t0 + left if left is not None else until  # (the sandbox's own session is passed it)
+        if until is None:  # (the sandbox's own session is passed it: the budget is the parent's)
+            ends = [x for x in (left, self.time_left()) if x is not None]
+            if ends and min(ends) < 5.0:
+                return f"No episode. {TIME_UP}"
+            if ends:
+                seconds = min(float(seconds), min(ends))
+                until = t0 + min(ends)
         n = self.episodes + 1
         if os.path.exists(os.path.join(self.run_dir, file)):
             self.harness_started[n] = t0
@@ -1096,8 +1131,8 @@ class Session:
         return kept + text
 
     def _episode_over(self, until=None):
-        """Whether the episode running now must end: the run stops, the user steered, or (until: a time.time()) an
-        exploration's play time is up."""
+        """Whether the episode running now must end: the run stops, the user steered, or (until: a time.time()) the
+        run's time for play is up."""
         return (bool(self.stop()) or self.end_episode.is_set() or self.steering.pending()
                 or (until is not None and time.time() >= until))
 
@@ -1174,7 +1209,7 @@ class Session:
                 if recorder is not None:
                     recorder.end(n)
             if result.get("reason") == "stopped" and until is not None and time.time() >= until:
-                note += "Note: the exploration's minutes of play are up: the episode ended there.\n"
+                note += "Note: the run's minutes of play are up: the episode ended there.\n"
             elif result.get("reason") == "stopped" and not self.stop():
                 note += ("Note: the user steered while Jev played: the episode ended there, and the game is paused "
                          "where it was.\n")
@@ -1429,6 +1464,8 @@ class Session:
                 f"(run {self.marker or self.run_id}):"), [f["jpeg"] for f in chosen]
 
     def restart_level(self, level=None):
+        if self.time_up():
+            return f"Not restarted. {TIME_UP}"
         if self.steered or self.steering.pending():
             return ("Not restarted: the user is steering live play. Go on from where the game is (run_harness "
                     "continues it).")
@@ -1468,12 +1505,18 @@ class Session:
             refused = ("Not reported: no run_harness episode has been played yet. Write harness.py and run it: the "
                        "outcome must rest on an episode in which Jev played (probes only check assumptions). Report "
                        "INCONCLUSIVE if the game can't be played at all.")
+            if self.time_up():
+                refused = ("Not reported: no run_harness episode played, and the run's time is up, so none will. "
+                           "Report INCONCLUSIVE, saying what the run found out.")
         elif self.most_decisions < MIN_JEV_DECISIONS and str(args.get("outcome", "")).upper() != "INCONCLUSIVE":
             refused = (f"Not reported: in no episode did Jev make {MIN_JEV_DECISIONS} decisions (the most: "
                        f"{self.most_decisions}). Options that run alone are a script, not Jev playing. Give Jev real "
                        "choices: at its decision points offer 2+ legal options that are each a sensible thing to do "
                        "now (e.g. which target, approach or action next, or keep going vs. something else), then run "
                        "again.")
+            if self.time_up():
+                refused = (f"Not reported: in no episode did Jev make {MIN_JEV_DECISIONS} decisions, and the run's "
+                           "time is up, so none will. Report INCONCLUSIVE, saying what the run found out.")
         elif str(args.get("visual")).strip().lower() == "true" and not self.described:
             # A claim about how something looks rests on a description of its frames, by a model not told the claim:
             # the agent's own reading of numbers (or hopes) isn't what the picture showed
@@ -1496,6 +1539,7 @@ class Session:
             self.note(refused)  # (the log shows why the run went on after a report)
             return refused
         self.report = args
+        self.reported_at_time_up = self.time_up()
         self.to_stage("report")
         outcome = str(args.get("outcome") or "").strip()
         evidence = args.get("evidence") if isinstance(args.get("evidence"), list) else []
@@ -1939,6 +1983,8 @@ def finish(session, started, stopped, last_text, **facts):
         "research_modified": [w for w in writes if isinstance(w, dict) and w.get("probe") and not w.get("in_play")],
         **facts,
     })
+    if session.reported_at_time_up:  # (the run's own fact: an agent's words about its time aren't taken for it)
+        report["time_up"] = True
     if session.alerts:
         report["alerts"] = list(session.alerts)
     if session.researcher is not None:

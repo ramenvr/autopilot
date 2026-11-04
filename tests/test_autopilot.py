@@ -528,19 +528,86 @@ def test_report_needs_an_episode(game, tmp_path, monkeypatch):
     assert "Reported" in s.do_report({"outcome": "CONFIRMED", "summary": "x", "evidence": []})
 
 
-def test_clock_nudges_toward_a_report(game, tmp_path, monkeypatch):
+def test_clock_only_counts_until_the_time_is_up(game, tmp_path, monkeypatch):
     from autopilot import codex
     from autopilot.agents import session
 
     monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
     s = session.Session(game, "fake", "Win", "r1")
     s.budget = 3600.0
-    assert "min left" not in s.clock()
-    s.started -= 2600  # (72%: with 17 minutes left it isn't time to stop, whatever the request's state)
-    clock = s.clock()
-    assert "17 min left: go on with the request" in clock and "report now" not in clock
-    s.started -= 700
-    assert "nearly up" in s.clock()
+    for used in (0, 2600, 3400):  # (no warning: the agent has no time to manage, the run stops it when it's up)
+        s.started = time.time() - used
+        assert s.clock().endswith("min used]"), s.clock()
+    s.started = time.time() - (3600 - session.REPORT_SECONDS)
+    assert s.time_up() and "Time is up" in s.clock() and "report now" in s.clock()
+    s.budget = 30.0  # (a short budget keeps a third for the report)
+    s.started = time.time() - 15
+    assert not s.time_up()
+    s.started = time.time() - 21
+    assert s.time_up()
+
+
+def test_time_up_closes_play_and_asks_for_the_report(game, tmp_path, monkeypatch):
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setenv("AUTOPILOT_SANDBOX", "off")
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    s = session.open_session(game, "fake", "Open the crate", "r1", client=FakeJev("wait"))
+    src = open(__file__, encoding="utf-8").read()
+    crate = "from autopilot.kit import *\n\n" + src[src.index("class CrateHarness"):src.index("@pytest.fixture")]
+    (tmp_path / "fake" / "runs" / "r1" / "harness.py").write_text(crate, encoding="utf-8")
+
+    # An episode that would run past the end stops there, and the agent is told why
+    s.budget = 600.0
+    s.started = time.time() - (600.0 - session.REPORT_SECONDS - 8.0)
+    t0 = time.monotonic()
+    out = s.run_harness(30)
+    assert 4 < time.monotonic() - t0 < 12, "the episode didn't end when the run's time was up"
+    assert "minutes of play are up" in out and s.episodes == 1
+    time.sleep(max(0.0, s.time_left()) + 0.1)
+
+    # Nothing more is played, nothing changes the game, and the agent is told what to do instead
+    assert s.time_up()
+    for refused in (s.run_harness(30), s.probe("print(1)"), s.restart_level()):
+        assert "Time is up" in refused and "report now" in refused, refused
+    assert s.episodes == 1
+
+    # An agent that stopped is asked for the report once: stopping again ends the run
+    assert "report now" in s.next_message()
+    assert s.next_message() == ""
+
+    # The report stays open, and the fact that time ended the run is the run's own
+    s.most_decisions = session.MIN_JEV_DECISIONS
+    s.do_report({"outcome": "not_achieved", "summary": "Stopped by the clock.", "evidence": []})
+    assert s.report is not None and "Time is up" not in s.clock()
+    assert session.finish(s, time.time(), None, "")["time_up"] is True
+
+
+def test_time_up_leaves_a_way_to_report_with_no_episode(game, tmp_path, monkeypatch):
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    s = session.Session(game, "fake", "Win", "r1")
+    s.budget = 60.0
+    s.started = time.time() - 60
+    refused = s.do_report({"outcome": "achieved", "summary": "Done.", "evidence": []})
+    assert s.report is None and "INCONCLUSIVE" in refused and "run it" not in refused
+    s.do_report({"outcome": "INCONCLUSIVE", "summary": "No episode played.", "evidence": []})
+    assert s.report is not None
+
+
+def test_an_agent_that_stops_with_time_left_isnt_asked_for_more(game, tmp_path, monkeypatch):
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    s = session.Session(game, "fake", "Win", "r1")
+    s.budget = 3600.0
+    assert s.next_message() == ""
+    s.steering.add("go left")
+    assert "go left" in s.next_message()
 
 
 def test_opus_thinks_harder_in_the_users_own_plugin(monkeypatch):
@@ -1717,6 +1784,14 @@ def test_an_exploration_plays_only_its_minutes_then_its_run_ends(game, tmp_path,
         t0 = time.monotonic()
         out = sb.call("run_harness", seconds=30, until=time.time() + 2, timeout=120)
         assert time.monotonic() - t0 < 8 and "minutes of play are up" in out, out
+    finally:
+        sb.close()
+    # The run's time is the parent's: a child going by its own default budget would close play on a longer run
+    monkeypatch.setenv("AUTOPILOT_TIMEOUT", "1")
+    sb = sandbox.Sandbox(game.link, FakeJev("wait"), "fake", "Explore", "r1", root, str(tmp_path))
+    try:
+        time.sleep(1.2)
+        assert "Time is up" not in sb.call("restart_level", timeout=120)
     finally:
         sb.close()
 

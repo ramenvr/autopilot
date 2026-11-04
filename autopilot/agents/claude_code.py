@@ -363,7 +363,7 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
                     elif isinstance(m, ResultMessage):
                         result_msg = m
                 # (the user steered after the last tool result, with no tool call left to carry it: on as asked)
-                message = session.steer_note().strip()
+                message = session.next_message()
 
     async def until_stopped():
         """go(), ended early when the session's stop() says so."""
