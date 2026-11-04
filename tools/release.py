@@ -34,7 +34,10 @@ this checkout has checked out doesn't matter.
 Built by hand, not by CI, on purpose: a self-hosted runner with the engines would run whatever code a branch's or a
 fork's workflow sends it. Needs Git, uv, the Unreal engines (and on a Mac the Xcodes they take, see package_release.py),
 and gh signed in as a repository admin: a tag ruleset lets only admins create tags, and publishing a release creates
-its tag. Run the two halves one after the other, not at once: two runs that both find no draft make two.
+its tag. The two halves' runs may overlap: a run looks for the draft again when its build ends, and if both made one
+the later draft's run moves its half into the earlier draft, so the halves still meet in one. A run waits for the other
+run's upload to finish before adding to its draft, and the run that adds its half to the other's draft is the one that
+publishes.
 
 The downloads are signed as they're built (package_release.py --sign, which says what each needs): on Windows the
 Unity package by Unity's upm (UNITY_ORGANIZATION and its signing service account's UPM_SERVICE_ACCOUNT_KEY_ID and
@@ -55,6 +58,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GITHUB = "ramenvr/autopilot"
@@ -66,6 +70,7 @@ SIGNED = ("The Unity package is signed, and the Unreal plugins' binaries are sig
 UNSIGNED_UNITY = ("The Unreal plugins' binaries are signed by TribeVR Inc (the macOS ones notarized by Apple), as is "
                   "the installer the Windows downloads carry (install.ps1); the Unity package isn't signed (Unity 6.3 "
                   "and later show it as unsigned).")
+UPLOAD_WAIT = 15 * 60  # (seconds a run waits for the other run's upload: it took under a minute so far)
 
 
 def run(*args):
@@ -97,6 +102,60 @@ def complete(names):
     """Whether a release's files are both halves: Unreal for Windows and for Mac, Unity and Godot."""
     return (any(n.endswith("-Win64.zip") for n in names) and any(n.endswith(MAC_DOWNLOADS) for n in names)
             and "Autopilot-Unity.zip" in names and "Autopilot-Godot.zip" in names)
+
+
+def contains(commit, older):
+    """Whether a commit's history has another commit in it."""
+    return subprocess.run(["git", "-C", HERE, "merge-base", "--is-ancestor", older, commit]).returncode == 0
+
+
+def list_releases():
+    """The repository's releases, drafts too."""
+    return json.loads(read("gh", "api", f"repos/{GITHUB}/releases?per_page=100"))
+
+
+def delete_draft(draft):
+    """Deletes a draft by its id: two drafts can have the same tag, and gh finds a draft by its tag."""
+    run("gh", "api", "-X", "DELETE", f"repos/{GITHUB}/releases/{draft['id']}")
+
+
+def leftovers(releases):
+    """This script's drafts whose tag is published: the half of an overlap that never got moved. They'd pass for a
+    draft waiting for the other half, and that run would stop at "released already" rather than build main."""
+    published = {r["tag_name"] for r in releases if not r["draft"]}
+    return [r for r in releases if r["draft"] and TAG.match(r["tag_name"]) and r["tag_name"] in published]
+
+
+def draft_of(releases, tag, platform):
+    """The draft a tag's halves meet in, and the extra drafts holding this platform's half (to delete): two runs that
+    overlap each make a draft, because GitHub lets drafts share a tag, and the earlier one (lowest id) is the one to
+    keep: neither run has to know what the other does, and the later run always sees the earlier run's draft, which
+    was there before its own upload began. (None and [] when the tag has no draft.)"""
+    drafts = sorted((r for r in releases if r["draft"] and r["tag_name"] == tag), key=lambda r: r["id"])
+    extra = [r for r in drafts[1:] if any(half(a["name"]) == platform for a in r["assets"])]
+    return (drafts[0] if drafts else None), extra
+
+
+def uploaded(draft):
+    """Whether the run filling a draft is done: gh starts a run's files in order and SHA256SUMS.txt is the last of them,
+    and a file being uploaded isn't in the state "uploaded" yet."""
+    assets = draft["assets"]
+    return (any(a["name"] == "SHA256SUMS.txt" for a in assets)
+            and all(a.get("state", "uploaded") == "uploaded" for a in assets))
+
+
+def wait_for_upload(draft):
+    """Waits for the other run to finish uploading to its draft: adding to the draft before that would lose its lines
+    of SHA256SUMS.txt."""
+    deadline = time.monotonic() + UPLOAD_WAIT
+    while not uploaded(draft):
+        if time.monotonic() > deadline:
+            sys.exit(f"The draft {draft['tag_name']} isn't fully uploaded after {UPLOAD_WAIT // 60} minutes: if its "
+                     "run failed, delete the draft, then run both halves again.")
+        print(f"Waiting for the other half's upload to the draft {draft['tag_name']} to finish...", flush=True)
+        time.sleep(10)
+        draft = json.loads(read("gh", "api", f"repos/{GITHUB}/releases/{draft['id']}"))
+    return draft
 
 
 def waiting(releases, platform):
@@ -158,12 +217,16 @@ def main(argv=None):
     work = os.path.realpath(args.work_dir)  # (Unreal's build accelerator loses files under a symlink: macOS's /var)
 
     run("git", "-C", HERE, "fetch", "--quiet", "origin", "main")
-    releases = json.loads(read("gh", "api", f"repos/{GITHUB}/releases?per_page=100"))
+    releases = list_releases()
+    stale = leftovers(releases)
+    for old in stale:
+        print(f"Deleting the draft {old['tag_name']} (id {old['id']}): that tag is published already.")
+        delete_draft(old)
+    releases = [r for r in releases if r not in stale]
     draft = waiting(releases, platform)
     if draft:
         commit = draft["target_commitish"]
-        if not re.fullmatch(r"[0-9a-f]{40}", commit) or subprocess.run(
-                ["git", "-C", HERE, "merge-base", "--is-ancestor", commit, "origin/main"]).returncode != 0:
+        if not re.fullmatch(r"[0-9a-f]{40}", commit) or not contains("origin/main", commit):
             sys.exit(f"The draft {draft['tag_name']} is for {commit}, which isn't on main: delete it, then run this "
                      "again.")
         print(f"The draft {draft['tag_name']} has the other half: building its commit, {commit[:7]}.")
@@ -185,7 +248,6 @@ def main(argv=None):
         print(f"{short} is released already: https://github.com/{GITHUB}/releases/tag/{tag}\nTo release it again "
               f"(a published release can't change), run this with --respin {respin}.")
         return
-    draft = next((r for r in releases if r["draft"] and r["tag_name"] == tag), None)
 
     # This half, built in a worktree of that commit
     os.makedirs(work, exist_ok=True)
@@ -207,12 +269,24 @@ def main(argv=None):
         run("git", "-C", HERE, "worktree", "remove", "--force", tree)
     files = sorted(os.path.join(out, n) for n in os.listdir(out))
 
+    # What GitHub has now, not what it had before the build: the other half's run may have made the draft since
+    releases = list_releases()
+    if any(r["tag_name"] == tag and not r["draft"] for r in releases):
+        sys.exit(f"{tag} was published during this build, without this half: to release {short} with both halves, run "
+                 f"this with --respin. The downloads are in {out}")
+    draft, extra = draft_of(releases, tag, platform)
+    for old in extra:
+        print(f"Deleting a second draft {tag} (id {old['id']}): this half goes into the first.")
+        delete_draft(old)
+
     # Into the draft: a new one (and older drafts go: they would never be complete), or the other half's
-    if draft is None:
+    made_it = draft is None
+    if made_it:
         for old in releases:
-            if old["draft"] and TAG.match(old["tag_name"]):
+            # (not one newer than this commit: the list is from after the build, and main may have moved on since)
+            if old["draft"] and TAG.match(old["tag_name"]) and contains(commit, old["target_commitish"]):
                 print(f"Deleting the draft {old['tag_name']}: it's for an older commit than {short}.")
-                run("gh", "api", "-X", "DELETE", f"repos/{GITHUB}/releases/{old['id']}")
+                delete_draft(old)
         previous = next((r["tag_name"] for r in releases if not r["draft"] and not r["prerelease"]), None)
         notes = os.path.join(work, f"autopilot-release-{short}-notes.md")
         with open(notes, "w", encoding="utf-8", newline="\n") as f:
@@ -225,7 +299,15 @@ def main(argv=None):
             f"Autopilot {version} ({tag.rsplit('-', 1)[1]})", "--notes-file", notes, "--generate-notes",
             *(["--notes-start-tag", previous] if previous else []))
         os.remove(notes)
-    else:
+        # The other run may have made one too while this one built, and uploaded: then this run's goes (see draft_of)
+        first, extra = draft_of(list_releases(), tag, platform)
+        for old in extra:
+            print(f"Moving this half to the draft {tag} the other half's run made first (id {first['id']}).")
+            delete_draft(old)
+        if extra:
+            draft, made_it = first, False
+    if not made_it:
+        draft = wait_for_upload(draft)
         sums = os.path.join(out, "SHA256SUMS.txt")
         with open(sums, encoding="utf-8") as f:
             ours = f.read()
@@ -248,12 +330,15 @@ def main(argv=None):
             run("gh", "release", "edit", tag, "-R", GITHUB, "--notes-file", notes)
             os.remove(notes)
 
-    assets =json.loads(read("gh", "release", "view", tag, "-R", GITHUB, "--json", "assets"))["assets"]
+    assets = json.loads(read("gh", "release", "view", tag, "-R", GITHUB, "--json", "assets"))["assets"]
     names = [a["name"] for a in assets]
-    if not (complete(names) or args.publish):
+    # (The run that made the draft doesn't publish: the other run adds its half after, and is still uploading when
+    # this one could see its files; it publishes, once SHA256SUMS.txt has both halves')
+    if not ((complete(names) and not made_it) or args.publish):
         other = "Mac" if platform == "Win64" else "Windows"
         print(f"\nThe draft {tag} has {HALVES[platform]}. Run this on {'a ' if other == 'Mac' else ''}{other} for the "
-              f"rest, which publishes it; or run this again with --publish to publish it without.")
+              "rest, which publishes it (a run there now finds this draft when its build ends); or run this again "
+              "with --publish to publish it without.")
         print(f"The downloads are also in {out}")
         return
     run("gh", "release", "edit", tag, "-R", GITHUB, "--draft=false", "--latest")

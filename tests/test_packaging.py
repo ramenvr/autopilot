@@ -411,7 +411,7 @@ def fake_release_tools(tmp_path, monkeypatch, platform, releases, draft_has):
         calls.append(args)
         out = ""
         if args[:2] == ["gh", "api"] and args[2].endswith("/releases?per_page=100"):
-            out = json.dumps(releases)
+            out = json.dumps(releases() if callable(releases) else releases)
         elif args[:2] == ["gh", "api"]:
             out = "true\n"  # (admin)
         elif args[:2] == ["git", "-C"] and args[3:5] == ["remote", "get-url"]:
@@ -431,6 +431,11 @@ def fake_release_tools(tmp_path, monkeypatch, platform, releases, draft_has):
                 notes.append(f.read())
         elif args[:3] == ["gh", "release", "view"]:
             out = json.dumps({"assets": [{"name": n} for n in draft_has]})
+        elif args[:3] == ["gh", "release", "download"]:
+            folder = args[args.index("--dir") + 1]
+            os.makedirs(folder, exist_ok=True)
+            with open(os.path.join(folder, "SHA256SUMS.txt"), "w", encoding="utf-8") as f:
+                f.write("ff  Autopilot-Unreal5.8-Other.dmg\n")
         return release.subprocess.CompletedProcess(args, 0, out, "")
     monkeypatch.setattr(release.subprocess, "run", run)
     monkeypatch.setattr(release.shutil, "which", lambda name: f"/bin/{name}")
@@ -445,7 +450,8 @@ def test_no_upm_releases_with_the_unity_package_unsigned_and_the_notes_say_so(tm
     tag = "v1.0.0-bbbbbbb"
     mac_notes = f"Autopilot 1.0.0, built from {commit}. {release.SIGNED} The downloads use Aura.\n\nChanges"
     drafts = [{"id": 1, "tag_name": tag, "draft": True, "prerelease": False, "created_at": "2026-10-29T11:00:00Z",
-               "target_commitish": commit, "body": mac_notes, "assets": [{"name": "Autopilot-Unreal5.8-Mac.zip"}]}]
+               "target_commitish": commit, "body": mac_notes,
+               "assets": [{"name": "Autopilot-Unreal5.8-Mac.zip"}, {"name": "SHA256SUMS.txt"}]}]
     calls, edited = fake_release_tools(tmp_path, monkeypatch, "win32", drafts, WINDOWS_HALF + MAC_HALF)
     release.main(["--no-upm", "--unreal", "5.8", "--work-dir", str(tmp_path)])
     build = next(c for c in calls if any(str(a).endswith("package_release.py") for a in c))
@@ -482,7 +488,7 @@ def test_respin_releases_a_released_commit_again_under_a_tag_of_its_own(tmp_path
     assert not any("--draft=false" in c for c in calls)  # (it waits for the Mac half)
     # The Mac's run, without --respin, finishes and publishes it
     draft = {**released, "id": 2, "tag_name": "v1.0.0-bbbbbbb.2", "draft": True, "created_at": "2026-10-29T11:00:00Z",
-             "assets": [{"name": n} for n in WINDOWS_HALF if n != "SHA256SUMS.txt"]}
+             "assets": [{"name": n} for n in WINDOWS_HALF]}
     assert release.waiting([draft, released], "Mac") is draft
     calls, _ = fake_release_tools(tmp_path, monkeypatch, "darwin", [draft, released], WINDOWS_HALF + MAC_HALF)
     release.main(args)
@@ -499,6 +505,129 @@ def test_respin_releases_a_released_commit_again_under_a_tag_of_its_own(tmp_path
         release.main(args + ["--respin", "3"])
     with pytest.raises(SystemExit, match="from 2"):
         release.main(args + ["--respin", "1"])
+
+
+OVERLAP_TAG = "v1.0.0-bbbbbbb"
+
+
+def overlap_draft(id_, files):
+    """A draft of the commit fake_release_tools has as origin/main, as the other half's run left it."""
+    return {"id": id_, "tag_name": OVERLAP_TAG, "draft": True, "prerelease": False,
+            "created_at": "2026-10-29T09:00:00Z", "target_commitish": "b" * 40, "body": "",
+            "assets": [{"name": n, "state": "uploaded"} for n in files]}
+
+
+def listings(*answers):
+    """What GitHub's list of releases answers each time it's read: these in turn, the last one from then on."""
+    answers = list(answers)
+    return lambda: answers.pop(0) if len(answers) > 1 else answers[0]
+
+
+def deleted(calls):
+    return [c[4].rsplit("/", 1)[1] for c in calls if c[:3] == ["gh", "api", "-X"]]
+
+
+def test_a_run_finds_the_draft_the_other_half_made_during_its_build(tmp_path, monkeypatch):
+    """Runs that overlap: nothing was there when this one began, and the other half's draft was when its build ended."""
+    other = overlap_draft(1, WINDOWS_HALF)
+    calls, _ = fake_release_tools(tmp_path, monkeypatch, "darwin", listings([], [other]), WINDOWS_HALF + MAC_HALF)
+    release.main(["--unreal", "5.8", "--work-dir", str(tmp_path)])
+    assert not any(c[:3] == ["gh", "release", "create"] for c in calls)
+    assert ["gh", "release", "edit", OVERLAP_TAG, "-R", release.GITHUB, "--draft=false", "--latest"] in calls
+    with open(tmp_path / "autopilot-release-bbbbbbb-Mac" / "SHA256SUMS.txt", encoding="utf-8") as f:
+        assert "Autopilot-Unreal5.8-Other.dmg" in f.read()  # (the other half's lines)
+
+
+def test_two_runs_that_each_made_a_draft_end_in_the_earlier_one(tmp_path, monkeypatch, capsys):
+    """Both ends of a build at once: the later draft's run moves its half into the earlier, and publishes; the earlier
+    draft's run neither deletes anything nor publishes, whatever it sees."""
+    args = ["--unreal", "5.8", "--work-dir", str(tmp_path)]
+    earlier, later = overlap_draft(1, MAC_HALF), overlap_draft(2, WINDOWS_HALF)
+    calls, _ = fake_release_tools(tmp_path, monkeypatch, "win32", listings([], [], [later, earlier]),
+                                  WINDOWS_HALF + MAC_HALF)
+    release.main(args)
+    assert deleted(calls) == ["2"]
+    order = [c[:3] for c in calls if c[:3] in (["gh", "api", "-X"], ["gh", "release", "upload"])]
+    assert order == [["gh", "api", "-X"], ["gh", "release", "upload"]]  # (only one draft left for gh to find by tag)
+    assert any("--draft=false" in c for c in calls)
+    # The same overlap as the run with the earlier draft sees it, the other half's files already showing
+    earlier, later = overlap_draft(1, WINDOWS_HALF), overlap_draft(2, MAC_HALF)
+    calls, _ = fake_release_tools(tmp_path, monkeypatch, "win32", listings([], [], [later, earlier]),
+                                  WINDOWS_HALF + MAC_HALF)
+    release.main(args)
+    assert deleted(calls) == [] and not any("--draft=false" in c for c in calls)
+    assert "a run there now finds this draft" in capsys.readouterr().out
+    # Two drafts left by runs from before this: a rerun of the half in the second moves it into the first
+    calls, _ = fake_release_tools(tmp_path, monkeypatch, "win32", [overlap_draft(2, WINDOWS_HALF),
+                                                                  overlap_draft(1, MAC_HALF)], WINDOWS_HALF + MAC_HALF)
+    release.main(args)
+    assert deleted(calls) == ["2"] and any("--draft=false" in c for c in calls)
+
+
+def test_a_run_waits_for_the_other_runs_upload_before_adding_to_its_draft(tmp_path, monkeypatch):
+    """Its SHA256SUMS.txt isn't there to merge yet, or a file of it is still on its way."""
+    assert not release.uploaded(overlap_draft(1, ["Autopilot-Unity.zip"]))
+    assert release.uploaded(overlap_draft(1, MAC_HALF))
+    partial = overlap_draft(1, MAC_HALF)
+    partial["assets"][0]["state"] = "starter"
+    assert not release.uploaded(partial)
+    calls, _ = fake_release_tools(tmp_path, monkeypatch, "win32", [partial], WINDOWS_HALF + MAC_HALF)
+    real, slept = release.subprocess.run, []
+    polls = iter([overlap_draft(1, MAC_HALF)])
+
+    def poll(args, **kw):
+        if list(args)[:3] == ["gh", "api", f"repos/{release.GITHUB}/releases/1"]:
+            return release.subprocess.CompletedProcess(args, 0, json.dumps(next(polls)), "")
+        return real(args, **kw)
+    monkeypatch.setattr(release.subprocess, "run", poll)
+    monkeypatch.setattr(release.time, "sleep", slept.append)
+    release.main(["--unreal", "5.8", "--work-dir", str(tmp_path)])
+    assert slept == [10]
+    assert any(c[:3] == ["gh", "release", "upload"] for c in calls)
+    # A run that never finished stops this one, with what to do, rather than publish half of SHA256SUMS.txt
+    fake_release_tools(tmp_path, monkeypatch, "win32", [partial], WINDOWS_HALF + MAC_HALF)
+    monkeypatch.setattr(release, "UPLOAD_WAIT", -1)
+    with pytest.raises(SystemExit, match="isn't fully uploaded after"):
+        release.main(["--unreal", "5.8", "--work-dir", str(tmp_path)])
+
+
+def test_a_run_deletes_older_drafts_but_not_one_newer_than_its_commit(tmp_path, monkeypatch):
+    """The list is read after the build now, so it can hold a draft of a commit merged since this run began."""
+    older = {**overlap_draft(1, MAC_HALF), "tag_name": "v1.0.0-aaaaaaa", "target_commitish": "a" * 40}
+    newer = {**overlap_draft(2, MAC_HALF), "tag_name": "v1.0.0-ccccccc", "target_commitish": "c" * 40}
+    calls, _ = fake_release_tools(tmp_path, monkeypatch, "win32", listings([], [newer, older], []), WINDOWS_HALF)
+    real = release.subprocess.run
+
+    def ancestors(args, **kw):
+        if "--is-ancestor" in args and args[args.index("--is-ancestor") + 1] == "c" * 40:
+            return release.subprocess.CompletedProcess(args, 1, "", "")
+        return real(args, **kw)
+    monkeypatch.setattr(release.subprocess, "run", ancestors)
+    release.main(["--unreal", "5.8", "--work-dir", str(tmp_path)])
+    assert deleted(calls) == ["1"]
+
+
+def test_a_draft_whose_tag_is_published_is_deleted_and_doesnt_stop_the_next_release(tmp_path, monkeypatch, capsys):
+    """An overlap's second draft, left behind: it would pass for a draft waiting for this half, and the run would stop
+    at "released already" rather than build main."""
+    released = {**overlap_draft(1, WINDOWS_HALF + MAC_HALF), "tag_name": "v1.0.0-aaaaaaa", "draft": False,
+                "target_commitish": "a" * 40}
+    left = {**overlap_draft(2, MAC_HALF), "tag_name": "v1.0.0-aaaaaaa", "target_commitish": "a" * 40}
+    assert release.waiting([left, released], "Win64") is left and release.leftovers([left, released]) == [left]
+    assert release.leftovers([overlap_draft(3, MAC_HALF), released]) == []
+    calls, _ = fake_release_tools(tmp_path, monkeypatch, "win32", listings([left, released], [released]), WINDOWS_HALF)
+    release.main(["--unreal", "5.8", "--work-dir", str(tmp_path)])
+    assert deleted(calls) == ["2"] and "released already" not in capsys.readouterr().out
+    assert next(c for c in calls if c[:3] == ["gh", "release", "create"])[3] == OVERLAP_TAG
+
+
+def test_a_tag_published_during_the_build_stops_the_run(tmp_path, monkeypatch):
+    """--publish on the other computer while this half built: this half can't go in, and the run says so."""
+    published = {**overlap_draft(1, MAC_HALF), "draft": False}
+    calls, _ = fake_release_tools(tmp_path, monkeypatch, "win32", listings([], [published]), WINDOWS_HALF)
+    with pytest.raises(SystemExit, match="was published during this build"):
+        release.main(["--unreal", "5.8", "--work-dir", str(tmp_path)])
+    assert not any(c[:3] in (["gh", "release", "create"], ["gh", "release", "upload"]) for c in calls)
 
 
 def built_plugin(tmp_path, platform):
