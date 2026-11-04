@@ -528,18 +528,20 @@ def test_report_needs_an_episode(game, tmp_path, monkeypatch):
     assert "Reported" in s.do_report({"outcome": "CONFIRMED", "summary": "x", "evidence": []})
 
 
-def test_clock_only_counts_until_the_time_is_up(game, tmp_path, monkeypatch):
+def test_the_agent_isnt_told_the_runs_time_until_it_is_up(game, tmp_path, monkeypatch):
     from autopilot import codex
     from autopilot.agents import session
 
     monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
     s = session.Session(game, "fake", "Win", "r1")
     s.budget = 3600.0
-    for used in (0, 2600, 3400):  # (no warning: the agent has no time to manage, the run stops it when it's up)
+    s.looking = True  # (an episode has played: no limit on research left to tell)
+    for used in (0, 2600, 3400):  # (it has no time to manage: shown it, an agent gave it as its reason to stop)
         s.started = time.time() - used
-        assert s.clock().endswith("min used]"), s.clock()
+        assert s.clock() == ""
     s.started = time.time() - (3600 - session.REPORT_SECONDS)
-    assert s.time_up() and "Time is up" in s.clock() and "report now" in s.clock()
+    assert s.time_up() and s.clock() == session.TIME_UP
+    assert "min" not in s.clock() and "report now" in s.clock()
     s.budget = 30.0  # (a short budget keeps a third for the report)
     s.started = time.time() - 15
     assert not s.time_up()

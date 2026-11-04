@@ -68,9 +68,9 @@ for it, never your own, and don't touch the user's project or the game's files w
 only through the game's tools.
 
 Call the game's tools one at a time: the game runs only inside a call and is paused between them. A call that takes
-long (an episode, starting the game) answers "still going": call wait until it gives the result. Every game tool
-answers with the time used of the run's budget. Once report says "Reported", the run is over: tell the user its
-outcome in a few lines (the Autopilot tab in their editor shows the whole result).
+long (an episode, starting the game) answers "still going": call wait until it gives the result. Once report says
+"Reported", the run is over: tell the user its outcome in a few lines (the Autopilot tab in their editor shows the
+whole result).
 
 ## Looking at the picture here
 

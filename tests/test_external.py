@@ -80,7 +80,7 @@ def test_a_run_is_worked_on_through_the_mcp_front(started, tmp_path):
     # The game's tools, with the clock; the report's own rules hold, as for every agent
     assert "no run_harness episode" in text_of(front.call("report", {"outcome": "CONFIRMED", "summary": "s",
                                                                      "evidence": []}))
-    assert "[time:" in text_of(front.call("snapshot", {}))
+    assert "min used]" in text_of(front.call("snapshot", {}))
 
     # A call that takes long answers "still going"; other game calls wait for it; wait gives its result
     session = desk.session
@@ -94,7 +94,7 @@ def test_a_run_is_worked_on_through_the_mcp_front(started, tmp_path):
     # Another front that started no run (Codex starts one for each subagent: the frames' describer) works on the
     # run going
     other = mcp.Server(out=io.StringIO(), find=lambda: ([control.url], None))
-    assert "[time:" in text_of(other.call("snapshot", {}))
+    assert "min used]" in text_of(other.call("snapshot", {}))
     assert "isn't filmed" in text_of(other.call("frames", {"episode": 1}))
 
     # What the user types in the tab reaches the agent with its next tool result
@@ -256,7 +256,7 @@ def test_the_run_goes_to_the_agent_service_the_editor_is_connected_to(started):
 
         # Another front that started no run finds the service with the run going
         other = mcp.Server(out=io.StringIO(), find=lambda: ([gone, idle.url, control.url], None))
-        assert "[time:" in text_of(settled(other, other.call("snapshot", {})))
+        assert "min used]" in text_of(settled(other, other.call("snapshot", {})))
 
         # With no editor connected anywhere, the user's agent is told so (not that a service couldn't be reached)
         lone = mcp.Server(out=io.StringIO(), find=lambda: ([gone, idle.url], None))

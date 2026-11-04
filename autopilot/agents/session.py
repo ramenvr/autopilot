@@ -173,11 +173,12 @@ How to work:
    change to the play in the report.
 5. When the request is settled (the goal reached; a claim shown true or false; the exploration done) or more tries
    won't help, call `report` right away: an episode that settles it is enough (don't polish the harness after it).
-   Every tool result tells the time used of your budget, so you can size an episode to it. Time is never a reason to
-   stop: when it is up the run closes play and probes and asks you for the report, and an episode still playing ends
-   there. Until then go on, and a report that stops early says its real reason (what more tries wouldn't change, and
-   why). Before you report, update notes.md with verified facts a later request on this game needs (controls,
-   mechanics, numbers, pitfalls; short lines, no guesses) and move reusable harness code into lib.py.
+   You aren't told the run's time, because it isn't yours to manage: when it is up, the run closes play and probes and
+   asks you for the report, and an episode still playing ends there. So time is never a reason to stop or to hurry, and
+   never the reason a report gives. Go on until one of those two holds, and a report that stops before the request is
+   settled says what more tries wouldn't change, and why. Before you report, update notes.md with verified facts a
+   later request on this game needs (controls, mechanics, numbers, pitfalls; short lines, no guesses) and move reusable
+   harness code into lib.py.
 
 The request is one of:
 - a goal ("repair the X", "reach the end", "win a round"): make Jev achieve it in play. Report achieved or
@@ -890,19 +891,20 @@ class Session:
         return left is not None and left < -PLAY_GRACE
 
     def clock(self):
-        """The time used, for every tool result: the implementer can't see a clock otherwise."""
-        used = time.time() - self.started
-        line = f"[time: {used / 60:.1f} of {self.budget / 60:.0f} min used]"
+        """What every tool result says of time: the limits the agent has to work within (its reading and probing, an
+        exploration's minutes of play), and that the run's time is up once it is. The run's own time isn't said: the
+        run keeps it. Shown it, even with no warning, an agent gave it as its reason to stop with half of it left."""
         if self.report is None and self.time_up():
-            return f"{line} {TIME_UP}"
+            return TIME_UP
+        line = ""
         left = self.play_left()
         if left is not None:
-            line = (f"[time: {used / 60:.1f} min used; play: {max(0.0, self.play_seconds - left) / 60:.1f} of "
-                    f"{self.play_seconds / 60:.0f} min used]")
+            line = f"[play: {max(0.0, self.play_seconds - left) / 60:.1f} of {self.play_seconds / 60:.0f} min used]"
         research = self.research_left()
         if research is not None:  # (before the first episode)
-            line = line[:-1] + (f"; reading and probing: {(self.research_budget - max(0.0, research)) / 60:.1f} of "
-                                f"{self.research_budget / 60:g} min used]")
+            line = (line[:-1] + "; " if line else "[") + (
+                f"reading and probing: {(self.research_budget - max(0.0, research)) / 60:.1f} of "
+                f"{self.research_budget / 60:g} min used]")
             if self.report is None and self.research_over():
                 return line + (f" The time for reading and probing is up: write {self.run_rel}/harness.py now from "
                                "what you know and call run_harness. Probes are closed until an episode has played.")

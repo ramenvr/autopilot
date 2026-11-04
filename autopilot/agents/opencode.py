@@ -51,8 +51,8 @@ Read files with `read`, search with `grep` and `glob` (several in one turn); wri
 lib.py with `write`, `edit` or `patch`: nothing else may be changed (not codex/, not earlier runs, nothing outside this
 game's folder). Reading is held to this game's folder and the autopilot package's kit (autopilot/KIT.md,
 autopilot/kit/). There is no shell and no web: everything you need is in this folder and the live game. The game's tools
-(probe, run_harness, snapshot, describe_frames, restart_level, report) each return their result, then the time used
-of your budget. Call them one at a time: the game runs only inside a call. Once report says "Reported", stop.
+(probe, run_harness, snapshot, describe_frames, restart_level, report) each return their result. Call them one at a
+time: the game runs only inside a call. Once report says "Reported", stop.
 """
 
 

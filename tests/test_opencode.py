@@ -40,7 +40,7 @@ def test_the_host_reaches_the_game_tools_over_localhost(session):
     server = ToolServer(session, say=said.append)
     try:
         out = post(server.url + "/probe", {"code": "print(len(game.all_actors()))\ngame.loc(game.actors('Crate')[0])"})
-        assert "2" in out and "800" in out and "[time:" in out
+        assert "2" in out and "800" in out and "min used]" in out
         assert said == ["Trying things in the game"] and session.game.link.paused
         assert "no run_harness episode" in post(server.url + "/report", {"outcome": "achieved", "summary": "Opened.",
                                                                          "evidence": ["trace1"]})

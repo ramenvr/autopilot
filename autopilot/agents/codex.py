@@ -65,7 +65,7 @@ describe_frames, restart_level, report) and these file tools, all from the `auto
 list_files and search (this game's folder and the kit: autopilot/KIT.md, autopilot/kit/); write_file and edit_file
 ({run}/harness.py and other files in {run}/, notes.md, lib.py: nothing else may be changed). Paths are relative to
 this game's folder. There is no shell and no web: everything you need is in this folder and the live game. The game's
-tools each return their result, then the time used of your budget. Call them one at a time: the game runs only inside
+tools each return their result. Call them one at a time: the game runs only inside
 a call. Once report says "Reported", stop.
 """
 
