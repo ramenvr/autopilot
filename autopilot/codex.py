@@ -152,12 +152,14 @@ def snapshot_level(game, codex_root):
 FETCH_INDEX = ".fetched.json"  # {project-relative path: md5} of the files fetched from the plugin
 
 
-def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait=True, first_map=None):
+def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait=True, first_map=None, follow=False):
     """The game's code and asset export, fetched from the plugin (codex_manifest / codex_read). Only files that changed
     since the last fetch are read; which files go where is the game's engine's (Engine.codex_path).
     wait False: a plugin that can answers at once while its export runs (export "running", with "done" and "total"),
     with the files written so far; files it doesn't list then stay (the export hasn't written them again yet).
     first_map: the level the run plays, which an export started now does first.
+    follow: asking again about the export an earlier answer said runs: the plugin never starts one for this, so an
+    export the user stopped stays stopped while the run finishes up.
     Returns {"files", "fetched", "removed", "export", "arrived": [(codex path, "new" or "changed")]}, or None when the
     plugin has no such ops (an older build)."""
     from .kit.game import GameError
@@ -168,6 +170,8 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
         args["wait"] = False
     if first_map:
         args["first_map"] = first_map
+    if follow:
+        args["follow"] = True
     try:
         manifest = game.request("codex_manifest", args, timeout=900)
     except GameError as e:
@@ -321,7 +325,7 @@ class Indexer:
         failed = 0
         while not self._stop.wait(POLL_SECONDS):
             try:
-                res = fetch_from_plugin(self.game, self.root, wait=False)
+                res = fetch_from_plugin(self.game, self.root, wait=False, follow=True)
             except Exception as e:
                 failed += 1
                 if failed >= GONE_TRIES:

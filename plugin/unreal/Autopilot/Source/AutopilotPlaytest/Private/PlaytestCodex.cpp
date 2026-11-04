@@ -620,13 +620,18 @@ void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject
 {
 	FString Mode = TEXT("auto");
 	// wait false: answered with the files there now while the export runs (its progress in the answer), so the brain
-	// fetches them as they come and asks again; first_map: the level the run plays, which a new export does first
+	// fetches them as they come and asks again; first_map: the level the run plays, which a new export does first;
+	// follow: this is such asking again, about the export an earlier answer said runs. It never starts one: the brain
+	// keeps asking while a stopped run finishes up, and the export Stop ended must stay ended (the next run's first ask
+	// doesn't say follow, and starts it again)
 	bool bWait = true;
+	bool bFollow = false;
 	FString FirstMap;
 	if (Args.IsValid())
 	{
 		Args->TryGetStringField(TEXT("export"), Mode);
 		Args->TryGetBoolField(TEXT("wait"), bWait);
+		Args->TryGetBoolField(TEXT("follow"), bFollow);
 		Args->TryGetStringField(TEXT("first_map"), FirstMap);
 	}
 	if (Mode != TEXT("auto") && Mode != TEXT("refresh") && Mode != TEXT("skip"))
@@ -659,7 +664,11 @@ void Manifest(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject
 			Request->Export = ExportInfo(false, Reason, 0, nullptr, Error);
 		}
 	};
-	if (Mode == TEXT("skip"))
+	if (bFollow && Running.IsValid())
+	{
+		Request->Job = Running;
+	}
+	else if (bFollow || Mode == TEXT("skip"))
 	{
 		Request->Export = ExportInfo(false, FString(), 0, nullptr, FString());
 	}

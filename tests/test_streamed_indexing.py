@@ -343,6 +343,22 @@ def test_background_work_is_tried_again_when_the_game_is_too_busy(tmp_path, monk
     assert done.wait(5) and len(tries) == 2
 
 
+def test_only_the_asks_after_the_first_follow_the_export(tmp_path, monkeypatch):
+    # (a plugin starts an export for a first ask, never for a followed one: an export the user stopped stays stopped
+    # while the run finishes up, and the next run's first ask starts it again)
+    plugin = ExportingPlugin({}, [{"Saved/AutopilotCodex/a.txt": "a"}, {"Saved/AutopilotCodex/b.txt": "b"}])
+    idx = make_indexer(tmp_path, plugin, monkeypatch)
+    idx.start()
+    wait_for(idx)
+    assert [a.get("follow", False) for a in plugin.asked] == [False] + [True] * (len(plugin.asked) - 1)
+    assert len(plugin.asked) > 1
+
+    next_run = ExportingPlugin({}, [{"Saved/AutopilotCodex/a.txt": "a"}])
+    second = codex.Indexer(next_run, idx.root)
+    second.start()
+    assert "follow" not in next_run.asked[0]
+
+
 def test_an_export_that_ended_well_counts_as_all_written(tmp_path, monkeypatch):
     plugin = ExportingPlugin({}, [{"Saved/AutopilotCodex/a.txt": "a"}, {"Saved/AutopilotCodex/b.txt": "b"}])
     idx = make_indexer(tmp_path, plugin, monkeypatch)
