@@ -61,15 +61,16 @@ CODEX_PROVIDERS = ("openai",)
 # The providers Aura may name a frame-describing model on (its answer's `vision`)
 VISION_PROVIDERS = ("anthropic", "openai", "openrouter", "google")
 MAX_MODEL = 128  # characters of the model asked for, at most
+EFFORTS = ("low", "medium", "high", "xhigh", "max")  # the levels Aura may name for the agent (its answer's `effort`)
 # Where a brain run for Aura says it listens (bridge.brain_file): what the plugins' Use with Aura reads
 BRAIN_FILE = "aura-brain.json"
 KINDS = ("verify", "explore", "goal")
 # The model settings a run replaces while it plays (and puts back after): every key variable OpenCode may read for a
 # provider is the run token's (agents/opencode.py PROVIDER_KEYS), so none of the user's own is used instead
 RUN_ENV = ("TYPESAFE_BASE_URL", "TYPESAFE_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-           "ANTHROPIC_OAUTH_TOKEN", "AUTOPILOT_MODEL", "AUTOPILOT_OPENCODE_PROVIDER", "OPENAI_BASE_URL",
-           "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY", "GOOGLE_BASE_URL",
-           "GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY")
+           "ANTHROPIC_OAUTH_TOKEN", "AUTOPILOT_MODEL", "AUTOPILOT_EFFORT", "AUTOPILOT_OPENCODE_PROVIDER",
+           "OPENAI_BASE_URL", "OPENAI_API_KEY", "CODEX_API_KEY", "OPENROUTER_BASE_URL", "OPENROUTER_API_KEY",
+           "GOOGLE_BASE_URL", "GEMINI_API_KEY", "GOOGLE_GENERATIVE_AI_API_KEY", "GOOGLE_API_KEY")
 
 
 def api_url():
@@ -219,10 +220,17 @@ def model_of(model):
     return model.strip()[:MAX_MODEL]
 
 
+def thinking_level_of(level):
+    """A start frame's run "thinking_level" as Aura takes it (the level picked in Aura's chat, for its run "model"): one
+    of EFFORTS, else None (Aura decides, as for a chat with none picked). Aura may answer with another: `effort`."""
+    return level if level in EFFORTS else None
+
+
 def agent_of(agent, relay):
-    """Aura's answer's `agent` (the agent and model that play the model asked for: {name, provider, model, required?})
-    when it is one this brain can play through Aura's relay, else None (Claude Code on Autopilot's own model).
-    required: no other may play the run (a run on the team's free allowance plays Aura's free-tier model alone)."""
+    """Aura's answer's `agent` (the agent and model that play the model asked for: {name, provider, model, required?,
+    effort?}) when it is one this brain can play through Aura's relay, else None (Claude Code on Autopilot's own model).
+    required: no other may play the run (a run on the team's free allowance plays Aura's free-tier model alone);
+    effort: how hard the model thinks (one of EFFORTS; absent: as session.effort says without Aura)."""
     if not isinstance(agent, dict):
         return None
     name, provider, model = agent.get("name"), agent.get("provider"), agent.get("model")
@@ -234,7 +242,8 @@ def agent_of(agent, relay):
                              or not (relay or {}).get(provider)):
         return None
     required = {"required": True} if agent.get("required") is True else {}
-    return {"name": name, "provider": provider, "model": model.strip(), **required}
+    effort = {"effort": agent["effort"]} if agent.get("effort") in EFFORTS else {}
+    return {"name": name, "provider": provider, "model": model.strip(), **required, **effort}
 
 
 def vision_of(vision, relay):
@@ -292,7 +301,7 @@ class Run:
     use Aura's relay; on leaving, the run is finished (and billed) and the model settings are put back."""
 
     def __init__(self, token, kind, mode=PLAYTEST, project=None, http=None, say=None, project_key=None, trace=None,
-                 model=None, disable_premium_models=False):
+                 model=None, disable_premium_models=False, thinking_level=None):
         self.token = token
         self.project_key = project_key or project  # (which project's memory: the Unreal ProjectID when there is one)
         # Where in Aura the run was asked for (the start frame's run "trace": the chat thread, tool call and tool), so
@@ -303,6 +312,8 @@ class Run:
         # Aura's chat's "Disable Premium Models" (the start frame's run "disable_premium_models", sent with its model):
         # Auto in a chat it has picked nothing for yet then plays the user's free-tier model
         self.disable_premium_models = disable_premium_models is True and self.model is not None
+        # The thinking level picked in Aura's chat for that model (the start frame's run "thinking_level")
+        self.thinking_level = thinking_level_of(thinking_level) if self.model is not None else None
         self.agent = None  # the agent and model Aura answered with for it (agent_of), once started
         self.vision = None  # the model Aura named to describe its frames (vision_of), once started; None: Opus 5.5
         self._rooted = set()  # the providers whose <PROVIDER>_BASE_URL the run pointed at the relay (_relay_env)
@@ -327,7 +338,8 @@ class Run:
         body = {"kind": self.kind, "mode": self.mode, **({"project": self.project} if self.project else {}),
                 **({"project_key": self.project_key} if self.project_key else {}),
                 **({"trace": self.trace} if self.trace else {}), **({"model": self.model} if self.model else {}),
-                **({"disable_premium_models": True} if self.disable_premium_models else {})}
+                **({"disable_premium_models": True} if self.disable_premium_models else {}),
+                **({"thinking_level": self.thinking_level} if self.thinking_level else {})}
         try:
             r = self.http.post(f"{api_url()}/api/autopilot/runs", json=body, timeout=START_TIMEOUT,
                                headers={"Authorization": f"Bearer {self.token}"})
@@ -378,6 +390,12 @@ class Run:
         os.environ.update({"TYPESAFE_API_KEY": self.run_token, "ANTHROPIC_API_KEY": self.run_token})
         if self.agent:  # (the model picked in Aura's chat; else Autopilot's own, as AUTOPILOT_MODEL says)
             os.environ["AUTOPILOT_MODEL"] = self.agent["model"]
+            # (Aura naming none: the user's own, also when the free part of a run plays another model than the first)
+            effort = self.agent.get("effort") or (self._saved or {}).get("AUTOPILOT_EFFORT")
+            if effort:
+                os.environ["AUTOPILOT_EFFORT"] = effort
+            else:
+                os.environ.pop("AUTOPILOT_EFFORT", None)
             if self.agent["name"] == "opencode":
                 from .agents.opencode import PROVIDER_KEYS
 

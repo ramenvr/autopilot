@@ -989,6 +989,71 @@ def test_run_prompt_passes_disable_premium_models_on_to_aura(through_aura, monke
     assert started.calls[0][1]["disable_premium_models"] is True
 
 
+def test_the_serve_loop_takes_the_thinking_level_from_the_start_frames_run(monkeypatch):
+    asked = []
+    monkeypatch.setattr(cli, "run_prompt", lambda *a, **k: asked.append(k))
+    link = Plugin()
+    link.hello = {"project": "Farm", "run": {"kind": "goal", "goal": "Open the gate", "model": "opus-5.5",
+                                             "thinking_level": "xhigh"}}
+    link.current = link
+    link.next_message = lambda timeout=None: (_ for _ in ()).throw(KeyboardInterrupt)
+    monkeypatch.setattr(cli, "send_memory_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "send_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "SignIn", lambda link: None)
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_serve(link, types.SimpleNamespace(path=None, model=None))
+    for _ in range(100):  # (the run goes in its own thread)
+        if asked:
+            break
+        time.sleep(0.02)
+    assert asked and asked[0]["thinking_level"] == "xhigh"
+
+
+def test_the_thinking_level_goes_to_aura_with_the_model_only(through_aura):
+    http = FakeAura()
+    aura.Run("aura-session", "goal", http=http, model="opus-5.5", thinking_level="xhigh").start()
+    assert http.calls[0][1]["model"] == "opus-5.5" and http.calls[0][1]["thinking_level"] == "xhigh"
+    for kwargs in ({"model": "opus-5.5"}, {"thinking_level": "xhigh"},
+                   {"model": "opus-5.5", "thinking_level": "turbo"}):
+        http.calls.clear()
+        aura.Run("aura-session", "goal", http=http, **kwargs).start()
+        assert "thinking_level" not in http.calls[0][1]
+
+
+def test_run_prompt_passes_the_thinking_level_on_to_aura(through_aura, monkeypatch, tmp_path):
+    started = FakeAura(Answer(402, {"valid": False, "code": "NO_CREDITS", "error": "Out of Aura credits."}))
+    monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
+    monkeypatch.setattr(cli.aura.requests, "Session", lambda: started)
+    cli.run_prompt(Plugin(), "Open the gate", kind="goal", aura_model="opus-5.5", thinking_level="max")
+    assert started.calls[0][1]["thinking_level"] == "max"
+
+
+def test_the_agent_thinks_as_hard_as_aura_says_for_the_run_alone(through_aura, monkeypatch):
+    from autopilot.agents import session
+
+    relay = {"anthropic": "https://aura.test/a"}
+    assert aura.agent_of({"name": "claude", "provider": "anthropic", "model": "m", "effort": "xhigh"},
+                         relay)["effort"] == "xhigh"
+    assert "effort" not in aura.agent_of({"name": "claude", "provider": "anthropic", "model": "m", "effort": "turbo"},
+                                         relay)
+    monkeypatch.setenv("AUTOPILOT_EFFORT", "low")  # (the user's own, put back after the run)
+    run = aura.Run("aura-session", "goal", http=FakeAura())
+    run.relay, run.run_token = {"typesafe": "https://aura.test/t", "anthropic": "https://aura.test/a"}, "run-token"
+    run.agent = {"name": "claude", "provider": "anthropic", "model": "claude-opus-5-5", "effort": "xhigh"}
+    with run:
+        assert session.effort("claude-opus-5-5") == "xhigh"
+        run.agent = {"name": "claude", "provider": "anthropic", "model": "claude-opus-5-5"}
+        run._agent_env()  # (as going on free does: that model wasn't given the level)
+        assert session.effort("claude-opus-5-5") == "low"
+    assert os.environ["AUTOPILOT_EFFORT"] == "low"
+    monkeypatch.delenv("AUTOPILOT_EFFORT")
+    run.agent = {"name": "claude", "provider": "anthropic", "model": "claude-opus-5-5", "effort": "xhigh"}
+    with run:
+        run.agent = {"name": "claude", "provider": "anthropic", "model": "claude-opus-5-5"}
+        run._agent_env()
+        assert "AUTOPILOT_EFFORT" not in os.environ
+
+
 # -- the model that describes the run's frames (its answer's `vision`) ------------------------------------------------
 
 GOOGLE_RELAY = "https://aura.test/api/autopilot/llm/google/v1beta"
