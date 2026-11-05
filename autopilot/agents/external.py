@@ -315,8 +315,12 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
               steering=None, play_seconds=None, describer=None, desk=None, activity=None):
     """The run, worked on by the user's own agent through desk (a Desk, from the start call); returns the report, as
     every agent's implement() (claude_code.implement has the arguments; model is the user's agent's, unknown here)."""
-    session = open_session(game, project, prompt, run_id, say=say, client=client, timeout=timeout, stop=stop,
-                           steering=steering, play_seconds=play_seconds, describer=describer, activity=activity)
+    try:
+        session = open_session(game, project, prompt, run_id, say=say, client=client, timeout=timeout, stop=stop,
+                               steering=steering, play_seconds=play_seconds, describer=describer, activity=activity)
+    except Exception as e:
+        desk.end(f"{type(e).__name__}: {e}")  # the start call must finish even if no session opened
+        raise
     session.looks_itself = True
     desk.marker = f"{session.run_id}-{secrets.token_hex(4)}"
     session.marker = desk.marker

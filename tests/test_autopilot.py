@@ -997,6 +997,68 @@ def test_the_summary_says_when_the_player_stops_answering_its_inputs(tmp_path):
         assert ("DIDN'T ANSWER ITS INPUTS" in text) == flagged, text[:600]
 
 
+class MenuLink(FakeLink):
+    """A game with a menu: `ui_act` works on its Play button and is refused on anything else."""
+
+    def request(self, op, args=None, timeout=None):
+        from autopilot.bridge import BridgeError
+
+        if op == "ui_act":
+            if (args or {}).get("id") != "Play":
+                raise BridgeError(400, "no such element")
+            return {"acted": True}
+        return super().request(op, args, timeout)
+
+
+def test_the_trace_has_each_mouse_move_and_ui_action_inside_its_option(tmp_path):
+    class MenuHarness(Harness):
+        goal = "Start the game"
+        tempo = 2.0
+        tick_hz = 30.0
+        started = False
+
+        def observe(self, game):
+            return {"_pose": game.pose()}
+
+        def use_menu(self, game, obs):
+            game.mouse(12.34, -5.67)
+            game.mouse(0.2, 0.1)  # (too small to send: not an input)
+            game.mouse(0.0, 3.0)
+            game.ui_act(id="Play", action="click")
+            self.started = True
+            yield
+
+        def options(self, obs):
+            return [Option("use_menu", "Start from the menu", self.use_menu)]
+
+        def status(self, obs):
+            return Status("done", "started", {}) if self.started else Status()
+
+    link = MenuLink()
+    game = Game(link)
+    path = tmp_path / "t.jsonl"
+    runtime.Runtime(game, MenuHarness(), str(path), client=FakeJev("use_menu"), max_seconds=10).run()
+    events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+    kinds = [e["kind"] for e in events]
+    begin, end = kinds.index("option_start"), kinds.index("option_end")
+    inputs = [{k: v for k, v in e.items() if k not in ("kind", "wall")}
+              for e in events[begin:end] if e["kind"] == "input"]
+    assert inputs == [{"key": "MouseX", "mode": "press", "value": 12.3},
+                      {"key": "MouseY", "mode": "press", "value": -5.7},
+                      {"key": "MouseY", "mode": "press", "value": 3.0},
+                      {"key": "ui", "mode": "click", "value": {"id": "Play", "action": "click"}}]
+    # (the trace says what the game was sent)
+    assert [i["value"] for i in link.inputs if i.get("key") in ("MouseX", "MouseY")] == [12.3, -5.7, 3.0]
+
+
+def test_a_refused_ui_action_is_no_input(tmp_path):
+    logged = []
+    game = Game(MenuLink(), log=lambda kind, **fields: logged.append((kind, fields)))
+    with pytest.raises(GameError):
+        game.ui_act(id="Gone", action="click")
+    assert logged == []
+
+
 def test_probes_after_an_episode_log_as_before(game, tmp_path):
     before = game.log
     runtime.Runtime(game, CrateHarness(), str(tmp_path / "t.jsonl"), client=FakeJev("open_crate"), max_seconds=5).run()
