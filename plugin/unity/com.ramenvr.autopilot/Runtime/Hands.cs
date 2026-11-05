@@ -759,7 +759,7 @@ namespace Autopilot.Playtest
         static double leaseSeconds = 1.0;
         static bool wasConnected;
 
-        static double Now => Time.realtimeSinceStartupAsDouble;
+        static double Now => PlaytestClient.Now;
 
         static void Hold(Control c, float value, bool rate, string owner)
         {

@@ -142,3 +142,15 @@ def test_a_player_build_stands_for_its_project_and_is_launched(tmp_path):
     cmd = eng.launch_command(project, "ws://127.0.0.1:1/v1/bridge", "g.log")
     assert cmd[0] == str(exe) and "-batchmode" in cmd
     assert eng.project_at(str(tmp_path / "Nothing.exe")) is None
+
+
+def test_the_plugins_clock_goes_on_through_a_stop_and_play():
+    """A restart in the editor is a Stop and a Play, and Unity's own clock starts over with every Play: a time kept in a
+    static (when the next frame of a recording is due) then stays in the future and nothing happens until the clock
+    catches up. Headless runs can't see that (no picture), so a source check: the plugin times things with its own."""
+    runtime = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "plugin", "unity",
+                           "com.ramenvr.autopilot", "Runtime")
+    for name in os.listdir(runtime):
+        if name.endswith(".cs"):
+            with open(os.path.join(runtime, name), encoding="utf-8-sig") as f:
+                assert "realtimeSinceStartup" not in f.read(), name
