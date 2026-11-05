@@ -1041,8 +1041,10 @@ def test_the_trace_has_each_mouse_move_and_ui_action_inside_its_option(tmp_path)
     events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
     kinds = [e["kind"] for e in events]
     begin, end = kinds.index("option_start"), kinds.index("option_end")
-    inputs = [{k: v for k, v in e.items() if k not in ("kind", "wall")} for e in events[begin:end] if e["kind"] == "input"]
-    assert inputs == [{"key": "MouseX", "mode": "press", "value": 12.3}, {"key": "MouseY", "mode": "press", "value": -5.7},
+    inputs = [{k: v for k, v in e.items() if k not in ("kind", "wall")}
+              for e in events[begin:end] if e["kind"] == "input"]
+    assert inputs == [{"key": "MouseX", "mode": "press", "value": 12.3},
+                      {"key": "MouseY", "mode": "press", "value": -5.7},
                       {"key": "MouseY", "mode": "press", "value": 3.0},
                       {"key": "ui", "mode": "click", "value": {"id": "Play", "action": "click"}}]
     # (the trace says what the game was sent)
