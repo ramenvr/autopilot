@@ -96,6 +96,76 @@ def test_local_server_accepts_the_plugin_and_answers():
     link.server.shutdown()
 
 
+UNITY_A = {"engine": "unity", "project": "A", "project_id": "1"}
+
+
+@pytest.mark.parametrize("a, b, same", [
+    (UNITY_A, dict(UNITY_A), True),
+    (UNITY_A, {**UNITY_A, "project_id": "2"}, False),  # (two games, one name)
+    (UNITY_A, {**UNITY_A, "project": "Renamed"}, True),
+    ({"engine": "unity", "project": "A"}, {"engine": "godot", "project": "A"}, False),
+    ({"engine": "godot", "project": "A"}, {"engine": "godot", "project": "B"}, False),
+    ({"engine": "godot", "project": "A"}, {"engine": "godot", "project": "A"}, True),
+    ({"project": "A"}, {"engine": "unreal", "project": "A"}, True),
+])
+def test_same_project(a, b, same):
+    assert bridge.same_project(a, b) is same
+
+
+def test_a_run_keeps_its_game_when_another_editor_opens():
+    """The run's calls stay with its game: another game's plugin is refused and told why, the same game's still comes
+    back, and once the run has ended any plugin connects as before."""
+    from websockets.sync.client import connect as ws_connect
+
+    from autopilot.cli import LiveLink, run_holds
+
+    port = 18766
+    url = f"ws://127.0.0.1:{port}/v1/bridge"
+    rts = {"type": "hello", "protocol": 1, "project": "rts", "engine": "unity", "project_id": "r", "host": "editor"}
+    other = {"type": "hello", "protocol": 1, "project": "lantern", "engine": "godot", "host": "editor"}
+    open_sockets = []
+
+    def plugin(hello):
+        for _ in range(50):
+            try:
+                ws = ws_connect(url).__enter__()
+                break
+            except OSError:
+                time.sleep(0.1)
+        open_sockets.append(ws)
+        ws.send(json.dumps(hello))
+        return ws, json.loads(ws.recv())
+
+    import threading
+
+    first = {}
+    threading.Thread(target=lambda: first.update(ws=plugin(rts)[0]), daemon=True).start()
+    served = bridge.serve_local(port=port, wait=10)
+    link = LiveLink(served)
+    try:
+        with run_holds(link):
+            ws, answer = plugin(other)
+            assert answer["type"] == "error" and "busy with a run of rts" in answer["message"]
+            assert link.current is served  # (nothing moved)
+            ws, answer = plugin(rts)  # (the editor restarted: the run goes on with it)
+            assert answer["type"] == "welcome"
+            deadline = time.time() + 5
+            while link.current is served and time.time() < deadline:
+                time.sleep(0.02)
+            assert link.current is not served and link.hello["project"] == "rts"
+        back = link.current
+        ws, answer = plugin(other)
+        assert answer["type"] == "welcome"
+        deadline = time.time() + 5
+        while link.current is back and time.time() < deadline:
+            time.sleep(0.02)
+        assert link.hello["project"] == "lantern"
+    finally:
+        for ws in open_sockets:
+            ws.close()
+        served.server.shutdown()
+
+
 def test_posted_requests_do_not_wait_and_their_errors_are_kept(link):
     sent = []
     link._send = lambda frame: sent.append(frame)  # nobody answers now
