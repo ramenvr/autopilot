@@ -263,7 +263,9 @@ class Game:
         return (self.request("ui") or {}).get("elements", [])
 
     def ui_act(self, **args):
-        return self.request("ui_act", args)
+        out = self.request("ui_act", args)
+        self.log("input", key="ui", mode=args.get("action"), value=args)
+        return out
 
     def pointer(self, screen_x=None, screen_y=None, world=None, object=None):
         """Put the mouse at a place on the game's view without moving it across (no mouse movement on the way): a
@@ -367,8 +369,10 @@ class Game:
         if abs(right) >= 0.5:
             self.post("key", {"key": "MouseX", "mode": "press", "value": round(right, 1)})
             self.turn_asked += abs(right * (self.look["x"] or 0.0))  # degrees of yaw (the runtime checks they come)
+            self.log("input", key="MouseX", mode="press", value=round(right, 1))
         if abs(up) >= 0.5:
             self.post("key", {"key": "MouseY", "mode": "press", "value": round(up, 1)})
+            self.log("input", key="MouseY", mode="press", value=round(up, 1))
 
     def turn(self, right_deg=0.0, up_deg=0.0):
         """Turn the view by about these degrees with the mouse (needs calibrate_look(); open loop)."""
