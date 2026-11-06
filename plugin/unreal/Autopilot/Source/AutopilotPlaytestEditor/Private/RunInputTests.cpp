@@ -5,6 +5,7 @@
 // Plays the level open in the editor (PIE) when nothing plays yet, and stops it after.
 
 #include "Editor.h"
+#include "Components/InputComponent.h"
 #include "Editor/EditorEngine.h"
 #include "Engine/GameViewportClient.h"
 #include "Engine/World.h"
@@ -84,6 +85,28 @@ static FAutoConsoleCommand GAutopilotTestFlushKeys(TEXT("Autopilot.Test.FlushKey
 		}
 	}));
 
+// How often the game saw a key pressed, on demand (a live check of a run's held keys: one hold, one press)
+static int32 GAutopilotTestPresses = 0;
+static FAutoConsoleCommand GAutopilotTestWatchPresses(TEXT("Autopilot.Test.WatchPresses"),
+	TEXT("Counts the presses of a key (its name) the game being played sees."),
+	FConsoleCommandWithArgsDelegate::CreateLambda([](const TArray<FString>& Args)
+	{
+		APlayerController* PC = PlayController();
+		if (PC && PC->InputComponent && Args.Num())
+		{
+			GAutopilotTestPresses = 0;
+			FInputKeyBinding Binding(FInputChord(FKey(*Args[0])), IE_Pressed);
+			Binding.KeyDelegate.GetDelegateForManualSet().BindLambda([]() { ++GAutopilotTestPresses; });
+			PC->InputComponent->KeyBindings.Add(MoveTemp(Binding));
+		}
+	}));
+static FAutoConsoleCommand GAutopilotTestPressCount(TEXT("Autopilot.Test.Presses"),
+	TEXT("Logs the presses counted by Autopilot.Test.WatchPresses."),
+	FConsoleCommandDelegate::CreateLambda([]()
+	{
+		UE_LOG(LogTemp, Display, TEXT("Autopilot.Test.Presses: %d"), GAutopilotTestPresses);
+	}));
+
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotRunInputTest, "AutopilotPlaytest.Editor.RunInput",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -126,10 +149,17 @@ bool FAutopilotRunInputTest::RunTest(const FString& Parameters)
 		}
 		FSlateApplication& Slate = FSlateApplication::Get();
 		PlaytestRunInput::SetForTests(false);  // (between runs; a run going now has the game's mouse settings off: back first)
-		const EMouseCaptureMode GameCapture = View->GetMouseCaptureMode();
-		const EMouseLockMode GameLock = View->GetMouseLockMode();
-		AddInfo(FString::Printf(TEXT("the game's own mouse: capture %d, lock %d, hidden during capture %d"),
-			(int32)GameCapture, (int32)GameLock, View->HideCursorDuringCapture() ? 1 : 0));
+		// A game that holds the mouse, whatever this level does (a level that doesn't would prove nothing below)
+		const EMouseCaptureMode LevelCapture = View->GetMouseCaptureMode();
+		const EMouseLockMode LevelLock = View->GetMouseLockMode();
+		const bool bLevelHide = View->HideCursorDuringCapture();
+		AddInfo(FString::Printf(TEXT("the level's own mouse: capture %d, lock %d, hidden during capture %d"),
+			(int32)LevelCapture, (int32)LevelLock, bLevelHide ? 1 : 0));
+		const EMouseCaptureMode GameCapture = EMouseCaptureMode::CapturePermanently_IncludingInitialMouseDown;  // (asked for mid-run)
+		const EMouseLockMode GameLock = EMouseLockMode::LockAlways;
+		View->SetMouseCaptureMode(EMouseCaptureMode::CapturePermanently);
+		View->SetMouseLockMode(GameLock);
+		View->SetHideCursorDuringCapture(true);
 		TSharedPtr<SViewport> ViewWidget = View->GetGameViewportWidget();
 		Slate.SetAllUserFocusToGameViewport();
 		const TSharedPtr<SWidget> Focused = Slate.GetUserFocusedWidget(0);
@@ -150,6 +180,10 @@ bool FAutopilotRunInputTest::RunTest(const FString& Parameters)
 			PersonStickReaches(FGamepadKeyNames::RightAnalogX, EKeys::Gamepad_RightX));
 		TestEqual(TEXT("in a run the view doesn't capture the mouse"), (int32)View->GetMouseCaptureMode(), (int32)EMouseCaptureMode::NoCapture);
 		TestEqual(TEXT("in a run the view doesn't lock the mouse"), (int32)View->GetMouseLockMode(), (int32)EMouseLockMode::DoNotLock);
+		TestFalse(TEXT("in a run the view doesn't hide the cursor"), View->HideCursorDuringCapture());
+		View->SetMouseCaptureMode(GameCapture);  // (the game sets one of its own again during the run)
+		PlaytestRunInput::SetForTests(true);
+		TestEqual(TEXT("what the game asks for during the run doesn't take the mouse either"), (int32)View->GetMouseCaptureMode(), (int32)EMouseCaptureMode::NoCapture);
 		TSharedPtr<SViewport> Widget = View->GetGameViewportWidget();
 		TSharedPtr<SWindow> Window = Widget.IsValid() ? Slate.FindWidgetWindow(Widget.ToSharedRef()) : nullptr;
 		const FGeometry& Geometry = Widget.IsValid() ? Widget->GetTickSpaceGeometry() : FGeometry();
@@ -191,6 +225,7 @@ bool FAutopilotRunInputTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("not isolating after the run"), PlaytestRunInput::IsIsolating());
 		TestEqual(TEXT("the game's capture mode is back"), (int32)View->GetMouseCaptureMode(), (int32)GameCapture);
 		TestEqual(TEXT("the game's lock mode is back"), (int32)View->GetMouseLockMode(), (int32)GameLock);
+		TestTrue(TEXT("the game's hidden cursor is back"), View->HideCursorDuringCapture());
 		TestTrue(TEXT("after the run the person's key reaches the game"), PersonKeyReaches(*this));
 		TestTrue(TEXT("after the run the person's stick reaches the game"),
 			PersonStickReaches(FGamepadKeyNames::RightAnalogY, EKeys::Gamepad_RightY));
@@ -199,6 +234,9 @@ bool FAutopilotRunInputTest::RunTest(const FString& Parameters)
 		TestFalse(TEXT("a run that starts with the view holding the mouse lets it go"), After.IsValid() && After->HasMouseCapture());
 		TestFalse(TEXT("... and turns raw mouse input off"), Slate.IsUsingHighPrecisionMouseMovment());
 		PlaytestRunInput::SetForTests(false);
+		View->SetMouseCaptureMode(LevelCapture);
+		View->SetMouseLockMode(LevelLock);
+		View->SetHideCursorDuringCapture(bLevelHide);
 		PlaytestRunInput::SetForTests(TOptional<bool>());
 		return true;
 	}));

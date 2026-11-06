@@ -242,7 +242,17 @@ namespace
 			const bool bHide = Client->HideCursorDuringCapture();
 			if (Capture != EMouseCaptureMode::NoCapture || Lock != EMouseLockMode::DoNotLock || bHide)
 			{
-				GameMouse.Add(Client, FGameMouse{Capture, Lock, bHide});  // (the game's, set again: kept for after)
+				// (the game's, set again: kept for after. Only what it set: the rest is what the run turned off)
+				if (FGameMouse* Kept = GameMouse.Find(Client))
+				{
+					Kept->Capture = Capture != EMouseCaptureMode::NoCapture ? Capture : Kept->Capture;
+					Kept->Lock = Lock != EMouseLockMode::DoNotLock ? Lock : Kept->Lock;
+					Kept->bHide = bHide || Kept->bHide;
+				}
+				else
+				{
+					GameMouse.Add(Client, FGameMouse{Capture, Lock, bHide});
+				}
 				Client->SetMouseCaptureMode(EMouseCaptureMode::NoCapture);
 				Client->SetMouseLockMode(EMouseLockMode::DoNotLock);
 				Client->SetHideCursorDuringCapture(false);

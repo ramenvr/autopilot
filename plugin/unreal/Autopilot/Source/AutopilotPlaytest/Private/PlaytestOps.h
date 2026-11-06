@@ -64,6 +64,8 @@ namespace PlaytestOps
 	void Input(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void Move(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void KeyOp(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** A held key this tick, as the player's input reads it: whether to press it again. See PlaytestOpsInput.cpp. */
+	bool HeldKeyGoesDownAgain(bool bDown, bool& bSeenDown, int32& UpTicks);
 	/** `pointer` (PlaytestOpsPointer.cpp): the mouse to a place on the game's view; the buttons pressed after click there. */
 	void PointerOp(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	/** A mouse button going down or up while the pointer is set: true when it went to the game's UI under the pointer
