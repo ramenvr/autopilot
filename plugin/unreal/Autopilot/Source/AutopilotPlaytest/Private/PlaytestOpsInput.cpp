@@ -288,6 +288,27 @@ namespace
 	// value every frame, until released, until the brain stops renewing it (the lease: a brain gone quiet
 	// leaves nothing held), or until the session ends.
 
+	// When the game's view loses the focus (the person clicked elsewhere in the editor, or left it) the engine lets go of
+	// every key, and a held key goes down again. The player's input reads a key once a frame, so the key reads as up on
+	// the tick that pressed it (not seen down yet: no second press, which a game's pressed action would run twice), and
+	// the engine's release is queued as a press is and beats a press read with it (a full input pass goes by first).
+	bool HeldKeyGoesDownAgain(bool bDown, bool& bSeenDown, int32& UpTicks)
+	{
+		if (bDown)
+		{
+			bSeenDown = true;
+			UpTicks = 0;
+			return false;
+		}
+		if (!bSeenDown || ++UpTicks < 2)
+		{
+			return false;
+		}
+		bSeenDown = false;
+		UpTicks = 0;
+		return true;
+	}
+
 namespace
 {
 	struct FHeldKey
@@ -298,6 +319,8 @@ namespace
 		bool bRate = false;  // an axis value per second (mouse movement): sent as Value * frame time each frame
 		double Renewed = 0.0;
 		double Until = 0.0;  // a timed hold: let go at this game time (world seconds), needing no renewal; 0: leased
+		bool bSeenDown = false;  // the player's input has read it down (HeldKeyGoesDownAgain)
+		int32 UpTicks = 0;
 	};
 	/** One player's held keys, and the controller they are held on (another one: a new session, nothing held). */
 	struct FPlayerKeys
@@ -343,7 +366,7 @@ namespace
 		TArray<FName> Expired;
 		for (TPair<FName, FHeldKey>& Pair : Keys.Keys)
 		{
-			const FHeldKey& Held = Pair.Value;
+			FHeldKey& Held = Pair.Value;
 			if (Held.Until > 0.0 ? GameNow >= Held.Until : Now - Held.Renewed > KeyLeaseSeconds)
 			{
 				Expired.Add(Pair.Key);
@@ -352,10 +375,9 @@ namespace
 			{
 				SendAxis(PC, Held.Key, Held.bRate ? Held.Value * DeltaTime : Held.Value, DeltaTime);
 			}
-			else if (!Held.Key.IsMouseButton() && PC->PlayerInput && !PC->IsInputKeyDown(Held.Key))
+			else if (!Held.Key.IsMouseButton() && PC->PlayerInput  // (a mouse button may be down in the game's UI, not here)
+				&& HeldKeyGoesDownAgain(PC->IsInputKeyDown(Held.Key), Held.bSeenDown, Held.UpTicks))
 			{
-				// The game's view lost the focus (the person clicked elsewhere in the editor, or left it) and the engine let
-				// go of every key: this one is still held. (A mouse button may be down in the game's UI, not here.)
 				SendKey(PC, Held.Key, IE_Pressed);
 			}
 		}
