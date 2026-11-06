@@ -19,6 +19,7 @@ UNREAL = os.environ.get("AUTOPILOT_UNREAL", r"C:\Program Files\Epic Games\UE_5.8
 ENGINE_CMD = os.path.join(UNREAL, "Engine", "Binaries", "Win64", "UnrealEditor-Cmd.exe")
 EDITOR = os.path.join(UNREAL, "Engine", "Binaries", "Win64", "UnrealEditor.exe")
 SOURCE_EXT = (".h", ".hpp", ".cpp", ".inl", ".cs")
+SCRIPT_EXT = ".as"  # AngelScript (the Hazelight engine fork): Script/ beside Source/
 EXPORT_PREFIX = "Saved/AutopilotCodex/"
 
 
@@ -303,17 +304,18 @@ def _run_commandlet(uproject, out, log, timeout):
 
 
 def copy_source(uproject, codex_root):
-    """Source/ and Config/*.ini of a project into the codex."""
+    """Source/, Script/ (AngelScript) and Config/*.ini of a project into the codex."""
     proj = os.path.dirname(os.path.abspath(uproject))
     n = 0
-    src = os.path.join(proj, "Source")
-    if os.path.isdir(src):
-        for f in glob.glob(os.path.join(src, "**", "*"), recursive=True):
-            if f.endswith(SOURCE_EXT) and os.path.isfile(f):
-                dst = os.path.join(codex_root, "source", os.path.relpath(f, src))
-                os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copyfile(f, dst)
-                n += 1
+    for folder, into, ext in (("Source", "source", SOURCE_EXT), ("Script", "script", SCRIPT_EXT)):
+        src = os.path.join(proj, folder)
+        if os.path.isdir(src):
+            for f in glob.glob(os.path.join(src, "**", "*"), recursive=True):
+                if f.lower().endswith(ext) and os.path.isfile(f):
+                    dst = os.path.join(codex_root, into, os.path.relpath(f, src))
+                    os.makedirs(os.path.dirname(dst), exist_ok=True)
+                    shutil.copyfile(f, dst)
+                    n += 1
     cfg = os.path.join(proj, "Config")
     for f in glob.glob(os.path.join(cfg, "*.ini")):
         dst = os.path.join(codex_root, "config", os.path.basename(f))
@@ -350,6 +352,7 @@ def write_index(codex_root, project):
         m = re.search(rf"^{k}=(.*)$", ini.get("DefaultEngine.ini", ""), re.M)
         if m:
             keys.append(f"- {k} = {m.group(1).strip()}")
+    scripts = count(f"script/**/*{SCRIPT_EXT}")
     lines = [
         f"# Codex of {project}",
         "",
@@ -358,6 +361,7 @@ def write_index(codex_root, project):
         "| where | what | count |",
         "|---|---|---|",
         f"| source/ | C++ source (Source/) | {count('source/**/*.*')} |",
+        *([f"| script/ | AngelScript source (Script/) | {scripts} |"] if scripts else []),
         f"| blueprints/ | Blueprints as pseudo-code: variables, components, defaults, graphs | "
         f"{count('blueprints/**/*.txt')} |",
         f"| input/ | Enhanced Input actions and mapping contexts (key -> action) | {count('input/**/*.txt')} |",
@@ -389,6 +393,8 @@ def codex_path(rel):
         return None
     if rel.startswith("Source/"):
         return "source/" + rel[len("Source/"):]
+    if rel.startswith("Script/") and rel.lower().endswith(SCRIPT_EXT):
+        return "script/" + rel[len("Script/"):]
     if rel.startswith("Config/") and len(parts) == 2 and rel.endswith(".ini"):
         return "config/" + parts[1]
     if rel.startswith(EXPORT_PREFIX) and len(parts) > 2:

@@ -1,7 +1,7 @@
 // The game's code for a brain that can't read this machine's disk (docs/protocol.md: `codex_manifest`, `codex_read`).
-// Read-only, and only the project's own code: Source/ (C++ and C#), Config/*.ini, the .uproject, and the Blueprint
-// export the AutopilotCodex commandlet writes to Saved/AutopilotCodex/ (run as a child process, never in this one: it loads
-// every asset). The walks, hashes and reads run off the game thread; the answers go from the game thread.
+// Read-only, and only the project's own code: Source/ (C++ and C#), Script/ (AngelScript), Config/*.ini, the .uproject,
+// and the Blueprint export the AutopilotCodex commandlet writes to Saved/AutopilotCodex/ (run as a child process, never
+// in this one: it loads every asset). The walks, hashes and reads run off the game thread; the answers go from the game thread.
 
 #include "PlaytestInternal.h"
 
@@ -75,6 +75,12 @@ namespace
 			|| Ext.Equals(TEXT("cs"), ESearchCase::IgnoreCase);
 	}
 
+	/** AngelScript (the Hazelight engine fork), under the project's Script/. Its other files there are caches. */
+	bool IsScriptFile(const FString& Name)
+	{
+		return FPaths::GetExtension(Name).Equals(TEXT("as"), ESearchCase::IgnoreCase);
+	}
+
 	bool IsIni(const FString& Name)
 	{
 		return FPaths::GetExtension(Name).Equals(TEXT("ini"), ESearchCase::IgnoreCase);
@@ -122,6 +128,14 @@ namespace
 		else if (Parts[0].Equals(TEXT("Source"), ESearchCase::IgnoreCase))
 		{
 			if (!IsSourceFile(Name))
+			{
+				return FString();
+			}
+			Root = Roots.Project;
+		}
+		else if (Parts[0].Equals(TEXT("Script"), ESearchCase::IgnoreCase))
+		{
+			if (!IsScriptFile(Name))
 			{
 				return FString();
 			}
@@ -218,6 +232,9 @@ namespace
 		Sorted(From);
 		From = Found.Num();
 		Walk(Roots.Project / TEXT("Source"), TEXT("Source"), true, [](const FString& Name) { return IsSourceFile(Name); }, Found);
+		Sorted(From);
+		From = Found.Num();
+		Walk(Roots.Project / TEXT("Script"), TEXT("Script"), true, [](const FString& Name) { return IsScriptFile(Name); }, Found);
 		Sorted(From);
 		From = Found.Num();
 		Walk(Roots.Export, ExportPrefix, true, [](const FString&) { return true; }, Found);
