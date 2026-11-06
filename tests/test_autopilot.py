@@ -785,12 +785,44 @@ def test_codex_paths_never_leave_the_codex():
     from autopilot.engines.unreal import codex_path
 
     assert codex_path("Source/Game/Door.cpp") == "source/Game/Door.cpp"
+    assert codex_path("Script/Doors/Door.as") == "script/Doors/Door.as"
     assert codex_path("Config/DefaultInput.ini") == "config/DefaultInput.ini"
     assert codex_path("Saved/AutopilotCodex/blueprints/BP_Door.txt") == "blueprints/BP_Door.txt"
     assert codex_path("Game.uproject") == "Game.uproject"
     for bad in ("../x.cpp", "Source/../../x", "/etc/passwd", "C:/Windows/win.ini", "Source\\x.cpp",
-                "Saved/Logs/game.log", "Config/sub/x.ini", ".env", "", None):
+                "Saved/Logs/game.log", "Config/sub/x.ini", ".env", "", None, "Script/../x.as",
+                "Script/PrecompiledScript.Cache",
+                "Script/.vscode/angelscript/unreal-cache.json"):
         assert codex_path(bad) is None, bad
+
+
+def test_angelscript_comes_into_the_codex(tmp_path):
+    from autopilot import codex
+    from autopilot.engines.unreal import copy_source, write_index
+
+    project = tmp_path / "game"
+    (project / "Script" / "Doors").mkdir(parents=True)
+    (project / "Script" / "Doors" / "Door.as").write_text(
+        "UCLASS()\nclass ADoor : AActor\n{\n}\n\nstruct FDoorState\n{\n}\n", encoding="utf-8")
+    (project / "Script" / "Loose.as").write_text("void Open() {}\n", encoding="utf-8")
+    (project / "Script" / "PrecompiledScript.Cache").write_text("no", encoding="utf-8")
+    (project / "Game.uproject").write_text("{}", encoding="utf-8")
+    root = tmp_path / "codex"
+    root.mkdir()
+    assert copy_source(str(project / "Game.uproject"), str(root)) == 2
+    assert sorted(p.relative_to(root).as_posix() for p in (root / "script").rglob("*") if p.is_file()) == [
+        "script/Doors/Door.as", "script/Loose.as"]
+    assert codex.digest(str(root), "script/Doors/Door.as") == "AngelScript: ADoor, FDoorState"
+    assert codex.digest(str(root), "script/Loose.as") == "void Open() {}"
+    write_index(str(root), "Game")
+    assert "| script/ | AngelScript source (Script/) | 2 |" in (root / "README.md").read_text(encoding="utf-8")
+
+
+def test_a_project_without_angelscript_keeps_its_index(tmp_path):
+    from autopilot.engines.unreal import write_index
+
+    write_index(str(tmp_path), "Game")
+    assert "script/" not in (tmp_path / "README.md").read_text(encoding="utf-8")
 
 
 def test_fetch_from_plugin_reads_only_what_changed(tmp_path):
