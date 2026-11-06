@@ -133,7 +133,8 @@ class Feed:
 
 class LiveLink:
     """The plugin's link as it is now. A plugin that reconnects (Connect pressed again, a dropped connection) comes
-    back as a new bridge.Link; requests go to the newest one, so a run carries on across the reconnect."""
+    back as a new bridge.Link; requests go to the newest one, so a run carries on across the reconnect. Only the same
+    game's, while a run goes: run_holds."""
 
     def __init__(self, first):
         self._first = first
@@ -145,6 +146,19 @@ class LiveLink:
 
     def __getattr__(self, name):
         return getattr(self.current, name)
+
+
+@contextlib.contextmanager
+def run_holds(link):
+    """For the time of a run the link is its game's: another game's plugin is refused (bridge.serve_local)."""
+    state = getattr(link, "_state", None)
+    if isinstance(state, dict):
+        state["run"] = getattr(link, "hello", None) or {}
+    try:
+        yield
+    finally:
+        if isinstance(state, dict):
+            state.pop("run", None)
 
 
 # -- the project on disk ------------------------------------------------------------------------------------------
@@ -849,8 +863,9 @@ def cmd_codex(args):
 
 def cmd_play(link, args):
     asked, sent = link.hello.get("run"), []
-    code = run_prompt(link, args.prompt, args.path, args.model, sent=sent, timeout=time_limit(asked),
-                      level=getattr(args, "level", None) or (asked or {}).get("level"))
+    with run_holds(link):
+        code = run_prompt(link, args.prompt, args.path, args.model, sent=sent, timeout=time_limit(asked),
+                          level=getattr(args, "level", None) or (asked or {}).get("level"))
     if asked:
         # A game started with a run on its command line quits on the result: let it close first (closing at once can
         # cost it the result: a WebSocket client may drop what is buffered on close, as Godot's does). One that lost
@@ -967,13 +982,15 @@ def cmd_serve(link, args):
         nonlocal done
         sent = []
         try:
-            run_prompt(link, prompt, args.path, args.model, timeout=time_limit(run), sent=sent, stop=stop.is_set,
-                       steering=steering, kind=run.get("kind") if run.get("kind") in aura.KINDS else None,
-                       play_minutes=play_minutes(run), trace=run.get("trace"), desk=desk, level=run.get("level"),
-                       aura_model=run.get("model"), disable_premium_models=run.get("disable_premium_models") is True,
-                       thinking_level=run.get("thinking_level"),
-                       feed=feed, explore_minutes=explore_minutes(run),
-                       design_brief=str(run.get("design_brief") or "").strip() or None)
+            with run_holds(link):
+                run_prompt(link, prompt, args.path, args.model, timeout=time_limit(run), sent=sent, stop=stop.is_set,
+                           steering=steering, kind=run.get("kind") if run.get("kind") in aura.KINDS else None,
+                           play_minutes=play_minutes(run), trace=run.get("trace"), desk=desk, level=run.get("level"),
+                           aura_model=run.get("model"),
+                           disable_premium_models=run.get("disable_premium_models") is True,
+                           thinking_level=run.get("thinking_level"),
+                           feed=feed, explore_minutes=explore_minutes(run),
+                           design_brief=str(run.get("design_brief") or "").strip() or None)
         except Exception as e:
             print(f"The run failed: {type(e).__name__}: {e}")
             if desk is not None:

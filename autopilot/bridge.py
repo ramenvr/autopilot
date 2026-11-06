@@ -393,13 +393,26 @@ def announce(url, path=None, extra=None):
     atexit.register(withdraw)
 
 
+def same_project(a, b):
+    """Whether two plugins' hellos come from the same game: by the project's own id when both have one (two games may
+    share a name, every "MyProject"), else by name. What a hello doesn't say (an older plugin's engine) isn't held
+    against it."""
+    if a.get("engine") and b.get("engine") and a["engine"] != b["engine"]:
+        return False
+    if a.get("project_id") and b.get("project_id"):
+        return a["project_id"] == b["project_id"]
+    return a.get("project") == b.get("project")
+
+
 def serve_local(host="127.0.0.1", port=8765, wait=None, role="cli", announce_as=BRAIN_FILE, extra=None):
     """Listen for the plugin on this machine and return the Link once it has said hello (a service says where it is
     in brain_file(announce_as), with extra: announce()). Keeps
     listening afterwards: a plugin that reconnects (e.g. after the editor restarts) takes over the link's
     place in a fresh Link, available from the returned link's .server.current. A plugin that closed with RELOAD_CLOSE
     and says hello with {"resume": <its session>} within RESUME_SECONDS gets its own Link back: the same run goes on,
-    and requests waiting across the reload are answered."""
+    and requests waiting across the reload are answered. While a run goes (state "run": the hello of the game it plays,
+    cli.run_holds) another game's plugin is refused: every editor on this machine finds this service, and one that took
+    the link over would get the run's input."""
     from websockets.sync.server import serve
 
     ready = queue.Queue()
@@ -430,6 +443,13 @@ def serve_local(host="127.0.0.1", port=8765, wait=None, role="cli", announce_as=
                 pass  # (gone again already: its close, below, decides)
             print(f"The plugin is back after reloading its scripts (session {link.session})")
         else:
+            playing = state.get("run")
+            if playing is not None and not same_project(playing, first):
+                name = playing.get("project") or "another game"
+                print(f"Refused {first.get('project') or 'a plugin'}: a run of {name} is going")
+                ws.send(json.dumps({"type": "error", "message": f"Autopilot is busy with a run of {name}. Connect "
+                                                                "again once it has finished."}))
+                return
             link = Link(send)
             link.loopback = is_loopback(ws.remote_address)
             link.auth_token, link.mode = connection_auth(ws)
