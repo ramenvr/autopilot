@@ -611,15 +611,32 @@ def test_world(g, orbs):
 
 def test_sessions(g, editor):
     # restart: the launch scene again; with map: the level
-    g.req("session", {"action": "restart"}, timeout=60)
+    g.req("session", {"action": "restart"}, timeout=120)
     ctx = g.req("context")
     launch = "Menu.unity" if not editor else "Main.unity"
     check(f"session restart: the launch scene ({launch})", ctx["world"].endswith(launch), ctx["world"])
-    g.req("session", {"action": "restart", "map": "Main"}, timeout=60)
+    g.req("session", {"action": "restart", "map": "Main"}, timeout=120)
     orbs = g.req("find", {"class": "Collectible"})["objects"]
     hud = g.req("screen")["texts"].get("HUD.OrbsText")
     check("session restart map=Main: the level afresh", len(orbs) == 4 and hud == "Orbs: 0/4", (len(orbs), hud))
     check("session status running", g.req("session", {"action": "status"})["running"] is True)
+
+
+def test_carried(g, editor):
+    """A restart starts the game over: what it carries between scenes doesn't pile up (the Menu's Carried, one for every
+    opening of the Menu). Editor: Stop and Play. Player: the first scene drops it, another scene keeps it."""
+    def carried():
+        return len(g.req("find", {"class": "Carried"})["objects"])
+
+    g.req("session", {"action": "restart", "map": "Menu"}, timeout=120)
+    g.req("session", {"action": "restart", "map": "Menu"}, timeout=120)
+    check("a second restart of the Menu leaves one carried object, not two", carried() == 1, carried())
+    g.req("session", {"action": "restart", "map": "Main"}, timeout=120)
+    check("a restart of another scene: " + ("Stop and Play leaves nothing" if editor else "what it may need stays"),
+          carried() == (0 if editor else 1), carried())
+    r = g.req("session", {"action": "restart", "map": "Menu"}, timeout=120)
+    check("the answer names the scene asked for", r.get("scene", "").endswith("Menu.unity"), r)
+    g.req("session", {"action": "restart", "map": "Main"}, timeout=120)
 
 
 def test_parity(g):
@@ -692,7 +709,7 @@ def test_parity(g):
           and els.get("MenuCanvas.NameField", {}).get("placeholder") == "Enter text...", (els.get("MenuCanvas.VolumeSlider"), els.get("MenuCanvas.NameField")))
     _, err = g.try_req("ui_act", {"id": "MenuDoc.CreditsButton", "action": "right_click"})
     check("ui_act: right_click on a UI Toolkit button", err is None, err)
-    g.req("session", {"action": "restart", "map": "Main"}, timeout=60)
+    g.req("session", {"action": "restart", "map": "Main"}, timeout=120)
 
 
 def test_levels_editor(g):
@@ -713,10 +730,10 @@ def test_levels_editor(g):
     lv = g.req("levels")
     check("levels: Main still open in the editor, Menu playing", lv["open"].endswith("Main.unity") and lv["playing"].endswith("Menu.unity"),
           json.dumps({k: lv[k] for k in ("open", "playing")}))
-    g.req("session", {"action": "restart"}, timeout=60)
+    g.req("session", {"action": "restart"}, timeout=120)
     ctx = g.req("context")
     check("a restart replays the scene asked for", ctx["world"].endswith("Menu.unity"), ctx["world"])
-    g.req("session", {"action": "restart", "map": "Assets/Scenes/Main.unity"}, timeout=60)
+    g.req("session", {"action": "restart", "map": "Assets/Scenes/Main.unity"}, timeout=120)
     ctx = g.req("context")
     check("restart with a scene's path in play mode", ctx["world"].endswith("Main.unity"), ctx["world"])
     g.req("session", {"action": "stop"}, timeout=60)
@@ -814,6 +831,7 @@ def run_player(args):
         test_world(g, orbs)
         test_legacy(g)  # (its keys reach the player too: after the checks that need it where test_input left it)
         test_sessions(g, editor=False)
+        test_carried(g, editor=False)
         test_parity(g)
         run_events(g)
         if not args.skip_codex:
@@ -851,9 +869,10 @@ def run_editor(args):
         test_legacy(g)  # (its keys reach the player too: after the checks that need it where test_input left it)
         test_error_pause(g)
         t = time.time()
-        r = g.req("session", {"action": "restart", "fresh": True}, timeout=120)
-        check("editor: fresh restart (out of play mode and in)", r.get("running") is True and len(g.req("find", {"class": "Collectible"})["objects"]) == 4,
+        r = g.req("session", {"action": "restart"}, timeout=120)
+        check("editor: a restart is a Stop and a Play", r.get("running") is True and len(g.req("find", {"class": "Collectible"})["objects"]) == 4,
               f"{time.time() - t:.1f}s")
+        test_carried(g, editor=True)
         run_events(g)
         test_levels_editor(g)
         if not args.skip_codex:

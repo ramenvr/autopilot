@@ -206,7 +206,10 @@ namespace Autopilot.Playtest
             LogCapture.Install();
         }
 
-        public static double Now => Time.realtimeSinceStartupAsDouble;
+        /// <summary>Seconds on a clock that only goes forward. Not one of Unity's: the editor starts those over with every
+        /// Play, and a restart is a Stop and a Play, so a time kept in a static would stay in the future (with no script
+        /// reload to clear it, a recording then sent nothing until the new clock caught up).</summary>
+        public static double Now => System.Diagnostics.Stopwatch.GetTimestamp() / (double)System.Diagnostics.Stopwatch.Frequency;
 
         /// <summary>The game time of the played world, or null when no game is running.</summary>
         public object GameTime => Application.isPlaying ? (object)Json.Round(Time.timeAsDouble, 3) : null;

@@ -40,6 +40,7 @@ namespace Autopilot.Playtest
             installed = false;
             runner = null;
             Ops.LaunchScene = "";
+            Ops.FirstScene = "";
             Ops.ResetSession();
             Paths.Reset();
         }
@@ -50,9 +51,11 @@ namespace Autopilot.Playtest
             InstallTick();
             var first = SceneManager.GetActiveScene();
             if (string.IsNullOrEmpty(Ops.LaunchScene) && first.IsValid()) Ops.LaunchScene = first.path;
+            if (first.IsValid()) Ops.FirstScene = first.path;
             SceneManager.sceneLoaded += (scene, mode) =>
             {
                 if (string.IsNullOrEmpty(Ops.LaunchScene) && mode == LoadSceneMode.Single) Ops.LaunchScene = scene.path;
+                if (string.IsNullOrEmpty(Ops.FirstScene) && mode == LoadSceneMode.Single) Ops.FirstScene = scene.path;
                 Paths.Prune();
             };
             if (Application.isBatchMode && Application.targetFrameRate <= 0)

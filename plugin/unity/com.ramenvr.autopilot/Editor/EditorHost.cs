@@ -45,7 +45,9 @@ namespace Autopilot.Playtest.Editor
             public string Action;  // start | stop | fresh
             public int Stage;  // (start: -1 while the project index is written before play mode)
             public double Since;
-            public string Map;  // (start: the scene asked for, to enter play mode with once the index is written)
+            public string Map;  // (start: the scene asked for, to enter play mode with once the index is written;
+                                // fresh: the scene to play again)
+            public string Launch;  // (fresh: the session's launch scene: a restart without a map still means that one)
         }
 
         static readonly List<SessionWait> waits = new List<SessionWait>();
@@ -65,7 +67,6 @@ namespace Autopilot.Playtest.Editor
             AgentService.Ready += ServiceReady;
             EditorApplication.delayCall += Restore;
             Ops.EditorLevels = Levels;
-            Ops.EditorLoad = LoadInPlayMode;
             Ops.EditorLoading = () => PlayModeLoading;
         }
 
@@ -193,6 +194,7 @@ namespace Autopilot.Playtest.Editor
                                 Stage = (int)Json.Num(w, "stage", 0),
                                 Since = Json.Num(w, "since", EditorApplication.timeSinceStartup),
                                 Map = Json.Str(w, "map"),
+                                Launch = Json.Str(w, "launch"),
                             });
                         }
                     }
@@ -224,6 +226,7 @@ namespace Autopilot.Playtest.Editor
                 SessionState.SetString(PendingKey, Json.Write(waits.Select(w => (object)new Dictionary<string, object>
                 {
                     ["id"] = w.Id, ["action"] = w.Action, ["stage"] = w.Stage, ["since"] = w.Since, ["map"] = w.Map ?? "",
+                    ["launch"] = w.Launch ?? "",
                 }).ToList()));
             }
             Client.CloseForReload();
@@ -299,14 +302,16 @@ namespace Autopilot.Playtest.Editor
                         }
                         break;
                     case "fresh":
-                        if (w.Stage == 0 && !EditorApplication.isPlayingOrWillChangePlaymode)
+                        // (only once out of play mode for good: entering edit mode clears the start scene, so Play
+                        // has to come after it, and isPlayingOrWillChangePlaymode turns false before that)
+                        if (w.Stage == 0 && !EditorApplication.isPlaying && !EditorApplication.isPlayingOrWillChangePlaymode)
                         {
                             w.Stage = 1;
-                            SessionState.SetBool(AgentPlayKey, true);
-                            EditorApplication.EnterPlaymode();
+                            Play(client, w.Map);
                         }
-                        else if (w.Stage == 1 && playing && playFrames >= 3)
+                        else if (w.Stage == 1 && playing && playFrames >= 3 && SceneManager.GetActiveScene().isLoaded)
                         {
+                            if (!string.IsNullOrEmpty(w.Launch)) Ops.LaunchScene = w.Launch;
                             client.Respond(w.Id, new Dictionary<string, object> { ["running"] = true, ["scene"] = SceneManager.GetActiveScene().path });
                             done = true;
                         }
@@ -351,7 +356,7 @@ namespace Autopilot.Playtest.Editor
                         // (a scene asked for while another plays: switched to, as Godot's game does)
                         if (!string.IsNullOrEmpty(map) && !Ops.IsActiveScene(map) && !Ops.IsActiveScene(ScenePath(map)))
                         {
-                            Ops.Restart(client, id, map);
+                            StopAndPlay(id, map);
                             return true;
                         }
                         client.Respond(id, new Dictionary<string, object> { ["running"] = true, ["scene"] = SceneManager.GetActiveScene().path });
@@ -375,20 +380,28 @@ namespace Autopilot.Playtest.Editor
                         EnterPlayMode(client, Wait(id, map));
                         return true;
                     }
-                    if (Json.Bool(args, "fresh", false))
-                    {
-                        // Out of play mode and in again: everything starts over (static state too, when scripts reload)
-                        Hands.ReleaseAll();
-                        if (!string.IsNullOrEmpty(map)) SetStartScene(map);
-                        EditorApplication.ExitPlaymode();
-                        waits.Add(new SessionWait { Id = id, Action = "fresh", Since = EditorApplication.timeSinceStartup });
-                        SessionState.SetBool(AgentPlayKey, true);
-                        return true;
-                    }
-                    Ops.Restart(client, id, map);
+                    StopAndPlay(id, map);
                     return true;
             }
             return false;
+        }
+
+        /// <summary>Start over as the person at the editor would, with Stop and then Play. Only that starts a game
+        /// over: a scene loaded inside play mode keeps what the game carries between scenes (DontDestroyOnLoad objects
+        /// and what they told static fields), and a game that builds on those may not start a second time. Statics stay
+        /// when the project doesn't reload scripts for play mode, as they do for its own Play. Answered once it plays
+        /// (TickWaits).</summary>
+        static void StopAndPlay(long id, string map)
+        {
+            Hands.ReleaseAll();
+            var launch = Ops.LaunchScene;  // (entering play mode forgets it)
+            waits.Add(new SessionWait
+            {
+                Id = id, Action = "fresh", Since = EditorApplication.timeSinceStartup,
+                Map = string.IsNullOrEmpty(map) ? launch : map, Launch = launch,
+            });
+            SessionState.SetBool(AgentPlayKey, true);
+            EditorApplication.ExitPlaymode();
         }
 
         /// <summary>A session start's wait: answered once play mode plays (TickWaits).</summary>
@@ -497,15 +510,6 @@ namespace Autopilot.Playtest.Editor
             var playing = EditorApplication.isPlaying ? SceneManager.GetActiveScene().path : "";
             var open = EditorApplication.isPlaying ? SessionState.GetString(EditSceneKey, "") : OpenScene();
             return new Dictionary<string, object> { ["levels"] = levels, ["open"] = open, ["playing"] = playing ?? "" };
-        }
-
-        /// <summary>A scene of the project loaded in play mode, in the build list or not (Ops.Restart's `map`).</summary>
-        static bool LoadInPlayMode(string map)
-        {
-            var path = ScenePath(map);
-            if (string.IsNullOrEmpty(path) || !EditorApplication.isPlaying) return false;
-            EditorSceneManager.LoadSceneInPlayMode(path, new LoadSceneParameters(LoadSceneMode.Single));
-            return true;
         }
 
         public static string ScenePath(string map)

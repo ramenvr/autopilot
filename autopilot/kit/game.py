@@ -430,7 +430,7 @@ class Game:
         map = map or self.level
         if map:
             args["map"] = map
-        self.request("session", args, timeout=60)
+        self.request("session", args, timeout=120)  # (Unity's is a Stop and a Play; its plugin gives up after 90 s)
         self.restarts += 1
         self._ctx = None
         deadline = time.monotonic() + wait_for_pawn

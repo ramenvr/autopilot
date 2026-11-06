@@ -132,6 +132,7 @@ public static class TestCourseBuilder
         doc.AddComponent<UIDocument>().panelSettings = panel;
         doc.AddComponent<MenuToolkit>();
         new GameObject("MenuImgui").AddComponent<MenuImgui>();
+        new GameObject("Carried").AddComponent<Carried>();
 
         var events = new GameObject("EventSystem", typeof(EventSystem));
         events.AddComponent<InputSystemUIInputModule>().AssignDefaultActions();

@@ -16,12 +16,11 @@ namespace Autopilot.Playtest
         /// <summary>The scene the game was launched with (play mode entered with): what restart reopens.</summary>
         public static string LaunchScene = "";
 
+        /// <summary>The first scene of this launch (a player's restart of it starts the game over: Restart).</summary>
+        public static string FirstScene = "";
+
         /// <summary>The editor's answer to `levels` (EditorHost): the project's scenes, not only the build's.</summary>
         public static Func<Dictionary<string, object>> EditorLevels;
-
-        /// <summary>The editor's scene loading in play mode (EditorHost): any scene of the project, not only the
-        /// build's. False when it can't load `map` (SceneManager then tries).</summary>
-        public static Func<string, bool> EditorLoad;
 
         /// <summary>The editor's session still starting (EditorHost): the project index written before play mode, or
         /// play mode being entered. Said as `session` status's `loading`, so the agent service waits it out.</summary>
@@ -279,6 +278,21 @@ namespace Autopilot.Playtest
 
         static int restarting;
 
+        /// <summary>Whether `map` (a scene name, path or build index) names the scene at `path`.</summary>
+        public static bool SameScene(string map, string path)
+        {
+            if (string.IsNullOrEmpty(map) || string.IsNullOrEmpty(path)) return false;
+            if (int.TryParse(map, out var index)) return SceneUtility.GetBuildIndexByScenePath(path) == index;
+            return map == path || map == System.IO.Path.GetFileNameWithoutExtension(path);
+        }
+
+        /// <summary>The game's DontDestroyOnLoad objects gone (the plugin's own are hidden: they stay).</summary>
+        static void DropCarried()
+        {
+            foreach (var go in Paths.Roots(Paths.DontDestroyOnLoadScene()).ToList())
+                UnityEngine.Object.Destroy(go);
+        }
+
         /// <summary>`levels` in a player: the build's scenes, the one playing open (docs/protocol.md).</summary>
         static Dictionary<string, object> PlayerLevels()
         {
@@ -289,7 +303,10 @@ namespace Autopilot.Playtest
             return new Dictionary<string, object> { ["levels"] = levels, ["open"] = playing, ["playing"] = playing };
         }
 
-        /// <summary>Reopen the launch scene (or `map`: a scene name, path or build index) and answer once it is loaded.</summary>
+        /// <summary>Reopen the launch scene (or `map`: a scene name, path or build index) and answer once it is loaded.
+        /// A player's restart; the editor's is Stop and Play (EditorHost.StopAndPlay). A player can't do that, so the
+        /// game's first scene, which starts the game, gets what a new launch would: nothing carried over. Any other
+        /// scene keeps it: it may need what the first scene set up.</summary>
         public static void Restart(PlaytestClient client, long id, string map)
         {
             var target = string.IsNullOrEmpty(map) ? LaunchScene : map;
@@ -299,8 +316,9 @@ namespace Autopilot.Playtest
             var old = SceneManager.GetActiveScene().handle;
             try
             {
+                if (SameScene(target, FirstScene)) DropCarried();
                 if (int.TryParse(target, out var index)) SceneManager.LoadScene(index, LoadSceneMode.Single);
-                else if (EditorLoad == null || !EditorLoad(target)) SceneManager.LoadScene(target, LoadSceneMode.Single);
+                else SceneManager.LoadScene(target, LoadSceneMode.Single);
             }
             catch (Exception e)
             {

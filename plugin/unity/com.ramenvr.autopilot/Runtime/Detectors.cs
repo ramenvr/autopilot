@@ -236,6 +236,7 @@ namespace Autopilot.Playtest
             }
             if (Time.deltaTime > 0) CheckTeleports();
             var gameTime = Convert.ToDouble(client.GameTime);
+            if (gameTime < nextGrowth - 10.0) nextGrowth = 0;  // (game time starts over with a Stop and a Play)
             if (gameTime >= nextGrowth)
             {
                 nextGrowth = gameTime + 10.0;
