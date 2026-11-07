@@ -500,9 +500,9 @@ class Studio:
             raise ToolMissing(
                 f"The Roblox Studio MCP server ({who}, started with: {' '.join(self.client.transport.cmd)}) doesn't "
                 f"offer {', '.join(missing)}, which Autopilot needs. It offers: {offered}. Use Studio's built-in MCP "
-                "server: in Roblox Studio, open Assistant, then ... > Manage MCP Servers, and turn on 'Enable Studio "
-                f"as MCP server'; update Studio if the option isn't there. If {ENV_CMD} is set, check it starts that "
-                "server. (If the server names these tools otherwise, the names are in "
+                "server: in Roblox Studio, open Assistant, then ... > Settings > MCP Servers, and turn on 'Enable "
+                f"Studio as MCP server'; update Studio if the option isn't there. If {ENV_CMD} is set, check it starts "
+                "that server. (If the server names these tools otherwise, the names are in "
                 "autopilot/engines/roblox_mcp.py.)")
         if self.studio_id is None and self.needs_studio_id():
             self.studio_id = self.pick_studio()
@@ -539,7 +539,7 @@ class Studio:
             return ids[0]
         if not ids:
             raise McpError("Roblox Studio isn't connected to its MCP server: open the place in Studio, and check "
-                           "Assistant > ... > Manage MCP Servers > 'Enable Studio as MCP server' is on")
+                           "Assistant > ... > Settings > MCP Servers > 'Enable Studio as MCP server' is on")
         raise McpError(f"the MCP server is connected to {len(ids)} Studios "
                        f"({', '.join(f'{i} ({n})' if n else i for i, n in found)}): set {ENV_STUDIO_ID} to the one to "
                        "play")

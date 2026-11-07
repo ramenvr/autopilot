@@ -3,7 +3,8 @@ message a line. Its tools: list_roblox_studios (the Studios in argv[1], JSON; a 
 test's client, one without a name and player its server), execute_luau (a client's player, as the client says it) and
 screen_capture (a 64x48 PNG, or an error when argv[2] is "fail", or no answer to the first when it is
 "hang:<file>"; the picture's top-left pixel's red is the Studio's
-place in the list). It pings the client once, as a server may, and writes a line of its own logging."""
+place in the list). "late:<n>" in argv[2]: the first n lists are empty, as when Studio hasn't joined yet. It pings
+the client once, as a server may, and writes a line of its own logging."""
 
 import base64
 import json
@@ -30,6 +31,7 @@ def main():
     # ("hang:<file>": the first picture, of all the servers started, is never answered: the file says it was)
     marker = sys.argv[2][5:] if len(sys.argv) > 2 and sys.argv[2].startswith("hang:") else None
     hang = marker is not None and not os.path.exists(marker)
+    late = int(sys.argv[2][5:]) if len(sys.argv) > 2 and sys.argv[2].startswith("late:") else 0
     out = sys.stdout
     print("StudioMCP stand-in starting", file=out, flush=True)  # (not JSON: a client skips it)
     pinged = False
@@ -47,7 +49,9 @@ def main():
                 pinged = True
                 out.write(json.dumps({"jsonrpc": "2.0", "id": "ping-1", "method": "ping"}) + "\n")
             if name == "list_roblox_studios":
-                result = {"content": [{"type": "text", "text": json.dumps({"studios": studios})}]}
+                seen = [] if late > 0 else studios
+                late -= 1
+                result = {"content": [{"type": "text", "text": json.dumps({"studios": seen})}]}
             elif name == "execute_luau":
                 args = msg["params"]["arguments"]
                 studio = next(s for s in studios if s["id"] == args["studio_id"])

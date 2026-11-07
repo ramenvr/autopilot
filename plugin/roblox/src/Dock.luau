@@ -1355,7 +1355,7 @@ function Dock:_renderSettings()
 		self.editor:setSharing(not share)
 	end)
 	label(s, "Enabling this sends agent traces and memories to the developers of Autopilot. Runs are recorded from "
-		.. "Studio's MCP server: turn it on in Assistant, Manage MCP Servers, Enable Studio as MCP server.",
+		.. "Studio's MCP server: turn it on in Assistant, ..., Settings, MCP Servers, Enable Studio as MCP server.",
 		{ color = C.muted, size = 13 })
 	label(s, "Autopilot in Claude Code & Codex: run `autopilot connect claude` or `autopilot connect codex` once, then "
 		.. "ask your agent to \"Use Autopilot to ...\" with this place open.", { color = C.muted, size = 13 })
