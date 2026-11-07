@@ -50,8 +50,8 @@ verify claims about it and reach goals in it.
 3. Before each session, start the agent service in a terminal: `autopilot serve`.
 4. Open your place. The **Autopilot** dock appears on the right (Plugins > Autopilot) and connects by itself. Studio
    needn't stay in front while a run plays. For the run's recording and stills, turn on Studio's MCP server once
-   (Assistant > … > Manage MCP Servers > Enable Studio as MCP server): the agent service takes the game's pictures
-   through it.
+   (Assistant > … > Settings > MCP Servers > Enable Studio as MCP server): the agent service takes the game's pictures
+   through it. The [setup guide](../../docs/roblox-studio-setup.md) has the details.
 
 ### Updating
 

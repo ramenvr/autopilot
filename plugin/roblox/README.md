@@ -21,9 +21,9 @@ your place's scripts and instances to read. The agent itself runs on your comput
 it.
 
 It needs a current Roblox Studio (it uses `UserInputService:CreateVirtualInput`, `HttpService:CreateWebStreamClient`,
-`StudioTestService` and `StudioDeviceSimulatorService`; tested with Studio 0.745) on Windows or macOS. For pictures of
-the game (the run's recording, stills, `describe_frames`), turn on Studio's MCP server once: in Studio, **Assistant**,
-**…**, **Manage MCP Servers**, **Enable Studio as MCP server** (see [Pictures of the game](#pictures-of-the-game)).
+`StudioTestService` and `StudioDeviceSimulatorService`; tested with Studio 0.745 and 0.746) on Windows or macOS. For pictures of
+the game (the run's recording, stills, `describe_frames`), turn on Studio's MCP server once (see [Setting up Autopilot
+with Roblox Studio](../../docs/roblox-studio-setup.md#3-turn-on-studios-mcp-server)).
 
 ## Install
 
@@ -255,12 +255,16 @@ not Studio is in front. So for a Roblox plugin the agent service, which runs on 
 server (`autopilot/studio_mcp.py`) and answers `capture` and `record` from it: runs get a recording, stills and
 `describe_frames` as in the other engines.
 
-- Turn it on once in Studio: **Assistant**, **…**, **Manage MCP Servers**, **Enable Studio as MCP server**.
+- Turn it on once in Studio: **Assistant** (far right of the top bar), **…**, **Settings** (or **Manage MCP Servers**),
+  **MCP Servers** tab, **Enable Studio as MCP server**. The status changes to **MCP Ready**. Nothing under **MCP
+  Permissions** needs changing, and a place needn't be saved to Roblox.
 - The agent service starts `/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP` on macOS and `cmd.exe /c
   %LOCALAPPDATA%\Roblox\mcp.bat` on Windows (Roblox's own command lines); `AUTOPILOT_STUDIO_MCP` sets another,
   `AUTOPILOT_STUDIO_MCP=off` turns pictures off. With several Studios open it takes the one whose place the plugin's
   hello names.
 - Pictures come at most a few a second (each is a round trip through Studio), only while a game plays.
+- A picture asked for while a play session starts or stops can fail or go unanswered (`Target is closed (INVOKE_ScreenCaptureTool...)`, or
+  nothing): the server is then started over, and the next picture usually comes a few seconds later, so a recording can miss those moments.
 
 ## Limitations
 
