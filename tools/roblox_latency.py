@@ -6,7 +6,7 @@ reads in one call, as engines/roblox_connector.py sends a game.batch), timed one
     python tools/roblox_latency.py --tools      # what the server offers: tools/list, with each tool's input schema
     python tools/roblox_latency.py --fake       # the plumbing against FakeStudio (no Studio; numbers mean nothing)
 
-Studio must be open on a place with its MCP server on (Assistant > ... > Manage MCP Servers > Enable Studio as MCP
+Studio must be open on a place with its MCP server on (Assistant > ... > Settings > MCP Servers > Enable Studio as MCP
 server); the server is started as the engine starts it (AUTOPILOT_ROBLOX_MCP_CMD, else Roblox's documented command).
 Without --no-start, play mode is started first (start_stop_play) and stopped again at the end.
 

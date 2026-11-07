@@ -15,7 +15,7 @@ StudioMCP as any MCP client does (over stdio) and answers the brain's picture re
               the Link as a plugin's own frames are (autopilot/media.py), across play sessions as Godot's go on, until
               {"action": "stop"} or the connection's end
 
-It needs Studio's MCP server turned on (in Studio: Assistant, ..., Manage MCP Servers, "Enable Studio as MCP
+It needs Studio's MCP server turned on (in Studio: Assistant, ..., Settings, MCP Servers, "Enable Studio as MCP
 server"). AUTOPILOT_STUDIO_MCP is the command line to start it (else, as Roblox's docs give it,
 /Applications/RobloxStudio.app/Contents/MacOS/StudioMCP on macOS and cmd.exe /c %LOCALAPPDATA%\\Roblox\\mcp.bat on
 Windows); AUTOPILOT_STUDIO_MCP=off leaves the game without pictures.
@@ -40,6 +40,9 @@ CALL_TIMEOUT = 20.0  # seconds for one tool call
 # seconds for a picture (one takes well under one): a call that hangs (Studio's MCP server sometimes leaves one
 # unanswered) costs a recording this much, and the server is started over after it
 SHOT_TIMEOUT = 5.0
+# seconds Studio gets to join a server that has just started (it takes a few: 1.6-3.7 seen), and how often to look
+STUDIO_WAIT = 15.0
+STUDIO_LOOK = 0.25
 FPS = (0.2, 10.0)  # the frames a second a recording may ask for
 MAX_DIM = 960
 QUALITY = 75
@@ -48,7 +51,7 @@ OFF = ("off", "0", "no", "false", "none")
 # is player 1's client, the player Autopilot plays (Studio's test players are Player1, Player2...: UserId -1, -2...)
 PLAYER_ONE = ('local p = game:GetService("Players").LocalPlayer '
               'return if p and p.UserId == -1 then "player 1" else "other"')
-ENABLE_HINT = ("turn on Studio's MCP server (in Studio: Assistant, ..., Manage MCP Servers, Enable Studio as MCP "
+ENABLE_HINT = ("turn on Studio's MCP server (in Studio: Assistant, ..., Settings, MCP Servers, Enable Studio as MCP "
                "server)")
 
 
@@ -73,6 +76,10 @@ def command():
 
 class McpError(Exception):
     """Studio's MCP server couldn't do it (or isn't there)."""
+
+
+class NoStudio(McpError):
+    """The server is up and no Studio is connected to it (yet)."""
 
 
 class McpClient:
@@ -277,7 +284,7 @@ class StudioPictures:
             raise McpError(f"Studio's MCP server listed no Studio ({text[:200]!r})") from None
         studios = [s for s in studios if isinstance(s, dict) and s.get("id")]
         if not studios:
-            raise McpError(f"Studio's MCP server sees no Studio: {ENABLE_HINT}")
+            raise NoStudio(f"Studio's MCP server sees no Studio: {ENABLE_HINT}")
         if len(studios) == 1:
             return studios[0]["id"]
         # (a multiplayer test plays: the pictures are player 1's client's, a Studio of its own)
@@ -307,8 +314,14 @@ class StudioPictures:
         if self._client is None or self._client.closed:
             self._client = self._client_type(self.argv)
             self._studio = None
-        if self._studio is None:
-            self._studio = self._pick(self._client.tool("list_roblox_studios", {}))
+        deadline = time.monotonic() + STUDIO_WAIT
+        while self._studio is None:
+            try:
+                self._studio = self._pick(self._client.tool("list_roblox_studios", {}))
+            except NoStudio:
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(STUDIO_LOOK)
         return self._client, self._studio
 
     def forget(self):

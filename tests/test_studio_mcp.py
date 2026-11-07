@@ -43,7 +43,8 @@ def test_the_command_line(monkeypatch):
     assert studio_mcp.command()[-1] == "--stdio"
 
 
-def test_pictures_of_the_places_studio():
+def test_pictures_of_the_places_studio(monkeypatch):
+    monkeypatch.setattr(studio_mcp, "STUDIO_WAIT", 0.2)
     studios = [{"id": "a", "name": "Other Place"}, {"id": "b", "name": "Sky Farm"}]
     pictures = studio_mcp.StudioPictures({"project": "Sky Farm"}, argv(studios))
     try:
@@ -188,6 +189,31 @@ def test_a_multiplayer_tests_pictures_are_player_ones(monkeypatch):
         assert link.media.pictures._studio == "p1"
     finally:
         link.close("test")
+
+
+def test_studio_gets_a_moment_to_join_a_server_that_just_started(monkeypatch):
+    """The first lists of a fresh server can be empty: that isn't Studio's MCP server being off."""
+    monkeypatch.setattr(studio_mcp, "STUDIO_LOOK", 0.01)
+    pictures = studio_mcp.StudioPictures({"project": "Place1"}, argv(mode="late:3"))
+    try:
+        pictures.check()
+        assert pictures._studio == "s1"
+        assert pictures.shot(max_dim=32)[0][:3] == b"\xff\xd8\xff"
+    finally:
+        pictures.close()
+
+
+def test_a_studio_that_never_joins_is_said_after_the_wait(monkeypatch):
+    monkeypatch.setattr(studio_mcp, "STUDIO_WAIT", 0.3)
+    monkeypatch.setattr(studio_mcp, "STUDIO_LOOK", 0.05)
+    pictures = studio_mcp.StudioPictures({"project": "Place1"}, argv(mode="late:1000"))
+    try:
+        t0 = time.monotonic()
+        with pytest.raises(studio_mcp.NoStudio, match="Settings, MCP Servers"):
+            pictures.check()
+        assert 0.3 <= time.monotonic() - t0 < 5
+    finally:
+        pictures.close()
 
 
 def test_a_picture_that_hangs_starts_the_server_over(monkeypatch, tmp_path):

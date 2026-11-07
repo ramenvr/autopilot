@@ -5,7 +5,7 @@ dev loader's eval, tools/roblox_dev.py: only when the plugin runs from it).
 The tests need Roblox Studio open on the test game: tests/LanternGrove.rbxl (the place, saved), or an empty Baseplate
 with tests/testgame.luau run in Studio's command bar (it builds the same game). Also the plugin in Studio (the built Autopilot.rbxmx, or the dev loader), and nothing else on
 port 8765 (no `autopilot serve`). Studio needn't be the window in front: the plugin's input reaches the game either way.
-For the game's pictures, Studio's MCP server must be on (Assistant, ..., Manage MCP Servers).
+For the game's pictures, Studio's MCP server must be on (Assistant, ..., Settings, MCP Servers).
 """
 
 import os

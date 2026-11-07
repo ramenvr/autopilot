@@ -106,7 +106,7 @@
   (touch) is for one player only.
 - **Pictures**: the game's view (3D and the game's own UI, not Roblox's top bar) comes from Studio itself, through
   Studio's MCP server (the agent service starts it beside Studio), so recordings and `describe_frames` work as in the
-  other engines while a game plays; Studio must have its MCP server on (Assistant, ..., Manage MCP Servers). When it
+  other engines while a game plays; Studio must have its MCP server on (Assistant, ..., Settings, MCP Servers). When it
   isn't, there are no frames: settle a request about how something looks by what `game.view` tells (parts shown,
   transparency, colours read with `game.get`, lights, animations, sounds, effects, texts) and say so.
 - **What `view` tells**: as the other engines' (its `omitted` is empty): visible things (name, path, class, tags,

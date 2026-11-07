@@ -148,7 +148,7 @@ def test_a_missing_required_tool_fails_with_what_to_do():
         mcp.Studio.connect(mcp.LocalTransport(mcp.FakeStudio(without=[mcp.EXECUTE_LUAU, mcp.START_STOP_PLAY])))
     text = str(e.value)
     assert "doesn't offer execute_luau, start_stop_play" in text
-    assert "Manage MCP Servers" in text and "Enable Studio as MCP server" in text
+    assert "Settings > MCP Servers" in text and "Enable Studio as MCP server" in text
     assert mcp.ENV_CMD in text and "get_console_output" in text  # (what it does offer)
 
 
