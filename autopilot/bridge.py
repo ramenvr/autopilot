@@ -706,6 +706,12 @@ def same_project(a, b):
     return a.get("project") == b.get("project")
 
 
+# Who may open the bridge's WebSocket. Plugins, not web pages (a page may open a WebSocket to this machine): most send
+# no Origin, and Unreal's WebSocket library always sends http://<the URL's host>, without its port. A page on any other
+# site, or on another port here, can't send one of these.
+BRIDGE_ORIGINS = [None, "http://127.0.0.1", "http://localhost"]
+
+
 def serve_local(host="127.0.0.1", port=8765, wait=None, role="cli", announce_as=BRAIN_FILE, extra=None,
                 http_port=None):
     """Listen for the plugin on this machine and return the Link once it has said hello (a service says where it is
@@ -801,7 +807,7 @@ def serve_local(host="127.0.0.1", port=8765, wait=None, role="cli", announce_as=
         link.close(why)
         state["sessions"].pop(link.session, None)  # (no longer resumable)
 
-    server = serve(handler, host, port, max_size=None, origins=[None])
+    server = serve(handler, host, port, max_size=None, origins=BRIDGE_ORIGINS)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     http = None
     if http_port is not None:

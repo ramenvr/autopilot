@@ -96,6 +96,40 @@ def test_local_server_accepts_the_plugin_and_answers():
     link.server.shutdown()
 
 
+def test_the_bridge_takes_plugins_and_refuses_web_pages():
+    """A plugin that sends no Origin gets in, and so does Unreal's WebSocket library, which always sends
+    http://<host>; a web page's Origin (another site, or another port on this machine) is refused."""
+    import threading
+
+    from websockets.exceptions import InvalidStatus
+    from websockets.sync.client import connect as ws_connect
+
+    port = 18769
+    served = {}
+    threading.Thread(target=lambda: served.update(link=bridge.serve_local(port=port, wait=5)), daemon=True).start()
+    hello = json.dumps({"type": "hello", "protocol": bridge.PROTOCOL, "project": "p", "engine": "unreal"})
+
+    def opens(origin):
+        for _ in range(50):
+            try:
+                with ws_connect(f"ws://127.0.0.1:{port}/v1/bridge", origin=origin, proxy=None) as ws:
+                    ws.send(hello)
+                    return json.loads(ws.recv(timeout=5))["type"] == "welcome"
+            except InvalidStatus as e:
+                assert e.response.status_code == 403
+                return False
+            except OSError:
+                time.sleep(0.05)
+        raise AssertionError("the bridge didn't start")
+
+    try:
+        assert opens("http://127.0.0.1") and opens(None) and opens("http://localhost")
+        for page in ("https://untrusted.invalid", "http://127.0.0.1:3000", "http://localhost:3000", "null", ""):
+            assert not opens(page), page
+    finally:
+        served["link"].server.shutdown()
+
+
 def test_a_pipe_joins_a_plugins_parts_to_its_link():
     """A plugin's parts that can't reach each other (Roblox Studio's edit, server and client DataModels) meet through
     /v1/pipe/<the link's session>: the editor's {"type": "pipe"} frames go to every part, a part's "to": "brain" frames
