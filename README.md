@@ -61,7 +61,7 @@ Autopilot has a build for Godot 4 (v4.7 or later). If you haven't already, downl
 
 ### Step 2D: Adding to your place (Roblox Studio)
 
-Follow these instructions if your game is on Roblox.
+Follow these instructions if your game is on Roblox. [docs/roblox-studio-setup.md](docs/roblox-studio-setup.md) goes through them step by step, with what to do if something goes wrong.
 
 The Roblox build is an `Autopilot-<version>-Roblox.zip`. It contains the plugin, `Autopilot.rbxmx`, and the agent service's installer in `agent_service/`. From a clone of this repository, `python tools/build_roblox.py --install` builds the plugin and puts it in Studio's Plugins folder instead (skip to step 3 below).
 
@@ -70,7 +70,7 @@ The Roblox build is an `Autopilot-<version>-Roblox.zip`. It contains the plugin,
 3. Start the agent service: run `autopilot serve` in a terminal, and leave it running while you use Autopilot.
 4. Move `Autopilot.rbxmx` into Studio's Plugins folder: `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS).
 5. Open your place in Studio. The Autopilot dock appears on the right (**Plugins > Autopilot** toggles it) and connects to the agent service by itself.
-6. For screenshots and recordings of your game, turn on Studio's MCP server once: **Assistant**, **…**, **Manage MCP Servers**, **Enable Studio as MCP server**.
+6. For screenshots and recordings of your game, turn on Studio's MCP server once: **Assistant** (far right of Studio's top bar), **…**, **Settings** (or **Manage MCP Servers**), **MCP Servers** tab, **Enable Studio as MCP server**. The status changes to **MCP Ready**.
 7. Proceed to **Step 3: Onboarding**. More on the Roblox plugin is in [plugin/roblox](plugin/roblox/README.md).
 
 ### Step 3: Onboarding
@@ -122,8 +122,8 @@ To do a clean uninstall of Autopilot, do the following steps:
 ## Roblox through Studio's MCP server (experimental)
 
 `roblox-mcp` plays a Roblox place through Roblox Studio's built-in MCP server: no plugin inside Studio, a small
-connector process instead, so runs can be scripted (the bench runs Roblox places with it). Its tools are checked
-against a live Studio; it is still experimental. [docs/roblox-mcp.md](docs/roblox-mcp.md) explains how to set it up,
+connector process instead, so runs can be scripted (the bench runs Roblox places with it). Whole runs work on
+Windows; it is still experimental. [docs/roblox-mcp.md](docs/roblox-mcp.md) explains how to set it up,
 how to measure its latency, and what it can't do yet.
 
 ## Contributing

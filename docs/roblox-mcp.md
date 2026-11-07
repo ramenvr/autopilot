@@ -9,11 +9,13 @@ connector for each prompt as it starts the other engines' headless games, with n
 Studio plugin (Route B, below) is the way to play a place from inside Studio. Should both be installed, a Roblox
 place goes to the engine registered first; `AUTOPILOT_ENGINE=roblox-mcp` chooses this one.
 
-> **Status: the tools are checked against a live Studio; whole runs are still being tried.** The tool arguments, the
-> input actions' JSON and the tools' answers were read from Studio's own MCP server (RobloxStudio 1.0.0 on macOS,
-> 2026-11: its `tools/list` is in [studio_tools.txt](studio_tools.txt)) and tried in a play session on the test place
-> (see [What a live Studio answered](#what-a-live-studio-answered)). The tests run against a stand-in that follows
-> them (`FakeStudio` in `autopilot/engines/roblox_mcp.py`, and a simulated place in `tests/robloxsim.py`).
+> **Status: experimental, and whole runs work.** On Windows with Studio 0.746, the bench played a test FPS through
+> this engine: three prompts (a match starting, a planted HUD bug, a wave cleared in a fight), three correct results.
+> The tool arguments, the input actions' JSON and the tools' answers were read from Studio's own MCP server
+> (RobloxStudio 1.0.0 on macOS, 2026-11: its `tools/list` is in [studio_tools.txt](studio_tools.txt)) and tried in a
+> play session on the test place (see [What a live Studio answered](#what-a-live-studio-answered)). The tests run
+> against a stand-in that follows them (`FakeStudio` in `autopilot/engines/roblox_mcp.py`, and a simulated place in
+> `tests/robloxsim.py`).
 > `python tools/roblox_latency.py --tools` prints the live list again.
 
 ## How it works
@@ -40,8 +42,7 @@ physics takes a stud as 0.28 m).
 
 ## Setup
 
-1. **Turn on Studio's MCP server.** In Roblox Studio, open **Assistant**, click **...** > **Manage MCP Servers**, and turn
-   on **Enable Studio as MCP server**.
+1. **Turn on Studio's MCP server**, as [the setup guide](roblox-studio-setup.md#3-turn-on-studios-mcp-server) shows.
 2. **Open the place** in Studio. A Rojo project needs building first (`rojo build <project> -o Place.rbxlx`) or serving
    with the Rojo plugin (`rojo serve`).
 3. **Install Autopilot from a clone** (see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup)) and set your keys in
@@ -98,7 +99,7 @@ them has been run against Studio yet.
 
 - **Latency.** Every read and input is an MCP round trip. Measured on a Mac (`tools/roblox_latency.py`, a batched
   observe of 4 reads in the Client, n=100): p50 67 ms, p95 72 ms, so `tick_hz` <= 13.9 and `tempo` <= 6.9 decisions a
-  second. A key press is about 35 ms, a mouse click 0.25-0.6 s. Batched reads cost one round trip, so the agent is
+  second. Windows measured the same: p50 67 ms, p95 68 ms. A key press is about 35 ms, a mouse click 0.25-0.6 s. Batched reads cost one round trip, so the agent is
   told to batch them. Reflex play (dodging a hit a fraction of a second ahead) is mostly out of reach.
 - **No pause.** Studio's MCP server can't pause a play session: the game runs while the agent thinks.
 - **Stills, not video.** There is no recording, only `screen_capture` stills.
@@ -109,6 +110,8 @@ them has been run against Studio yet.
 - **One place.** `game.restart(map=...)` can only restart the place open in Studio.
 - **No named input actions.** ContextActionService and UserInputService bindings are pressed by their keys.
 - **Not headless.** Studio must be open, so it can't run in CI.
+- **Clicks are real clicks.** Roblox's chat window takes the presses that land on it. In a small game view it can cover
+  part of a menu, so a button can seem dead while its uncovered part, or the keyboard, still works.
 
 ## What a live Studio answered
 
@@ -143,9 +146,8 @@ Read from Studio's MCP server (RobloxStudio 1.0.0, macOS, 2026-11) on the test p
 - **`screen_capture`** returns a JPEG image item (the viewport, 1219x870 on the machine tried).
 - **`script_read`** numbers each line (`     1→--!strict`); the connector takes the numbers off.
 
-## Open questions
-
-- **Windows**: everything above was read on macOS. The server's command differs (`mcp.bat`); the tools should not.
+Windows (Studio 0.746) agrees with the above, apart from the server's command (`mcp.bat`). Its server also offers
+`generate_animation` and `open_cloud_invoke`, which Autopilot doesn't use.
 
 ## Route B: a native Studio plugin
 
