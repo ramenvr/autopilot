@@ -323,32 +323,15 @@ local function tagText(word: string, kind: string): string
 		.. " </font></mark>  "
 end
 
-local function markColor(akind: string): Color3
-	if akind == "alert" then
-		return C.red
-	elseif akind == "report" then
-		return C.success
-	elseif akind == "probe" or akind == "episode" then
-		return C.accent
-	elseif akind == "write" or akind == "refine" then
-		return C.info
-	elseif akind == "look" then
-		return T.ACTION_COLORS[5]
-	elseif akind == "restart" then
-		return C.amber
-	elseif akind == "text" or akind == "steer" then
-		return C.text2
-	end
-	return C.muted
-end
-
+-- A feed line: its time, then its words. (No icon before an activity line's words, as the other docks have: a Roblox
+-- plugin can only draw a picture of its own in the edit session, and the dock is drawn in the playtest's client while
+-- a run plays.)
 function RunPage.feedLine(e: any, current: boolean?): string
 	local t = M.shortClock(tonumber(e.t) or 0)
 	local s = T.rt(t .. string.rep(" ", math.max(1, 7 - #t)), C.muted)
 	local text = tostring(e.text or "")
 	if e.kind == "activity" then
-		local akind = tostring(e.akind or "")
-		s ..= "<b>" .. T.rt(M.GLYPHS[akind] or "·", markColor(akind)) .. "</b> " .. T.rt(text, C.text)
+		s ..= T.rt(text, C.text)
 		local quiet = ""
 		local detail = tostring(e.detail or "")
 		if detail ~= "" and not M.folds(detail) and not string.find(text, detail, 1, true) then

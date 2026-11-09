@@ -17,11 +17,6 @@ M.STAGE_HEADINGS = { [0] = "Launch", "Analyze", "Probe", "Build harness", "Play"
 M.MAX_FEED = 2000
 -- An activity frame's `stage` -> the stage
 M.ACTIVITY_STAGES = { analyze = 1, probe = 2, build = 3, play = 4, results = 5, report = 6 }
--- The letter before an activity line's words, by the event's kind (Godot's when it can't draw the icon): ? the agent's
--- words, R read, S searched, W wrote, P tried in the game, E a harness played, L looked, ! report or alert, > steer,
--- * restart, M memory refined.
-M.GLYPHS = { text = "?", read = "R", search = "S", write = "W", probe = "P", episode = "E", look = "L", report = "!",
-	alert = "!", steer = ">", restart = "*", refine = "M" }
 M.DETAIL_LABELS = { probe = "the code", write = "what was written", episode = "what was asked", look = "the questions",
 	report = "the summary", read = "the path", search = "the pattern", refine = "the edit and its evidence" }
 M.RESULT_LABELS = { probe = "the output", episode = "the summary", look = "the description" }

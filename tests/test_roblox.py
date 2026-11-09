@@ -556,6 +556,9 @@ def test_the_dock_is_laid_out_as_the_other_plugins_panels():
         assert page in dock, page
     run = sources["RunPage"]
     assert '"Policy log · %d"' in run and '"Live" else "Result"' in run and '"Feed"' in run
+    # (a feed line is its time and its words: no kind letter in place of the other docks' icons, which a Roblox plugin
+    # can't draw in the playtest's client, where the dock is while a run plays)
+    assert "GLYPHS" not in run and "GLYPHS" not in sources["RunModel"]
     theme = sources["Theme"]
     for color in ('Color3.fromHex("121316")', 'Color3.fromHex("181a1e")', 'Color3.fromHex("24262b")',
                   'Color3.fromHex("f0873a")', "Theme.R_PLATE = 8"):
