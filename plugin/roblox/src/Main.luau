@@ -46,6 +46,7 @@ function Main.start(plugin: Plugin, options: any?)
 			end
 			if options and options.dev then
 				(_G :: any).AutopilotEditor = editor -- (for the dev loader's eval: a look inside while developing)
+				;(_G :: any).AutopilotDock = dock
 				-- (the dev loader's relay for the play session's client: plugin/roblox/dev, never in the built plugin)
 				local relay = script.Parent:FindFirstChild("DevRelay")
 				if relay then
