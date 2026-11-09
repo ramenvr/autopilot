@@ -4,9 +4,10 @@ from autopilot import engines
 
 
 def test_every_engine_sends_the_games_errors():
-    # Unreal, Unity and Godot all send the errors the game logs in play (`log` events: Godot's addon from its Logger,
-    # lib/detectors.gd), so an episode without any can say "no errors logged"
-    for name in ("unreal", "unity", "godot"):
+    # Unreal, Unity, Godot and LÖVE all send the errors the game logs in play (`log` events: Godot's addon from its
+    # Logger, lib/detectors.gd; LÖVE's module from the Lua errors its callbacks raise), so an episode without any can
+    # say "no errors logged"
+    for name in ("unreal", "unity", "godot", "love"):
         assert engines.get(name).error_log, name
 
 

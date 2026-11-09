@@ -1,7 +1,9 @@
 """What the game showed during a run: a recording and stills, kept with the run's data (docs/run-data.md).
 
 The plugin captures the game's view (docs/protocol.md, "Recording, stills and usage"): `record` makes it send a `frame`
-(a JPEG with the game time it shows) a few times a second while the game runs; `capture` answers one still.
+(a JPEG with the game time it shows) a few times a second while the game runs; `capture` answers one still. A plugin
+whose engine can't encode a JPEG (LÖVE) sends its pictures as PNGs (`png` in place of `jpeg`): jpeg_of() makes each a
+JPEG as it arrives, so everything after sees JPEGs only.
 
     Recorder   the run's recording, one video per harness: while episode n plays (begin(n) to end(n), the
                session's run_harness) its frames go into an H.264 MP4 (PyAV), media/recording-<n>.mp4, and
@@ -55,6 +57,40 @@ def can_capture(link):
 
 def _even(n):
     return max(2, int(n) // 2 * 2)
+
+
+def qscale(quality):
+    """A JPEG quality (1-100, as plugins are asked for) as FFmpeg's mjpeg qscale (2-31: lower is better)."""
+    q = max(1, min(100, int(quality)))
+    return round(2 + (100 - q) * 29 / 99)
+
+
+def jpeg_of(picture, quality=QUALITY):
+    """The picture of a `frame` or of a `capture` answer, as JPEG bytes: its `jpeg` (base64) as it is, or its `png` (a
+    plugin that can't encode a JPEG: LÖVE) made a JPEG of that quality. b"" for neither, or a PNG that can't be read."""
+    data = picture.get("jpeg")
+    if data:
+        return base64.b64decode(data)
+    data = picture.get("png")
+    if not data:
+        return b""
+    import av
+
+    try:
+        frames = av.CodecContext.create("png", "r").decode(av.Packet(base64.b64decode(data)))
+    except (ValueError, av.FFmpegError) as e:
+        print(f"note: a PNG picture that can't be read: {e}")
+        return b""
+    if not frames:
+        return b""
+    frame = frames[-1]
+    c = av.CodecContext.create("mjpeg", "w")
+    c.width, c.height = _even(frame.width), _even(frame.height)  # (4:2:0 needs even sides: an odd one loses a pixel)
+    c.pix_fmt = "yuvj420p"
+    c.time_base = Fraction(1, 25)
+    c.qscale = qscale(quality)
+    picture_yuv = frame.reformat(width=c.width, height=c.height, format="yuvj420p")
+    return b"".join(bytes(p) for p in list(c.encode(picture_yuv)) + list(c.encode(None)))
 
 
 class Encoder:
@@ -397,7 +433,7 @@ class Recorder:
             try:
                 asked = time.time()  # (stamped as frames are: when the picture was asked for)
                 shot = self.link.request("capture", {"max_dim": self.max_dim, "quality": self.quality}, timeout=10)
-                if shot.get("jpeg"):
+                if shot.get("jpeg") or shot.get("png"):
                     last = {**shot, "n": "end", "wall": asked}
             except Exception as e:  # noqa: BLE001 - the video ends on its last frame
                 print(f"note: no picture of episode {n}'s end: {type(e).__name__}: {e}")
@@ -445,7 +481,7 @@ class Recorder:
             self.problem = clip.problem
 
     def _keep(self, frame, final=False):
-        jpeg = base64.b64decode(frame.get("jpeg") or "")
+        jpeg = jpeg_of(frame, self.quality)  # (the encoder's thread: a PNG is made a JPEG off the bridge's)
         if not jpeg:
             return
         wall = float(frame.get("wall") or time.time())
@@ -527,7 +563,7 @@ def still(link, folder, reason, extra=None, t=None):
     try:
         asked = time.time()  # (the plugin captures the frame drawn next: the still's time, as frames are stamped)
         shot = link.request("capture", {"max_dim": STILL_DIM, "quality": STILL_QUALITY}, timeout=15)
-        jpeg = base64.b64decode(shot.get("jpeg") or "")
+        jpeg = jpeg_of(shot, STILL_QUALITY)
         if not jpeg:
             return None
         with _seq_lock:

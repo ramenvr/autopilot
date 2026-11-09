@@ -513,6 +513,89 @@ def test_a_still_is_saved_with_its_line(tmp_path):
     assert line["reason"] == "finding" and line["signature"] == "hud:x" and line["t"] == 3.5
 
 
+# -- pictures as PNGs (a plugin that can't encode a JPEG: LÖVE) --------------------------------------------------------
+
+def png(width=64, height=48, rgb=(200, 40, 40), alpha=False):
+    import av
+
+    fmt = "rgba" if alpha else "rgb24"
+    codec = av.CodecContext.create("png", "w")
+    codec.width, codec.height, codec.pix_fmt = width, height, fmt
+    codec.time_base = __import__("fractions").Fraction(1, 25)
+    frame = av.VideoFrame(width, height, fmt)
+    pixel = bytes(rgb) + (b"\xff" if alpha else b"")
+    plane = frame.planes[0]
+    row = pixel * width + b"\0" * (plane.line_size - len(pixel) * width)
+    plane.update(row * height)
+    data = b"".join(bytes(p) for p in codec.encode(frame))
+    data += b"".join(bytes(p) for p in codec.encode(None))
+    return data
+
+
+def decode_jpeg(data):
+    import av
+
+    frames = av.CodecContext.create("mjpeg", "r").decode(av.Packet(data))
+    assert frames, "not a JPEG"
+    return frames[-1]
+
+
+def test_jpeg_of_keeps_a_jpeg_as_it_came():
+    data = jpeg()
+    assert media.jpeg_of({"jpeg": base64.b64encode(data).decode()}) == data
+    assert media.jpeg_of({}) == b"" and media.jpeg_of({"png": ""}) == b""
+
+
+def test_jpeg_of_makes_a_png_a_jpeg():
+    for alpha in (False, True):
+        data = media.jpeg_of({"png": base64.b64encode(png(alpha=alpha)).decode()})
+        assert data[:2] == b"\xff\xd8"  # (a JPEG)
+        picture = decode_jpeg(data)
+        assert (picture.width, picture.height) == (64, 48)
+        rgb = picture.reformat(format="rgb24").planes[0]
+        at = 24 * rgb.line_size + 32 * 3  # (the middle pixel: no numpy here)
+        r, g, b = bytes(rgb)[at:at + 3]
+        assert abs(r - 200) < 12 and g < 60 and b < 60, (r, g, b)  # (its colour)
+    # an odd side loses a pixel (4:2:0), and a lower quality makes a smaller JPEG
+    assert (decode_jpeg(media.jpeg_of({"png": base64.b64encode(png(65, 49)).decode()})).width) == 64
+    noisy = base64.b64encode(png(320, 240, rgb=(123, 45, 67))).decode()
+    assert len(media.jpeg_of({"png": noisy}, quality=10)) <= len(media.jpeg_of({"png": noisy}, quality=95))
+    assert media.qscale(100) == 2 and media.qscale(1) == 31 and media.qscale(75) == 9
+
+
+def test_jpeg_of_a_png_that_cant_be_read_is_nothing():
+    assert media.jpeg_of({"png": base64.b64encode(b"not a png at all").decode()}) == b""
+
+
+def test_a_recording_and_stills_of_png_pictures(tmp_path):
+    """LÖVE's pictures (`png`, not `jpeg`) are recorded and kept as any plugin's: as JPEGs."""
+    import av
+
+    class PngLink(SendLink):
+        def request(self, op, args=None, timeout=None):
+            if op == "capture":
+                self.requests.append((op, args))
+                return {"png": base64.b64encode(png(rgb=(20, 200, 20))).decode(), "t": 9.0, "width": 64, "height": 48}
+            return super().request(op, args, timeout)
+
+    link = PngLink({"project": "fake", "engine": "love", "features": ["media"]})
+    with media.Recorder(link, str(tmp_path)) as rec:
+        rec.begin(1)
+        for n in range(5):
+            frame = {"type": "frame", "n": n, "t": n * 0.2, "wall": 1000.0 + n * 0.2, "width": 64, "height": 48,
+                     "png": base64.b64encode(png(rgb=(40 * n, 40, 40))).decode()}
+            for listener in link.frame_listeners:
+                listener(frame)
+        rec.end(1)
+    assert rec.kept == 6  # (5 frames, and the picture taken as the episode ended)
+    with av.open(str(tmp_path / "media" / "recording-1.mp4")) as video:
+        frames = list(video.decode(video=0))
+    assert (frames[0].width, frames[0].height) == (64, 48) and len(frames) == 7
+    assert len(rec.frames.items) == 5 and rec.frames.items[0]["jpeg"][:2] == b"\xff\xd8"  # (for describe_frames)
+    rel = media.still(link, str(tmp_path), "look")
+    assert rel.endswith(".jpg") and (tmp_path / rel).read_bytes()[:2] == b"\xff\xd8"
+
+
 # -- each decision ------------------------------------------------------------------------------------------------
 
 def test_a_shared_episode_keeps_each_decision_whole(game, tmp_path):
