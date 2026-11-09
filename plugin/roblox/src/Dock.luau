@@ -815,8 +815,9 @@ function Dock:exploreFromSetup(minutes: number)
 	if brief ~= "" then
 		run.brief = brief
 	end
-	self.setupOpen = false
-	self:startRun(run, "")
+	if self:startRun(run, "") then
+		self.setupOpen = false
+	end
 	self:render()
 end
 
@@ -897,7 +898,7 @@ function Dock:_listen()
 		if string.sub(text, 1, 22) == "Run finished. Report: " then
 			return
 		end
-		local r = self.active or self:_reopenLost()
+		local r = self.active
 		if r and string.sub(text, 1, 9) ~= "Finding: " then
 			r:onStatus(M.translate(text))
 			self:liveChanged()
@@ -947,7 +948,14 @@ function Dock:_listen()
 		self:render()
 	end)
 	on("activity", function(f)
-		local r = self.active or self:_reopenLost()
+		local r = self.active
+		if r == nil then
+			-- (the run whose connection closed, going on: its feed comes on from where it was)
+			local last = self.runs[1]
+			if last and last.lostConnection and (tonumber(f.id) or 0) > (last.lastActivityId or 0) then
+				r = self:_reopenLost()
+			end
+		end
 		if r == nil then
 			return
 		end
@@ -1016,9 +1024,15 @@ function Dock:_listen()
 			return
 		end
 		local b = { usd = math.max(0, f.usd), billed = f.billed == true }
-		local r = self.active or self:_reopenLost()
+		local r = self.active
 		if r == nil then
-			self.pendingBill = b
+			local last = self.runs[1]
+			if last and not last:live() and last.result and last.bill == nil then
+				last.bill = b
+				self:save()
+			else
+				self.pendingBill = b
+			end
 			return
 		end
 		r.bill = b
@@ -1030,7 +1044,7 @@ function Dock:_listen()
 		self:_onPolicyStep(f)
 	end)
 	on("usage", function(models, final)
-		local r = self.active or self:_reopenLost()
+		local r = self.active
 		if r == nil then
 			-- (the final count can come after the result: the run just ended)
 			local last = self.runs[1]
@@ -1117,7 +1131,7 @@ function Dock:_onResult(result: any)
 end
 
 function Dock:_onPolicyStep(f: any)
-	local r = self.active or self:_reopenLost()
+	local r = self.active
 	if r == nil or type(f) ~= "table" then
 		return
 	end
@@ -1461,15 +1475,23 @@ end
 -- --- popups ---------------------------------------------------------------------------------------------------------
 
 function Dock:closePopup()
+	-- (the Memory row back where it lives, the rail's foot, before the popup that may hold it goes)
+	if self.footer.Parent ~= self.railFoot then
+		self.footer.Parent = self.railFoot
+		for _, d in ipairs(self.footer:GetDescendants()) do
+			if d:IsA("GuiObject") and d.ZIndex >= 61 then
+				d.ZIndex = 1
+			end
+		end
+		if self.footer.ZIndex >= 61 then
+			self.footer.ZIndex = 1
+		end
+	end
 	if self.popup then
 		self.popup:Destroy()
 		self.popup = nil
 	end
 	self.overlay.Visible = false
-	-- (the Memory row back where it lives: the rail's foot)
-	if self.footer.Parent ~= self.railFoot then
-		self.footer.Parent = self.railFoot
-	end
 end
 
 -- A floating panel at (x, y) in the dock, width wide: POPOVER, radius 8, the control outline.

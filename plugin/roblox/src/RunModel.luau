@@ -441,6 +441,7 @@ function Run:addLine(e: any)
 		e.stage = self.stage
 	end
 	table.insert(self.feed, e)
+	self.feedTotal = (self.feedTotal or 0) + 1 -- (every line added: the feed keeps only the latest)
 	while #self.feed > M.MAX_FEED do
 		table.remove(self.feed, 1)
 	end
@@ -643,9 +644,13 @@ function Run:saved(): any
 		table.insert(feed, { t = e.t, text = e.text, kind = e.kind, stage = e.stage, akind = e.akind, aid = e.aid,
 			result = e.result, tone = e.tone })
 	end
+	local stageSecs = {}
+	for k, v in pairs(self.stageSecs) do
+		stageSecs[tostring(k)] = v -- (string keys: a plugin setting keeps no table keyed 0..6)
+	end
 	return { id = self.id, kind = self.kind, prompt = self.prompt, request = self.request, started = self.started,
 		seconds = math.floor(self:elapsed() * 10) / 10, result = self.result, findings = self.findings,
-		notABug = self.notABug, feed = feed, attempts = self.attempts, stage = self.stage, stageSecs = self.stageSecs,
+		notABug = self.notABug, feed = feed, attempts = self.attempts, stage = self.stage, stageSecs = stageSecs,
 		stepCount = self.stepCount, stopAsked = self.stopAsked, usage = self.usage, bill = self.bill,
 		origin = self.origin, project = self.project, tested = self.tested, lostConnection = self.lostConnection }
 end

@@ -633,7 +633,7 @@ function Theme.dot(parent: Instance?, color: Color3, size: number?): Frame
 end
 
 -- Something going on: a 12 px square, its 2 px outline in INFO_LINE with its top side in INFO, turning.
-local spinners = setmetatable({}, { __mode = "k" }) :: any
+local spinners = {} :: { [Frame]: boolean }
 local spinning: RBXScriptConnection? = nil
 function Theme.spinner(parent: Instance?): Frame
 	local holder = Instance.new("Frame")
@@ -660,9 +660,15 @@ function Theme.spinner(parent: Instance?): Frame
 	if spinning == nil then
 		spinning = RunService.Heartbeat:Connect(function(dt)
 			for s in pairs(spinners) do
-				if s.Parent then
+				if s.Parent and s.Parent.Parent then
 					s.Rotation = (s.Rotation + dt * 360) % 360
+				elseif s.Parent == nil or s.Parent.Parent == nil then
+					spinners[s] = nil -- (gone with its page)
 				end
+			end
+			if next(spinners) == nil and spinning then
+				spinning:Disconnect()
+				spinning = nil
 			end
 		end)
 	end

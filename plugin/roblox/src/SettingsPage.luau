@@ -279,7 +279,18 @@ end
 
 function SettingsPage.render(d: any, frame: Frame)
 	if T.focused and T.focused:IsDescendantOf(frame) then
-		d.settingsDirty = true -- (built again once the box is left)
+		-- (built again once the box is left)
+		if not d.settingsDirty then
+			d.settingsDirty = true
+			local box = T.focused :: TextBox
+			box.FocusLost:Once(function()
+				task.defer(function()
+					if d.settingsDirty and d.page == "settings" then
+						SettingsPage.render(d, frame)
+					end
+				end)
+			end)
+		end
 		return
 	end
 	d.settingsDirty = false
@@ -305,7 +316,9 @@ function SettingsPage.render(d: any, frame: Frame)
 	-- Share runs to improve Autopilot (the agent service's preferences.json share_data)
 	local share = settingCard(v, "Share runs to improve Autopilot", SHARING)
 	T.switch(share, Settings.get(d.plugin, "share") ~= false, "Data sharing on", "Data sharing off", function(on)
-		d.editor:setSharing(on)
+		if not d.editor:setSharing(on) then
+			SettingsPage.render(d, frame) -- (not saved: the switch shows the setting as it is)
+		end
 	end)
 	-- Research agent: the hello's `research`, once flipped (until then the switch shows the agent service's own
 	-- default, on)
@@ -323,11 +336,6 @@ function SettingsPage.render(d: any, frame: Frame)
 		text = Settings.get(d.plugin, "design_brief") or "" })
 	brief:GetPropertyChangedSignal("Text"):Connect(function()
 		Settings.set(d.plugin, "design_brief", brief.Text)
-	end)
-	brief.FocusLost:Connect(function()
-		if d.settingsDirty and d.page == "settings" then
-			SettingsPage.render(d, frame)
-		end
 	end)
 	-- Show Policy Log: the Policy log tab, and the hello's `inspect`
 	local policy = Settings.get(d.plugin, "show_policy_log") ~= false

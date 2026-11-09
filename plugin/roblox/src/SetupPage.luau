@@ -547,7 +547,20 @@ end
 
 function SetupPage.render(d: any, frame: Frame)
 	if T.focused and T.focused:IsDescendantOf(frame) then
-		return -- (not built again under the caret: the keys typed stay)
+		-- (not built again under the caret: once the box is left)
+		if not d.setupWaits then
+			d.setupWaits = true
+			local box = T.focused :: TextBox
+			box.FocusLost:Once(function()
+				d.setupWaits = false
+				task.defer(function()
+					if d.setupOpen then
+						SetupPage.render(d, d.setupFrame)
+					end
+				end)
+			end)
+		end
+		return
 	end
 	local s = state(d)
 	if s.step == 4 and d:memoryNow() == "some" then

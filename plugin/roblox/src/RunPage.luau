@@ -606,7 +606,7 @@ function RunPage:_renderFeed()
 	for i = math.max(1, #r.feed - FEED_ROWS + 1), #r.feed do
 		self:_appendFeed(r.feed[i], i == cur)
 	end
-	self.feedCount = #r.feed
+	self.feedTotal = r.feedTotal or #r.feed
 	self.feedRun = r
 	if r:live() then
 		self:_toBottom()
@@ -918,18 +918,19 @@ function RunPage:liveChanged()
 		self:_renderLive()
 	elseif self.feedArea.Visible then
 		local cur = currentAttemptLine(r)
-		if self.feedRun ~= r or #self.feedRun.feed < (self.feedCount or 0) or (cur > 0 and cur > (self.feedCount or 0))
-			or d.feedUpdated then
+		local total = r.feedTotal or #r.feed
+		local fresh = total - (self.feedTotal or 0) -- (lines added since the tab was drawn)
+		if self.feedRun ~= r or fresh < 0 or fresh > #r.feed or (cur > 0 and cur > #r.feed - fresh) or d.feedUpdated then
 			self:_renderFeed()
 			d.feedUpdated = nil
 		else
 			local bottom = self:_atBottom()
 			self.feedEmpty.Visible = #r.feed == 0
 			self.feedPlate.Visible = #r.feed > 0
-			for i = (self.feedCount or 0) + 1, #r.feed do
+			for i = #r.feed - fresh + 1, #r.feed do
 				self:_appendFeed(r.feed[i], i == cur)
 			end
-			self.feedCount = #r.feed
+			self.feedTotal = total
 			if bottom then
 				self:_toBottom()
 			end
@@ -940,7 +941,7 @@ function RunPage:liveChanged()
 	self.tabMain.Text = if r:live() then "Live" else "Result"
 	local hasSteps = #r.steps > 0
 	self.tabPolicy.Text = string.format("Policy log · %d", #r.steps)
-	if hasSteps ~= self.tabPolicy.Visible then
+	if (hasSteps and Settings.get(d.plugin, "show_policy_log") ~= false) ~= self.tabPolicy.Visible then
 		self:render()
 	end
 end
@@ -950,7 +951,7 @@ function RunPage:onStep(st: any)
 	local d = self.d
 	local r = d.shown
 	self.tabPolicy.Text = string.format("Policy log · %d", #r.steps)
-	if not self.tabPolicy.Visible then
+	if not self.tabPolicy.Visible and Settings.get(d.plugin, "show_policy_log") ~= false then
 		self:render()
 	elseif self.policyFrame.Visible then
 		self.policy:onStep(st)
