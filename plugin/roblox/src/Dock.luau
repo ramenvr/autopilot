@@ -1,7 +1,8 @@
 --!strict
 -- The Autopilot dock (Plugins tab > Autopilot), as the Autopilot panel of the Unreal, Unity and Godot plugins: it
--- connects to the agent service by itself (the connect card shows only while it isn't connected: connecting, what went
--- wrong, or Disconnected by the user, with Reconnect); compose a run (one prompt box: the agent service reads what kind
+-- connects to the agent service by itself once the user has started it with `autopilot serve` (a Roblox plugin can't
+-- start programs; the connect card shows only while it isn't connected: what to run, waiting for it, or Connect after
+-- the user's Disconnect); compose a run (one prompt box: the agent service reads what kind
 -- of run the words ask for), follow it live (its stages, what the agent does now, the harness attempts, the feed, the
 -- Policy log) and read its result; the runs in a run history (a rail when the dock is wide, a dropdown when narrow;
 -- kept in the plugin's settings), the gear (the Settings page: the account, the runs' bills, data sharing, the research
@@ -38,6 +39,8 @@ Dock.RUN_GOING = "A run is going: wait for its result, or stop it"
 local PROMPT_PLACEHOLDER = "Describe what to verify, reach or explore"
 local RUN_NOTE = "A run is going: stop it or wait for its result."
 local RESET_TEXT = "The agent forgets what it has learned about this game."
+local SERVE_COMMAND = "autopilot serve"
+Dock.SERVE_COMMAND = SERVE_COMMAND
 -- The editor's own status lines the status line doesn't show (the connect card, the Live page and the feed say them)
 local QUIET = { "Connecting to ", "Connected to the agent service", "Run started", "Run finished", "Finding: ",
 	"Can't reach the agent service", "Connection closed", "Disconnected" }
@@ -315,19 +318,15 @@ function Dock:_build()
 		self:openMenu(th)
 	end)
 
-	-- the notice shown above a run while not connected
-	local strip, si = T.bar(main, { bg = C.amberFill, edge = C.amberLine, pad = { 10, 7, 10, 7 }, horizontal = true,
+	-- the line shown above a finished run while not connected: what to run for the next one (not an alert), or Connect
+	-- after the user's Disconnect
+	local strip, si = T.bar(main, { bg = C.plate, edge = C.rule, pad = { 10, 7, 10, 7 }, horizontal = true,
 		gap = 8, name = "Strip" })
 	self.strip = strip
-	self.stripText = T.label(si, "", "small", { color = C.amberFg, wrap = false, fill = true })
-	self.stripBtn = T.button(si, "Details", "default", function()
-		local c = self.conn
-		if c == "connecting" or c == "unreachable" then
-			self:selectRun(nil)
-		else
-			self.editor:connect()
-			self:render()
-		end
+	self.stripText = T.label(si, "", "small", { color = C.muted, wrap = false, fill = true })
+	self.stripBtn = T.button(si, "Connect", "default", function()
+		self.editor:connect()
+		self:render()
 	end, true)
 
 	local pages = Instance.new("Frame")
@@ -425,13 +424,16 @@ function Dock:_buildConnect()
 	local card = T.plate(v, { pad = { 0, 0, 0, 0 }, gap = 0, name = "Card" })
 	local cv = T.col(card, 10, "Main")
 	T.pad(cv, 14, 12, 14, 12)
-	local topc = T.col(cv, 4)
-	local head = T.row(topc, 8, true)
-	T.label(head, "Agent service", "title", { wrap = false })
-	T.tag(head, "Not connected", "mut")
-	local where = T.row(topc, 4, true)
-	T.label(where, "Start the agent service with", "small", { wrap = false })
-	T.label(where, "autopilot serve", "mono", { wrap = false, color = C.accent })
+	-- what to do: a Roblox plugin can't start the agent service, so the user runs it (the dock connects once it's up)
+	local topc = T.col(cv, 6)
+	T.label(topc, "Start the agent service", "title", { wrap = false })
+	T.label(topc, "Run this in a terminal and leave it open while you use Autopilot:", "small")
+	T.selectable(topc, SERVE_COMMAND, { name = "Command", color = C.accent })
+	-- waiting for it: a quiet spinner line, no alert
+	local wait = T.row(cv, 8, true, "Waiting")
+	T.spinner(wait)
+	T.label(wait, "Waiting for the agent service…", "small", { wrap = false, color = C.muted })
+	self.cpWait = wait
 	-- the state: an alert (its line, and a detail) in its tone, then its buttons
 	local box = T.frame(cv, "State", C.infoFill)
 	self.cpStroke = T.stroke(box, C.infoLine)
@@ -527,28 +529,25 @@ function Dock:_connState(): string
 	return "idle"
 end
 
--- The connect card's state now: {tone: "info" | "amber" | "red" | "" (no line), text, detail, buttons: {{label,
--- variant, action}}}.
+-- The connect card's state now: {waiting: the quiet "Waiting for the agent service…" line, tone: "red" | "" (no
+-- alert), text, detail, buttons: {{label, variant, action}}}. Not running yet isn't an error: the card says what to
+-- run and waits (the link keeps trying); only an agent service that turned the dock away (a wrong token) is one.
 function Dock:connectState(): any
 	local l = self.editor.link
-	local stop = { "Stop", "quiet", "stop" }
 	local c = self.conn
-	if c == "connecting" then
-		return { tone = "info", text = "Connecting to the agent service…", detail = "", buttons = { stop } }
-	elseif c == "unreachable" then
-		return { tone = "amber", text = "Can’t reach the agent service, retrying", detail = tostring(l.url),
-			buttons = { { "Try now", "primary", "try_now" }, stop } }
+	if c == "connecting" or c == "unreachable" then
+		return { waiting = true, tone = "", text = "", detail = "", buttons = {} }
 	elseif c == "refused" then
-		return { tone = "red", text = M.scrub(l.problem), detail = "", buttons = { { "Try again", "primary", "connect" } } }
+		return { waiting = false, tone = "red", text = M.scrub(l.problem), detail = "",
+			buttons = { { "Try again", "primary", "connect" } } }
 	end
-	local problem = if l.problem ~= "" then M.scrub(l.problem) else ""
-	return { tone = if problem ~= "" then "amber" else "", text = problem, detail = "",
-		buttons = { { "Reconnect", "primary", "connect" } } }
+	return { waiting = false, tone = "", text = "", detail = "", buttons = { { "Connect", "primary", "connect" } } }
 end
 
 function Dock:_renderConnect()
 	local st = self:connectState()
-	self.cpBack.Visible = self.conn == "idle" and self:_backRun() ~= nil
+	self.cpWait.Visible = st.waiting
+	self.cpBack.Visible = self:_backRun() ~= nil
 	local tone = st.tone
 	self.cpBox.Visible = tone ~= ""
 	if tone ~= "" then
@@ -1705,8 +1704,9 @@ function Dock:render()
 	self.settingsPage.Visible = page == "settings"
 	self.strip.Visible = page == "run" and not online and self.shown ~= nil and not self.shown:live()
 	local trying = self.conn == "connecting" or self.conn == "unreachable"
-	self.stripText.Text = if trying then "Reconnecting to the agent service…" else "Not connected to the agent service"
-	self.stripBtn.Text = if trying then "Details" else "Reconnect"
+	self.stripText.Text = if trying then "To start a run, run " .. SERVE_COMMAND .. " in a terminal"
+		else "Not connected to the agent service"
+	self.stripBtn.Visible = not trying
 	if page == "connect" then
 		self:_renderConnect()
 	elseif page == "composer" then

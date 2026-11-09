@@ -6,7 +6,8 @@
 --  1. Account: Sign in with Aura (the agent service signs in, in the browser) or Create Account (Aura's sign-up page:
 --     its address to open, a Roblox plugin can't open a browser); or Bring your own keys (BYOK: the Coding Agent, the
 --     LLM provider and the keys, sent to the agent service with the setup's other choices at the end).
---  2. Agent service: a Roblox plugin can't start or install it: ready once connected, else what to run (autopilot serve).
+--  2. Agent service: a Roblox plugin can't start or install it: ready once connected, else what to run (autopilot serve)
+--     and a quiet wait for it (not an alert).
 --  3. Privacy settings: whether to share runs, and a recap. Next (Finish when the memory has something) saves the
 --     choices through the agent service (save_setup), then the setup closes or goes on to step 4.
 --  4. First run: with the place's memory empty, an Explore run is offered (Explore and finish, Skip and finish).
@@ -165,13 +166,6 @@ local function spinning(parent: Instance, text: string, style: string?)
 	T.label(h, text, style or "strong", { wrap = false, fill = true })
 end
 
-local function dotLine(parent: Instance, text: string, color: Color3?)
-	local h = T.row(parent, 10)
-	T.dot(h, color or C.amber, 7)
-	local l = T.label(h, text, "strong")
-	l.Size = UDim2.new(1, -17, 0, 0)
-end
-
 -- A step's foot: under a rule, its buttons (left: before; right: after the room).
 local function nav(v: Instance, left: { (Instance) -> () }, right: { (Instance) -> () }, rule: boolean?)
 	local f = T.col(v, 12)
@@ -256,9 +250,10 @@ local function auraCard(d: any, v: Instance)
 			d:cancelSignIn()
 		end)
 	elseif st == "no_service" then
-		local a = card(v, C.amberLine)
-		head(a, "Sign in with Aura", "Agent service needed", "warn")
-		dotLine(a, "No agent service found: start it with autopilot serve.")
+		local a = card(v)
+		head(a, "Sign in with Aura")
+		T.label(a, "Signing in goes through the agent service. Run this in a terminal, then try again:", "small")
+		T.selectable(a, d.SERVE_COMMAND, { name = "Command", color = C.accent })
 		local r = T.row(a, 6, true)
 		T.button(r, "Try again", "primary", function()
 			d:beginSignIn()
@@ -400,13 +395,14 @@ local function buildService(d: any, v: Instance)
 			go(d, 3)
 		end) })
 	else
-		-- (a Roblox plugin can't start it: the user does, Continue once it is connected)
-		local c = card(v, C.amberLine)
-		dotLine(c, "Waiting for the agent service: start it with autopilot serve.")
-		local problem = ed.link.problem
-		if problem ~= "" then
-			T.label(c, M.scrub(problem), "monoDim")
-		end
+		-- (a Roblox plugin can't start it: the user runs it, Continue once it is connected; not running yet isn't an
+		-- error, so no alert)
+		local c = card(v)
+		T.label(c, "Run this in a terminal and leave it open while you use Autopilot:", "small")
+		T.selectable(c, d.SERVE_COMMAND, { name = "Command", color = C.accent })
+		local h = T.row(c, 8, true)
+		T.spinner(h)
+		T.label(h, "Waiting for the agent service…", "small", { wrap = false, color = C.muted })
 		nav(v, { back }, { btn("I’ll do it later", "quiet", function()
 			go(d, 3)
 		end), btn("Continue", "primary", function() end, true) })
@@ -503,9 +499,10 @@ local function buildFirstRun(d: any, v: Instance)
 		-- (waiting for the connection and its memory_state; with something remembered, the setup closes)
 		local c = card(v)
 		spinning(c, if ed:connected() then "Checking what Autopilot remembers about this game…"
-			else "Connecting to the agent service…")
-		if not ed:connected() and ed.link.problem ~= "" then
-			T.label(c, M.scrub(ed.link.problem), "dim", { color = C.amber })
+			else "Waiting for the agent service…")
+		if not ed:connected() then
+			T.label(c, "Run this in a terminal and leave it open while you use Autopilot:", "small")
+			T.selectable(c, d.SERVE_COMMAND, { name = "Command", color = C.accent })
 		end
 		local r = T.row(v, 6, true)
 		T.button(r, "Skip", "quiet", function()

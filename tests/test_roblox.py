@@ -554,7 +554,6 @@ def test_the_dock_is_laid_out_as_the_other_plugins_panels():
         assert item in dock, item
     for page in ('self:_page("Connect")', 'self:_page("Composer")', 'self:_page("Run")', 'self:_page("Settings")'):
         assert page in dock, page
-    assert '"Reconnect"' in dock and '"Can’t reach the agent service, retrying"' in dock
     run = sources["RunPage"]
     assert '"Policy log · %d"' in run and '"Live" else "Result"' in run and '"Feed"' in run
     theme = sources["Theme"]
@@ -565,6 +564,16 @@ def test_the_dock_is_laid_out_as_the_other_plugins_panels():
     for step in ('"1 ACCOUNT"', '"2 AGENT SERVICE"', '"3 PRIVACY SETTINGS"', '"4 FIRST RUN"'):
         assert step in setup, step
     assert "ed:saveSetup(setup)" in setup
+    # (the dock tells the person to run the agent service themselves, and waits for it quietly: a Roblox plugin can't
+    # start it, and its not running yet isn't an error to show)
+    assert 'local SERVE_COMMAND = "autopilot serve"' in dock and '"Start the agent service"' in dock
+    for m in ("Dock", "SetupPage", "SettingsPage"):
+        assert "SERVE_COMMAND" in sources[m], m
+        assert "Waiting for the agent service…" in sources[m] or m == "SettingsPage", m
+        # (the link's own "Can't reach …" line stays in the dock's QUIET list: the status line never shows it)
+        for alarm in ("Can’t reach the agent service", "No agent service", "service: not running", '"Try now"',
+                      '"Reconnect"'):
+            assert alarm not in sources[m], (m, alarm)
     # (the words shown: the quoted strings of the dock's modules with a space in them, not the protocol's names)
     # (M.scrub's own patterns, the words it takes out of the agent service's lines, aside)
     texts = {m: re.sub(r"function M\.scrub\(.*?\nend\n", "", sources[m], flags=re.S) for m in DOCK_MODULES}

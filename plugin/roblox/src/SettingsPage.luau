@@ -82,9 +82,9 @@ local function serviceLine(d: any, v: Instance)
 		T.label(row, "Agent service: running", "small", { wrap = false })
 		T.label(row, tostring(ed.link.url), "monoDim", { wrap = false })
 	else
-		T.dot(row, C.amber)
-		T.label(row, "Agent service: not running (start it with autopilot serve)", "small", { wrap = false,
-			color = C.amber })
+		T.dot(row, C.muted)
+		T.label(row, "Agent service: run " .. d.SERVE_COMMAND .. " in a terminal", "small", { wrap = false,
+			color = C.muted })
 	end
 end
 
@@ -102,7 +102,8 @@ local function signInInPlace(d: any, v: Instance, si: any)
 		T.label(v, "If no page opened, open this address in your browser:", "small")
 		T.selectable(v, tostring(si.url or ""), { multiline = true, size = 11 })
 	elseif state == "no_service" then
-		T.label(v, "No agent service: start it with autopilot serve, then try again.", "body", { color = C.amber })
+		T.label(v, "Signing in goes through the agent service. Run this in a terminal, then try again:", "body")
+		T.selectable(v, d.SERVE_COMMAND, { name = "Command", color = C.accent })
 		T.button(row, "Try again", "primary", function()
 			d:beginSignIn()
 		end, true)

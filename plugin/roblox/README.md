@@ -43,22 +43,23 @@ and is never saved.
 
 ## Use it from Studio
 
-1. **Start the agent service** in a terminal: `autopilot serve` (installed), or `python -m autopilot serve` in the
-   Autopilot repository. It listens on `ws://127.0.0.1:8765/v1/bridge` (and, for the plugin's HTTP fallback, on the next
+1. **Start the agent service** in a terminal, each time you use Autopilot in Studio, and leave it running: `autopilot
+   serve` (installed), or `python -m autopilot serve` in the Autopilot repository. It listens on `ws://127.0.0.1:8765/v1/bridge` (and, for the plugin's HTTP fallback, on the next
    port, 8766). A Roblox plugin can't start programs or read files, so it can't start the agent service itself as the
    other engines' plugins do, nor find one that `autopilot serve --port 0` put elsewhere: when 8765 is taken, start it
    on another port (`autopilot serve --port 8770`) and set **Agent service URL** under **Advanced** on the dock's
    connect card to match (`ws://127.0.0.1:8770/v1/bridge`).
-2. **Connect**: the dock connects by itself when a place opens (retrying with a backoff of up to 15 s). Until it is
-   connected it shows its connect card: what it is doing (*Connecting to the agent service…*, or *Can’t reach the
-   agent service, retrying* with **Try now**), the command to start the agent service, and under **Advanced** the
-   address, the HTTP fallback and the access token. **Disconnect** is in the **⋮** menu; a disconnected dock shows
-   **Reconnect**.
+2. **Connect**: the dock connects by itself once the agent service is running, before or after the place opens
+   (it keeps trying, with a backoff of up to 15 s). Until then it shows its connect card: **Start the agent service**,
+   the command to run (`autopilot serve`, to select and copy), *Waiting for the agent service…*, and under **Advanced**
+   the address, the HTTP fallback and the access token. An agent service that isn't running yet isn't shown as an
+   error; only one that refuses the dock (a wrong access token) is, with **Try again**. Above a finished run, a line
+   gives the command for the next run. **Disconnect** is in the **⋮** menu; a disconnected dock shows **Connect**.
 3. **First-run setup**: when the agent service says this computer isn't set up (and the dock hasn't been through the
    setup), the setup takes the dock's place. **1 Account**: **Sign in with Aura** (the agent service signs in to Aura
    in your browser) or **Create Account** (Aura's sign-up address, to open in your browser: a Roblox plugin can't open
    one), or **Bring your own keys (BYOK)**: the decision provider key (TypeSafe), the Coding Agent (OpenCode, Claude Code
-   or Codex), the LLM provider and its key. **2 Agent service**: ready once the dock is connected (else what to run).
+   or Codex), the LLM provider and its key. **2 Agent service**: ready once the dock is connected (else the command to run, and a wait for it).
    **3 Privacy settings**: whether to share runs, and a recap; **Next** has the agent service save the choices
    (`preferences.json` and, for BYOK, `Autopilot/autopilot.env`: the plugin can't write files, so it sends them in a
    `save_setup` frame). **4 First run**: while the agent service remembers nothing of this place, an Explore run is

@@ -59,14 +59,17 @@ You don't need to change anything under **MCP Permissions**, and you don't need 
 
 ## 4. Start the agent service
 
-In a terminal, run this and leave it running while you use Autopilot:
+You start the agent service yourself, each time you use Autopilot in Studio. In a terminal, run this and leave it running
+while you use Autopilot:
 
 ```
 autopilot serve
 ```
 
-The dock connects by itself, within about 15 seconds: its connect card gives way to the first-run setup or the
-**New run** page (`● CONNECTED` at its foot). **Try now** on the card tries at once.
+You can start it before or after opening Studio. Until it's running, the dock shows **Start the agent service** with
+this command and *Waiting for the agent service…*. Once it starts, the dock connects by itself within about 15 seconds
+and moves on to the first-run setup or the **New run** page (`● CONNECTED` at its foot). When you're done, close the
+terminal or press Ctrl+C. The next time, start it again.
 
 If Studio asks whether the plugin may make HTTP requests or connect to `127.0.0.1`, allow it. The plugin only talks to the
 agent service on your computer.
@@ -109,7 +112,7 @@ run.
 
 ## If something goes wrong
 
-**The dock doesn't connect.** Check that `autopilot serve` is still running. If port 8765 is taken, start it on another
+**The dock stays on *Waiting for the agent service…*.** Check that `autopilot serve` is still running in its terminal. If port 8765 is taken, start it on another
 port (`autopilot serve --port 8770`) and set **Agent service URL** under **Advanced** on the dock's connect card
 to match (`ws://127.0.0.1:8770/v1/bridge`).
 
