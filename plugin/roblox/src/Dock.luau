@@ -58,6 +58,8 @@ function Dock.new(plugin: Plugin, editor: any, options: any?)
 	self.editor = editor
 	self.conns = {}
 	self.preview = o.mount ~= nil -- (mounted elsewhere, e.g. a ScreenGui for a look at it: keeps nothing)
+	-- (a mount drawn at a UIScale: the dock's own sizes are its pixels divided by it)
+	self.scale = if type(o.scale) == "number" and o.scale > 0 then o.scale else 1
 	self.runs = {} -- this place's runs, newest first
 	self.others = {} -- the other places' (kept as they are)
 	self.active = nil -- the run going on
@@ -465,7 +467,7 @@ function Dock:_buildConnect()
 	local fields = T.col(fold, 10, "Fields")
 	fields.Visible = false
 	local function showFold()
-		foldBtn.Text = (if fields.Visible then "▾  " else "▸  ") .. "ADVANCED"
+		foldBtn.Text = (if fields.Visible then "–  " else "+  ") .. "ADVANCED"
 	end
 	showFold()
 	foldBtn.MouseButton1Click:Connect(function()
@@ -1467,7 +1469,7 @@ function Dock:_renderHistory()
 		self:verdictTag(self.histRow, r)
 		self.histMeta = T.label(self.histRow, self:rowMeta(r), "monoDim", { wrap = false, fill = true, color = C.text3 })
 	end
-	T.label(self.histRow, "▾", "mono", { wrap = false, color = C.text3 })
+	T.chevron(self.histRow, C.text3)
 	self.histRow.Size = UDim2.fromScale(1, 1)
 end
 
@@ -1500,8 +1502,8 @@ function Dock:_popup(x: number, y: number, width: number): Frame
 	p.Name = "Popup"
 	p.BackgroundColor3 = C.popover
 	p.BorderSizePixel = 0
-	p.Position = UDim2.fromOffset(x, y)
-	p.Size = UDim2.new(0, width, 0, 0)
+	p.Position = UDim2.fromOffset(x / self.scale, y / self.scale)
+	p.Size = UDim2.new(0, width / self.scale, 0, 0)
 	p.AutomaticSize = Enum.AutomaticSize.Y
 	p.ZIndex = 60
 	T.corner(p, T.R_PLATE)
@@ -1555,7 +1557,7 @@ function Dock:openMenu(at: GuiObject)
 		b.BorderSizePixel = 0
 		b.BackgroundTransparency = 1
 		b.BackgroundColor3 = C.hover
-		b.Text = (if item[3] then "✓  " else "     ") .. item[1]
+		b.Text = T.text((if item[3] then "✓  " else "     ") .. item[1], T.F.body)
 		b.FontFace = T.F.body
 		b.TextSize = 14
 		b.TextColor3 = if item[2] then C.text2 else C.muted
@@ -1605,7 +1607,7 @@ function Dock:openHistory()
 	sc.AutomaticSize = Enum.AutomaticSize.Y
 	T.list(sc, 0)
 	local cons = Instance.new("UISizeConstraint")
-	cons.MaxSize = Vector2.new(math.huge, math.max(120, self.root.AbsoluteSize.Y - y - 140))
+	cons.MaxSize = Vector2.new(math.huge, math.max(120, (self.root.AbsoluteSize.Y - y) / self.scale - 140))
 	cons.Parent = sc
 	for _, r in ipairs(self.runs) do
 		self:_historyRow(sc, r, false, true)
@@ -1651,7 +1653,7 @@ end
 -- --- layout and rendering -------------------------------------------------------------------------------------------
 
 function Dock:_resized()
-	local w = self.root.AbsoluteSize.X >= WIDE_AT
+	local w = self.root.AbsoluteSize.X / self.scale >= WIDE_AT
 	if w ~= self.wide then
 		self.wide = w
 		self:closePopup()
@@ -1662,7 +1664,7 @@ function Dock:_resized()
 end
 
 function Dock:mainWidth(): number
-	return self.root.AbsoluteSize.X - (if self.wide then RAIL_WIDTH + 1 else 0)
+	return self.root.AbsoluteSize.X / self.scale - (if self.wide then RAIL_WIDTH + 1 else 0)
 end
 
 function Dock:renderPages()

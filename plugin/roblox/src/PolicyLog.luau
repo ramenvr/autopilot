@@ -217,7 +217,7 @@ end
 function PolicyLog:_layout()
 	local wide = self.d.wide
 	self.wide = wide
-	self.cols = if wide then WIDE_COLS else NARROW_COLS
+	self.cols = if wide then self:_wideCols() else NARROW_COLS
 	self.splitLayout.FillDirection = if wide then Enum.FillDirection.Horizontal else Enum.FillDirection.Vertical
 	if wide then
 		self.left.Size = UDim2.new(0, 0, 1, 0)
@@ -234,8 +234,34 @@ function PolicyLog:_layout()
 	T.pad(self.summaryBox:FindFirstChild("Inner") :: Instance, side, 7, side, 7)
 end
 
+-- The columns that fit the table's share of a wide dock (1.5 of 2.5 beside the step): every one, else without the
+-- wall clock, else without the game time too, else the narrow dock's.
+function PolicyLog:_wideCols(): { string }
+	local room = self.d:mainWidth() * 1.5 / 2.5 - 20
+	local function need(cols: { string }): number
+		local n = 60 -- (the probabilities' bar, at least)
+		for _, k in ipairs(cols) do
+			n += (COL_W[k] or 0) + 8
+		end
+		return n
+	end
+	for _, cols in ipairs({ WIDE_COLS, { "t", "n", "current", "decision", "bar", "ms" },
+		{ "n", "current", "decision", "bar", "ms" } }) do
+		if need(cols) <= room then
+			return cols
+		end
+	end
+	return NARROW_COLS
+end
+
+-- The step's panel width (beside the table when wide, under it when narrow).
+function PolicyLog:_detailWidth(): number
+	local w = self.d:mainWidth()
+	return if self.wide then w / 2.5 else w
+end
+
 function PolicyLog:resized()
-	if self.d.wide ~= self.wide then
+	if self.d.wide ~= self.wide or (self.wide and table.concat(self:_wideCols(), ",") ~= table.concat(self.cols, ",")) then
 		self:_layout()
 		self:_rebuild()
 	end
@@ -791,25 +817,29 @@ end
 local function section(parent: Instance, title: string, aside: string?, asideColor: Color3?): Frame
 	local v = T.plate(parent, { bg = C.ground, pad = { 12, 10, 12, 10 }, gap = 4, name = "Section" })
 	local h = T.row(v, 8, true)
-	T.label(h, title, "caps", { wrap = false, fill = true })
+	T.label(h, title, "caps", { wrap = false })
 	if aside and aside ~= "" then
 		T.label(h, aside, "monoDim", { wrap = false, color = asideColor })
 	end
 	return v
 end
 
--- A row of mono cells: {text, color, width (0: the rest), "body"?}.
+-- A row of mono cells: {text, color, width (0: the rest), "body"?}; a "body" cell goes under the row, as wide as it.
 local function cells(parent: Instance, list: { any }, size: number?)
 	local h = T.row(parent, 10)
 	for _, c in ipairs(list) do
 		local w = c[3]
 		local l
-		if w > 0 then
+		if c[4] == "body" then
+			if tostring(c[1]) ~= "" then
+				local under = T.label(parent, tostring(c[1]), "small", { size = 12, color = c[2] })
+				local _ = under
+			end
+		elseif w > 0 then
 			l = T.label(h, tostring(c[1]), "mono", { wrap = false, truncate = true, size = size or 11, color = c[2] })
 			l.Size = UDim2.fromOffset(w, 16)
 		else
-			l = T.label(h, tostring(c[1]), if c[4] == "body" then "small" else "mono", { size = if c[4] == "body"
-				then 12 else (size or 11), color = c[2] })
+			l = T.label(h, tostring(c[1]), "mono", { size = size or 11, color = c[2] })
 			l.Size = UDim2.new(0, 0, 0, 0)
 			l.AutomaticSize = Enum.AutomaticSize.Y
 			T.fill(l)
@@ -850,9 +880,8 @@ function PolicyLog:_showDetail()
 		if st.ms > 0 then string.format(" · %d ms", math.floor(st.ms)) else ""), "monoDim")
 	local row = T.row(top, 8)
 	policyTag(row, st.tag, M.TAG_PAST[st.tag] or st.tag, nil, true)
-	T.label(row, if st.current ~= "" then st.current else "nothing running", "mono", { wrap = false, truncate = true,
-		color = if st.current ~= "" then run:colorOf(st.current, T.ACTION_COLORS) else C.muted }).Size =
-		UDim2.new(0, 120, 0, 16)
+	T.label(row, if st.current ~= "" then st.current else "nothing running", "mono", { wrap = false, fill = true,
+		color = if st.current ~= "" then run:colorOf(st.current, T.ACTION_COLORS) else C.muted })
 	T.label(row, "→", "mono", { wrap = false, color = C.muted })
 	T.label(row, if st.chosen ~= "" then st.chosen else "no action", "mono", { wrap = false, fill = true,
 		font = T.F.monoMedium, color = if st.chosen ~= "" then run:colorOf(st.chosen, T.ACTION_COLORS) else C.muted })
@@ -872,7 +901,7 @@ function PolicyLog:_showDetail()
 	local pi = T.col(dv, 6)
 	local cap = T.label(pi, "POLICY OUTPUT · π(a | s)", "caps", { wrap = false })
 	cap.Text = "POLICY OUTPUT · π(a | s)" -- (lowercase kept)
-	local nw = if self.wide then 160 else 130
+	local nw = math.clamp(math.floor(self:_detailWidth() * 0.35), 80, if self.wide then 160 else 130)
 	for _, pr in ipairs(M.sortedProbs(st)) do
 		local action = pr[1]
 		local chosen = action == st.chosen

@@ -80,7 +80,7 @@ local function providerNow(d: any): string
 	return if LLM_NAMES[said] then said else "anthropic"
 end
 
--- A dropdown: a field (the value and ▾) that opens a list of choices under it (in the dock's popup layer).
+-- A dropdown: a field (the value and a chevron) that opens a list of choices under it (in the dock's popup layer).
 local function dropdown(d: any, parent: Instance, value: string, choices: { string }, names: any, enabled: boolean,
 	onPick: (string) -> (), width: number?): TextButton
 	local b = T.button(parent, "", "field", nil, false, { width = width, name = "Dropdown" })
@@ -95,7 +95,7 @@ local function dropdown(d: any, parent: Instance, value: string, choices: { stri
 	row.Parent = b
 	T.list(row, 4, true)
 	T.label(row, names[value] or value, "body", { wrap = false, fill = true, color = if enabled then C.text else C.text3 })
-	T.label(row, "▾", "mono", { wrap = false, color = C.text3 })
+	T.chevron(row, C.text3)
 	if not enabled then
 		b:SetAttribute("disabled", true)
 		b.BackgroundColor3 = C.plate

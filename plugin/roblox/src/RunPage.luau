@@ -424,7 +424,7 @@ function RunPage:_renderLive()
 	self.lOrigin.Text = r:originLine()
 	self.lOrigin.Visible = self.lOrigin.Text ~= ""
 	T.disable(self.lStop, r.stopAsked or d.active ~= r or not d.editor:connected())
-	self.lStop.Text = if r.stopAsked then "Stopping…" else "Stop"
+	self.lStop.Text = T.text(if r.stopAsked then "Stopping…" else "Stop", T.F.medium)
 	self.steerRow.Visible = self:_canSteerShown()
 	self:_updateSteer()
 	self:tick()

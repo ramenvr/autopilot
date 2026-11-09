@@ -288,6 +288,7 @@ function Theme.label(parent: Instance?, text: string, style: string?, opts: any?
 	l.BorderSizePixel = 0
 	l.Text = if (style == "caps" or style == "tag") and o.rich ~= true then string.upper(text) else text
 	l.FontFace = o.font or (F :: any)[st[1]]
+	l.Text = Theme.text(l.Text, l.FontFace)
 	l.TextSize = o.size or st[2]
 	l.TextColor3 = o.color or st[3]
 	l.RichText = o.rich == true
@@ -315,6 +316,15 @@ function Theme.label(parent: Instance?, text: string, style: string?, opts: any?
 	end
 	l.Parent = parent
 	return l
+end
+
+-- Text as the font draws it: IBM Plex Sans JP centres "…" (as Japanese sets it), so the sans text has three full
+-- stops in its place.
+function Theme.text(s: string, font: Font?): string
+	if font ~= nil and string.find(font.Family, tostring(SANS_ID), 1, true) then
+		return (string.gsub(s, "…", "..."))
+	end
+	return s
 end
 
 function Theme.esc(s: string): string
@@ -373,8 +383,8 @@ function Theme.button(parent: Instance?, text: string, variant: string?, onClick
 	local v = variant or "default"
 	local b = Instance.new("TextButton")
 	b.Name = o.name or text
-	b.Text = text
 	b.FontFace = F.medium
+	b.Text = Theme.text(text, F.medium)
 	b.TextSize = if small then 12 else 13
 	b.AutoButtonColor = false
 	b.BorderSizePixel = 0
@@ -461,6 +471,27 @@ function Theme.moreButton(parent: Instance?, onClick: () -> (), small: boolean?)
 	return b
 end
 
+-- A chevron pointing down (a dropdown's, the history button's), drawn: Studio's fonts have no ▾. open: pointing up.
+function Theme.chevron(parent: Instance?, color: Color3, open: boolean?): Frame
+	local f = Instance.new("Frame")
+	f.Name = "Chevron"
+	f.BackgroundTransparency = 1
+	f.Size = UDim2.fromOffset(10, 10)
+	f.LayoutOrder = nextOrder()
+	for i, r in ipairs({ 45, -45 }) do
+		local bar = Instance.new("Frame")
+		bar.BorderSizePixel = 0
+		bar.BackgroundColor3 = color
+		bar.Size = UDim2.fromOffset(6, 2)
+		bar.AnchorPoint = Vector2.new(0.5, 0.5)
+		bar.Position = UDim2.new(0.5, if i == 1 then -2 else 2, 0.5, 0)
+		bar.Rotation = if open then -r else r
+		bar.Parent = f
+	end
+	f.Parent = parent
+	return f
+end
+
 -- The gear (Settings), drawn (Studio's fonts have no gear glyph): a solid body with six square teeth round it (three
 -- bars through the centre, 60° apart, reaching past the body) and a hole in the button's own colour. (The dock lays
 -- out by Sibling: a later sibling with a higher ZIndex draws over an earlier one; nothing here has a stroke, which
@@ -529,7 +560,7 @@ function Theme.input(parent: Instance?, opts: any?): TextBox
 	local t = Instance.new("TextBox")
 	t.Name = o.name or "Input"
 	t.Text = o.text or ""
-	t.PlaceholderText = o.placeholder or ""
+	t.PlaceholderText = Theme.text(o.placeholder or "", if o.mono then F.mono else F.body)
 	t.PlaceholderColor3 = C.muted
 	t.TextColor3 = C.text
 	t.FontFace = if o.mono then F.mono else F.body
