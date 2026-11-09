@@ -1,8 +1,10 @@
 --!strict
 -- Autopilot for Roblox Studio: the plugin's start. Studio runs a plugin in every DataModel it has: the place being
 -- edited, and while a play session goes, that session's server and its player's client. Each starts its own part:
---  - edit: the link to the agent service and the dock (Editor.luau, Dock.luau);
---  - a play session's client: the player's eyes and hands (Client.luau);
+--  - edit: the link to the agent service and the dock (Editor.luau, Dock.luau), hidden while a playtest's client draws
+--    it (Mirror.luau);
+--  - a play session's client: the dock, drawn there while the playtest runs (Mirror.luau, first: Studio draws no edit
+--    widget during play), and the player's eyes and hands (Client.luau);
 --  - a play session's server: the game's authoritative state (Server.luau).
 -- start(plugin, options) returns {stop = function}: the dev loader (plugin/roblox/dev) stops and starts it again when
 -- its sources change; the built plugin starts it once.
@@ -36,7 +38,9 @@ function Main.start(plugin: Plugin, options: any?)
 			local Settings = require(script.Parent.Settings)
 			local editor = Editor.new(plugin)
 			table.insert(parts, editor)
-			table.insert(parts, Dock.new(plugin, editor, options))
+			local dock = Dock.new(plugin, editor, options)
+			table.insert(parts, dock)
+			table.insert(parts, require(script.Parent.Mirror).edit(plugin, editor, dock))
 			if Settings.get(plugin, "autoconnect") ~= false then
 				editor:connect()
 			end
@@ -49,7 +53,11 @@ function Main.start(plugin: Plugin, options: any?)
 				end
 			end
 		elseif side == "client" then
-			table.insert(parts, require(script.Parent.Client).start(plugin))
+			local mirror = require(script.Parent.Mirror).client(plugin)
+			table.insert(parts, mirror)
+			local client = require(script.Parent.Client).start(plugin)
+			table.insert(parts, client)
+			mirror.attach(client.host)
 		else
 			table.insert(parts, require(script.Parent.Server).start(plugin))
 		end

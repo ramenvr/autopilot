@@ -61,7 +61,7 @@ end
 
 -- A button that changes the account: not while a run is going (it would lose its connection).
 local function whileIdle(d: any, b: TextButton)
-	if d.active ~= nil then
+	if d.active ~= nil or d.mirror then -- (the mirror of a playtest: once it stops)
 		T.disable(b, true)
 	end
 end
@@ -180,7 +180,7 @@ local function accountCard(d: any, parent: Instance)
 			d.confirmSignOut = true
 			d:renderPages()
 		end, true)
-		if not ed:connected() then
+		if not ed:connected() or d.mirror then
 			T.disable(so, true)
 		end
 	elseif kind == "own_keys" then
@@ -207,9 +207,9 @@ local function accountCard(d: any, parent: Instance)
 		end
 		T.label(v, "Your Aura sign-in on this computer ended.", "body", { color = C.red })
 		serviceLine(d, v)
-		T.button(buttons, "Sign in again", "primary", function()
+		whileIdle(d, T.button(buttons, "Sign in again", "primary", function()
 			d:beginSignIn()
-		end, true)
+		end, true))
 		rerun(d, buttons, "quiet")
 	else
 		T.label(v, if ed:connected() then "Choose how to run Autopilot" else "Connect to the agent service to see how "
@@ -320,7 +320,7 @@ function SettingsPage.render(d: any, frame: Frame)
 		if not d.editor:setSharing(on) then
 			SettingsPage.render(d, frame) -- (not saved: the switch shows the setting as it is)
 		end
-	end)
+	end, { disabled = d.mirror })
 	-- Research agent: the hello's `research`, once flipped (until then the switch shows the agent service's own
 	-- default, on)
 	local chosen = Settings.get(d.plugin, "research")
@@ -330,11 +330,12 @@ function SettingsPage.render(d: any, frame: Frame)
 		Settings.set(d.plugin, "research", not research)
 		d.editor:helloChanged()
 		research = not research
-	end)
+	end, { disabled = d.mirror })
 	-- Design brief: sent with every run the dock starts (the start's `design_brief`)
 	local bc = settingCard(v, "Design brief", BRIEF_TEXT)
 	local brief = T.input(bc, { multiline = true, height = 84, name = "DesignBrief", placeholder = "Optional",
 		text = Settings.get(d.plugin, "design_brief") or "" })
+	brief.TextEditable = not d.mirror
 	brief:GetPropertyChangedSignal("Text"):Connect(function()
 		Settings.set(d.plugin, "design_brief", brief.Text)
 	end)
@@ -345,7 +346,7 @@ function SettingsPage.render(d: any, frame: Frame)
 		Settings.set(d.plugin, "show_policy_log", not policy)
 		d.editor:helloChanged()
 		policy = not policy
-	end)
+	end, { disabled = d.mirror })
 	-- Autopilot in Claude Code & Codex: the commands that set it up (to select and copy)
 	local ac = settingCard(v, ASSISTANTS_TITLE, ASSISTANTS_INTRO)
 	for _, command in ipairs(ASSISTANTS_COMMANDS) do

@@ -580,3 +580,82 @@ def test_the_dock_is_laid_out_as_the_other_plugins_panels():
     shown = " ".join(s for m in DOCK_MODULES for s in re.findall(r'"([^"\n]*)"', texts[m]) if " " in s.strip())
     for word in ("episode", "Episode", "Jev", "brain", "policy network", " RL "):
         assert word not in shown, word
+
+
+def _function_body(src, header):
+    body = src[src.index(header):]
+    return body[:body.index("\nend\n")]
+
+
+def test_the_dock_is_mirrored_in_the_playtests_client():
+    """Studio draws no edit widget during play: player 1's client draws the same dock (Mirror.luau), fed the edit dock's
+    state (a snapshot) and the editor's events (batched) over the editor's pipe, its actions sent back to the edit side;
+    the mirror's editor stands in for every editor call the dock's modules make, and what makes no sense mid-play is
+    disabled."""
+    sources = _sources()
+    mirror, dock, editor, host, main = (sources[m] for m in ("Mirror", "Dock", "Editor", "Host", "Main"))
+    # every editor event the dock listens to is forwarded
+    listened = set(re.findall(r'^\ton\("(\w+)"', _function_body(dock, "function Dock:_listen()"), re.M))
+    events = set(re.findall(r'"(\w+)"', mirror[mirror.index("Mirror.EVENTS = {"):mirror.index("}", mirror.index(
+        "Mirror.EVENTS = {"))]))
+    assert listened and listened <= events, listened - events
+    # the mirror's editor has every method the dock's modules call on their editor
+    called = set()
+    for m in DOCK_MODULES:
+        called |= set(re.findall(r"(?:self\.editor|d\.editor|\bed):(\w+)\(", sources[m]))
+    defined = set(re.findall(r"^function MirrorEditor:(\w+)\(", mirror, re.M))
+    assert called <= defined, called - defined
+    # the pipe: a snapshot when the client joins, the events in batches, actions back
+    assert 'self:_fire("side_ready", side)' in editor
+    assert 'kind == "dock_action" and side == "client"' in editor and 'self:_fire("dock_action", frame)' in editor
+    assert 'kind == "dock" or kind == "dock_snapshot"' in host and "self.onDock(frame)" in host
+    assert 'type = "dock_snapshot", state = dock:snapshot(Mirror.STEPS)' in mirror
+    assert 'to = "client", type = "dock", events = batch, ed = Dock.editorState(editor)' in mirror
+    assert "now - self.flushAt >= Mirror.FLUSH" in mirror and "Mirror.FLUSH = 0.1" in mirror
+    assert 'frame.type = "dock_action"' in mirror
+    for action in ('a == "start"', 'a == "stop"', 'a == "steer"', 'a == "feedback"'):
+        assert action in _function_body(mirror, "function Mirror.act("), action
+    # only player 1's client draws it, first thing in the client's start, in a widget of the dock's id
+    assert "Paths.playerIndex(me) ~= 1" in mirror and 'CreateDockWidgetPluginGuiAsync("AutopilotDock", info)' in mirror
+    client = main[main.index('elseif side == "client" then'):]
+    assert client.index("Mirror).client(plugin)") < client.index("Client).start(plugin)")
+    assert "mirror.attach(client.host)" in client and "host = host," in sources["Client"]
+    # the mirror writes nothing and does nothing mid-play that would half work
+    assert "self.plugin = if self.mirror then Dock.readOnly(plugin) else plugin" in dock
+    assert "SetSetting = function() end," in dock
+    assert 'Dock.DURING_PLAY = "Not during play: once the playtest stops"' in dock
+    for guard in ('{ "Rerun setup", idle and not self.mirror', "and not self.setupOpen and not self.mirror, false",
+                  "self.stripBtn.Visible = not trying and not self.mirror", "box.TextEditable = not self.mirror",
+                  "disconnect.Visible = not self.mirror", "T.disable(cb, self.mirror)"):
+        assert guard in dock, guard
+    settings = sources["SettingsPage"]
+    assert settings.count("{ disabled = d.mirror }") == 3 and "brief.TextEditable = not d.mirror" in settings
+    for method in ("connect", "disconnect", "clearMemory", "signOut", "saveSetup", "setSharing"):
+        body = mirror[mirror.index(f"function MirrorEditor:{method}("):]
+        assert "_act(" not in body[:body.index("end")], method
+
+
+def test_the_edit_dock_always_comes_back_after_play():
+    """The edit dock is hidden only while a mirror says it is drawing (dock_mirror, said every second): stale or gone,
+    the edit dock shows again as it was, a stopped mirror clears it at once, the edit mirror's stop shows the dock, and
+    a dock hidden when Studio went away is shown at the next start (dock_hidden)."""
+    sources = _sources()
+    mirror, dock, main = sources["Mirror"], sources["Dock"], sources["Main"]
+    assert "Mirror.FRESH_MS = 3000" in mirror
+    fresh = _function_body(mirror, "function Mirror.fresh(")
+    assert "(now or nowMs()) - m.at < Mirror.FRESH_MS" in fresh
+    poll = _function_body(mirror, "\tfunction self.poll()")
+    assert "if Mirror.fresh(m) then" in poll and "dock:setPlayHidden(true)" in poll
+    assert "elseif dock.playHidden then\n\t\t\tdock:setPlayHidden(false)" in poll
+    assert 'elseif Settings.get(plugin, "dock_hidden") ~= nil then' in poll  # (Studio went away with it hidden)
+    assert "\tself.poll()\n" in mirror  # (at once when the edit side starts)
+    assert "now - self.pollAt >= 0.25" in mirror and "pcall(self.poll)" in mirror
+    stop = _function_body(mirror, "\tfunction self.stop()\n\t\tself.dead = true")
+    assert "dock:setPlayHidden(false)" in stop
+    client_stop = mirror[mirror.rindex("\tfunction self.stop()"):]
+    assert 'Settings.set(plugin, "dock_mirror", nil)' in client_stop
+    assert "os.clock() - beatAt >= 1" in mirror  # (the mirror says it is there every second)
+    hide = _function_body(dock, "function Dock:setPlayHidden(on: boolean)")
+    assert 'Settings.set(self.plugin, "dock_hidden", { was = w.Enabled })' in hide
+    assert 'Settings.set(self.plugin, "dock_hidden", nil)' in hide and "w.Enabled = was" in hide
+    assert "require(script.Parent.Mirror).edit(plugin, editor, dock)" in main  # (stopped with the plugin)

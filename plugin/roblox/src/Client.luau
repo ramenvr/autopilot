@@ -547,6 +547,7 @@ function Client.start(plugin: Plugin)
 		end))
 	end
 	return {
+		host = host,
 		stop = function()
 			releaseAll()
 			host:stop()

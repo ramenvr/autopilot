@@ -40,6 +40,8 @@ local PROMPT_PLACEHOLDER = "Describe what to verify, reach or explore"
 local RUN_NOTE = "A run is going: stop it or wait for its result."
 local RESET_TEXT = "The agent forgets what it has learned about this game."
 local SERVE_COMMAND = "autopilot serve"
+-- (the dock a play session's client draws, Mirror.luau: what it can't do until the playtest stops)
+Dock.DURING_PLAY = "Not during play: once the playtest stops"
 Dock.SERVE_COMMAND = SERVE_COMMAND
 -- The editor's own status lines the status line doesn't show (the connect card, the Live page and the feed say them)
 local QUIET = { "Connecting to ", "Connected to the agent service", "Run started", "Run finished", "Finding: ",
@@ -54,7 +56,10 @@ function Dock.new(plugin: Plugin, editor: any, options: any?)
 	SetupPage = SetupPage or require(script.Parent.SetupPage)
 	local o = options or {}
 	local self = setmetatable({}, Dock) :: any
-	self.plugin = plugin
+	-- (the dock a play session's client draws while the playtest runs, Mirror.luau: the edit dock's state and events
+	-- over the pipe, its actions sent back; it writes no setting and keeps no run)
+	self.mirror = o.mirror == true
+	self.plugin = if self.mirror then Dock.readOnly(plugin) else plugin
 	self.editor = editor
 	self.conns = {}
 	self.preview = o.mount ~= nil -- (mounted elsewhere, e.g. a ScreenGui for a look at it: keeps nothing)
@@ -85,6 +90,7 @@ function Dock.new(plugin: Plugin, editor: any, options: any?)
 		host = o.mount
 	else
 		host = self:_widget()
+		self.widget = host
 	end
 	self.host = host
 	pcall(function()
@@ -120,6 +126,16 @@ function Dock.new(plugin: Plugin, editor: any, options: any?)
 	self:_resized()
 	self:render()
 	return self
+end
+
+-- The plugin, its settings read only (the mirror's: the edit dock keeps them).
+function Dock.readOnly(plugin: any): any
+	return {
+		GetSetting = function(_, key: string): any
+			return plugin:GetSetting(key)
+		end,
+		SetSetting = function() end,
+	}
 end
 
 function Dock:_widget(): Instance
@@ -171,6 +187,13 @@ function Dock:_widget(): Instance
 			widget.Enabled = not widget.Enabled
 		end))
 	end
+	-- (whether the dock is open, for the mirror of a playtest to open as it: not while hidden for play)
+	Settings.set(plugin, "dock_open", widget.Enabled)
+	table.insert(self.conns, widget:GetPropertyChangedSignal("Enabled"):Connect(function()
+		if not self.playHidden then
+			Settings.set(plugin, "dock_open", widget.Enabled)
+		end
+	end))
 	return widget
 end
 
@@ -488,6 +511,7 @@ function Dock:_buildConnect()
 		T.label(f, caption, "caps", { wrap = false })
 		local box = T.input(f, { mono = true, text = Settings.get(self.plugin, key) or "", placeholder = placeholder,
 			name = key })
+		box.TextEditable = not self.mirror
 		box.FocusLost:Connect(function()
 			self:_applyAddress()
 		end)
@@ -576,7 +600,7 @@ function Dock:_renderConnect()
 	T.clear(self.cpButtons)
 	for _, spec in ipairs(st.buttons) do
 		local action = spec[3]
-		T.button(self.cpButtons, spec[1], spec[2], function()
+		local cb = T.button(self.cpButtons, spec[1], spec[2], function()
 			if action == "stop" then
 				self.editor:disconnect()
 			else
@@ -584,6 +608,7 @@ function Dock:_renderConnect()
 			end
 			self:render()
 		end)
+		T.disable(cb, self.mirror)
 	end
 end
 
@@ -667,10 +692,11 @@ function Dock:_buildComposer()
 	self.cLinkRow = link
 	self.cLinkLabel = T.label(link, "● Connected", "caps", { wrap = false, color = C.success })
 	self.cLinkUrl = T.label(link, "", "monoDim", { wrap = false, fill = true, align = "right" })
-	T.button(link, "Disconnect", "quiet", function()
+	local disconnect = T.button(link, "Disconnect", "quiet", function()
 		self.editor:disconnect()
 		self:render()
 	end, true)
+	disconnect.Visible = not self.mirror
 	local pad = Instance.new("UIPadding")
 	pad.Parent = v
 	self.cPad = pad
@@ -1005,7 +1031,7 @@ function Dock:_listen()
 	end)
 	on("account", function(acc)
 		if acc.mode == "none" and not self.setupOpen and Settings.get(self.plugin, "onboarded") ~= true
-			and not self.setupChecked then
+			and not self.setupChecked and not self.mirror then
 			-- (not set up on this computer, and never through this dock's setup: the first-run setup)
 			self.setupChecked = true
 			self:openSetup()
@@ -1247,6 +1273,10 @@ end
 -- --- the first-run setup --------------------------------------------------------------------------------------------
 
 function Dock:openSetup()
+	if self.mirror then
+		self:status(Dock.DURING_PLAY)
+		return
+	end
 	if self.active ~= nil then
 		self:status(Dock.RUN_GOING)
 		return
@@ -1317,6 +1347,10 @@ end
 -- Reset memory…: asks in place, when connected and no run is going.
 function Dock:askReset()
 	self.settingsOpen = false
+	if self.mirror then
+		self:status(Dock.DURING_PLAY)
+		return
+	end
 	if not self.editor:connected() then
 		self:status("Not connected: connect first to reset the memory")
 		return
@@ -1368,7 +1402,7 @@ function Dock:_renderFooter()
 	T.pad(self.footerInner, p[1], p[2], p[1], p[2])
 	T.disable(self.resetBtn, self.reset == "working")
 	if self.reset ~= "working" then
-		T.grey(self.resetBtn, self.active ~= nil or not self.editor:connected())
+		T.grey(self.resetBtn, self.active ~= nil or not self.editor:connected() or self.mirror)
 	end
 	local r = self.reset
 	self.resetLine.Visible = r == "working" or r == "done" or r == "failed"
@@ -1525,7 +1559,7 @@ function Dock:menuItems(): { any }
 	local wants = ed.link.want or connected
 	local idle = self.active == nil
 	return {
-		{ if wants then "Disconnect" else "Connect", not self.setupOpen, false, function()
+		{ if wants then "Disconnect" else "Connect", not self.setupOpen and not self.mirror, false, function()
 			if wants then
 				ed:disconnect()
 			else
@@ -1536,10 +1570,10 @@ function Dock:menuItems(): { any }
 		{ "Settings", not self.setupOpen, self.settingsOpen, function()
 			self:toggleSettings()
 		end },
-		{ "Rerun setup", idle, false, function()
+		{ "Rerun setup", idle and not self.mirror, false, function()
 			self:openSetup()
 		end },
-		{ "Reset memory…", connected and idle and not self.setupOpen, false, function()
+		{ "Reset memory…", connected and idle and not self.setupOpen and not self.mirror, false, function()
 			self:askReset()
 		end },
 	}
@@ -1711,7 +1745,7 @@ function Dock:render()
 	local trying = self.conn == "connecting" or self.conn == "unreachable"
 	self.stripText.Text = if trying then "To start a run, run " .. SERVE_COMMAND .. " in a terminal"
 		else "Not connected to the agent service"
-	self.stripBtn.Visible = not trying
+	self.stripBtn.Visible = not trying and not self.mirror
 	if page == "connect" then
 		self:_renderConnect()
 	elseif page == "composer" then
@@ -1764,6 +1798,103 @@ end
 function Dock:waiting(): boolean
 	local ed = self.editor
 	return ed.runActive and ed.starting and not ed.playing
+end
+
+-- --- the playtest: the edit dock hidden while the client's draws it (Mirror.luau) ---------------------------------------
+
+-- Hide the dock while a play session's client draws its mirror (Studio doesn't draw the edit DataModel's widget during
+-- play), or show it again as it was. Kept in the plugin's settings (dock_hidden) so that a dock hidden when Studio went
+-- away is shown again at the next start.
+function Dock:setPlayHidden(on: boolean)
+	local w = self.widget
+	if w == nil or on == (self.playHidden == true) then
+		return
+	end
+	if on then
+		self.playHidden = true
+		self.wasEnabled = w.Enabled
+		Settings.set(self.plugin, "dock_hidden", { was = w.Enabled })
+		w.Enabled = false
+	else
+		self.playHidden = false
+		local saved = Settings.get(self.plugin, "dock_hidden")
+		local was = if self.wasEnabled ~= nil then self.wasEnabled
+			elseif type(saved) == "table" and saved.was == false then false else true
+		w.Enabled = was
+		self.wasEnabled = nil
+		Settings.set(self.plugin, "dock_hidden", nil)
+	end
+end
+
+-- The dock's state for its mirror: the editor's (the connection, the account, the memory, the run going), the run
+-- going on (as kept, and its latest policy steps when steps), and which run is shown.
+function Dock:snapshot(steps: number?): any
+	local ed = self.editor
+	local s: any = { ed = Dock.editorState(ed), account = ed.account, shown = if self.shown then self.shown.id else nil,
+		composing = self.composing, tab = self.tab }
+	local r = self.active
+	if r ~= nil then
+		local a = r:saved()
+		a.live = r:live()
+		a.nowText = r.nowText
+		a.lastActivityId = r.lastActivityId
+		a.stageIn = r:elapsed() - (r.stageSince or 0)
+		if steps and steps > 0 then
+			a.steps = {}
+			for i = math.max(1, #r.steps - steps + 1), #r.steps do
+				table.insert(a.steps, r.steps[i].frame)
+			end
+		end
+		s.active = a
+	end
+	return s
+end
+
+-- What the mirror's editor needs of the editor's state (sent with each batch of events).
+function Dock.editorState(ed: any): any
+	local l = ed.link
+	return { connected = ed:connected(), url = l.url, problem = l.problem, want = l.want, refused = l.refused == true,
+		runActive = ed.runActive, starting = ed.starting, playing = ed.playing, brainAccount = ed.brainAccount,
+		brainSetup = ed.brainSetup, brainSteers = ed.brainSteers, memory = ed.memory }
+end
+
+-- The mirror's dock as the edit dock is (its snapshot): the run going on, the run shown.
+function Dock:applySnapshot(s: any)
+	if type(s) ~= "table" then
+		return
+	end
+	local a = s.active
+	if type(a) == "table" then
+		local r = M.fromSaved(a)
+		if a.live then
+			r.seconds = nil
+			r.ended = nil
+			r.clock0 = os.clock() - (tonumber(a.seconds) or 0)
+			r.stageSince = r:elapsed() - (tonumber(a.stageIn) or 0)
+		end
+		r.nowText = tostring(a.nowText or "")
+		r.lastActivityId = tonumber(a.lastActivityId) or 0
+		for _, f in ipairs(if type(a.steps) == "table" then a.steps else {}) do
+			r:addStep(f, T.ACTION_COLORS, POLICY_KEPT)
+		end
+		for i, old in ipairs(self.runs) do
+			if old.id == r.id then
+				table.remove(self.runs, i)
+				break
+			end
+		end
+		table.insert(self.runs, 1, r)
+		self.active = if r:live() then r else nil
+	end
+	self.shown = nil
+	for _, r in ipairs(self.runs) do
+		if r.id == s.shown then
+			self.shown = r
+		end
+	end
+	self.composing = s.composing == true
+	self.tab = if type(s.tab) == "string" then s.tab else "main"
+	self:render()
 end
 
 function Dock:stop()

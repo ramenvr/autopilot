@@ -170,6 +170,10 @@ function Host:_onFrame(frame: any)
 		self:send({ to = "edit", type = "ready", t = self:t(), place = game.Name })
 	elseif kind == "detach" then
 		self:_detach()
+	elseif kind == "dock" or kind == "dock_snapshot" then
+		if self.onDock then
+			self.onDock(frame) -- (the edit dock's state and events, for its mirror: Mirror.luau)
+		end
 	elseif kind == "who" then
 		-- (the editor asks who is there: a side it hasn't attached says so, an attached one that it is still there)
 		self:send({ to = "edit", type = if self.attached then "alive" else "here", t = self:t(), place = game.Name })

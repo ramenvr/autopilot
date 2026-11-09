@@ -899,6 +899,7 @@ function Editor:_onPipeFrame(frame: any)
 			end
 			self:_fire("playing", true)
 		end
+		self:_fire("side_ready", side) -- (the dock's mirror in the client: Mirror.luau)
 	elseif kind == "alive" then
 		if s == nil then
 			-- (attached before this editor's state was lost, a plugin reload: attach it again)
@@ -910,6 +911,8 @@ function Editor:_onPipeFrame(frame: any)
 		if side == "client" then
 			self:_playEnded()
 		end
+	elseif kind == "dock_action" and side == "client" then
+		self:_fire("dock_action", frame) -- (what the dock's mirror in the client asks: Mirror.luau)
 	elseif kind == "findings" then
 		for _, f in ipairs(frame.findings or {}) do
 			if type(f) == "table" then

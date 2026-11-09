@@ -752,7 +752,14 @@ function Theme.switch(parent: Instance?, on: boolean, onWords: string, offWords:
 		words.Text = if state then onWords else offWords
 	end
 	show()
+	if o.disabled then
+		pill.BackgroundTransparency = 0.5
+		words.TextTransparency = 0.5
+	end
 	b.MouseButton1Click:Connect(function()
+		if o.disabled then
+			return
+		end
 		state = not state
 		show()
 		local ok, err = pcall(onToggle, state)

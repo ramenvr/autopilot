@@ -95,6 +95,14 @@ settings); pick one to show its result and feed again. **New run** opens the pro
 rail's foot, or the list's) says how many runs the agent remembers of this game; **Reset memory…** asks in place, then
 has the agent forget them (the ended runs leave the history).
 
+**During a playtest** (a run's, or your own Play) Studio doesn't draw the edit DataModel's dock, so the play session's
+client draws the same dock in an **Autopilot** panel of its own, and the edit dock is hidden until play stops. It shows
+the run as it goes (its stages, feed, Policy log, result) and takes **Run**, **Run again**, **Stop**, steering and
+**Not a bug**, which the edit side's dock does; what makes no sense mid-play (Connect or Disconnect, signing in or out,
+the setup, **Reset memory…**, the settings) waits until play stops. Only player 1's client draws it in a multiplayer
+test. The edit dock comes back when play stops, however it stops: the client says every second that it is drawing
+(the plugin settings' `dock_mirror`), and the edit dock shows again within 3 s of its last word.
+
 ### Settings
 
 The gear opens the Settings page: the **Account** (Aura and what it billed this period, your own keys, or not set up;
@@ -336,6 +344,7 @@ All paths are under `plugin/roblox/`.
 | `src/Main.luau` | The start: which DataModel this is (edit, server, client) and which parts run there. |
 | `src/Editor.luau` | The edit DataModel's link to the agent service: the hello, runs, `session` (play, stop, restart, on a device), `levels`, `device`, the codex, routing requests to the play session's sides, the account and setup frames. |
 | `src/Dock.luau` | The dock: its layout (the history rail or list, the gear, the ⋮ menu), the connect card, the composer, the runs and their history, the Memory row, the status line. |
+| `src/Mirror.luau` | The dock during a playtest: drawn by player 1's client from the edit dock's snapshot and events (over the editor's pipe), its actions sent back; the edit dock hidden while it draws, shown again when it stops. |
 | `src/RunPage.luau`, `src/PolicyLog.luau` | The run page: Live (stages, now, harness attempts, Stop, steer), Result, Feed, and the Policy log. |
 | `src/SettingsPage.luau`, `src/SetupPage.luau` | The Settings page and the first-run setup. |
 | `src/Theme.luau`, `src/RunModel.luau` | The dock's look (Aura's palette, fonts, controls) and its runs without UI (status lines, verdicts, policy steps, the report). |
