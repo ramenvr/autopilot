@@ -431,6 +431,9 @@ function Dock:_buildConnect()
 	T.label(topc, "Start the agent service", "title", { wrap = false })
 	T.label(topc, "Run this in a terminal and leave it open while you use Autopilot:", "small")
 	T.selectable(topc, SERVE_COMMAND, { name = "Command", color = C.accent })
+	-- (the first time: the command comes from the download's installer, which the dock can't run)
+	T.label(topc, "No autopilot command yet? Install it with the installer in the download: see its README.txt.",
+		"small", { color = C.muted })
 	-- waiting for it: a quiet spinner line, no alert
 	local wait = T.row(cv, 8, true, "Waiting")
 	T.spinner(wait)

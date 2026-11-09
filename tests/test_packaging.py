@@ -71,6 +71,22 @@ def test_the_roblox_download_has_the_plugin_and_the_agent_services_installer(tmp
     assert 'name="Name">DevRelay</string>' not in model  # (the dev loader's own, never in a download)
 
 
+def test_the_roblox_download_says_how_to_install_it_and_start_the_agent_service(tmp_path):
+    """Nothing else in the Roblox download says what to do, and the dock can't install the agent service: README.txt
+    gives the steps, and the installer's last words, beside Autopilot.rbxmx, are Roblox's (start `autopilot serve` in a
+    new terminal), not the other engines' (the plugin starts it with the editor)."""
+    path = package_release.roblox_zip(str(tmp_path), wheel(tmp_path), "Autopilot-1.0.0", "abc123")
+    with zipfile.ZipFile(path) as z:
+        text = z.read("README.txt").decode("utf-8")
+    for step in ("Autopilot.rbxmx", "Plugins", "install.ps1", "install.sh", "-ExecutionPolicy Bypass",
+                 "autopilot serve", "new terminal"):
+        assert step in text, step
+    for name in ("install.ps1", "install.sh"):
+        with open(os.path.join(package_release.STANDALONE, name), encoding="utf-8") as f:
+            script = f.read()
+        assert "Autopilot.rbxmx" in script and "open a new terminal" in script, name
+
+
 def test_every_download_says_which_agent_service_it_carries(tmp_path):
     """agent-service.json beside the installer: the wheel's hash and commit (the installer keeps a copy; a plugin whose
     copy differs from the installed one installs its own)."""

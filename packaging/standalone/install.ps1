@@ -151,6 +151,14 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host ""
-Write-Host "Autopilot is installed. Autopilot starts it with your editor: open the Autopilot tab and finish its first-run"
-Write-Host "setup. To run it yourself instead, run this before you open the editor (Autopilot connects to it):"
-Write-Host "  autopilot serve"
+if (Test-Path (Join-Path (Split-Path -Parent $here) "Autopilot.rbxmx")) {
+    # (the Roblox download: a Roblox plugin can't start programs, so the user starts the agent service each time)
+    Write-Host "Autopilot is installed. Each time you use Autopilot in Roblox Studio, open a new terminal (this one doesn't"
+    Write-Host "have the autopilot command yet), run this, and leave it running:"
+    Write-Host "  autopilot serve"
+    Write-Host "Then open your place in Studio: the Autopilot dock connects to it by itself."
+} else {
+    Write-Host "Autopilot is installed. Autopilot starts it with your editor: open the Autopilot tab and finish its first-run"
+    Write-Host "setup. To run it yourself instead, run this before you open the editor (Autopilot connects to it):"
+    Write-Host "  autopilot serve"
+}

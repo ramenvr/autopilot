@@ -42,12 +42,14 @@ verify claims about it and reach goals in it.
 
 ### Roblox Studio
 
-1. Unzip the download. Install the agent service once: run `agent_service/install.ps1` (Windows: right-click > Run
-   with PowerShell) or `sh agent_service/install.sh` (macOS) from the unzipped folder. A Roblox plugin can't run
-   programs, so it can't install or start the agent service for you.
+1. Unzip the download (its `README.txt` has these steps too). Install the agent service once: run
+   `agent_service/install.ps1` (Windows: right-click > Run with PowerShell) or `sh agent_service/install.sh` (macOS)
+   from the unzipped folder. A Roblox plugin can't run programs, so it can't install or start the agent service for
+   you.
 2. Copy `Autopilot.rbxmx` into Studio's Plugins folder: `%LOCALAPPDATA%\Roblox\Plugins` on Windows,
    `~/Documents/Roblox/Plugins` on macOS (Studio's Plugins tab > Plugins Folder opens it).
-3. Before each session, start the agent service in a terminal: `autopilot serve`.
+3. Before each session, start the agent service in a terminal and leave it running: `autopilot serve`. Right after
+   installing, open a new terminal for it: the one you installed from doesn't have the `autopilot` command yet.
 4. Open your place. The **Autopilot** dock appears on the right (Plugins > Autopilot) and connects by itself. Studio
    needn't stay in front while a run plays. For the run's recording and stills, turn on Studio's MCP server once
    (Assistant > … > Settings > MCP Servers > Enable Studio as MCP server): the agent service takes the game's pictures

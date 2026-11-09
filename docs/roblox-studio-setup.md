@@ -29,9 +29,22 @@ Three things work together, all on your computer:
 
 ## 1. Install the agent service and the plugin
 
-1. Download `Autopilot-<version>-Roblox.zip` and extract it.
-2. Install the agent service: run `agent_service/install.ps1` (Windows) or `sh agent_service/install.sh` (macOS) from the
-   extracted folder.
+1. Download `Autopilot-<version>-Roblox.zip` and extract it. Its `README.txt` has these steps in short.
+2. Install the agent service, which gives you the `autopilot` command. From the extracted folder, in PowerShell on
+   Windows:
+
+   ```
+   powershell -ExecutionPolicy Bypass -File agent_service\install.ps1
+   ```
+
+   or in Terminal on macOS:
+
+   ```
+   sh agent_service/install.sh
+   ```
+
+   It installs everything it needs (uv, its own Python, Bun) and needs the internet once. The `autopilot` command works
+   in terminals you open afterwards, not in the one you installed from.
 3. Move `Autopilot.rbxmx` into Studio's Plugins folder: `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or
    `~/Documents/Roblox/Plugins` (macOS).
 
@@ -59,8 +72,8 @@ You don't need to change anything under **MCP Permissions**, and you don't need 
 
 ## 4. Start the agent service
 
-You start the agent service yourself, each time you use Autopilot in Studio. In a terminal, run this and leave it running
-while you use Autopilot:
+You start the agent service yourself, each time you use Autopilot in Studio. In a terminal (a new one, right after
+installing), run this and leave it running while you use Autopilot:
 
 ```
 autopilot serve

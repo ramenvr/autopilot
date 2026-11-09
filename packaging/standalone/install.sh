@@ -71,9 +71,20 @@ then
   echo "first-run setup). Install Bun (https://bun.sh), then run this again to use OpenCode."
 fi
 
-cat <<'EOF'
+if [ -f "$here/../Autopilot.rbxmx" ]; then
+  # (the Roblox download: a Roblox plugin can't start programs, so the user starts the agent service each time)
+  cat <<'EOF'
+
+Autopilot is installed. Each time you use Autopilot in Roblox Studio, open a new terminal (this one doesn't
+have the autopilot command yet), run this, and leave it running:
+  autopilot serve
+Then open your place in Studio: the Autopilot dock connects to it by itself.
+EOF
+else
+  cat <<'EOF'
 
 Autopilot is installed. Autopilot starts it with your editor: open the Autopilot tab and finish its first-run
 setup. To run it yourself instead, run this before you open the editor (Autopilot connects to it):
   autopilot serve
 EOF
+fi

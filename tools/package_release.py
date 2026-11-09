@@ -630,7 +630,8 @@ def godot_zip(out, wheel, stem, commit):
 
 def roblox_zip(out, wheel, stem, commit):
     """The Roblox Studio plugin (Autopilot.rbxmx: tools/build_roblox.py) and, beside it, the agent service's installer,
-    which the user runs once (a Roblox plugin can't start programs)."""
+    which the user runs once (a Roblox plugin can't start programs), and README.txt: how to install both and start the
+    agent service each time (packaging/standalone/README-Roblox.txt)."""
     sys.path.insert(0, os.path.join(HERE, "tools"))
     import build_roblox
 
@@ -640,6 +641,10 @@ def roblox_zip(out, wheel, stem, commit):
         info.external_attr = 0o644 << 16
         z.writestr(info, build_roblox.model_xml(), zipfile.ZIP_DEFLATED)
         add_agent_service(z, wheel, "agent_service", commit)
+        with open(os.path.join(STANDALONE, "README-Roblox.txt"), "rb") as f:
+            info = zipfile.ZipInfo("README.txt", (2026, 1, 1, 0, 0, 0))
+            info.external_attr = 0o644 << 16
+            z.writestr(info, f.read(), zipfile.ZIP_DEFLATED)
     return path
 
 
