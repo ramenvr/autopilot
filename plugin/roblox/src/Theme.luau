@@ -461,52 +461,59 @@ function Theme.moreButton(parent: Instance?, onClick: () -> (), small: boolean?)
 	return b
 end
 
--- The gear (Settings): a ring with a hub, drawn (Studio's fonts have no gear glyph).
+-- The gear (Settings), drawn (Studio's fonts have no gear glyph): a solid body with six square teeth round it (three
+-- bars through the centre, 60° apart, reaching past the body) and a hole in the button's own colour. (The dock lays
+-- out by Sibling: a later sibling with a higher ZIndex draws over an earlier one; nothing here has a stroke, which
+-- Studio draws outside a frame and would cover the teeth.)
+local GEAR_BODY = 11 -- the body's diameter
+local GEAR_SPAN = 17 -- tip to tip across the teeth
+local GEAR_TOOTH = 4 -- a tooth's width
+local GEAR_HOLE = 5 -- the hole's diameter
 function Theme.gearButton(parent: Instance?, onClick: () -> (), small: boolean?): TextButton
 	local b = Theme.iconButton(parent, "", "quiet", onClick, small, "Settings")
-	local ring = Instance.new("Frame")
-	ring.Name = "Ring"
-	ring.BackgroundTransparency = 1
-	ring.Size = UDim2.fromOffset(12, 12)
-	ring.AnchorPoint = Vector2.new(0.5, 0.5)
-	ring.Position = UDim2.fromScale(0.5, 0.5)
-	Theme.corner(ring, 6)
-	local s = Theme.stroke(ring, C.muted, 2)
-	ring.Parent = b
-	local teeth = {}
-	for i = 0, 3 do
-		local t = Instance.new("Frame")
-		t.BorderSizePixel = 0
-		t.Size = UDim2.fromOffset(16, 3)
-		t.AnchorPoint = Vector2.new(0.5, 0.5)
-		t.Position = UDim2.fromScale(0.5, 0.5)
-		t.Rotation = i * 45
-		t.BackgroundColor3 = C.muted
-		t.ZIndex = 0
-		t.Parent = b
-		table.insert(teeth, t)
-	end
-	local hub = Instance.new("Frame")
-	hub.BorderSizePixel = 0
-	hub.Size = UDim2.fromOffset(6, 6)
-	hub.AnchorPoint = Vector2.new(0.5, 0.5)
-	hub.Position = UDim2.fromScale(0.5, 0.5)
-	hub.ZIndex = 3
-	Theme.corner(hub, 3)
-	hub.Parent = b
-	local function tint()
-		s.Color = b.TextColor3
-		for _, t in ipairs(teeth) do
-			t.BackgroundColor3 = b.TextColor3
+	local function part(name: string, w: number, h: number, z: number, round: boolean, rotation: number?): Frame
+		local f = Instance.new("Frame")
+		f.Name = name
+		f.BorderSizePixel = 0
+		f.Size = UDim2.fromOffset(w, h)
+		f.AnchorPoint = Vector2.new(0.5, 0.5)
+		f.Position = UDim2.fromScale(0.5, 0.5)
+		f.Rotation = rotation or 0
+		f.ZIndex = z
+		if round then
+			Theme.corner(f, math.ceil(w / 2))
 		end
-		local bg = if b.BackgroundTransparency < 1 then b.BackgroundColor3 else C.ground
-		hub.BackgroundColor3 = bg
-		ring.BackgroundColor3 = bg
-		ring.BackgroundTransparency = 0
+		f.Parent = b
+		return f
 	end
-	ring.ZIndex = 2
+	local inks = {}
+	for i = 0, 2 do
+		table.insert(inks, part("Tooth", GEAR_SPAN, GEAR_TOOTH, 1, false, i * 60))
+	end
+	table.insert(inks, part("Body", GEAR_BODY, GEAR_BODY, 2, true))
+	local hole = part("Hole", GEAR_HOLE, GEAR_HOLE, 3, true)
+	-- (the hole shows what is behind the button: its own colour while hovered or on, else the nearest opaque ancestor's,
+	-- the rail or the top bar)
+	local function behind(): Color3
+		local g: Instance? = b
+		while g ~= nil and g:IsA("GuiObject") do
+			if (g :: GuiObject).BackgroundTransparency < 1 then
+				return (g :: GuiObject).BackgroundColor3
+			end
+			g = g.Parent
+		end
+		return C.ground
+	end
+	local function tint()
+		for _, f in ipairs(inks) do
+			f.BackgroundColor3 = b.TextColor3
+		end
+		hole.BackgroundColor3 = behind()
+	end
+	b.AncestryChanged:Connect(tint)
 	b:GetPropertyChangedSignal("TextColor3"):Connect(tint)
 	b:GetPropertyChangedSignal("BackgroundColor3"):Connect(tint)
+	b:GetPropertyChangedSignal("BackgroundTransparency"):Connect(tint)
 	tint()
 	return b
 end
