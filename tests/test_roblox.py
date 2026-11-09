@@ -514,7 +514,10 @@ def test_the_dock_sends_the_design_brief_research_and_inspect():
     `inspect` and the Research agent switch as its `research` (only once chosen), the hello sent again when either
     changes; the Policy log of the "policy" events, the run's usage, and "Waiting for the game to start"."""
     sources = _sources()
-    settings, dock, editor = sources["Settings"], sources["Dock"], sources["Editor"]
+    settings, editor = sources["Settings"], sources["Editor"]
+    # (the dock is several modules: the layout and the runs in Dock, the run page, the Policy log, the Settings page
+    # and the first-run setup in their own)
+    dock = "\n".join(sources[m] for m in DOCK_MODULES)
     defaults = settings[settings.index("local DEFAULTS"):]
     defaults = defaults[:defaults.index("\n}\n")]
     assert '\tdesign_brief = "",' in defaults and "\tshow_policy_log = true," in defaults
@@ -526,11 +529,45 @@ def test_the_dock_sends_the_design_brief_research_and_inspect():
     assert 'inspect = Settings.get(self.plugin, "show_policy_log") ~= false' in hello and "inspect = true" not in hello
     assert 'local research = Settings.get(self.plugin, "research")' in hello
     assert 'if type(research) == "boolean" then\n\t\th.research = research' in hello
-    assert "function Editor:helloChanged()" in editor and dock.count("self.editor:helloChanged()") == 2
-    for setting in ('Settings.set(self.plugin, "research", not research)',
-                    'Settings.set(self.plugin, "show_policy_log", not policy)',
-                    'Settings.set(self.plugin, "design_brief", brief.Text)'):
+    assert "function Editor:helloChanged()" in editor and dock.count("d.editor:helloChanged()") == 2
+    for setting in ('Settings.set(d.plugin, "research", not research)',
+                    'Settings.set(d.plugin, "show_policy_log", not policy)',
+                    'Settings.set(d.plugin, "design_brief", brief.Text)'):
         assert setting in dock, setting
-    assert 'editor:on("policy"' in dock and 'editor:on("usage"' in dock
+    assert 'on("policy"' in dock and 'on("usage"' in dock
     assert "POLICY_KEPT = 300" in dock and "POLICY_SHOWN = 100" in dock
     assert '"Waiting for the game to start"' in dock and "ed.runActive and ed.starting and not ed.playing" in dock
+
+
+DOCK_MODULES = ("Dock", "RunPage", "PolicyLog", "SettingsPage", "SetupPage", "RunModel", "Theme")
+
+
+def test_the_dock_is_laid_out_as_the_other_plugins_panels():
+    """The Unreal, Unity and Godot panels' layout: the run history as a rail when wide and a dropdown when narrow, the
+    gear and the ⋮ menu (Connect or Disconnect, Settings, Rerun setup, Reset memory…), pages in place of one scroll (the
+    connect card, the composer, the run page's Live / Feed / Policy log tabs, the Settings page, the first-run setup),
+    the Memory row; Aura's palette; and only the panels' words (attempts, never episodes; no architecture words)."""
+    sources = _sources()
+    dock = sources["Dock"]
+    assert "local WIDE_AT = 700" in dock and "local RAIL_WIDTH = 280" in dock
+    for item in ('"Disconnect" else "Connect"', '{ "Settings",', '{ "Rerun setup",', '{ "Reset memory…",'):
+        assert item in dock, item
+    for page in ('self:_page("Connect")', 'self:_page("Composer")', 'self:_page("Run")', 'self:_page("Settings")'):
+        assert page in dock, page
+    assert '"Reconnect"' in dock and '"Can’t reach the agent service, retrying"' in dock
+    run = sources["RunPage"]
+    assert '"Policy log · %d"' in run and '"Live" else "Result"' in run and '"Feed"' in run
+    theme = sources["Theme"]
+    for color in ('Color3.fromHex("121316")', 'Color3.fromHex("181a1e")', 'Color3.fromHex("24262b")',
+                  'Color3.fromHex("f0873a")', "Theme.R_PLATE = 8"):
+        assert color in theme, color
+    setup = sources["SetupPage"]
+    for step in ('"1 ACCOUNT"', '"2 AGENT SERVICE"', '"3 PRIVACY SETTINGS"', '"4 FIRST RUN"'):
+        assert step in setup, step
+    assert "ed:saveSetup(setup)" in setup
+    # (the words shown: the quoted strings of the dock's modules with a space in them, not the protocol's names)
+    # (M.scrub's own patterns, the words it takes out of the agent service's lines, aside)
+    texts = {m: re.sub(r"function M\.scrub\(.*?\nend\n", "", sources[m], flags=re.S) for m in DOCK_MODULES}
+    shown = " ".join(s for m in DOCK_MODULES for s in re.findall(r'"([^"\n]*)"', texts[m]) if " " in s.strip())
+    for word in ("episode", "Episode", "Jev", "brain", "policy network", " RL "):
+        assert word not in shown, word

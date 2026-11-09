@@ -65,7 +65,8 @@ In a terminal, run this and leave it running while you use Autopilot:
 autopilot serve
 ```
 
-The dock connects by itself, within about 15 seconds, and its header shows `● CONNECTED`. **Connect** tries at once.
+The dock connects by itself, within about 15 seconds: its connect card gives way to the first-run setup or the
+**New run** page (`● CONNECTED` at its foot). **Try now** on the card tries at once.
 
 If Studio asks whether the plugin may make HTTP requests or connect to `127.0.0.1`, allow it. The plugin only talks to the
 agent service on your computer.
@@ -109,8 +110,8 @@ run.
 ## If something goes wrong
 
 **The dock doesn't connect.** Check that `autopilot serve` is still running. If port 8765 is taken, start it on another
-port (`autopilot serve --port 8770`) and set **Agent service URL** in the dock's Settings to match
-(`ws://127.0.0.1:8770/v1/bridge`).
+port (`autopilot serve --port 8770`) and set **Agent service URL** under **Advanced** on the dock's connect card
+to match (`ws://127.0.0.1:8770/v1/bridge`).
 
 **A run says *Studio's MCP server sees no Studio*.** Check that Studio is open on your place and shows **MCP Ready**.
 

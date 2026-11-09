@@ -1,254 +1,124 @@
 --!strict
--- The Autopilot dock: a Studio widget (Plugins tab > Autopilot) to connect to the agent service, set up how runs go,
--- start a run from one prompt box, follow it (its stages, the activity feed, the Policy log, Stop, Steer) and read its
--- result (with its usage); the run history and the memory line. It reads nothing from the prompt's words: the agent
--- service says what kind of run they ask for (its run_kind frame).
+-- The Autopilot dock (Plugins tab > Autopilot), as the Autopilot panel of the Unreal, Unity and Godot plugins: it
+-- connects to the agent service by itself (the connect card shows only while it isn't connected: connecting, what went
+-- wrong, or Disconnected by the user, with Reconnect); compose a run (one prompt box: the agent service reads what kind
+-- of run the words ask for), follow it live (its stages, what the agent does now, the harness attempts, the feed, the
+-- Policy log) and read its result; the runs in a run history (a rail when the dock is wide, a dropdown when narrow;
+-- kept in the plugin's settings), the gear (the Settings page: the account, the runs' bills, data sharing, the research
+-- agent, the Design brief, Show Policy Log), the ⋮ menu (Connect or Disconnect, Settings, Rerun setup, Reset memory…),
+-- the Memory row (Reset memory) and, until the user went through it, the first-run setup in place of everything else.
+-- It is pure UI over the editor's link to the agent service (Editor.luau); the pages are RunPage, PolicyLog,
+-- SettingsPage and SetupPage, the look Theme, the runs RunModel.
 local HttpService = game:GetService("HttpService")
-local Selection = game:GetService("Selection")
-local TextService = game:GetService("TextService")
+local RunService = game:GetService("RunService")
 
 local Json = require(script.Parent.Json)
+local M = require(script.Parent.RunModel)
 local Settings = require(script.Parent.Settings)
+local T = require(script.Parent.Theme)
+
+local C = T.C
 
 local Dock = {}
 Dock.__index = Dock
 
--- Aura's look: near-black grounds, 1 px rules, one amber accent
-local C = {
-	bg = Color3.fromHex("121212"), panel = Color3.fromHex("1a1a1a"), field = Color3.fromHex("222222"),
-	rule = Color3.fromHex("2c2c2c"), text = Color3.fromHex("e8e8e8"), muted = Color3.fromHex("9a9a9a"),
-	accent = Color3.fromHex("f0873a"), good = Color3.fromHex("4cc38a"), bad = Color3.fromHex("e5534b"),
-	warn = Color3.fromHex("e2b340"), info = Color3.fromHex("5aa9e6"),
-}
-local FONT = Font.new("rbxasset://fonts/families/SourceSansPro.json")
-local BOLD = Font.new("rbxasset://fonts/families/SourceSansPro.json", Enum.FontWeight.SemiBold)
-local MONO = Font.new("rbxasset://fonts/families/RobotoMono.json")
-
-local STAGES = { "launch", "analyze", "probe", "build", "play", "results", "report" }
-local STAGE_NAMES = { launch = "Launch", analyze = "Analyze", probe = "Probe", build = "Build harness",
-	play = "Play", results = "Results", report = "Report" }
-local MARKS = { text = "?", read = "R", search = "S", write = "W", probe = "P", episode = "E", look = "L",
-	report = "!", alert = "!", steer = ">", restart = "*", memory = "M" }
-local HISTORY = 30
-local WAITING_FOR_GAME = "Waiting for the game to start"
+local WIDE_AT = 700
+local RAIL_WIDTH = 280
+local HISTORY = 50 -- the runs kept in the plugin's settings (every place's)
+local STATUS_FOR = 8 -- seconds a status line message stays
+local COMPOSER_WIDTH = 620
+local CONNECT_WIDTH = 540
 -- The Policy log: a run's policy steps kept (the oldest go), and the rows shown of them
 local POLICY_KEPT = 300
 local POLICY_SHOWN = 100
--- decided.summary's "<action>: <name>" -> the tag shown (as Godot's Policy log)
-local TAGS = { started = "START", kept = "KEEP", switched = "SWITCH", kept_running = "HELD", dropped = "DROPPED" }
--- The Settings' words (as Godot's Settings page)
-local BRIEF_TEXT = "How the game is meant to work: its design, the rules players are told (e.g. “the player has three "
-	.. "lives; each coin is worth 10 points”). Explorations report what differs from it as a bug. Sent with every run."
-local RESEARCH_TEXT = "Enabling the research agent allows Autopilot to achieve more difficult goals with fewer "
-	.. "attempts, but at a higher cost. Applies from the next run."
-local POLICY_TEXT = "The Policy log: every step the agent took in the game (the action it chose, how likely it was). "
-	.. "Asked of the agent service at once."
+Dock.POLICY_KEPT = POLICY_KEPT
+Dock.POLICY_SHOWN = POLICY_SHOWN
+Dock.WAITING_FOR_GAME = "Waiting for the game to start"
+Dock.RUN_GOING = "A run is going: wait for its result, or stop it"
+local PROMPT_PLACEHOLDER = "Describe what to verify, reach or explore"
+local RUN_NOTE = "A run is going: stop it or wait for its result."
+local RESET_TEXT = "The agent forgets what it has learned about this game."
+-- The editor's own status lines the status line doesn't show (the connect card, the Live page and the feed say them)
+local QUIET = { "Connecting to ", "Connected to the agent service", "Run started", "Run finished", "Finding: ",
+	"Can't reach the agent service", "Connection closed", "Disconnected" }
 
-local function corner(parent: Instance, r: number?)
-	local c = Instance.new("UICorner")
-	c.CornerRadius = UDim.new(0, r or 6)
-	c.Parent = parent
-end
+-- Lazily required pages (they require this module's constants through the dock object, not the module)
+local RunPage, SettingsPage, SetupPage
 
-local function pad(parent: Instance, px: number)
-	local p = Instance.new("UIPadding")
-	p.PaddingLeft, p.PaddingRight = UDim.new(0, px), UDim.new(0, px)
-	p.PaddingTop, p.PaddingBottom = UDim.new(0, px), UDim.new(0, px)
-	p.Parent = parent
-end
-
-local function list(parent: Instance, gap: number?, horizontal: boolean?)
-	local l = Instance.new("UIListLayout")
-	l.SortOrder = Enum.SortOrder.LayoutOrder
-	l.Padding = UDim.new(0, gap or 6)
-	if horizontal then
-		l.FillDirection = Enum.FillDirection.Horizontal
-		l.VerticalAlignment = Enum.VerticalAlignment.Center
-		l.Wraps = true
-	end
-	l.Parent = parent
-	return l
-end
-
-local order = 0
-local function nextOrder(): number
-	order += 1
-	return order
-end
-
-local function frame(parent: Instance, name: string, horizontal: boolean?, color: Color3?): Frame
-	local f = Instance.new("Frame")
-	f.Name = name
-	f.BackgroundColor3 = color or C.panel
-	f.BackgroundTransparency = if color then 0 else 1
-	f.BorderSizePixel = 0
-	f.Size = UDim2.new(1, 0, 0, 0)
-	f.AutomaticSize = Enum.AutomaticSize.Y
-	f.LayoutOrder = nextOrder()
-	list(f, if horizontal then 6 else 4, horizontal)
-	f.Parent = parent
-	return f
-end
-
-local function label(parent: Instance, text: string, opts: any?): TextLabel
-	local o = opts or {}
-	local l = Instance.new("TextLabel")
-	l.Name = o.name or "Label"
-	l.BackgroundTransparency = 1
-	l.Text = text
-	l.TextColor3 = o.color or C.text
-	l.FontFace = o.font or FONT
-	l.TextSize = o.size or 15
-	l.TextWrapped = o.wrap ~= false
-	l.TextXAlignment = Enum.TextXAlignment.Left
-	l.TextYAlignment = Enum.TextYAlignment.Top
-	l.RichText = o.rich == true
-	l.Size = o.width and UDim2.new(0, o.width, 0, 0) or UDim2.new(1, 0, 0, 0)
-	l.AutomaticSize = if o.width then Enum.AutomaticSize.XY else Enum.AutomaticSize.Y
-	if o.width == 0 then
-		l.Size = UDim2.new(0, 0, 0, 0)
-		l.AutomaticSize = Enum.AutomaticSize.XY
-		l.TextWrapped = false
-	end
-	l.LayoutOrder = nextOrder()
-	l.Parent = parent
-	return l
-end
-
-local function button(parent: Instance, text: string, onClick: () -> (), opts: any?): TextButton
-	local o = opts or {}
-	local b = Instance.new("TextButton")
-	b.Name = o.name or text
-	b.Text = text
-	b.FontFace = BOLD
-	b.TextSize = 15
-	b.AutoButtonColor = true
-	b.BackgroundColor3 = if o.primary then C.accent else C.field
-	b.TextColor3 = if o.primary then Color3.new(0, 0, 0) else (o.color or C.text)
-	b.BorderSizePixel = 0
-	b.Size = UDim2.new(0, 0, 0, 28)
-	b.AutomaticSize = Enum.AutomaticSize.X
-	b.LayoutOrder = nextOrder()
-	pad(b, 0)
-	local p = b:FindFirstChildOfClass("UIPadding") :: UIPadding
-	p.PaddingLeft, p.PaddingRight = UDim.new(0, 12), UDim.new(0, 12)
-	corner(b, 4)
-	b.MouseButton1Click:Connect(function()
-		local ok, err = pcall(onClick)
-		if not ok then
-			warn("[Autopilot] " .. tostring(err))
-		end
-	end)
-	b.Parent = parent
-	return b
-end
-
-local function input(parent: Instance, placeholder: string, opts: any?): TextBox
-	local o = opts or {}
-	local t = Instance.new("TextBox")
-	t.Name = o.name or "Input"
-	t.PlaceholderText = placeholder
-	t.PlaceholderColor3 = C.muted
-	t.Text = o.text or ""
-	t.TextColor3 = C.text
-	t.FontFace = if o.mono then MONO else FONT
-	t.TextSize = 15
-	t.ClearTextOnFocus = false
-	t.MultiLine = o.multiline == true
-	t.TextWrapped = o.multiline == true
-	t.TextXAlignment = Enum.TextXAlignment.Left
-	t.TextYAlignment = if o.multiline then Enum.TextYAlignment.Top else Enum.TextYAlignment.Center
-	t.BackgroundColor3 = C.field
-	t.BorderSizePixel = 0
-	t.Size = o.width and UDim2.new(0, o.width, 0, o.height or 28) or UDim2.new(1, 0, 0, o.height or 28)
-	t.LayoutOrder = nextOrder()
-	pad(t, 6)
-	corner(t, 4)
-	t.Parent = parent
-	return t
-end
-
-local function clear(f: Instance)
-	for _, c in ipairs(f:GetChildren()) do
-		if not c:IsA("UIListLayout") and not c:IsA("UIPadding") and not c:IsA("UICorner") then
-			c:Destroy()
-		end
-	end
-end
-
-local function mmss(t: number): string
-	t = math.max(0, math.floor(t))
-	return string.format("%d:%02d", t // 60, t % 60)
-end
-
-local function esc(s: string): string
-	return (string.gsub(string.gsub(string.gsub(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"))
-end
-
--- A policy step (the agent service's "jev" frame) as the Policy log shows it: {n, t, tag, chosen, p, ms}.
-local function policyStep(f: any): any
-	local decided = if type(f.decided) == "table" then f.decided else {}
-	local summary = tostring(decided.summary or "")
-	local action, rest = string.match(summary, "^(.-): (.*)$")
-	local chosen = ""
-	if type(decided.chosen) == "table" and decided.chosen[1] ~= nil then
-		chosen = tostring(decided.chosen[1])
-	elseif rest and rest ~= "None" then
-		chosen = rest
-	end
-	local p = nil
-	local out = f.output
-	if chosen ~= "" and type(out) == "table" and type(out.answers) == "table" and type(out.answers.pick) == "table" then
-		p = tonumber(out.answers.pick[chosen])
-	end
-	local secs = if type(f.seconds) == "table" then tonumber(f.seconds.jev) else nil
-	local tag = action or summary
-	return { n = tonumber(f.call) or tonumber(f.step) or 0, t = tonumber(f.t) or 0,
-		tag = TAGS[tag] or string.upper(tag), chosen = chosen, p = p, ms = if secs then secs * 1000 else nil }
-end
-
--- A usage frame's models (each {kind, model, calls, input, output, cache_read, cache_write}), whole numbers only: small
--- enough to keep with a run in the history.
-local function usageRows(models: any): { any }
-	local rows = {}
-	if type(models) ~= "table" then
-		return rows
-	end
-	for _, m in ipairs(models) do
-		if type(m) == "table" then
-			local row: any = { kind = if m.kind == "decision" then "decision" else "llm",
-				model = tostring(m.model or "") }
-			for _, k in ipairs({ "calls", "input", "output", "cache_read", "cache_write" }) do
-				row[k] = math.max(0, math.floor(tonumber(m[k]) or 0))
-			end
-			table.insert(rows, row)
-		end
-	end
-	return rows
-end
-
-local function tokens(n: number): string
-	if n >= 1e6 then
-		return string.format("%.1fM", n / 1e6)
-	elseif n >= 1e3 then
-		return string.format("%.1fk", n / 1e3)
-	end
-	return tostring(n)
-end
-
-function Dock.new(plugin: Plugin, editor: any, _options: any?)
+function Dock.new(plugin: Plugin, editor: any, options: any?)
+	RunPage = RunPage or require(script.Parent.RunPage)
+	SettingsPage = SettingsPage or require(script.Parent.SettingsPage)
+	SetupPage = SetupPage or require(script.Parent.SetupPage)
+	local o = options or {}
 	local self = setmetatable({}, Dock) :: any
 	self.plugin = plugin
 	self.editor = editor
 	self.conns = {}
-	self.run = nil -- the run shown: {id, prompt, kind, tested, started, events, result, ...}
-	self.history = {}
-	local okh, saved = pcall(function()
-		return Settings.get(plugin, "history")
-	end)
-	if okh and type(saved) == "table" then
-		self.history = saved
+	self.preview = o.mount ~= nil -- (mounted elsewhere, e.g. a ScreenGui for a look at it: keeps nothing)
+	self.runs = {} -- this place's runs, newest first
+	self.others = {} -- the other places' (kept as they are)
+	self.active = nil -- the run going on
+	self.shown = nil -- the run shown
+	self.lastRun = nil -- the run shown before the connect page was asked for
+	self.composing = false
+	self.tab = "main" -- main (live or result) | feed | policy
+	self.wide = false
+	self.settingsOpen = false
+	self.setupOpen = false
+	self.reset = "" -- Reset memory: "" | "ask" | "working" | "done" | "failed"
+	self.resetWhy = ""
+	self.resetUntil = 0
+	self.signIn = nil -- the Aura sign-in asked for here: {state, url, email, message}
+	self.statusUntil = 0
+	self.pendingUsage = nil
+	self.pendingBill = nil
+	self:_loadHistory()
+
+	-- the widget (or the mount)
+	local host: Instance
+	if o.mount then
+		host = o.mount
+	else
+		host = self:_widget()
 	end
+	self.host = host
+	pcall(function()
+		(host :: any).ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+	end)
+	self:_build()
+	T.checkFonts(function()
+		if self.root and self.root.Parent then
+			self:_rebuildFonts()
+		end
+	end)
+	if not self.preview then
+		editor.activitySince = function()
+			local r = self.active or self.runs[1]
+			if r ~= nil and (r:live() or r.lostConnection) then
+				return r.lastActivityId or 0
+			end
+			return -1
+		end
+	end
+	self:_listen()
+	table.insert(self.conns, self.root:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+		self:_resized()
+	end))
+	local tick = 0
+	table.insert(self.conns, RunService.Heartbeat:Connect(function(dt)
+		tick += dt
+		if tick >= 0.25 then
+			tick = 0
+			self:_tick()
+		end
+	end))
+	self:_resized()
+	self:render()
+	return self
+end
+
+function Dock:_widget(): Instance
+	local plugin = self.plugin
 	-- (the widget and the toolbar outlive a restart of the plugin's code, the dev loader's: Studio keeps a widget's id
 	-- taken for the plugin's life)
 	local kept = (_G :: any).AutopilotDockKept
@@ -259,7 +129,7 @@ function Dock.new(plugin: Plugin, editor: any, _options: any?)
 	local mine = kept[plugin]
 	if mine == nil or mine.widget == nil then
 		mine = {}
-		local info = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 420, 640, 320, 360)
+		local info = DockWidgetPluginGuiInfo.new(Enum.InitialDockState.Right, false, false, 420, 640, 300, 360)
 		-- (a widget an earlier copy of the code made, before this was kept, holds its id: the next one is taken)
 		for i = 1, 50 do
 			local ok, w = pcall(function()
@@ -291,1077 +161,1586 @@ function Dock.new(plugin: Plugin, editor: any, _options: any?)
 	for _, c in ipairs(widget:GetChildren()) do
 		c:Destroy()
 	end
-	self.widget = widget
 	if mine.button then
 		table.insert(self.conns, mine.button.Click:Connect(function()
 			widget.Enabled = not widget.Enabled
 		end))
 	end
-	self:_build()
-	editor.activitySince = function()
-		if self.run and not self.run.result then
-			return self.run.lastEvent or 0
-		end
-		return -1
-	end
-	editor:on("status", function(text)
-		self:_status(text)
-	end)
-	editor:on("server_status", function(text)
-		self:_serverStatus(text)
-	end)
-	editor:on("connection", function()
-		self:_renderConnection()
-		self:_renderAccount()
-		self:_renderComposer()
-	end)
-	editor:on("run", function()
-		self:_renderComposer()
-		self:_renderLive()
-	end)
-	editor:on("run_started", function(run)
-		self:_newRun(run, run.by)
-	end)
-	editor:on("run_kind", function(kind, tested)
-		if self.run then
-			self.run.kind = kind
-			self.run.tested = tested
-			self:_renderLive()
-		end
-	end)
-	editor:on("activity", function(f)
-		self:_activity(f)
-	end)
-	editor:on("finding", function(f)
-		if self.run and not self.run.result then
-			table.insert(self.run.findings, f)
-		end
-	end)
-	editor:on("result", function(result)
-		self:_result(result)
-	end)
-	editor:on("memory", function()
-		self:_renderMemory()
-	end)
-	editor:on("account", function(acc)
-		if acc.signed_in and self.signIn and self.signIn.state == "waiting" then
-			-- (the sign-in finished while the dock was away: what it waited for is done)
-			self.signIn = nil
-			editor:signInCancel()
-			if acc.mode ~= "aura" then
-				self:_useAura()
-			end
-		end
-		self:_renderAccount()
-		self:_renderSettings()
-	end)
-	editor:on("sign_in", function(f)
-		self.signIn = f
-		if f.state == "signed_in" then
-			-- (signed in to run with Aura: runs go through it from now on, as the other plugins' setup records)
-			self:_useAura()
-		end
-		self:_renderAccount()
-	end)
-	editor:on("setup_saved", function(f)
-		self:_status(if f.ok then "Saved: applies to the next run" else ("Not saved: " .. tostring(f.message or "")))
-		editor:askAccount()
-	end)
-	editor:on("bill", function(f)
-		if self.run then
-			self.run.bill = f
-		end
-	end)
-	editor:on("playing", function()
-		self:_renderConnection()
-	end)
-	editor:on("policy", function(f)
-		self:_policyStep(f)
-	end)
-	editor:on("usage", function(models, final)
-		self:_usage(models, final)
-	end)
-	-- (the game coming up changes the live line with no frame from the agent service: Studio's play session starting,
-	-- Editor's `starting` and `playing`)
-	table.insert(self.conns, game:GetService("RunService").Heartbeat:Connect(function()
-		if self.run and not self.run.result and self:_waiting() ~= (self.waitingShown == true) then
-			self:_renderLive()
-		end
-	end))
-	self:_renderAll()
-	return self
+	return widget
 end
 
--- --- layout -------------------------------------------------------------------------------------------------------
+-- --- the run history kept -------------------------------------------------------------------------------------------
 
-function Dock:_build()
-	local root = Instance.new("ScrollingFrame")
-	root.Name = "Root"
-	root.Size = UDim2.fromScale(1, 1)
-	root.BackgroundColor3 = C.bg
-	root.BorderSizePixel = 0
-	root.CanvasSize = UDim2.new(0, 0, 0, 0)
-	root.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	root.ScrollBarThickness = 6
-	root.ScrollingDirection = Enum.ScrollingDirection.Y
-	pad(root, 10)
-	list(root, 10)
-	root.Parent = self.widget
-	self.root = root
-	self.header = frame(root, "Header", true)
-	self.account = frame(root, "Account", false, C.panel)
-	pad(self.account, 8)
-	corner(self.account, 8)
-	self.memoryRow = frame(root, "Memory", true)
-	self.composer = frame(root, "Composer", false, C.panel)
-	pad(self.composer, 8)
-	corner(self.composer, 8)
-	self.live = frame(root, "Live", false, C.panel)
-	pad(self.live, 8)
-	corner(self.live, 8)
-	self.policyBox = frame(root, "PolicyLog", false, C.panel)
-	pad(self.policyBox, 8)
-	corner(self.policyBox, 8)
-	self.resultBox = frame(root, "Result", false, C.panel)
-	pad(self.resultBox, 8)
-	corner(self.resultBox, 8)
-	self.feed = frame(root, "Feed", false, C.panel)
-	pad(self.feed, 8)
-	corner(self.feed, 8)
-	self.historyBox = frame(root, "History", false)
-	self.settingsBox = frame(root, "Settings", false, C.panel)
-	pad(self.settingsBox, 8)
-	corner(self.settingsBox, 8)
-	self.statusLine = label(root, "", { color = C.muted, size = 14, name = "Status" })
-end
-
-function Dock:_renderAll()
-	self:_renderConnection()
-	self:_renderAccount()
-	self:_renderMemory()
-	self:_renderComposer()
-	self:_renderLive()
-	self:_renderPolicy()
-	self:_renderResult()
-	self:_renderFeed()
-	self:_renderHistory()
-	self:_renderSettings()
-end
-
-function Dock:_status(text: string)
-	self.statusLine.Text = text or ""
-	local stamp = os.clock()
-	self.statusAt = stamp
-	task.delay(8, function()
-		if self.statusAt == stamp and self.statusLine.Parent then
-			self.statusLine.Text = ""
-		end
-	end)
-	if not self.editor:connected() then
-		self:_renderConnection()
-	end
-end
-
-function Dock:_serverStatus(text: string)
-	if self.run and not self.run.result then
-		self.run.statusLine = text
-		self:_renderLive()
-	end
-end
-
-function Dock:_renderConnection()
-	local h = self.header
-	clear(h)
+-- This place, as the history tells places apart.
+function Dock:project(): string
 	local ed = self.editor
-	local on = ed:connected()
-	label(h, "AUTOPILOT", { font = BOLD, size = 16, color = C.accent, width = 0 })
-	label(h, if on then "● CONNECTED" else "○ NOT CONNECTED", { color = if on then C.good else C.muted, size = 13,
-		width = 0,
-		font = MONO })
-	if ed.playing then
-		label(h, "▶ PLAYING", { color = C.accent, size = 13, width = 0, font = MONO })
-	end
-	if on then
-		button(h, "Disconnect", function()
-			ed:disconnect()
-		end)
-	else
-		button(h, "Connect", function()
-			ed:connect()
-		end, { primary = true })
-	end
-	if not on then
-		local why = ed.link.problem
-		label(h, (if why ~= "" then why .. "\n" else "") .. "The agent service runs on this computer: start it with "
-			.. "`autopilot serve` in a terminal (or `python -m autopilot serve` in the Autopilot repository). Address: "
-			.. ed.link.url, { color = C.muted, size = 13 })
-	end
+	local id = ed:projectId()
+	return id or ("place:" .. tostring(ed:projectName()))
 end
 
-function Dock:_renderAccount()
-	local a = self.account
-	clear(a)
-	local ed = self.editor
-	label(a, "ACCOUNT", { font = MONO, size = 12, color = C.muted })
-	if not ed:connected() then
-		label(a, "Connect to the agent service to see how runs go.", { color = C.muted, size = 14 })
+function Dock:_loadHistory()
+	local ok, saved = pcall(function()
+		return Settings.get(self.plugin, "history")
+	end)
+	if not ok or type(saved) ~= "table" then
 		return
 	end
-	local acc = ed.account or {}
-	local mode = acc.mode
-	local row = frame(a, "Row", true)
-	if mode == "aura" then
-		local email = acc.email or ""
-		label(row, "Aura" .. (if email ~= "" then " · " .. email else "")
-			.. (if acc.signed_in then "" else " · signed out"),
-			{ width = 0 })
-		local bill = acc.bill
-		if type(bill) == "table" and bill.usd then
-			label(a, string.format("Billing period: $%.2f USD", tonumber(bill.usd) or 0), { color = C.muted, size = 14 })
-		end
-		if type(acc.out_of_credits) == "table" then
-			label(a, tostring(acc.out_of_credits.message or "Out of credits"), { color = C.bad, size = 14 })
-		end
-		if acc.signed_in then
-			button(row, "Sign out", function()
-				ed:signOut()
-			end, { color = C.bad })
-		end
-	elseif mode == "own_keys" then
-		local keys = acc.keys or {}
-		label(row, string.format("BYOK · Decision provider %s · %s (%s) %s", tostring(keys.decision or "—"),
-			tostring(acc.coding_agent or "opencode"), tostring(acc.llm_provider or "anthropic"), tostring(keys.llm or "—")),
-			{ width = 0, size = 14 })
-	elseif acc.signed_in then
-		label(row, "Signed in to Aura" .. (if acc.email then " as " .. tostring(acc.email) else "")
-			.. ": runs don't go through it yet", { width = 0, size = 14 })
-		button(row, "Run with Aura", function()
-			self:_useAura()
-		end, { primary = true })
-	else
-		label(row, "Not set up: choose how to run Autopilot", { width = 0 })
-	end
-	local si = self.signIn
-	if si and si.state == "waiting" then
-		label(a, "Finish signing in in your browser. If none opened, copy this address into one:", { color = C.warn,
-			size = 14 })
-		-- (a box, so the address can be selected and copied: Studio's labels can't be)
-		local link = input(a, "", { mono = true, text = tostring(si.url or ""), name = "SignInUrl", multiline = true,
-			height = 54 })
-		link.TextWrapped = true
-		link.Focused:Connect(function()
-			link.SelectionStart = 1
-			link.CursorPosition = #link.Text + 1
-		end)
-		button(a, "Cancel", function()
-			ed:signInCancel()
-			self.signIn = nil
-			self:_renderAccount()
-		end)
-	elseif si and si.state == "error" then
-		label(a, "Sign-in failed: " .. tostring(si.message or si.error or ""), { color = C.bad, size = 14 })
-	end
-	local buttons = frame(a, "Buttons", true)
-	if mode ~= "aura" or not acc.signed_in then
-		button(buttons, "Sign in with Aura", function()
-			if ed:signIn() then
-				self:_status("Opening Aura's sign-in in your browser…")
-			end
-		end, { primary = mode ~= "own_keys" })
-	end
-	if ed.brainSetup then
-		button(buttons, if self.byokOpen then "Hide keys" else "Use my keys (BYOK)", function()
-			self.byokOpen = not self.byokOpen
-			self:_renderAccount()
-		end)
-	end
-	if self.byokOpen and ed.brainSetup then
-		self:_renderByok(a, acc)
-	end
-end
-
-local AGENTS = { { "opencode", "OpenCode" }, { "claude", "Claude Code" }, { "codex", "Codex" } }
-local PROVIDERS = { { "anthropic", "Anthropic" }, { "openai", "OpenAI" }, { "opencode", "OpenCode Zen" },
-	{ "openrouter", "OpenRouter" }, { "deepseek", "DeepSeek" }, { "google", "Gemini" } }
-
-function Dock:_renderByok(a: Instance, acc: any)
-	self.byok = self.byok or { agent = acc.coding_agent or "opencode", provider = acc.llm_provider or "anthropic" }
-	local st = self.byok
-	label(a, "Saved on this computer by the agent service (Autopilot/autopilot.env): leave a key empty to keep the one "
-		.. "it has.", { color = C.muted, size = 13 })
-	local decision = input(a, "Decision provider API key (TypeSafe)", { mono = true })
-	local row = frame(a, "Agent", true)
-	label(row, "Coding agent", { width = 0, color = C.muted, size = 14 })
-	local function nameOf(t, id)
-		for _, x in ipairs(t) do
-			if x[1] == id then
-				return x[2]
-			end
-		end
-		return id
-	end
-	local function cycle(t, id)
-		for i, x in ipairs(t) do
-			if x[1] == id then
-				return t[i % #t + 1][1]
-			end
-		end
-		return t[1][1]
-	end
-	button(row, nameOf(AGENTS, st.agent), function()
-		st.agent = cycle(AGENTS, st.agent)
-		self:_renderAccount()
-	end)
-	local provider = if st.agent == "claude" then "anthropic" elseif st.agent == "codex" then "openai" else st.provider
-	label(row, "LLM provider", { width = 0, color = C.muted, size = 14 })
-	button(row, nameOf(PROVIDERS, provider), function()
-		if st.agent == "opencode" then
-			st.provider = cycle(PROVIDERS, st.provider)
-			self:_renderAccount()
-		end
-	end)
-	local llm = input(a, "LLM provider API key", { mono = true })
-	button(a, "Use my keys", function()
-		local keys = Json.object()
-		if decision.Text ~= "" then
-			keys.decision = decision.Text
-		end
-		if llm.Text ~= "" then
-			keys.llm = llm.Text
-		end
-		if self.editor:saveSetup({ access = "own_keys", coding_agent = st.agent, llm_provider = provider, keys = keys,
-			share = Settings.get(self.plugin, "share") ~= false }) then
-			self.byokOpen = false
-			self:_status("Saving your keys…")
-		else
-			self:_status("This agent service can't save keys for Roblox Studio: put them in Autopilot/autopilot.env")
-		end
-	end, { primary = true })
-end
-
--- Runs go through Aura from now on (the agent service saves the choice: preferences.json's access).
-function Dock:_useAura()
-	if self.editor:saveSetup({ access = "aura", share = Settings.get(self.plugin, "share") ~= false }) then
-		self:_status("Runs go through Aura")
-	else
-		self:_status("This agent service can't save the choice for Roblox Studio: start it with `autopilot serve --aura`")
-	end
-end
-
-function Dock:_renderMemory()
-	local m = self.memoryRow
-	clear(m)
-	local mem = self.editor.memory
-	local text = "MEMORY"
-	if mem.known then
-		text ..= if mem.runs > 0 then string.format(" · %d run%s", mem.runs, if mem.runs == 1 then "" else "s")
-			elseif mem.notes or mem.lib then " · notes" else " · empty"
-	end
-	label(m, text, { font = MONO, size = 12, color = C.muted, width = 0 })
-	if self.confirmReset then
-		label(m, "Reset memory? The agent forgets what it has learned about this game.", { width = 0, size = 13 })
-		button(m, "Reset memory", function()
-			self.confirmReset = false
-			self.editor:clearMemory()
-			self:_renderMemory()
-		end, { color = C.bad })
-		button(m, "Cancel", function()
-			self.confirmReset = false
-			self:_renderMemory()
-		end)
-	else
-		button(m, "Reset memory…", function()
-			if not self.editor:connected() then
-				self:_status("Not connected: connect first to reset the memory")
-			elseif self.editor.runActive then
-				self:_status("A run is going: reset the memory once it is done")
+	local here = self:project()
+	for _, t in ipairs(saved) do
+		if type(t) == "table" then
+			if t.project == nil or t.project == here then
+				local okr, r = pcall(M.fromSaved, t)
+				if okr then
+					table.insert(self.runs, r)
+				end
 			else
-				self.confirmReset = true
-				self:_renderMemory()
+				table.insert(self.others, t)
 			end
+		end
+	end
+end
+
+-- The runs written to the plugin's settings (the ended ones: a run going is kept once it ends).
+function Dock:save()
+	if self.preview then
+		return
+	end
+	local out = {}
+	for _, r in ipairs(self.runs) do
+		if not r:live() then
+			table.insert(out, r:saved())
+		end
+	end
+	for _, t in ipairs(self.others) do
+		table.insert(out, t)
+	end
+	while #out > HISTORY do
+		table.remove(out)
+	end
+	Settings.set(self.plugin, "history", out)
+end
+
+-- --- building -------------------------------------------------------------------------------------------------------
+
+function Dock:_build()
+	local root = Instance.new("Frame")
+	root.Name = "AutopilotRoot"
+	root.Size = UDim2.fromScale(1, 1)
+	root.BackgroundColor3 = C.ground
+	root.BorderSizePixel = 0
+	root.ClipsDescendants = true
+	root.Parent = self.host
+	self.root = root
+
+	local body = Instance.new("Frame")
+	body.Name = "Body"
+	body.Size = UDim2.fromScale(1, 1)
+	body.BackgroundTransparency = 1
+	body.Parent = root
+	T.list(body, 0, true).VerticalAlignment = Enum.VerticalAlignment.Top
+	self.body = body
+
+	-- the rail (wide): the run history and the Memory row
+	local rail = Instance.new("Frame")
+	rail.Name = "Rail"
+	rail.Size = UDim2.new(0, RAIL_WIDTH, 1, 0)
+	rail.BackgroundColor3 = C.rail
+	rail.BorderSizePixel = 0
+	rail.LayoutOrder = 1
+	rail.Parent = body
+	T.list(rail, 0)
+	self.rail = rail
+	local _, rh = T.bar(rail, { bg = C.rail, pad = { 14, 12, 14, 12 }, horizontal = true, gap = 8, name = "Head" })
+	T.label(rh, "History", "strong", { wrap = false, fill = true })
+	self.railGear = T.gearButton(rh, function()
+		self:toggleSettings()
+	end, true)
+	T.button(rh, "New run", "primary", function()
+		self:compose("")
+	end, true)
+	T.moreButton(rh, function()
+		self:openMenu(rh)
+	end, true)
+	local list = T.scroll(rail, "List")
+	list.Size = UDim2.new(1, 0, 0, 0)
+	T.fill(list)
+	T.list(list, 0)
+	self.railList = list
+	self.railFoot = T.col(rail, 0, "FooterSlot")
+	local edge = Instance.new("Frame")
+	edge.Name = "RailEdge"
+	edge.BorderSizePixel = 0
+	edge.BackgroundColor3 = C.rule
+	edge.Size = UDim2.new(0, 1, 1, 0)
+	edge.LayoutOrder = 2
+	edge.Parent = body
+	self.railEdge = edge
+
+	local main = Instance.new("Frame")
+	main.Name = "Main"
+	main.BackgroundTransparency = 1
+	main.Size = UDim2.new(0, 0, 1, 0)
+	main.LayoutOrder = 3
+	main.ClipsDescendants = true
+	T.fill(main)
+	main.Parent = body
+	T.list(main, 0)
+	self.main = main
+
+	-- the top (narrow): the history button (the run shown, its list under it), the gear, New run and ⋮
+	local top, th = T.bar(main, { pad = { 10, 8, 10, 8 }, horizontal = true, gap = 6, name = "Top" })
+	self.top = top
+	self.topInner = th
+	local hb = T.button(th, "", "drop", function()
+		self:openHistory()
+	end, false, { name = "History" })
+	hb.AutomaticSize = Enum.AutomaticSize.None
+	hb.Size = UDim2.new(0, 0, 0, 28)
+	T.fill(hb)
+	T.pad(hb, 8, 0, 8, 0)
+	local hrow = Instance.new("Frame")
+	hrow.BackgroundTransparency = 1
+	hrow.Size = UDim2.fromScale(1, 1)
+	hrow.Parent = hb
+	T.list(hrow, 8, true)
+	self.histBtn = hb
+	self.histRow = hrow
+	self.topGear = T.gearButton(th, function()
+		self:toggleSettings()
+	end)
+	T.button(th, "New run", "primary", function()
+		self:compose("")
+	end)
+	T.moreButton(th, function()
+		self:openMenu(th)
+	end)
+
+	-- the notice shown above a run while not connected
+	local strip, si = T.bar(main, { bg = C.amberFill, edge = C.amberLine, pad = { 10, 7, 10, 7 }, horizontal = true,
+		gap = 8, name = "Strip" })
+	self.strip = strip
+	self.stripText = T.label(si, "", "small", { color = C.amberFg, wrap = false, fill = true })
+	self.stripBtn = T.button(si, "Details", "default", function()
+		local c = self.conn
+		if c == "connecting" or c == "unreachable" then
+			self:selectRun(nil)
+		else
+			self.editor:connect()
+			self:render()
+		end
+	end, true)
+
+	local pages = Instance.new("Frame")
+	pages.Name = "Pages"
+	pages.BackgroundTransparency = 1
+	pages.Size = UDim2.new(1, 0, 0, 0)
+	pages.ClipsDescendants = true
+	pages.LayoutOrder = T.nextOrder()
+	T.fill(pages)
+	pages.Parent = main
+	self.pages = pages
+	self.connectPage = self:_page("Connect")
+	self.composerPage = self:_page("Composer")
+	self.runPageFrame = self:_page("Run")
+	self.settingsPage = self:_page("Settings")
+	self:_buildConnect()
+	self:_buildComposer()
+	self.runPage = RunPage.new(self, self.runPageFrame)
+
+	-- the status line: the main column's last row, over a rule; one line, cut short
+	local sb, sbi = T.bar(main, { side = "top", pad = { 16, 6, 16, 6 }, name = "StatusBar" })
+	self.statusBar = sb
+	self.statusLabel = T.label(sbi, "", "mono", { color = C.muted, wrap = false, truncate = true })
+	self.statusLabel.Size = UDim2.new(1, 0, 0, 16)
+	sb.Visible = false
+
+	self:_buildFooter()
+
+	-- the first-run setup: over everything else while shown
+	local setup = Instance.new("Frame")
+	setup.Name = "Setup"
+	setup.Size = UDim2.fromScale(1, 1)
+	setup.BackgroundColor3 = C.ground
+	setup.BorderSizePixel = 0
+	setup.Visible = false
+	setup.Parent = root
+	self.setupFrame = setup
+
+	-- popups (the ⋮ menu, the narrow history list, dropdowns): over everything, closed by a click outside
+	local overlay = Instance.new("Frame")
+	overlay.Name = "Overlay"
+	overlay.Size = UDim2.fromScale(1, 1)
+	overlay.BackgroundTransparency = 1
+	overlay.ZIndex = 50
+	overlay.Visible = false
+	overlay.Parent = root
+	local catcher = Instance.new("TextButton")
+	catcher.Name = "Catcher"
+	catcher.Text = ""
+	catcher.AutoButtonColor = false
+	catcher.BackgroundTransparency = 1
+	catcher.Size = UDim2.fromScale(1, 1)
+	catcher.ZIndex = 50
+	catcher.Parent = overlay
+	catcher.MouseButton1Click:Connect(function()
+		self:closePopup()
+	end)
+	self.overlay = overlay
+end
+
+function Dock:_page(name: string): Frame
+	local f = Instance.new("Frame")
+	f.Name = name
+	f.BackgroundTransparency = 1
+	f.Size = UDim2.fromScale(1, 1)
+	f.Visible = false
+	f.Parent = self.pages
+	return f
+end
+
+-- The fonts known (the library's, or Builder Sans in their place): every text drawn again in them.
+function Dock:_rebuildFonts()
+	local swap = {}
+	for _, role in ipairs({ "body", "medium", "semibold" }) do
+		swap[role] = (T.F :: any)[role]
+	end
+	for _, d in ipairs(self.root:GetDescendants()) do
+		if d:IsA("TextLabel") or d:IsA("TextButton") or d:IsA("TextBox") then
+			local f = (d :: any).FontFace :: Font
+			if f.Family ~= "rbxasset://fonts/families/RobotoMono.json" then
+				local w = f.Weight
+				;(d :: any).FontFace = if w == Enum.FontWeight.SemiBold then swap.semibold
+					elseif w == Enum.FontWeight.Medium then swap.medium else swap.body
+			end
+		end
+	end
+end
+
+-- --- the connect page -----------------------------------------------------------------------------------------------
+
+function Dock:_buildConnect()
+	local scroll = T.scroll(self.connectPage, "Scroll")
+	T.list(scroll, 0)
+	local v = T.column(scroll, CONNECT_WIDTH, { 20, 24, 20, 24 }, 10)
+	local card = T.plate(v, { pad = { 0, 0, 0, 0 }, gap = 0, name = "Card" })
+	local cv = T.col(card, 10, "Main")
+	T.pad(cv, 14, 12, 14, 12)
+	local topc = T.col(cv, 4)
+	local head = T.row(topc, 8, true)
+	T.label(head, "Agent service", "title", { wrap = false })
+	T.tag(head, "Not connected", "mut")
+	local where = T.row(topc, 4, true)
+	T.label(where, "Start the agent service with", "small", { wrap = false })
+	T.label(where, "autopilot serve", "mono", { wrap = false, color = C.accent })
+	-- the state: an alert (its line, and a detail) in its tone, then its buttons
+	local box = T.frame(cv, "State", C.infoFill)
+	self.cpStroke = T.stroke(box, C.infoLine)
+	T.pad(box, 11, 9, 11, 9)
+	T.list(box, 10, true)
+	self.cpSpin = T.spinner(box)
+	local bv = T.col(box, 2)
+	bv.Size = UDim2.new(0, 0, 0, 0)
+	T.fill(bv)
+	self.cpTitle = T.label(bv, "", "body")
+	self.cpText = T.label(bv, "", "monoDim", { color = C.neutralFg })
+	self.cpBox = box
+	self.cpButtons = T.row(cv, 6, true, "Buttons")
+	-- Advanced: under a rule, folded
+	T.rule(card)
+	local fold = T.col(card, 10, "Advanced")
+	T.pad(fold, 14, 9, 14, 12)
+	local foldBtn = Instance.new("TextButton")
+	foldBtn.Name = "Fold"
+	foldBtn.BackgroundTransparency = 1
+	foldBtn.AutoButtonColor = false
+	foldBtn.FontFace = T.F.mono
+	foldBtn.TextSize = 11
+	foldBtn.TextColor3 = C.muted
+	foldBtn.TextXAlignment = Enum.TextXAlignment.Left
+	foldBtn.Size = UDim2.new(1, 0, 0, 18)
+	foldBtn.LayoutOrder = T.nextOrder()
+	foldBtn.Parent = fold
+	local fields = T.col(fold, 10, "Fields")
+	fields.Visible = false
+	local function showFold()
+		foldBtn.Text = (if fields.Visible then "▾  " else "▸  ") .. "ADVANCED"
+	end
+	showFold()
+	foldBtn.MouseButton1Click:Connect(function()
+		fields.Visible = not fields.Visible
+		showFold()
+	end)
+	foldBtn.MouseEnter:Connect(function()
+		foldBtn.TextColor3 = C.text
+	end)
+	foldBtn.MouseLeave:Connect(function()
+		foldBtn.TextColor3 = C.muted
+	end)
+	local function field(caption: string, key: string, placeholder: string): TextBox
+		local f = T.col(fields, 5)
+		T.label(f, caption, "caps", { wrap = false })
+		local box = T.input(f, { mono = true, text = Settings.get(self.plugin, key) or "", placeholder = placeholder,
+			name = key })
+		box.FocusLost:Connect(function()
+			self:_applyAddress()
+		end)
+		return box
+	end
+	self.urlBox = field("Agent service URL", "url", "ws://127.0.0.1:8765/v1/bridge")
+	self.httpBox = field("HTTP fallback URL · optional", "http_url", "The next port after the WebSocket's")
+	self.tokenBox = field("Access token · optional", "token", "")
+	self.cpBack = T.button(v, "Back to the last run", "quiet", function()
+		self:selectRun(self:_backRun())
+	end, true)
+end
+
+-- The address, the HTTP fallback or the token changed under Advanced: kept, and connected again with them.
+function Dock:_applyAddress()
+	local url = M.trim(self.urlBox.Text)
+	local http = M.trim(self.httpBox.Text)
+	local token = M.trim(self.tokenBox.Text)
+	if url == (Settings.get(self.plugin, "url") or "") and http == (Settings.get(self.plugin, "http_url") or "")
+		and token == (Settings.get(self.plugin, "token") or "") then
+		return
+	end
+	Settings.set(self.plugin, "url", url)
+	Settings.set(self.plugin, "http_url", http)
+	Settings.set(self.plugin, "token", token)
+	if self.active == nil then
+		self.editor:connect()
+		self:render()
+	end
+end
+
+function Dock:_connState(): string
+	local ed = self.editor
+	local l = ed.link
+	if ed:connected() then
+		return "connected"
+	end
+	if l.refused then
+		return "refused"
+	end
+	if l.want then
+		return if l.problem ~= "" then "unreachable" else "connecting"
+	end
+	return "idle"
+end
+
+-- The connect card's state now: {tone: "info" | "amber" | "red" | "" (no line), text, detail, buttons: {{label,
+-- variant, action}}}.
+function Dock:connectState(): any
+	local l = self.editor.link
+	local stop = { "Stop", "quiet", "stop" }
+	local c = self.conn
+	if c == "connecting" then
+		return { tone = "info", text = "Connecting to the agent service…", detail = "", buttons = { stop } }
+	elseif c == "unreachable" then
+		return { tone = "amber", text = "Can’t reach the agent service, retrying", detail = tostring(l.url),
+			buttons = { { "Try now", "primary", "try_now" }, stop } }
+	elseif c == "refused" then
+		return { tone = "red", text = M.scrub(l.problem), detail = "", buttons = { { "Try again", "primary", "connect" } } }
+	end
+	local problem = if l.problem ~= "" then M.scrub(l.problem) else ""
+	return { tone = if problem ~= "" then "amber" else "", text = problem, detail = "",
+		buttons = { { "Reconnect", "primary", "connect" } } }
+end
+
+function Dock:_renderConnect()
+	local st = self:connectState()
+	self.cpBack.Visible = self.conn == "idle" and self:_backRun() ~= nil
+	local tone = st.tone
+	self.cpBox.Visible = tone ~= ""
+	if tone ~= "" then
+		local line = ({ info = C.infoLine, amber = C.amberLine, red = C.redLine } :: any)[tone]
+		local fill = ({ info = C.infoFill, amber = C.amberFill, red = C.redFill } :: any)[tone]
+		local fg = ({ info = C.infoFg, amber = C.amberFg, red = C.redFg } :: any)[tone]
+		self.cpBox.BackgroundColor3 = fill
+		self.cpStroke.Color = line
+		self.cpSpin.Visible = tone == "info"
+		self.cpTitle.Text = st.text
+		self.cpTitle.FontFace = if tone == "info" then T.F.body else T.F.medium
+		self.cpTitle.TextColor3 = fg
+		self.cpText.Text = st.detail
+		self.cpText.Visible = st.detail ~= ""
+	end
+	local key = HttpService:JSONEncode(st.buttons)
+	if key == self.cpKey then
+		return -- (unchanged: the buttons stay, a click on them isn't lost to a rebuild)
+	end
+	self.cpKey = key
+	T.clear(self.cpButtons)
+	for _, spec in ipairs(st.buttons) do
+		local action = spec[3]
+		T.button(self.cpButtons, spec[1], spec[2], function()
+			if action == "stop" then
+				self.editor:disconnect()
+			else
+				self.editor:connect()
+			end
+			self:render()
 		end)
 	end
 end
 
-function Dock:_renderComposer()
-	local c = self.composer
-	clear(c)
-	local ed = self.editor
-	label(c, "NEW RUN", { font = MONO, size = 12, color = C.muted })
-	local acc = ed.account or {}
-	if type(acc.out_of_credits) == "table" then
-		label(c, tostring(acc.out_of_credits.message or ""), { color = C.bad, size = 14 })
-	end
-	local prompt = input(c, "Describe what to verify, reach or explore", { multiline = true, height = 78,
-		text = self.promptText or "", name = "Prompt" })
-	prompt:GetPropertyChangedSignal("Text"):Connect(function()
-		self.promptText = prompt.Text
+-- The run Back to the last run goes to.
+function Dock:_backRun(): any
+	local r = self.shown or self.lastRun
+	return if r ~= nil and table.find(self.runs, r) then r else nil
+end
+
+-- --- the composer ---------------------------------------------------------------------------------------------------
+
+function Dock:_buildComposer()
+	local page = self.composerPage
+	T.list(page, 0)
+	local head, hi = T.bar(page, { pad = { 16, 12, 16, 12 }, horizontal = true, name = "Head" })
+	T.label(hi, "New run", "title", { wrap = false, fill = true })
+	self.cHead = head
+	local bodyf = Instance.new("Frame")
+	bodyf.Name = "Body"
+	bodyf.BackgroundTransparency = 1
+	bodyf.Size = UDim2.new(1, 0, 0, 0)
+	bodyf.LayoutOrder = T.nextOrder()
+	T.fill(bodyf)
+	bodyf.Parent = page
+	local bl = T.list(bodyf, 0)
+	bl.HorizontalAlignment = Enum.HorizontalAlignment.Center
+	self.cBody = bodyf
+	local v = Instance.new("Frame")
+	v.Name = "Column"
+	v.BackgroundTransparency = 1
+	v.Size = UDim2.new(1, 0, 1, 0)
+	v.Parent = bodyf
+	local cons = Instance.new("UISizeConstraint")
+	cons.MaxSize = Vector2.new(COMPOSER_WIDTH, math.huge)
+	cons.Parent = v
+	T.list(v, 10)
+	self.cColumn = v
+	-- out of Aura credits: Aura's words over the box (Run stays: Aura checks again as a run starts)
+	local credits = T.frame(v, "Credits", C.redFill)
+	T.stroke(credits, C.redLine)
+	T.pad(credits, 11, 9, 11, 9)
+	T.list(credits, 6)
+	self.cCreditsText = T.label(credits, "", "body", { color = C.redFg })
+	self.cCreditsUrl = T.selectable(credits, "", { height = 24, size = 11 })
+	self.cCredits = credits
+	-- the prompt box: the words, then (one row, at the right) the Time limit and Run
+	local well = T.plate(v, { bg = C.well, border = C.line, pad = { 12, 11, 12, 9 }, gap = 8, name = "Prompt" })
+	self.cPrompt = T.input(well, { multiline = true, height = 100, bare = true, placeholder = PROMPT_PLACEHOLDER,
+		name = "PromptBox" })
+	self.cPrompt:GetPropertyChangedSignal("Text"):Connect(function()
+		self:_renderComposer()
 	end)
-	local row = frame(c, "Row", true)
-	label(row, "Time limit (minutes)", { width = 0, color = C.muted, size = 14 })
-	local minutes = input(row, "30", { width = 56, text = tostring(Settings.get(self.plugin, "time_limit") or 30),
+	local row = T.row(well, 8)
+	local l = row:FindFirstChildOfClass("UIListLayout") :: UIListLayout
+	l.HorizontalAlignment = Enum.HorizontalAlignment.Right
+	T.label(row, "Time limit", "caps", { wrap = false })
+	local minutes = T.input(row, { mono = true, width = 52, text = tostring(Settings.get(self.plugin, "time_limit") or 30),
 		name = "Minutes" })
+	minutes.TextXAlignment = Enum.TextXAlignment.Right
 	minutes.FocusLost:Connect(function()
-		local n = math.clamp(math.floor(tonumber(minutes.Text) or 30), 1, 600)
+		local n = math.clamp(math.floor(tonumber(minutes.Text) or M.TIME_LIMIT_DEFAULT), 1, 600)
 		minutes.Text = tostring(n)
 		Settings.set(self.plugin, "time_limit", n)
 	end)
-	local runButton = button(row, "Run", function()
-		local words = string.gsub(prompt.Text, "^%s+", "")
-		if words == "" then
-			return
-		end
-		if not ed:connected() then
-			self:_status("Not connected: connect first")
-			return
-		end
-		if ed.runActive then
-			self:_status("A run is going: wait for its result, or stop it")
-			return
-		end
-		local n = math.clamp(math.floor(tonumber(minutes.Text) or 30), 1, 600)
-		Settings.set(self.plugin, "time_limit", n)
-		local run: any = { kind = "auto", prompt = words, time_limit_minutes = n }
-		local brief = self:_brief()
-		if brief ~= "" then
-			run.design_brief = brief -- (how the game is meant to work: the Settings' Design brief)
-		end
-		if ed:startRun(run) then
-			self:_newRun(run, nil)
-		end
-	end, { primary = true, name = "Run" })
-	if not ed:connected() or ed.runActive then
-		runButton.BackgroundColor3 = C.field
-		runButton.TextColor3 = C.muted
-	end
+	self.cMinutes = minutes
+	self.cRun = T.button(row, "Run", "primary", function()
+		self:_onRun()
+	end, false, { width = 64, name = "Run" })
+	self.cNote = T.label(v, "", "small", { color = C.muted })
+	local spacer = Instance.new("Frame")
+	spacer.Name = "Spacer"
+	spacer.BackgroundTransparency = 1
+	spacer.Size = UDim2.new(1, 0, 0, 0)
+	spacer.LayoutOrder = T.nextOrder()
+	T.fill(spacer)
+	spacer.Parent = v
+	-- the link: its state, its address and Disconnect, at the right over a rule
+	local foot = T.col(v, 10, "Foot")
+	T.rule(foot)
+	local link = T.row(foot, 10)
+	self.cLinkRow = link
+	self.cLinkLabel = T.label(link, "● Connected", "caps", { wrap = false, color = C.success })
+	self.cLinkUrl = T.label(link, "", "monoDim", { wrap = false, fill = true, align = "right" })
+	T.button(link, "Disconnect", "quiet", function()
+		self.editor:disconnect()
+		self:render()
+	end, true)
+	local pad = Instance.new("UIPadding")
+	pad.Parent = v
+	self.cPad = pad
 end
 
-function Dock:_newRun(run: any, by: string?)
-	self.run = { id = HttpService:GenerateGUID(false), prompt = run.prompt or run.claim or run.goal or run.brief or "",
-		kind = if run.kind ~= "auto" then run.kind else nil, started = os.time(), clock = os.clock(), events = {},
-		findings = {}, stage = "launch", by = by, time_limit = run.time_limit_minutes, lastEvent = 0, steps = {} }
-	self:_renderLive()
-	self:_renderPolicy()
-	self:_renderResult()
-	self:_renderFeed()
-end
-
--- The Settings' Design brief as typed (kept as it is typed, saved here too should its box lose focus unseen), trimmed.
-function Dock:_brief(): string
-	if self.briefText ~= nil then
-		Settings.set(self.plugin, "design_brief", self.briefText)
-	end
-	local text = tostring(self.briefText or Settings.get(self.plugin, "design_brief") or "")
-	return string.match(text, "^%s*(.-)%s*$") or ""
-end
-
--- A run's play session is starting (Studio asked to play, its client not attached yet).
-function Dock:_waiting(): boolean
-	local ed = self.editor
-	return ed.runActive and ed.starting and not ed.playing
-end
-
-function Dock:_activity(f: any)
-	local run = self.run
-	if run == nil then
-		self:_newRun({ prompt = "" }, nil)
-		run = self.run
-	end
-	local id = tonumber(f.id) or 0
-	if id > 0 and id <= (run.lastEvent or 0) then
-		return -- (sent again: once)
-	end
-	run.lastEvent = math.max(run.lastEvent or 0, id)
-	if f.stage then
-		run.stage = f.stage
-	end
-	table.insert(run.events, f)
-	self:_renderLive()
-	self:_renderFeed()
-end
-
-function Dock:_renderLive()
-	local l = self.live
-	clear(l)
-	local run = self.run
-	if run == nil or run.result then
-		l.Visible = false
+-- Run: the words as typed and the Time limit; the agent service reads which kind of run they ask for and says so
+-- (run_kind) before it plays.
+function Dock:_onRun()
+	local words = M.trim(self.cPrompt.Text)
+	if words == "" then
 		return
 	end
-	l.Visible = true
-	local ed = self.editor
-	local kind = if run.kind then string.upper(run.kind) else "…"
-	if run.tested and run.kind == "explore" then
-		kind = "TEST"
+	local n = math.clamp(math.floor(tonumber(self.cMinutes.Text) or M.TIME_LIMIT_DEFAULT), 1, 600)
+	Settings.set(self.plugin, "time_limit", n)
+	local run: any = { kind = "auto", prompt = words, time_limit_minutes = n }
+	local brief = self:brief()
+	if brief ~= "" then
+		run.design_brief = brief -- (how the game is meant to work: the Settings' Design brief)
 	end
-	label(l, "LIVE // " .. kind .. (if run.by then " // started from " .. tostring(run.by) else ""),
-		{ font = MONO, size = 12, color = C.accent })
-	label(l, esc(run.prompt or ""), { size = 15, rich = true })
-	local track = {}
-	local reached = false
-	for _, s in ipairs(STAGES) do
-		local name = STAGE_NAMES[s]
-		if s == run.stage then
-			table.insert(track, '<font color="#f0873a"><b>' .. name .. "</b></font>")
-			reached = true
-		elseif not reached then
-			table.insert(track, '<font color="#4cc38a">' .. name .. "</font>")
+	self:startRun(run, words)
+end
+
+function Dock:_renderComposer()
+	local text = M.trim(self.cPrompt.Text)
+	local ed = self.editor
+	T.disable(self.cRun, text == "")
+	if text ~= "" then
+		T.grey(self.cRun, self.active ~= nil or not ed:connected())
+	end
+	self.cNote.Text = if self.active ~= nil then RUN_NOTE else ""
+	self.cNote.Visible = self.cNote.Text ~= ""
+	local credits = self:outOfCredits()
+	self.cCredits.Visible = credits ~= nil
+	if credits then
+		self.cCreditsText.Text = credits.message
+		self.cCreditsUrl.Text = credits.url
+		self.cCreditsUrl.Visible = credits.url ~= "" and not string.find(credits.message, credits.url, 1, true)
+	end
+	self.cLinkUrl.Text = if self.conn == "connected" then tostring(ed.link.url) else ""
+	-- (28 × 20 around the column; 16 × 12 in a narrow dock)
+	local p = if self.wide then { 20, 28, 20, 20 } else { 12, 16, 12, 12 }
+	T.pad(self.cColumn, p[1], p[2], p[3], p[4])
+	local hp = if self.wide then { 16, 12 } else { 12, 10 }
+	T.pad(self.cHead:FindFirstChild("Inner") :: Instance, hp[1], hp[2], hp[1], hp[2])
+	local l = self.cLinkRow:FindFirstChildOfClass("UIListLayout") :: UIListLayout
+	l.HorizontalAlignment = if self.wide then Enum.HorizontalAlignment.Right else Enum.HorizontalAlignment.Left
+end
+
+-- Aura's out-of-credits notice from the agent service's last account frame (nil while the team has credits).
+function Dock:outOfCredits(): any
+	local acc = self.editor.account or {}
+	if acc.mode ~= "aura" then
+		return nil
+	end
+	return M.outOfCredits(acc.out_of_credits)
+end
+
+-- The composer shown with these words in its box ("": what was typed there stays).
+function Dock:compose(text: string)
+	self.composing = true
+	self.settingsOpen = false
+	self:closePopup()
+	if text ~= "" or self.cPrompt.Text == "" then
+		self.cPrompt.Text = text
+	end
+	self:render()
+end
+
+-- The Settings' Design brief, trimmed ("" for none): sent with every run the dock starts.
+function Dock:brief(): string
+	return M.trim(Settings.get(self.plugin, "design_brief") or "")
+end
+
+-- --- runs -----------------------------------------------------------------------------------------------------------
+
+local function kindOfRun(run: any): string
+	local kind = tostring(run.kind or "")
+	return if M.KINDS[kind] then kind else ""
+end
+
+-- Start a run (the composer's, Run again's, the setup's Explore): shown live at once.
+function Dock:startRun(run: any, prompt: string): boolean
+	local ed = self.editor
+	if not ed:connected() then
+		self:status("Not connected: connect first")
+		self:render()
+		return false
+	end
+	if self.active ~= nil then
+		self:status(Dock.RUN_GOING)
+		return false
+	end
+	run.turn_based = nil -- (no turn-based runs any more: a run again of an older request goes real time)
+	local before = self.shown
+	local r = self:_newRun(kindOfRun(run), prompt)
+	r.request = run
+	self.starting = true
+	local ok = ed:startRun(run)
+	self.starting = false
+	if not ok then
+		table.remove(self.runs, table.find(self.runs, r) or 1)
+		self.active = nil
+		self.shown = before
+		self:render()
+		return false
+	end
+	self.composing = false
+	self.cPrompt.Text = ""
+	self:render()
+	return true
+end
+
+function Dock:_newRun(kind: string, prompt: string): any
+	local r = M.newRun(kind, prompt)
+	r.project = self:project()
+	table.insert(self.runs, 1, r)
+	self.active = r
+	self.shown = r
+	self.tab = "main"
+	self.settingsOpen = false
+	return r
+end
+
+function Dock:runAgain(r: any)
+	local ed = self.editor
+	if not ed:connected() or self.active ~= nil then
+		self:status(if self.active ~= nil then Dock.RUN_GOING else "Not connected: connect first")
+		return
+	end
+	if r.request == nil then
+		self:compose(r.prompt)
+		return
+	end
+	local again = table.clone(r.request)
+	local brief = self:brief()
+	if brief ~= "" and again.kind ~= "explore" then
+		again.design_brief = brief
+	end
+	self:startRun(again, r.prompt)
+end
+
+-- The setup's Explore and finish: an Explore run of these minutes, the setup closed and the run shown live.
+function Dock:exploreFromSetup(minutes: number)
+	local run: any = { kind = "explore", minutes = math.max(1, minutes) }
+	local brief = self:brief()
+	if brief ~= "" then
+		run.brief = brief
+	end
+	self.setupOpen = false
+	self:startRun(run, "")
+	self:render()
+end
+
+function Dock:stopRun()
+	if self.active then
+		self.active.stopAsked = true
+	end
+	self.editor:stopRun()
+	self:render()
+end
+
+function Dock:selectRun(r: any)
+	if r == nil and self.shown ~= nil then
+		self.lastRun = self.shown
+	end
+	self.shown = r
+	self.composing = false
+	self.settingsOpen = false
+	self.tab = "main"
+	self:closePopup()
+	self:render()
+end
+
+function Dock:setTab(key: string)
+	self.tab = key
+	self.runPage:render()
+end
+
+-- A run that ended only because the connection closed, open again when the agent service, connected again, still
+-- sends its events (nil otherwise). going: false when what came is its result.
+function Dock:_reopenLost(going: boolean?): any
+	if self.active ~= nil then
+		return nil
+	end
+	local r = self.runs[1]
+	if r == nil or r:live() or not r.lostConnection then
+		return nil
+	end
+	r.lostConnection = false
+	r.ended = nil
+	r.seconds = nil
+	r:addFeed("Connected again: the run goes on", "info")
+	self.active = r
+	if going ~= false then
+		self.editor.runActive = true -- (stop and steer reach it again)
+	end
+	self:render()
+	return r
+end
+
+-- --- events from the editor -----------------------------------------------------------------------------------------
+
+function Dock:_listen()
+	local ed = self.editor
+	-- (a dock stopped hears nothing more: the editor outlives a preview of it)
+	local function on(name: string, fn: (...any) -> ())
+		ed:on(name, function(...)
+			if not self.dead then
+				fn(...)
+			end
+		end)
+	end
+	on("status", function(text)
+		if text == self.serverLine then
+			return -- (the agent service's progress lines belong to the Live page and the feed)
+		end
+		for _, q in ipairs(QUIET) do
+			if string.sub(tostring(text), 1, #q) == q then
+				return
+			end
+		end
+		if text ~= "" then
+			self:status(M.scrub(text))
+		end
+	end)
+	on("server_status", function(text)
+		self.serverLine = text
+		if string.sub(text, 1, 22) == "Run finished. Report: " then
+			return
+		end
+		local r = self.active or self:_reopenLost()
+		if r and string.sub(text, 1, 9) ~= "Finding: " then
+			r:onStatus(M.translate(text))
+			self:liveChanged()
+		end
+	end)
+	on("connection", function()
+		self:render()
+	end)
+	on("run", function(running)
+		if running and self.active == nil and not self.starting then
+			self:_newRun("", "")
+			self:render()
+		elseif not running then
+			task.defer(function()
+				self:_endCheck()
+			end)
+		end
+		self:_renderComposer()
+	end)
+	on("run_started", function(run)
+		if self.active ~= nil and self.active.prompt ~= "" then
+			return
+		end
+		if self.active ~= nil then
+			-- (the run frame came after the run began: it is this one)
+			table.remove(self.runs, table.find(self.runs, self.active) or 1)
+			self.active = nil
+		end
+		local r = self:_newRun(kindOfRun(run), self:_promptOf(run))
+		local request = table.clone(run)
+		request.by = nil
+		r.request = request
+		r.origin = M.trim(run.by)
+		if r.origin == "" then
+			r.origin = "agent"
+		end
+		self.composing = false
+		self:render()
+	end)
+	on("run_kind", function(kind, tested)
+		local r = self.active
+		if r == nil or not M.KINDS[kind] then
+			return
+		end
+		r.kind = kind
+		r.tested = tested
+		self:render()
+	end)
+	on("activity", function(f)
+		local r = self.active or self:_reopenLost()
+		if r == nil then
+			return
+		end
+		local before = #r.feed
+		if not r:onActivity(f) then
+			return
+		end
+		self.feedUpdated = if #r.feed == before then tonumber(f.ends) else nil
+		self:liveChanged()
+	end)
+	on("finding", function(f)
+		local r = self.active
+		if r == nil then
+			return
+		end
+		local fresh = r:onFinding(f)
+		local count = tonumber(f.count) or 1
+		local engine = M.isEngine(f)
+		r:addFeed(M.scrub(tostring(f.summary or f.detector or "")) .. (if count > 1 then string.format(" (×%d)", count)
+			else ""), if engine then "engine" else "agent")
+		r.feed[#r.feed].tone = if engine then T.severityKind(tostring(f.severity or "")) else "bad"
+		if fresh or count > 1 then
+			self:liveChanged()
+		end
+	end)
+	on("result", function(result)
+		self:_onResult(result)
+	end)
+	on("memory", function()
+		self:_renderFooter()
+		if self.setupOpen then
+			SetupPage.render(self, self.setupFrame)
+		end
+	end)
+	on("memory_cleared", function(ok, message)
+		self.reset = if ok then "done" else "failed"
+		self.resetWhy = message
+		self.resetUntil = os.clock() + STATUS_FOR
+		if ok then
+			self:_setRunsAside()
+		end
+		self:_renderFooter()
+	end)
+	on("account", function(acc)
+		if acc.mode == "none" and not self.setupOpen and Settings.get(self.plugin, "onboarded") ~= true
+			and not self.setupChecked then
+			-- (not set up on this computer, and never through this dock's setup: the first-run setup)
+			self.setupChecked = true
+			self:openSetup()
+			return
+		end
+		self.setupChecked = true
+		self:render()
+	end)
+	on("sign_in", function(f)
+		self:_onSignIn(f)
+	end)
+	on("setup_saved", function(f)
+		if not f.ok then
+			self:status("Not saved: " .. M.scrub(tostring(f.message or "")))
+		end
+		ed:askAccount()
+	end)
+	on("bill", function(f)
+		if type(f.usd) ~= "number" then
+			return
+		end
+		local b = { usd = math.max(0, f.usd), billed = f.billed == true }
+		local r = self.active or self:_reopenLost()
+		if r == nil then
+			self.pendingBill = b
+			return
+		end
+		r.bill = b
+	end)
+	on("playing", function()
+		self:liveChanged()
+	end)
+	on("policy", function(f)
+		self:_onPolicyStep(f)
+	end)
+	on("usage", function(models, final)
+		local r = self.active or self:_reopenLost()
+		if r == nil then
+			-- (the final count can come after the result: the run just ended)
+			local last = self.runs[1]
+			if last and not last:live() and last.result then
+				last.usage = M.usageRows(models)
+				if final then
+					self:save()
+				end
+			else
+				self.pendingUsage = models
+			end
+			return
+		end
+		r.usage = M.usageRows(models)
+	end)
+end
+
+function Dock:_promptOf(run: any): string
+	local kind = tostring(run.kind or "")
+	if kind == "verify" then
+		return M.trim(run.claim)
+	elseif kind == "goal" then
+		return M.trim(run.goal)
+	elseif kind == "explore" then
+		local brief = M.trim(run.brief)
+		return if brief ~= "" then "Explore " .. brief else "Explore"
+	elseif kind == "auto" then
+		return M.trim(run.prompt)
+	end
+	return M.trim(run.claim or run.goal or run.brief or run.prompt)
+end
+
+function Dock:_endCheck()
+	local r = self.active
+	if r ~= nil and not self.editor.runActive then
+		r.ended = os.clock()
+		r.lostConnection = r.result == nil
+		if r.lostConnection then
+			r:addFeed("Connection closed: no result", "info")
+		end
+		self.active = nil
+		self:save()
+		self:render()
+	end
+end
+
+function Dock:_onResult(result: any)
+	local r = self.active
+	if r == nil then
+		r = self:_reopenLost(false)
+	end
+	if r == nil then
+		r = self:_newRun("", tostring(result.claim or result.goal or ""))
+		if self.pendingUsage then
+			r.usage = M.usageRows(self.pendingUsage)
+		end
+	end
+	if self.pendingBill and r.bill == nil then
+		r.bill = self.pendingBill
+	end
+	self.pendingUsage, self.pendingBill = nil, nil
+	r.result = result
+	if r.prompt == "" then
+		r.prompt = tostring(result.claim or result.goal or "")
+	end
+	if r.kind == "" then
+		r.kind = if result.verdict ~= nil then "verify" elseif result.kind == "goal" then "goal" else ""
+	end
+	if result.tested == true then
+		r.tested = true
+	end
+	r:enterStage(M.STAGE_REPORT)
+	r.ended = os.clock()
+	r:addFeed("Result: " .. M.sentence(r:verdict()), "info")
+	if r:memoryUpdated() then
+		r:addFeed(M.MEMORY_UPDATED, "memory")
+	end
+	self.active = nil
+	if self.shown == r then
+		self.tab = "main"
+	end
+	self:save()
+	self:render()
+end
+
+function Dock:_onPolicyStep(f: any)
+	local r = self.active or self:_reopenLost()
+	if r == nil or type(f) ~= "table" then
+		return
+	end
+	local st = r:addStep(f, T.ACTION_COLORS, POLICY_KEPT)
+	if self.shown == r then
+		self.runPage:onStep(st)
+	end
+end
+
+-- The run going on changed (a feed line, a stage, the game coming up): its page drawn again.
+function Dock:liveChanged()
+	if self.shown ~= nil and self.shown == self.active then
+		self.runPage:liveChanged()
+	end
+end
+
+-- Reset memory done: the runs ended leave the history (a run going stays), kept aside in the plugin's settings.
+function Dock:_setRunsAside()
+	local ended, kept = {}, {}
+	for _, r in ipairs(self.runs) do
+		if r:live() then
+			table.insert(kept, r)
 		else
-			table.insert(track, '<font color="#666666">' .. name .. "</font>")
+			table.insert(ended, r:saved())
 		end
 	end
-	label(l, table.concat(track, "  ›  "), { rich = true, size = 13 })
-	-- (as Godot's: while the run's play session is starting, "Waiting for the game to start"; else the status line)
-	self.waitingShown = self:_waiting()
-	local now = if self.waitingShown then WAITING_FOR_GAME else run.statusLine
-	if now then
-		label(l, now, { color = if self.waitingShown then C.warn else C.muted, size = 14, name = "Now" })
+	if #ended == 0 then
+		return
 	end
-	-- (the other plugins keep the person's input out of the game during a run; Roblox gives a plugin no way to tell
-	-- the person's input from its own)
-	label(l, "Hands off the game view while Autopilot plays: your clicks and keys there reach the game too.",
-		{ color = C.muted, size = 12, name = "HandsOff" })
-	local row = frame(l, "Row", true)
-	button(row, "Stop", function()
-		ed:stopRun()
-	end, { color = C.bad })
-	local steer = input(l, "Send a steering prompt to Autopilot", { text = self.steerText or "", name = "Steer" })
-	steer:GetPropertyChangedSignal("Text"):Connect(function()
-		self.steerText = steer.Text
-	end)
-	local canSteer = run.stage == "play" and ed:canSteer()
-	local sb = button(l, "Steer", function()
-		if not (run.stage == "play" and ed:canSteer()) then
-			self:_status("You can steer once the game is playing (Play)")
-			return
+	if not self.preview then
+		Settings.set(self.plugin, "history_aside", ended)
+	end
+	self.runs = kept
+	if self.shown ~= nil and not table.find(self.runs, self.shown) then
+		self.shown = nil
+	end
+	if self.lastRun ~= nil and not table.find(self.runs, self.lastRun) then
+		self.lastRun = nil
+	end
+	self:save()
+	self:render()
+end
+
+-- --- the Aura sign-in (asked of the agent service) ------------------------------------------------------------------
+
+function Dock:beginSignIn()
+	local ed = self.editor
+	if not ed:connected() then
+		self.signIn = { state = "no_service" }
+	elseif not ed.brainAccount then
+		self.signIn = { state = "error", message = "This agent service can’t sign in to Aura: update it, then try again." }
+	elseif ed:signIn() then
+		self.signIn = { state = "preparing" }
+	else
+		self.signIn = { state = "error", message = "The sign-in didn’t start. Try again." }
+	end
+	self:renderPages()
+end
+
+function Dock:cancelSignIn()
+	local s = self.signIn
+	if s and (s.state == "waiting" or s.state == "preparing") then
+		self.editor:signInCancel()
+	end
+	self.signIn = nil
+	self:renderPages()
+end
+
+-- Use another account: sign out, then sign in again.
+function Dock:anotherAccount()
+	self.editor:signOut()
+	self.signIn = { state = "preparing" }
+	task.delay(0.5, function()
+		if self.signIn and self.signIn.state == "preparing" then
+			self.editor:signIn()
 		end
-		ed:steer(steer.Text)
-		self.steerText = ""
-		steer.Text = ""
 	end)
-	if not canSteer then
-		sb.TextColor3 = C.muted
+	self:renderPages()
+end
+
+local SIGN_IN_WORDS = { denied = "Sign-in was cancelled in the browser.",
+	timeout = "Nothing came back from the browser in 5 minutes.",
+	unreachable = "Couldn’t reach Aura. Check your connection and try again." }
+
+function Dock:_onSignIn(f: any)
+	if self.signIn == nil then
+		return -- (not asked here, or cancelled)
+	end
+	local state = tostring(f.state or "")
+	if state == "waiting" then
+		self.signIn = { state = "waiting", url = tostring(f.url or "") }
+	elseif state == "signed_in" then
+		-- (in the setup: Continue; on the Settings page the account frame that follows shows it)
+		self.signIn = if self.setupOpen then { state = "signed_in", email = tostring(f.email or "") } else nil
+		self.editor:askAccount()
+	elseif state == "error" then
+		local reason = tostring(f.reason or "")
+		if reason == "cancelled" then
+			self.signIn = nil
+		else
+			local message = SIGN_IN_WORDS[reason] or M.scrub(tostring(f.message or ""))
+			self.signIn = { state = "error", message = if message ~= "" then message
+				else "The sign-in didn’t finish. Try again." }
+		end
+	end
+	self:renderPages()
+end
+
+-- --- the first-run setup --------------------------------------------------------------------------------------------
+
+function Dock:openSetup()
+	if self.active ~= nil then
+		self:status(Dock.RUN_GOING)
+		return
+	end
+	self.setupOpen = true
+	self.settingsOpen = false
+	self.signIn = nil
+	self:closePopup()
+	SetupPage.open(self)
+	self.editor:askAccount()
+	self:render()
+end
+
+function Dock:closeSetup()
+	self.setupOpen = false
+	self:render()
+end
+
+-- What the agent service said it remembers about this place on the connection open now: "unknown", "empty" or "some".
+function Dock:memoryNow(): string
+	local ed = self.editor
+	local mem = ed.memory
+	if not ed:connected() or not mem.known then
+		return "unknown"
+	end
+	if mem.runs == 0 and not mem.notes and not mem.lib then
+		return "empty"
+	end
+	return "some"
+end
+
+-- --- the footer: the Memory row -------------------------------------------------------------------------------------
+
+function Dock:_buildFooter()
+	local footer = T.frame(self.railFoot, "Footer", C.rail)
+	T.list(footer, 0)
+	T.rule(footer)
+	local inner = T.col(footer, 0, "Inner")
+	self.footerInner = inner
+	local bar = T.col(inner, 6, "Bar")
+	local save = T.row(bar, 8)
+	T.label(save, "Memory", "caps", { wrap = false })
+	self.saveLabel = T.label(save, "", "mono", { wrap = false, fill = true })
+	self.resetBtn = T.button(save, "Reset memory…", "danger", function()
+		self:askReset()
+	end, true)
+	local line = T.row(bar, 8)
+	self.resetSpin = T.spinner(line)
+	self.resetText = T.label(line, "", "small", { wrap = false, fill = true })
+	self.resetLine = line
+	self.memBar = bar
+	-- the confirmation, in place of the row: a plate with a red border
+	local ask = T.plate(inner, { border = C.redLine, pad = { 12, 11, 12, 11 }, gap = 6, name = "Ask" })
+	T.label(ask, "Reset memory?", "strong")
+	T.label(ask, RESET_TEXT, "small")
+	local ab = T.row(ask, 6)
+	T.button(ab, "Reset memory", "dangerFill", function()
+		self:_confirmReset()
+	end, true)
+	T.button(ab, "Cancel", "quiet", function()
+		self.reset = ""
+		self:_renderFooter()
+	end, true)
+	self.memAsk = ask
+	self.footer = footer
+end
+
+-- Reset memory…: asks in place, when connected and no run is going.
+function Dock:askReset()
+	self.settingsOpen = false
+	if not self.editor:connected() then
+		self:status("Not connected: connect first to reset the memory")
+		return
+	end
+	if self.active ~= nil then
+		self:status("A run is going: reset the memory once it is done")
+		return
+	end
+	self.reset = "ask"
+	if not self.wide then
+		self:openHistory()
+	end
+	self:render()
+end
+
+function Dock:_confirmReset()
+	if not self.editor:connected() then
+		self.reset = ""
+		self:status("Not connected: connect first to reset the memory")
+		self:_renderFooter()
+		return
+	end
+	self.editor:clearMemory()
+	self.reset = "working"
+	self:_renderFooter()
+end
+
+function Dock:_saveText(): string
+	local mem = self.editor.memory
+	if not mem.known then
+		return ""
+	end
+	if mem.runs == 0 and not mem.notes and not mem.lib then
+		return "empty"
+	end
+	return string.format("%d run%s", mem.runs, if mem.runs == 1 then "" else "s")
+end
+
+function Dock:_renderFooter()
+	local saved = self:_saveText()
+	self.saveLabel.Text = if saved ~= "" then "· " .. saved else ""
+	if self.reset == "ask" and (self.active ~= nil or not self.editor:connected()) then
+		self.reset = ""
+	end
+	local asking = self.reset == "ask"
+	self.memAsk.Visible = asking
+	self.memBar.Visible = not asking
+	local p = if asking then { 10, 10 } elseif self.wide then { 14, 9 } else { 12, 8 }
+	T.pad(self.footerInner, p[1], p[2], p[1], p[2])
+	T.disable(self.resetBtn, self.reset == "working")
+	if self.reset ~= "working" then
+		T.grey(self.resetBtn, self.active ~= nil or not self.editor:connected())
+	end
+	local r = self.reset
+	self.resetLine.Visible = r == "working" or r == "done" or r == "failed"
+	self.resetSpin.Visible = r == "working"
+	if r == "working" then
+		self.resetText.Text = "Resetting memory…"
+		self.resetText.TextColor3 = C.text3
+	elseif r == "done" then
+		self.resetText.Text = "Memory reset successful"
+		self.resetText.TextColor3 = C.success
+	elseif r == "failed" then
+		self.resetText.Text = "Memory not reset: " .. M.scrub(self.resetWhy)
+		self.resetText.TextColor3 = C.red
 	end
 end
 
-function Dock:_renderFeed()
-	local f = self.feed
-	clear(f)
-	local run = self.run
-	label(f, "FEED", { font = MONO, size = 12, color = C.muted })
-	if run == nil or #run.events == 0 then
-		label(f, "Nothing yet.", { color = C.muted, size = 14 })
-		return
+-- --- the run history ------------------------------------------------------------------------------------------------
+
+function Dock:verdictTag(parent: Instance, r: any): Frame
+	local v = r:verdict()
+	return T.tag(parent, if v == "LIVE" then "Live" else v, T.verdictColors(v)[3])
+end
+
+-- A run's line in the history: "Oct 19 13:25 · 03:26 · 2 attempts".
+function Dock:rowMeta(r: any): string
+	return string.format("%s · %s · %s", M.when(r.started), M.clock(if r:live() then r:elapsed() else r:took()),
+		M.attemptsText(r:attemptCount()))
+end
+
+-- A run in the history: its verdict tag and line, then its prompt. Selected: ROW_ACTIVE with a 2 px accent rule at its
+-- left; hovered, HOVER; else the rail's ground and GROUND in turn.
+function Dock:_historyRow(parent: Instance, r: any, odd: boolean, popup: boolean): GuiObject
+	local sel = r == self.shown and not self.composing
+	local rest = if popup then C.popover elseif odd then C.ground else C.rail
+	local b = Instance.new("TextButton")
+	b.Name = "Run"
+	b.Text = ""
+	b.AutoButtonColor = false
+	b.BorderSizePixel = 0
+	b.BackgroundColor3 = if sel then C.rowActive else rest
+	b.Size = UDim2.new(1, 0, 0, 0)
+	b.AutomaticSize = Enum.AutomaticSize.Y
+	b.LayoutOrder = T.nextOrder()
+	if sel then
+		T.leftEdge(b, C.accent)
 	end
-	local stage = nil
-	local first = math.max(1, #run.events - 150)
-	for i = first, #run.events do
-		local e = run.events[i]
-		if e.stage ~= stage then
-			stage = e.stage
-			label(f, string.upper(STAGE_NAMES[stage] or tostring(stage)), { font = BOLD, size = 13, color = C.accent })
+	local v = T.col(b, 3)
+	T.pad(v, if popup then 10 else 12, 9, if popup then 12 else 14, 9)
+	local h = T.row(v, 8)
+	self:verdictTag(h, r)
+	local meta = T.label(h, self:rowMeta(r), "monoDim", { wrap = false, fill = true })
+	if r:live() and not popup then
+		self.liveMeta = meta
+	end
+	local words = r:shownPrompt()
+	if #words > 140 then
+		words = M.trim(string.sub(words, 1, 139)) .. "…"
+	end
+	T.label(v, words, "body", { size = 13, color = if sel then C.text else C.text2 })
+	b.MouseEnter:Connect(function()
+		if not sel then
+			b.BackgroundColor3 = C.hover
 		end
-		local mark = MARKS[e.kind] or "·"
-		local text = string.format('<font color="#9a9a9a">%s</font>  <b>%s</b>  %s', mmss(tonumber(e.t) or 0), mark,
-			esc(tostring(e.text or "")))
-		if e.ends then
-			text = string.format('<font color="#9a9a9a">%s   ↳ %s</font>', mmss(tonumber(e.t) or 0),
-				esc(tostring(e.text or "")))
+	end)
+	b.MouseLeave:Connect(function()
+		if not sel then
+			b.BackgroundColor3 = rest
 		end
-		local line = label(f, text, { rich = true, size = 14 })
-		if e.detail and e.detail ~= Json.null and tostring(e.detail) ~= "" then
-			local open = false
-			local box: TextBox? = nil
-			local b = Instance.new("TextButton")
-			b.Text = "  + the details"
-			b.TextColor3 = C.muted
-			b.FontFace = FONT
-			b.TextSize = 13
-			b.BackgroundTransparency = 1
-			b.TextXAlignment = Enum.TextXAlignment.Left
-			b.Size = UDim2.new(1, 0, 0, 18)
-			b.LayoutOrder = line.LayoutOrder
-			b.Parent = f
+	end)
+	b.MouseButton1Click:Connect(function()
+		self:selectRun(r)
+	end)
+	b.Parent = parent
+	return b
+end
+
+function Dock:_renderHistory()
+	self.liveMeta = nil
+	T.clear(self.railList)
+	for i, r in ipairs(self.runs) do
+		self:_historyRow(self.railList, r, i % 2 == 0, false)
+	end
+	if #self.runs == 0 then
+		local e = T.col(self.railList, 0)
+		T.pad(e, 14, 10, 14, 10)
+		T.label(e, "No runs yet.", "small", { color = C.muted })
+	end
+	-- the history button (narrow)
+	for _, c in ipairs(self.histRow:GetChildren()) do
+		if c:IsA("GuiObject") then
+			c:Destroy()
+		end
+	end
+	local r = self.shown or self.runs[1]
+	if r == nil or self.composing then
+		T.tag(self.histRow, "New", "mut")
+		self.histMeta = T.label(self.histRow, if #self.runs > 0 then string.format("%d run%s", #self.runs,
+			if #self.runs == 1 then "" else "s") else "No runs yet", "monoDim", { wrap = false, fill = true,
+			color = C.text3 })
+	else
+		self:verdictTag(self.histRow, r)
+		self.histMeta = T.label(self.histRow, self:rowMeta(r), "monoDim", { wrap = false, fill = true, color = C.text3 })
+	end
+	T.label(self.histRow, "▾", "mono", { wrap = false, color = C.text3 })
+	self.histRow.Size = UDim2.fromScale(1, 1)
+end
+
+-- --- popups ---------------------------------------------------------------------------------------------------------
+
+function Dock:closePopup()
+	if self.popup then
+		self.popup:Destroy()
+		self.popup = nil
+	end
+	self.overlay.Visible = false
+	-- (the Memory row back where it lives: the rail's foot)
+	if self.footer.Parent ~= self.railFoot then
+		self.footer.Parent = self.railFoot
+	end
+end
+
+-- A floating panel at (x, y) in the dock, width wide: POPOVER, radius 8, the control outline.
+function Dock:_popup(x: number, y: number, width: number): Frame
+	self:closePopup()
+	local p = Instance.new("Frame")
+	p.Name = "Popup"
+	p.BackgroundColor3 = C.popover
+	p.BorderSizePixel = 0
+	p.Position = UDim2.fromOffset(x, y)
+	p.Size = UDim2.new(0, width, 0, 0)
+	p.AutomaticSize = Enum.AutomaticSize.Y
+	p.ZIndex = 60
+	T.corner(p, T.R_PLATE)
+	T.stroke(p, C.line)
+	T.list(p, 0)
+	p.Parent = self.overlay
+	self.popup = p
+	self.overlay.Visible = true
+	return p
+end
+
+-- The menu's items now: {{label, enabled, checked, action}}.
+function Dock:menuItems(): { any }
+	local ed = self.editor
+	local connected = ed:connected()
+	local wants = ed.link.want or connected
+	local idle = self.active == nil
+	return {
+		{ if wants then "Disconnect" else "Connect", not self.setupOpen, false, function()
+			if wants then
+				ed:disconnect()
+			else
+				ed:connect()
+			end
+			self:render()
+		end },
+		{ "Settings", not self.setupOpen, self.settingsOpen, function()
+			self:toggleSettings()
+		end },
+		{ "Rerun setup", idle, false, function()
+			self:openSetup()
+		end },
+		{ "Reset memory…", connected and idle and not self.setupOpen, false, function()
+			self:askReset()
+		end },
+	}
+end
+
+-- The ⋮ menu, under the button's row at the right.
+function Dock:openMenu(at: GuiObject)
+	local rootPos = self.root.AbsolutePosition
+	local width = 190
+	local x = at.AbsolutePosition.X + at.AbsoluteSize.X - width - rootPos.X
+	local y = at.AbsolutePosition.Y + at.AbsoluteSize.Y - rootPos.Y + 2
+	local p = self:_popup(math.max(4, x), y, width)
+	T.pad(p, 4, 4, 4, 4)
+	for _, item in ipairs(self:menuItems()) do
+		local b = Instance.new("TextButton")
+		b.Name = item[1]
+		b.AutoButtonColor = false
+		b.BorderSizePixel = 0
+		b.BackgroundTransparency = 1
+		b.BackgroundColor3 = C.hover
+		b.Text = (if item[3] then "✓  " else "     ") .. item[1]
+		b.FontFace = T.F.body
+		b.TextSize = 14
+		b.TextColor3 = if item[2] then C.text2 else C.muted
+		b.TextTransparency = if item[2] then 0 else 0.35
+		b.TextXAlignment = Enum.TextXAlignment.Left
+		b.Size = UDim2.new(1, 0, 0, 30)
+		b.ZIndex = 61
+		b.LayoutOrder = T.nextOrder()
+		T.pad(b, 8, 0, 8, 0)
+		b.Parent = p
+		if item[2] then
+			b.MouseEnter:Connect(function()
+				b.BackgroundTransparency = 0
+				b.TextColor3 = C.text
+			end)
+			b.MouseLeave:Connect(function()
+				b.BackgroundTransparency = 1
+				b.TextColor3 = C.text2
+			end)
 			b.MouseButton1Click:Connect(function()
-				open = not open
-				if open then
-					local t = Instance.new("TextBox")
-					t.Text = string.sub(tostring(e.detail), 1, 16000)
-					t.TextEditable = false
-					t.ClearTextOnFocus = false
-					t.MultiLine = true
-					t.TextWrapped = true
-					t.FontFace = MONO
-					t.TextSize = 13
-					t.TextColor3 = C.text
-					t.TextXAlignment = Enum.TextXAlignment.Left
-					t.TextYAlignment = Enum.TextYAlignment.Top
-					t.BackgroundColor3 = C.field
-					t.Size = UDim2.new(1, 0, 0, 0)
-					t.AutomaticSize = Enum.AutomaticSize.Y
-					t.LayoutOrder = b.LayoutOrder
-					pad(t, 6)
-					t.Parent = f
-					box = t
-					b.Text = "  − the details"
-				else
-					if box then
-						box:Destroy()
-					end
-					b.Text = "  + the details"
+				self:closePopup()
+				local ok, err = pcall(item[4])
+				if not ok then
+					warn("[Autopilot] " .. tostring(err))
 				end
 			end)
 		end
 	end
-end
-
--- --- the Policy log ------------------------------------------------------------------------------------------------
-
--- A policy step's row: "#12  0:34  SWITCH  JumpGap · 62% · 40 ms".
-local function policyRow(parent: Instance, st: any): TextLabel
-	local text = string.format('<font color="#9a9a9a">#%d  %s</font>  <b>%s</b>  %s', st.n, mmss(st.t), esc(st.tag),
-		esc(st.chosen))
-	if st.p then
-		text ..= string.format(" · %d%%", math.floor(st.p * 100 + 0.5))
-	end
-	if st.ms then
-		text ..= string.format(' <font color="#9a9a9a">· %d ms</font>', math.floor(st.ms + 0.5))
-	end
-	return label(parent, text, { rich = true, size = 13, font = MONO })
-end
-
--- The Policy log (Settings' Show Policy Log): the shown run's policy steps, folded under its header (its count), open a
--- list of the last POLICY_SHOWN that follows the newest while scrolled to the bottom.
-function Dock:_renderPolicy()
-	local box = self.policyBox
-	clear(box)
-	self.policyList, self.policyRows = nil, {}
-	local run = self.run
-	local steps = if run then run.steps else nil
-	if Settings.get(self.plugin, "show_policy_log") == false or steps == nil or #steps == 0 then
-		box.Visible = false
-		return
-	end
-	box.Visible = true
-	local head = Instance.new("TextButton")
-	head.Name = "Header"
-	head.BackgroundTransparency = 1
-	head.FontFace = MONO
-	head.TextSize = 12
-	head.TextColor3 = C.muted
-	head.TextXAlignment = Enum.TextXAlignment.Left
-	head.Size = UDim2.new(1, 0, 0, 18)
-	head.LayoutOrder = nextOrder()
-	head.Parent = box
-	self.policyHeader = head
-	head.MouseButton1Click:Connect(function()
-		self.policyOpen = not self.policyOpen
-		self:_renderPolicy()
-	end)
-	self:_policyHeader()
-	if not self.policyOpen then
-		return
-	end
-	local sc = Instance.new("ScrollingFrame")
-	sc.Name = "Steps"
-	sc.BackgroundColor3 = C.field
-	sc.BorderSizePixel = 0
-	sc.Size = UDim2.new(1, 0, 0, 220)
-	sc.CanvasSize = UDim2.new(0, 0, 0, 0)
-	sc.AutomaticCanvasSize = Enum.AutomaticSize.Y
-	sc.ScrollBarThickness = 6
-	sc.ScrollingDirection = Enum.ScrollingDirection.Y
-	sc.LayoutOrder = nextOrder()
-	pad(sc, 4)
-	list(sc, 2)
-	sc.Parent = box
-	self.policyList = sc
-	for i = math.max(1, #steps - POLICY_SHOWN + 1), #steps do
-		table.insert(self.policyRows, policyRow(sc, steps[i]))
-	end
-	task.defer(function()
-		sc.CanvasPosition = Vector2.new(0, sc.AbsoluteCanvasSize.Y)
-	end)
-end
-
-function Dock:_policyHeader()
-	local steps = if self.run then self.run.steps or {} else {}
-	if self.policyHeader then
-		self.policyHeader.Text = string.format("%s POLICY LOG · %d step%s", if self.policyOpen then "▾" else "▸",
-			#steps, if #steps == 1 then "" else "s")
-	end
-end
-
--- A policy step from the agent service (the Editor's "policy": its "jev" frames, sent while the hello's `inspect`).
-function Dock:_policyStep(f: any)
-	local run = self.run
-	if run == nil or run.result or type(f) ~= "table" then
-		return
-	end
-	run.steps = run.steps or {}
-	table.insert(run.steps, policyStep(f))
-	if #run.steps > POLICY_KEPT then
-		table.remove(run.steps, 1)
-	end
-	if not self.policyBox.Visible then
-		self:_renderPolicy()
-		return
-	end
-	self:_policyHeader()
-	local sc = self.policyList
-	if sc == nil or sc.Parent == nil then
-		return
-	end
-	local atBottom = sc.CanvasPosition.Y + sc.AbsoluteWindowSize.Y >= sc.AbsoluteCanvasSize.Y - 8
-	table.insert(self.policyRows, policyRow(sc, run.steps[#run.steps]))
-	while #self.policyRows > POLICY_SHOWN do
-		table.remove(self.policyRows, 1):Destroy()
-	end
-	if atBottom then
-		task.defer(function()
-			sc.CanvasPosition = Vector2.new(0, sc.AbsoluteCanvasSize.Y)
-		end)
-	end
-end
-
--- --- usage ---------------------------------------------------------------------------------------------------------
-
--- A usage frame: the run's token counts so far (each replaces the one before), shown with its result and kept in the
--- history with it. (Not a ledger of many runs, as Godot's Settings page keeps: Studio's plugin settings are small.)
-function Dock:_usage(models: any, final: boolean)
-	local run = self.run
-	if run == nil or (run.result and not run.saved) then
-		return -- (no run, or one of the history's shown)
-	end
-	run.usage = usageRows(models)
-	if run.result then
-		-- (the final count can come after the result)
-		if run.saved then
-			run.saved.usage = run.usage
-			if final then
-				Settings.set(self.plugin, "history", self.history)
-			end
-		end
-		self:_renderResult()
-	end
-end
-
--- The report as markdown (the Result's words), for the user to copy from the box.
-local function markdown(run: any): string
-	local r = run.result or {}
-	local lines = { "# Autopilot run", "", "Prompt: " .. tostring(run.prompt or ""), "" }
-	if r.verdict then
-		table.insert(lines, "Verdict: " .. tostring(r.verdict))
-		table.insert(lines, "")
-		table.insert(lines, tostring(r.reason or ""))
-		for _, e in ipairs(r.evidence or {}) do
-			table.insert(lines, "- " .. tostring(e))
-		end
-	else
-		table.insert(lines, (if r.reached then "Reached" else "Not reached") .. ": " .. tostring(r.goal or ""))
-		for _, n in ipairs(r.notes or {}) do
-			table.insert(lines, "- " .. tostring(n))
+	for _, d in ipairs(p:GetDescendants()) do
+		if d:IsA("GuiObject") and d.ZIndex < 61 then
+			d.ZIndex = 61
 		end
 	end
-	for _, a in ipairs(r.alerts or {}) do
-		table.insert(lines, "Alert: " .. tostring(a))
-	end
-	for _, ch in ipairs(r.changes or {}) do
-		table.insert(lines, "Direct change: " .. tostring(ch.text or ""))
-	end
-	if run.findings and #run.findings > 0 then
-		table.insert(lines, "")
-		table.insert(lines, "Engine findings:")
-		for _, f in ipairs(run.findings) do
-			table.insert(lines, "- [" .. tostring(f.severity or "") .. "] " .. tostring(f.summary or ""))
-		end
-	end
-	return table.concat(lines, "\n")
 end
 
-function Dock:_result(result: any)
-	if self.run == nil then
-		self:_newRun({ prompt = result.claim or result.goal or "" }, nil)
+-- The narrow dock's history list (the History button): the runs, newest first, then the Memory row; under the button,
+-- as wide as the top bar's inside.
+function Dock:openHistory()
+	local rootPos = self.root.AbsolutePosition
+	local top = self.top
+	local x = top.AbsolutePosition.X - rootPos.X + 10
+	local y = self.histBtn.AbsolutePosition.Y + self.histBtn.AbsoluteSize.Y - rootPos.Y + 8
+	local width = top.AbsoluteSize.X - 20
+	local p = self:_popup(x, y, width)
+	local sc = T.scroll(p, "List")
+	sc.Size = UDim2.new(1, 0, 0, 0)
+	sc.AutomaticSize = Enum.AutomaticSize.Y
+	T.list(sc, 0)
+	local cons = Instance.new("UISizeConstraint")
+	cons.MaxSize = Vector2.new(math.huge, math.max(120, self.root.AbsoluteSize.Y - y - 140))
+	cons.Parent = sc
+	for _, r in ipairs(self.runs) do
+		self:_historyRow(sc, r, false, true)
 	end
-	local run = self.run
-	run.result = result
-	run.seconds = math.floor(os.clock() - (run.clock or os.clock()))
-	local saved = { prompt = run.prompt, kind = run.kind, tested = run.tested, started = run.started,
-		seconds = run.seconds,
-		result = result, findings = run.findings, events = {}, usage = run.usage }
-	run.saved = saved
-	-- (the feed's lines without their details: plugin settings are kept small)
-	for _, e in ipairs(run.events) do
-		table.insert(saved.events, { id = e.id, t = e.t, stage = e.stage, kind = e.kind, text = e.text, ends = e.ends })
+	if #self.runs == 0 then
+		local e = T.col(sc, 0)
+		T.pad(e, 12, 10, 12, 10)
+		T.label(e, "No runs yet.", "small", { color = C.muted })
 	end
-	table.insert(self.history, 1, saved)
-	while #self.history > HISTORY do
-		table.remove(self.history)
+	self.footer.Parent = p
+	self.footer.LayoutOrder = T.nextOrder()
+	for _, d in ipairs(p:GetDescendants()) do
+		if d:IsA("GuiObject") and d.ZIndex < 61 then
+			d.ZIndex = 61
+		end
 	end
-	Settings.set(self.plugin, "history", self.history)
-	self:_renderLive()
-	self:_renderResult()
-	self:_renderFeed()
+end
+
+-- --- the Settings page ----------------------------------------------------------------------------------------------
+
+function Dock:toggleSettings()
+	self.settingsOpen = not self.settingsOpen
+	self:closePopup()
+	if self.settingsOpen then
+		self.editor:askAccount()
+	end
+	self:render()
+end
+
+-- --- the status line ------------------------------------------------------------------------------------------------
+
+-- A message on the status line (what the user's own action did, or why it couldn't): shown until the next one, or
+-- STATUS_FOR seconds.
+function Dock:status(text: string)
+	if self.statusLabel == nil then
+		return
+	end
+	self.statusLabel.Text = text or ""
+	self.statusBar.Visible = (text or "") ~= ""
+	self.statusUntil = os.clock() + STATUS_FOR
+end
+
+-- --- layout and rendering -------------------------------------------------------------------------------------------
+
+function Dock:_resized()
+	local w = self.root.AbsoluteSize.X >= WIDE_AT
+	if w ~= self.wide then
+		self.wide = w
+		self:closePopup()
+		self:render()
+	elseif self.page == "run" then
+		self.runPage:resized()
+	end
+end
+
+function Dock:mainWidth(): number
+	return self.root.AbsoluteSize.X - (if self.wide then RAIL_WIDTH + 1 else 0)
+end
+
+function Dock:renderPages()
+	if self.setupOpen then
+		SetupPage.render(self, self.setupFrame)
+	end
+	if self.page == "settings" then
+		SettingsPage.render(self, self.settingsPage)
+	end
+end
+
+function Dock:render()
+	if self.root == nil then
+		return
+	end
+	self.conn = self:_connState()
+	self.rail.Visible = self.wide
+	self.railEdge.Visible = self.wide
+	self.top.Visible = not self.wide
 	self:_renderHistory()
-	self:_renderComposer()
+	self:_renderFooter()
+	self.body.Visible = not self.setupOpen
+	self.setupFrame.Visible = self.setupOpen
+	if self.setupOpen then
+		SetupPage.render(self, self.setupFrame)
+	end
+	local online = self.conn == "connected"
+	local page = "run"
+	if self.shown == nil or self.composing then
+		page = if online then "composer" else "connect"
+	end
+	if self.settingsOpen then
+		page = "settings"
+	end
+	self.page = page
+	self.connectPage.Visible = page == "connect"
+	self.composerPage.Visible = page == "composer"
+	self.runPageFrame.Visible = page == "run"
+	self.settingsPage.Visible = page == "settings"
+	self.strip.Visible = page == "run" and not online and self.shown ~= nil and not self.shown:live()
+	local trying = self.conn == "connecting" or self.conn == "unreachable"
+	self.stripText.Text = if trying then "Reconnecting to the agent service…" else "Not connected to the agent service"
+	self.stripBtn.Text = if trying then "Details" else "Reconnect"
+	if page == "connect" then
+		self:_renderConnect()
+	elseif page == "composer" then
+		self:_renderComposer()
+	elseif page == "run" then
+		self.runPage:render()
+	elseif page == "settings" then
+		SettingsPage.render(self, self.settingsPage)
+	end
+	for _, g in ipairs({ self.railGear, self.topGear }) do
+		T.setVariant(g, if self.settingsOpen then "on" else "quiet")
+	end
 end
 
-function Dock:_renderResult()
-	local box = self.resultBox
-	clear(box)
-	local run = self.run
-	if run == nil or run.result == nil then
-		box.Visible = false
+function Dock:_tick()
+	if self.root == nil or self.root.Parent == nil then
 		return
 	end
-	box.Visible = true
-	local r = run.result
-	local verdict, color
-	if r.verdict then
-		verdict = tostring(r.verdict)
-		color = if verdict == "CONFIRMED" then C.good elseif verdict == "DENIED" then C.bad else C.warn
-	elseif r.error then
-		verdict, color = "ERROR", C.bad
-	else
-		local explored = run.kind == "explore"
-		verdict = if explored then (if run.tested then "GAME TESTED" else "EXPLORED") elseif r.reached then "ACHIEVED"
-			else "NOT ACHIEVED"
-		color = if r.reached or explored then C.good else C.bad
+	if self.statusBar.Visible and os.clock() >= self.statusUntil then
+		self.statusLabel.Text = ""
+		self.statusBar.Visible = false
 	end
-	local stamp = os.date("%b %d %H:%M", run.started or os.time())
-	label(box, string.format("RUN // %s // %s // %s", string.upper(tostring(run.kind or "run")), string.upper(stamp),
-		mmss(run.seconds or 0)), { font = MONO, size = 12, color = C.muted })
-	label(box, verdict, { font = BOLD, size = 22, color = color })
-	label(box, esc(tostring(run.prompt or "")), { color = C.muted, size = 14, rich = true })
-	if r.reason and r.reason ~= "" then
-		label(box, tostring(r.reason), { size = 15 })
+	if (self.reset == "done" or self.reset == "failed") and os.clock() >= self.resetUntil then
+		self.reset = ""
+		self:_renderFooter()
 	end
-	for _, e in ipairs(r.evidence or {}) do
-		label(box, "• " .. tostring(e), { size = 14 })
+	local c = self:_connState()
+	if c ~= self.conn then
+		self:render()
 	end
-	for _, n in ipairs(r.notes or {}) do
-		label(box, "• " .. tostring(n), { size = 14 })
-	end
-	for _, a in ipairs(r.alerts or {}) do
-		label(box, "⚠ " .. tostring(a), { size = 14, color = C.warn })
-	end
-	if r.changes and #r.changes > 0 then
-		label(box, "DIRECT CHANGES TO THE GAME", { font = MONO, size = 12, color = C.muted })
-		for _, ch in ipairs(r.changes) do
-			label(box, "• " .. tostring(ch.text or ""), { size = 14 })
+	local r = self.active
+	if r ~= nil then
+		if self.shown == r and self.page == "run" then
+			self.runPage:tick()
 		end
-	end
-	if r.no_recording then
-		label(box, "No recording: " .. tostring(r.no_recording), { size = 13, color = C.muted })
-	end
-	if r.memory and type(r.memory) == "table" and r.memory.updated then
-		label(box, "Memory updated", { size = 13, color = C.good })
-	end
-	if type(run.usage) == "table" and #run.usage > 0 then
-		label(box, "USAGE", { font = MONO, size = 12, color = C.muted })
-		for _, m in ipairs(run.usage) do
-			local cached = (m.cache_read or 0) + (m.cache_write or 0)
-			label(box, string.format("%s%s · %d call%s · %s in · %s out%s", if m.kind == "decision" then "Decision · "
-				else "", tostring(m.model), m.calls or 0, if m.calls == 1 then "" else "s", tokens(m.input or 0),
-				tokens(m.output or 0), if cached > 0 then " · " .. tokens(cached) .. " cached" else ""),
-				{ size = 13, color = C.muted })
-		end
-	end
-	local findings = run.findings or {}
-	if #findings > 0 then
-		label(box, string.format("ENGINE FINDINGS · %d", #findings), { font = MONO, size = 12, color = C.muted })
-		for i, f in ipairs(findings) do
-			if i > 40 then
-				break
+		self.slow = (self.slow or 0) + 1
+		if self.slow % 4 == 0 then
+			if self.liveMeta and self.liveMeta.Parent then
+				self.liveMeta.Text = self:rowMeta(r)
 			end
-			local sev = string.lower(tostring(f.severity or "info"))
-			local c = if sev == "error" or sev == "critical" or sev == "fatal" or sev == "bug" then C.bad
-				elseif sev == "warning" then C.warn else C.info
-			local row = frame(box, "Finding", true)
-			label(row, string.upper(sev), { width = 0, color = c, font = MONO, size = 12 })
-			label(row, tostring(f.summary or ""), { size = 14, width = 0 })
-			if f.signature then
-				button(row, "Not a bug", function()
-					if self.editor:connected() then
-						self.editor:feedback(f.signature, "not_a_bug")
-						self:_status("Told the agent: " .. tostring(f.detector or "it") .. " is not a bug")
-					else
-						self:_status("Not connected: connect to send feedback")
-					end
-				end)
-			end
-			if f.actor and f.actor ~= "" then
-				button(row, "Show in level", function()
-					local found = workspace:FindFirstChild(tostring(f.actor), true)
-					if found then
-						Selection:Set({ found })
-					end
-				end)
+			if self.shown == r and not self.composing and self.histMeta and self.histMeta.Parent then
+				self.histMeta.Text = self:rowMeta(r)
 			end
 		end
-	end
-	local row = frame(box, "Buttons", true)
-	button(row, "Run again", function()
-		local ed = self.editor
-		if not ed:connected() or ed.runActive then
-			self:_status(if ed.runActive then "A run is going: wait for its result, or stop it"
-				else "Not connected: connect first")
-			return
-		end
-		local again: any = { kind = "auto", prompt = run.prompt, time_limit_minutes = run.time_limit
-			or Settings.get(self.plugin, "time_limit") }
-		local brief = self:_brief()
-		if brief ~= "" then
-			again.design_brief = brief
-		end
-		if ed:startRun(again) then
-			self:_newRun(again, nil)
-		end
-	end, { primary = true })
-	button(row, if self.showReport then "Hide report" else "Report (to copy)", function()
-		self.showReport = not self.showReport
-		self:_renderResult()
-	end)
-	if #findings > 0 then
-		button(row, "Verify a fix", function()
-			self.promptText = "Verify that this is fixed: " .. tostring(findings[1].summary or "")
-			self:_renderComposer()
-		end)
-	end
-	if self.showReport then
-		local t = Instance.new("TextBox")
-		t.Text = markdown(run)
-		t.TextEditable = false
-		t.ClearTextOnFocus = false
-		t.MultiLine = true
-		t.TextWrapped = true
-		t.FontFace = MONO
-		t.TextSize = 13
-		t.TextColor3 = C.text
-		t.BackgroundColor3 = C.field
-		t.TextXAlignment = Enum.TextXAlignment.Left
-		t.TextYAlignment = Enum.TextYAlignment.Top
-		t.Size = UDim2.new(1, 0, 0, 0)
-		t.AutomaticSize = Enum.AutomaticSize.Y
-		t.LayoutOrder = nextOrder()
-		pad(t, 6)
-		t.Parent = box
 	end
 end
 
-function Dock:_renderHistory()
-	local h = self.historyBox
-	clear(h)
-	label(h, string.format("HISTORY · %d run%s", #self.history, if #self.history == 1 then "" else "s"),
-		{ font = MONO, size = 12, color = C.muted })
-	for i, run in ipairs(self.history) do
-		if i > 12 then
-			break
-		end
-		local r = run.result or {}
-		local verdict = r.verdict or (if run.kind == "explore" then "EXPLORED" elseif r.reached then "ACHIEVED"
-			else "NOT ACHIEVED")
-		local b = Instance.new("TextButton")
-		b.Name = "Run" .. i
-		b.Text = string.format("%s · %s · %s — %s", os.date("%b %d %H:%M", run.started or 0), mmss(run.seconds or 0),
-			tostring(verdict), string.sub(tostring(run.prompt or ""), 1, 60))
-		b.TextColor3 = C.text
-		b.FontFace = FONT
-		b.TextSize = 14
-		b.TextXAlignment = Enum.TextXAlignment.Left
-		b.TextTruncate = Enum.TextTruncate.AtEnd
-		b.BackgroundColor3 = if i % 2 == 0 then C.panel else C.bg
-		b.BorderSizePixel = 0
-		b.Size = UDim2.new(1, 0, 0, 24)
-		b.LayoutOrder = nextOrder()
-		pad(b, 4)
-		b.Parent = h
-		b.MouseButton1Click:Connect(function()
-			if self.editor.runActive then
-				self:_status("A run is going: its live page stays")
-				return
-			end
-			self.run = { prompt = run.prompt, kind = run.kind, tested = run.tested, started = run.started,
-				seconds = run.seconds, result = run.result, findings = run.findings or {}, events = run.events or {},
-				usage = run.usage }
-			self:_renderPolicy()
-			self:_renderResult()
-			self:_renderFeed()
-		end)
-	end
-end
-
-function Dock:_renderSettings()
-	local s = self.settingsBox
-	clear(s)
-	label(s, "SETTINGS", { font = MONO, size = 12, color = C.muted })
-	local url = input(s, "Agent service URL (empty: ws://127.0.0.1:8765/v1/bridge)", { mono = true,
-		text = Settings.get(self.plugin, "url") or "" })
-	local httpUrl = input(s, "HTTP fallback URL (empty: next port after WebSocket)", { mono = true,
-		text = Settings.get(self.plugin, "http_url") or "" })
-	local token = input(s, "Access token · optional", { mono = true, text = Settings.get(self.plugin, "token") or "" })
-	local function apply()
-		local changed = httpUrl.Text ~= (Settings.get(self.plugin, "http_url") or "")
-			or url.Text ~= (Settings.get(self.plugin, "url") or "")
-			or token.Text ~= (Settings.get(self.plugin, "token") or "")
-		Settings.set(self.plugin, "http_url", httpUrl.Text)
-		Settings.set(self.plugin, "url", url.Text)
-		Settings.set(self.plugin, "token", token.Text)
-		if changed and not self.editor.runActive then
-			self.editor:connect()
-		end
-	end
-	httpUrl.FocusLost:Connect(apply)
-	url.FocusLost:Connect(apply)
-	token.FocusLost:Connect(apply)
-	-- Design brief: sent with every run the dock starts (the start's `design_brief`)
-	label(s, "Design brief", { size = 14 })
-	local brief = input(s, "Optional", { multiline = true, height = 78, name = "DesignBrief",
-		text = self.briefText or Settings.get(self.plugin, "design_brief") or "" })
-	brief:GetPropertyChangedSignal("Text"):Connect(function()
-		self.briefText = brief.Text
-	end)
-	brief.FocusLost:Connect(function()
-		Settings.set(self.plugin, "design_brief", brief.Text)
-	end)
-	label(s, BRIEF_TEXT, { color = C.muted, size = 13 })
-	-- Research agent: the hello's `research`, once flipped (until then the switch shows the agent service's own
-	-- default, on, as Godot's does without Use with Aura)
-	local chosen = Settings.get(self.plugin, "research")
-	local research = if type(chosen) == "boolean" then chosen else true
-	local rrow = frame(s, "Research", true)
-	label(rrow, "Research agent", { width = 0, size = 14 })
-	button(rrow, if research then "Research agent on" else "Research agent off", function()
-		Settings.set(self.plugin, "research", not research)
-		self.editor:helloChanged()
-		self:_renderSettings()
-	end)
-	label(s, RESEARCH_TEXT, { color = C.muted, size = 13 })
-	-- Show Policy Log: the Policy log, and the hello's `inspect`
-	local policy = Settings.get(self.plugin, "show_policy_log") ~= false
-	local prow = frame(s, "PolicyLog", true)
-	label(prow, "Show Policy Log", { width = 0, size = 14 })
-	button(prow, if policy then "Policy log shown" else "Policy log hidden", function()
-		Settings.set(self.plugin, "show_policy_log", not policy)
-		self.editor:helloChanged()
-		self:_renderPolicy()
-		self:_renderSettings()
-	end)
-	label(s, POLICY_TEXT, { color = C.muted, size = 13 })
-	local row = frame(s, "Share", true)
-	local share = Settings.get(self.plugin, "share") ~= false
-	label(row, "Share runs to improve Autopilot", { width = 0, size = 14 })
-	button(row, if share then "Data sharing on" else "Data sharing off", function()
-		self.editor:setSharing(not share)
-	end)
-	label(s, "Enabling this sends agent traces and memories to the developers of Autopilot. Runs are recorded from "
-		.. "Studio's MCP server: turn it on in Assistant, ..., Settings, MCP Servers, Enable Studio as MCP server.",
-		{ color = C.muted, size = 13 })
-	label(s, "Autopilot in Claude Code & Codex: run `autopilot connect claude` or `autopilot connect codex` once, then "
-		.. "ask your agent to \"Use Autopilot to ...\" with this place open.", { color = C.muted, size = 13 })
+-- The live run's "now" line waits for the game: a run's play session starting (Studio asked to play, its client not
+-- attached yet).
+function Dock:waiting(): boolean
+	local ed = self.editor
+	return ed.runActive and ed.starting and not ed.playing
 end
 
 function Dock:stop()
+	self.dead = true
 	for _, c in ipairs(self.conns) do
 		c:Disconnect()
 	end
@@ -1369,5 +1748,8 @@ function Dock:stop()
 		self.root:Destroy()
 	end)
 end
+
+-- (Json kept for the pages that send JSON objects through the editor)
+Dock.Json = Json
 
 return Dock
