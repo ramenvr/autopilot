@@ -1,10 +1,10 @@
 """The Unreal plugin on one engine, live: the engine's own third-person template played headless (-nullrhi: nothing
 is drawn) with an Autopilot build in its Plugins/, driven through the bridge the way a brain drives it. Checks the ops
-whose code differs between engine versions: `rc` reads (sets and maps), `key` (the input path), an Enhanced Input
+whose code differs between engine versions: `rc` reads (sets and maps) and its refusal of an unknown argument or struct field, `key` (the input path), an Enhanced Input
 action, `move`, `view` and `screen`.
 
     python tools/engine_smoke.py --engine "C:/Program Files/Epic Games/UE_5.3" --plugin <an Autopilot build>
-        [--port 8790]
+        [--port 8790] [--templates <an engine with Templates/, for one installed without them>]
 
 The build must keep its runtime module (a BuildPlugin package; not the editor-only one Aura ships). Exits 1 when a
 check fails.
@@ -28,6 +28,7 @@ TEMPLATE = os.path.join("Templates", "TP_ThirdPersonBP")
 
 
 def make_project(engine, plugin, root):
+    """engine: the install whose Templates/ the project is made from."""
     project = os.path.join(root, "Smoke")
     template = os.path.join(engine, TEMPLATE)
     shutil.copytree(os.path.join(template, "Content"), os.path.join(project, "Content"))
@@ -82,10 +83,11 @@ def main():
     ap.add_argument("--engine", required=True)
     ap.add_argument("--plugin", required=True)
     ap.add_argument("--port", type=int, default=8790)
+    ap.add_argument("--templates", help="the engine install to take the template from (default: --engine)")
     ap.add_argument("--keep", action="store_true", help="keep the project folder")
     args = ap.parse_args()
     root = tempfile.mkdtemp(prefix="rg-smoke-")
-    uproject, actions = make_project(args.engine, args.plugin, root)
+    uproject, actions = make_project(args.templates or args.engine, args.plugin, root)
     jump = actions.get("jump")
     log = os.path.join(root, "game.log")
     exe = os.path.join(args.engine, "Engine", "Binaries", *(
@@ -132,6 +134,40 @@ def main():
                 package = value.get("AssetPath", {}).get("PackageName") if isinstance(value, dict) else value
                 same = list(read) == ["Hand"] and str(package).startswith("/Game/Smoke/Cursor")
             check(f"rc: a {'set' if isinstance(written, list) else 'map'} written and read back", same, read)
+
+        # An argument name the function doesn't take, or a struct field the struct doesn't have, is refused (the call
+        # not made), never dropped unread; names are still found case-insensitively
+        def call(obj, fn, params):
+            return link.request("rc", {"verb": "call", "body": {"objectPath": obj, "functionName": fn,
+                                                                 "parameters": params}})
+
+        def refusal(obj, fn, params):
+            try:
+                call(obj, fn, params)
+                return None
+            except bridge.BridgeError as e:
+                return e.error
+
+        math_lib = "/Script/Engine.Default__KismetMathLibrary"
+        length = call(math_lib, "VSize", {"a": {"x": 3, "y": 4, "z": 0}}).get("ReturnValue")
+        check("rc: arguments and struct fields found case-insensitively", length == 5, length)
+        for fn, params, needle in (
+                ("VSize", {"V": {"X": 3, "Y": 4, "Z": 0}}, "VSize on /Script/Engine.Default__KismetMathLibrary: "
+                                                          "unknown argument(s) V; it takes A"),
+                ("VSize", {"A": {"X": 3, "Y": 4, "Zed": 0}}, "A: unknown field(s) Zed for Vector; it has X, Y, Z"),
+                ("Vector_Distance", {"V1": {}, "V2": {}, "V3": {}}, "unknown argument(s) V3; it takes V1, V2")):
+            got = refusal(math_lib, fn, params)
+            check(f"rc: refused {fn} {list(params)}", bool(got) and got.endswith(needle), got)
+        got = refusal(character, "K2_GetActorLocation", {"Relative": True})
+        check("rc: refused an argument of a function that takes none", bool(got) and got.endswith(
+            "unknown argument(s) Relative; it takes no arguments"), got)
+        # (a call that would change the game: not made when a struct argument has an unknown field)
+        before = call(character, "K2_GetActorLocation", {})["ReturnValue"]
+        got = refusal(character, "K2_SetActorLocation", {"NewLocation": {"X": 0, "Y": 0, "Z": 5000, "W": 1},
+                                                         "bSweep": False, "bTeleport": True})
+        after = call(character, "K2_GetActorLocation", {})["ReturnValue"]
+        check("rc: a struct with an unknown field refused, nothing moved", bool(got) and "unknown field(s) W" in got
+              and after == before, f"{got}; {before} -> {after}")
 
         start = location(link, character)
         moved = link.request("move", {"direction": {"X": 1, "Y": 0, "Z": 0}, "scale": 1.0, "seconds": 0.6},
