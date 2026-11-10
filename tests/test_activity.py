@@ -177,11 +177,23 @@ def test_text_and_detail_are_in_the_users_words_and_free_of_secrets(game, tmp_pa
     s, frames, said = open_run(game, tmp_path, monkeypatch)
     s.activity("text", "Jev's turn: key lantern-secret-0123456789", detail="Jev picks. " + "x" * 40000)
     assert frames[0]["text"] == "The agent's turn: key [secret]"
-    assert frames[0]["detail"].startswith("The agent picks.") and len(frames[0]["detail"]) < 30100
-    assert frames[0]["detail"].endswith("more characters)")
-    # a long detail is cut on a line boundary where there is one
-    cut = session._cut_lines("\n".join(f"line {i}" for i in range(5000)), 30000)
-    assert cut.rsplit("\n", 1)[0].endswith(tuple(f"line {i}" for i in range(5000))) and "more characters" in cut
+    # A detail longer than the tabs show is written whole to a file of the run: the detail says where, with the part
+    # of its one long line that fits
+    detail = frames[0]["detail"]
+    kept = os.path.join(s.run_dir, "whole", "activity-1.txt")
+    assert len(detail) <= session.DETAIL_CHARS and kept in detail and "\nThe agent picks. xxx" in detail
+    assert open(kept, encoding="utf-8").read() == "The agent picks. " + "x" * 40000
+    # ... and of many lines, the whole lines that fit
+    s.activity("text", "Lines", detail="\n".join(f"line {i}" for i in range(5000)))
+    detail = frames[1]["detail"]
+    note, *lines = detail.split("\n")
+    assert len(detail) <= session.DETAIL_CHARS and lines == [f"line {i}" for i in range(len(lines))]
+    assert f"Lines 1-{len(lines)} follow" in note and os.path.join(s.run_dir, "whole", "activity-2.txt") in note
+    # a detail already whole in a file is pointed to there, not written again
+    summary = os.path.join(s.run_dir, "trace1_summary.txt")
+    s.activity("episode", "Episode 1", detail="y\n" * 10000, whole_at=summary)
+    assert summary in frames[2]["detail"] and not os.path.exists(os.path.join(s.run_dir, "whole", "activity-3.txt"))
+    assert "activity-1.txt" in open(os.path.join(s.run_dir, "activity.jsonl"), encoding="utf-8").read()
 
 
 def test_tool_calls_as_the_feed_shows_them(tmp_path):
