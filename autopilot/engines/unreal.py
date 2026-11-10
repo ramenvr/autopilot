@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 
 from ..kit.game import GAMEPLAY, KISMET_SYSTEM, GameError, name_of
@@ -20,6 +21,7 @@ ENGINE_CMD = os.path.join(UNREAL, "Engine", "Binaries", "Win64", "UnrealEditor-C
 EDITOR = os.path.join(UNREAL, "Engine", "Binaries", "Win64", "UnrealEditor.exe")
 SOURCE_EXT = (".h", ".hpp", ".cpp", ".inl", ".cs")
 SCRIPT_EXT = ".as"  # AngelScript (the Hazelight engine fork): Script/ beside Source/
+ANGELSCRIPT_MODULE = "Angelscript"  # its script classes are in /Script/Angelscript
 EXPORT_PREFIX = "Saved/AutopilotCodex/"
 
 
@@ -103,7 +105,9 @@ class Unreal(Engine):
 
     def resolve_class(self, game, name):
         """A class path from a name: a path as is; a Blueprint's name (BP_Door) from the codex; a C++ class name
-        (Door, ADoor) in the project's modules or the engine."""
+        (Door, ADoor) in the project's modules or the engine; an AngelScript class name (Door, ADoor) in
+        /Script/Angelscript; else the class of an actor in the level now whose class has that name (a class from
+        another plugin, a Blueprint the codex doesn't have)."""
         if name.startswith("/"):
             return name
         if name in game._classes:
@@ -111,9 +115,11 @@ class Unreal(Engine):
         candidates = []
         if game.codex:
             candidates += game.codex.class_paths(name)
+        # (Unreal drops a C++ class's A or U before a capital; AngelScript does the same with a script class's)
         bare = name[1:] if len(name) > 1 and name[0] in "AU" and name[1].isupper() else name
-        for module in (game.codex.modules() if game.codex else []) + ["Engine"]:
+        for module in (game.codex.modules() if game.codex else []) + [ANGELSCRIPT_MODULE, "Engine"]:
             candidates += [f"/Script/{module}.{bare}"]
+        candidates = list(dict.fromkeys(candidates))
         for c in candidates:
             # A class that exists (loaded) describes; one not loaded yet counts once the level has actors of it
             try:
@@ -127,7 +133,12 @@ class Unreal(Engine):
                     continue
             game._classes[name] = c
             return c
-        raise GameError(f"no class named {name} (tried {', '.join(candidates) or 'nothing'})")
+        c = live_class(game, {name, bare})
+        if c:
+            game._classes[name] = c
+            return c
+        raise GameError(f"no class named {name} (tried {', '.join(candidates)}, and the classes of the level's "
+                        "actors)")
 
     def actors(self, game, cls):
         r = game.call(GAMEPLAY, "GetAllActorsOfClass", WorldContextObject=game.world,
@@ -239,6 +250,39 @@ def owner_actor(path):
     if not sep or len(parts) < 2 or not all(parts[:2]):
         return None
     return f"{head}:{parts[0]}.{parts[1]}"
+
+
+def live_class(game, names):
+    """The class path of an actor in the level now whose class is named one of `names` (any case; a Blueprint's with
+    or without its _C), or None. An actor is named after its class (Door_3, BP_Door_C_2): the actors with one of the
+    names in theirs are asked first, each; then one actor of each other kind of name."""
+    want = {n.lower() for n in names}
+    want |= {n + "_c" for n in want}
+    keys = {n[:-2] if n.endswith("_c") else n for n in want}
+    try:
+        actors = game.all_actors()
+    except GameError:
+        return None
+    likely, kinds = [], {}
+    for a in actors:
+        n = name_of(a).lower()
+        if any(k in n for k in keys):
+            likely.append(a)
+        else:
+            kinds.setdefault(re.sub(r"(_c)?(_\d+)*$", "", n), a)
+    def class_of(a):
+        try:
+            return game.ret(GAMEPLAY, "GetObjectClass", Object=a)
+        except GameError:
+            return None
+
+    # (one by one when already one of game.batch's reads: a batch inside one could wait on itself)
+    nested = threading.current_thread().name.startswith("game")
+    for group in (likely, list(kinds.values())):
+        for c in (map(class_of, group) if nested else game.map(class_of, group)):
+            if isinstance(c, str) and c.rsplit(".", 1)[-1].lower() in want:
+                return c
+    return None
 
 
 def is_packaged(exe):

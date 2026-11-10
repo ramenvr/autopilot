@@ -244,6 +244,69 @@ def test_resolve_class_by_codex_and_name(game, tmp_path):
         game.resolve_class("Nothing")
 
 
+class ScriptClassLink(FakeLink):
+    """A level with an AngelScript class's actor (ASkateRamp: /Script/Angelscript.SkateRamp, its A dropped as for C++),
+    and two of another plugin's classes no name finds: one actor named after its class, one renamed."""
+
+    LEVEL = "/Game/M.M:PersistentLevel."
+    CLASSES = {"SkateRamp_0": "/Script/Angelscript.SkateRamp", "Grinder_0": "/Script/SkatePlugin.Grinder",
+               "Fence_7": "/Script/SkatePlugin.Rail", "Hero_C_0": "/Game/Hero.Hero_C"}
+
+    def __init__(self):
+        super().__init__()
+        self.asked = []
+
+    def request(self, op, args=None, timeout=None):
+        from autopilot.bridge import BridgeError
+
+        if op == "rc":
+            body = args["body"]
+            obj, fn = body.get("objectPath"), body.get("functionName")
+            if args["verb"] == "describe":
+                if obj == "/Script/Angelscript.SkateRamp":
+                    return {"Name": "SkateRamp", "Class": "/Script/CoreUObject.Class"}
+                if obj.startswith("/Script/"):
+                    raise BridgeError(400, f"Object {obj} does not exist")
+            if fn == "GetAllActorsOfClass":
+                cls = body["parameters"]["ActorClass"]
+                if cls == "/Script/Engine.Actor":
+                    return {"OutActors": [self.LEVEL + a for a in self.CLASSES]}
+                return {"OutActors": [self.LEVEL + a for a, c in self.CLASSES.items() if c == cls]}
+            if fn == "GetObjectClass":
+                actor = body["parameters"]["Object"]
+                self.asked.append(actor.rsplit(".", 1)[-1])
+                return {"ReturnValue": self.CLASSES[actor.rsplit(".", 1)[-1]]}
+        return super().request(op, args, timeout)
+
+
+def test_resolve_class_finds_angelscript_classes():
+    link = ScriptClassLink()
+    game = Game(link)
+    for name in ("ASkateRamp", "SkateRamp"):
+        assert game.resolve_class(name) == "/Script/Angelscript.SkateRamp"
+    assert game.actors("ASkateRamp") == ["/Game/M.M:PersistentLevel.SkateRamp_0"]
+    assert link.asked == []  # (found by its path: no actor asked)
+
+
+def test_resolve_class_falls_back_to_the_level_actors_classes():
+    link = ScriptClassLink()
+    game = Game(link)
+    assert game.resolve_class("AGrinder") == "/Script/SkatePlugin.Grinder"
+    assert link.asked == ["Grinder_0"]  # (the actor named after the class, first)
+    assert game.actors("Grinder") == ["/Game/M.M:PersistentLevel.Grinder_0"]
+    link.asked.clear()
+    assert game.resolve_class("Rail") == "/Script/SkatePlugin.Rail"  # (its actor renamed: one actor of each kind)
+    assert sorted(link.asked) == ["Fence_7", "Grinder_0", "Hero_C_0", "SkateRamp_0"]
+    assert game.resolve_class("hero") == "/Game/Hero.Hero_C"  # (a Blueprint's, without its _C, any case)
+    with pytest.raises(GameError) as e:
+        game.resolve_class("ANothing")
+    assert "no class named ANothing" in str(e.value)
+    assert "/Script/Angelscript.Nothing, /Script/Engine.Nothing, and the classes of the level's actors" in str(e.value)
+    # (from inside a batch of reads too: asked one by one there)
+    game = Game(ScriptClassLink())
+    assert game.batch([lambda: game.resolve_class("Rail")] * 16) == ["/Script/SkatePlugin.Rail"] * 16
+
+
 def test_probe_tool(game, tmp_path, monkeypatch):
     from autopilot import codex
     from autopilot.agents import session
