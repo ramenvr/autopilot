@@ -320,9 +320,10 @@ namespace AutopilotCodex
 			}
 			if (const UK2Node_CallFunction* CF = Cast<UK2Node_CallFunction>(N))
 			{
-				// Blueprint-defined functions and events by their own name, so calls grep to their definitions.
+				// Blueprint- and AngelScript-defined functions and events by their own name, so calls grep to their
+				// definitions.
 				const UFunction* F = CF->GetTargetFunction();
-				if (F && Cast<UBlueprintGeneratedClass>(F->GetOwnerClass()) && !N->IsA<UK2Node_CallParentFunction>())
+				if (F && IsScriptedClass(F->GetOwnerClass()) && !N->IsA<UK2Node_CallParentFunction>())
 				{
 					return F->GetName();
 				}

@@ -244,6 +244,69 @@ def test_resolve_class_by_codex_and_name(game, tmp_path):
         game.resolve_class("Nothing")
 
 
+class ScriptClassLink(FakeLink):
+    """A level with an AngelScript class's actor (ASkateRamp: /Script/Angelscript.SkateRamp, its A dropped as for C++),
+    and two of another plugin's classes no name finds: one actor named after its class, one renamed."""
+
+    LEVEL = "/Game/M.M:PersistentLevel."
+    CLASSES = {"SkateRamp_0": "/Script/Angelscript.SkateRamp", "Grinder_0": "/Script/SkatePlugin.Grinder",
+               "Fence_7": "/Script/SkatePlugin.Rail", "Hero_C_0": "/Game/Hero.Hero_C"}
+
+    def __init__(self):
+        super().__init__()
+        self.asked = []
+
+    def request(self, op, args=None, timeout=None):
+        from autopilot.bridge import BridgeError
+
+        if op == "rc":
+            body = args["body"]
+            obj, fn = body.get("objectPath"), body.get("functionName")
+            if args["verb"] == "describe":
+                if obj == "/Script/Angelscript.SkateRamp":
+                    return {"Name": "SkateRamp", "Class": "/Script/CoreUObject.Class"}
+                if obj.startswith("/Script/"):
+                    raise BridgeError(400, f"Object {obj} does not exist")
+            if fn == "GetAllActorsOfClass":
+                cls = body["parameters"]["ActorClass"]
+                if cls == "/Script/Engine.Actor":
+                    return {"OutActors": [self.LEVEL + a for a in self.CLASSES]}
+                return {"OutActors": [self.LEVEL + a for a, c in self.CLASSES.items() if c == cls]}
+            if fn == "GetObjectClass":
+                actor = body["parameters"]["Object"]
+                self.asked.append(actor.rsplit(".", 1)[-1])
+                return {"ReturnValue": self.CLASSES[actor.rsplit(".", 1)[-1]]}
+        return super().request(op, args, timeout)
+
+
+def test_resolve_class_finds_angelscript_classes():
+    link = ScriptClassLink()
+    game = Game(link)
+    for name in ("ASkateRamp", "SkateRamp"):
+        assert game.resolve_class(name) == "/Script/Angelscript.SkateRamp"
+    assert game.actors("ASkateRamp") == ["/Game/M.M:PersistentLevel.SkateRamp_0"]
+    assert link.asked == []  # (found by its path: no actor asked)
+
+
+def test_resolve_class_falls_back_to_the_level_actors_classes():
+    link = ScriptClassLink()
+    game = Game(link)
+    assert game.resolve_class("AGrinder") == "/Script/SkatePlugin.Grinder"
+    assert link.asked == ["Grinder_0"]  # (the actor named after the class, first)
+    assert game.actors("Grinder") == ["/Game/M.M:PersistentLevel.Grinder_0"]
+    link.asked.clear()
+    assert game.resolve_class("Rail") == "/Script/SkatePlugin.Rail"  # (its actor renamed: one actor of each kind)
+    assert sorted(link.asked) == ["Fence_7", "Grinder_0", "Hero_C_0", "SkateRamp_0"]
+    assert game.resolve_class("hero") == "/Game/Hero.Hero_C"  # (a Blueprint's, without its _C, any case)
+    with pytest.raises(GameError) as e:
+        game.resolve_class("ANothing")
+    assert "no class named ANothing" in str(e.value)
+    assert "/Script/Angelscript.Nothing, /Script/Engine.Nothing, and the classes of the level's actors" in str(e.value)
+    # (from inside a batch of reads too: asked one by one there)
+    game = Game(ScriptClassLink())
+    assert game.batch([lambda: game.resolve_class("Rail")] * 16) == ["/Script/SkatePlugin.Rail"] * 16
+
+
 def test_probe_tool(game, tmp_path, monkeypatch):
     from autopilot import codex
     from autopilot.agents import session
@@ -785,12 +848,44 @@ def test_codex_paths_never_leave_the_codex():
     from autopilot.engines.unreal import codex_path
 
     assert codex_path("Source/Game/Door.cpp") == "source/Game/Door.cpp"
+    assert codex_path("Script/Doors/Door.as") == "script/Doors/Door.as"
     assert codex_path("Config/DefaultInput.ini") == "config/DefaultInput.ini"
     assert codex_path("Saved/AutopilotCodex/blueprints/BP_Door.txt") == "blueprints/BP_Door.txt"
     assert codex_path("Game.uproject") == "Game.uproject"
     for bad in ("../x.cpp", "Source/../../x", "/etc/passwd", "C:/Windows/win.ini", "Source\\x.cpp",
-                "Saved/Logs/game.log", "Config/sub/x.ini", ".env", "", None):
+                "Saved/Logs/game.log", "Config/sub/x.ini", ".env", "", None, "Script/../x.as",
+                "Script/PrecompiledScript.Cache",
+                "Script/.vscode/angelscript/unreal-cache.json"):
         assert codex_path(bad) is None, bad
+
+
+def test_angelscript_comes_into_the_codex(tmp_path):
+    from autopilot import codex
+    from autopilot.engines.unreal import copy_source, write_index
+
+    project = tmp_path / "game"
+    (project / "Script" / "Doors").mkdir(parents=True)
+    (project / "Script" / "Doors" / "Door.as").write_text(
+        "UCLASS()\nclass ADoor : AActor\n{\n}\n\nstruct FDoorState\n{\n}\n", encoding="utf-8")
+    (project / "Script" / "Loose.as").write_text("void Open() {}\n", encoding="utf-8")
+    (project / "Script" / "PrecompiledScript.Cache").write_text("no", encoding="utf-8")
+    (project / "Game.uproject").write_text("{}", encoding="utf-8")
+    root = tmp_path / "codex"
+    root.mkdir()
+    assert copy_source(str(project / "Game.uproject"), str(root)) == 2
+    assert sorted(p.relative_to(root).as_posix() for p in (root / "script").rglob("*") if p.is_file()) == [
+        "script/Doors/Door.as", "script/Loose.as"]
+    assert codex.digest(str(root), "script/Doors/Door.as") == "AngelScript: ADoor, FDoorState"
+    assert codex.digest(str(root), "script/Loose.as") == "void Open() {}"
+    write_index(str(root), "Game")
+    assert "| script/ | AngelScript source (Script/) | 2 |" in (root / "README.md").read_text(encoding="utf-8")
+
+
+def test_a_project_without_angelscript_keeps_its_index(tmp_path):
+    from autopilot.engines.unreal import write_index
+
+    write_index(str(tmp_path), "Game")
+    assert "script/" not in (tmp_path / "README.md").read_text(encoding="utf-8")
 
 
 def test_fetch_from_plugin_reads_only_what_changed(tmp_path):
