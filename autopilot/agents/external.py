@@ -33,6 +33,7 @@ import time
 import traceback
 
 from .. import engines, transcripts
+from . import whole
 from .files import FILE_TOOL_SPECS, FILE_TOOLS, FileTools
 from .session import (
     PACKAGE,
@@ -101,6 +102,18 @@ calls. First read {instructions} with read_file, all of it (in parts: it is long
 is. The request and its briefing follow (also in {request}).
 
 {message}"""
+
+# The start call's answer when the request message is longer than one tool result holds (whole.RESULT_CHARS): it is
+# whole in REQUEST.md, and the agent reads both files with read_file
+START_LONG = """Autopilot run {marker} started on {project}: the game is open in the user's editor and paused between
+your calls. The request: {prompt}
+
+Its briefing (what you would read first: notes.md, lib.py, earlier runs, what changed in the codex, where the request's
+words are, what the live game shows now) is {size:,} characters, more than one tool result holds, so it is in a file.
+Read, with read_file and all of each (in parts: a call says where to read on):
+1. {instructions}: how to work and what the kit is;
+2. then {request}: the request and its briefing, whole.
+Then work on the request."""
 
 FRAMES_SPEC = (
     "frames",
@@ -221,7 +234,7 @@ class Desk:
                 text += f" (run {self.marker})"  # (every answer names the run: the describer's transcript is found)
             if tool == "report" and s.report is not None:
                 self.reported_at = time.time()
-            content = [{"type": "text", "text": text + s.steer_note() + s.news() + "\n" + s.clock()}]
+            content = [{"type": "text", "text": s.result(text)}]
             return {"content": content + image_content(images), "isError": False}
 
     def _frames_after(self, args):
@@ -344,6 +357,21 @@ def instructions_text(engine, run_rel):
             .replace("{sweep}", vision.SWEEP))
 
 
+def start_text(marker, project, prompt, message, run_rel):
+    """The start call's answer: the request message inline (START) when the answer fits one tool result, else
+    START_LONG, which points to REQUEST.md (the message, whole) and to INSTRUCTIONS.md."""
+    paths = {"instructions": f"{run_rel}/{INSTRUCTIONS}", "request": f"{run_rel}/{REQUEST}"}
+    text = START.format(marker=marker, project=project, message=message, **paths)
+    if len(text) <= whole.RESULT_CHARS:
+        return text
+    text = START_LONG.format(marker=marker, project=project, prompt=prompt, size=len(message), **paths)
+    if len(text) <= whole.RESULT_CHARS:
+        return text
+    # (the request itself is that long: it is in REQUEST.md too)
+    return START_LONG.format(marker=marker, project=project, size=len(message), **paths,
+                             prompt=f"{len(prompt):,} characters, at the top of {paths['request']}")
+
+
 def implement(game, project, prompt, run_id=None, say=None, client=None, model=None, timeout=None, stop=None,
               steering=None, play_seconds=None, describer=None, desk=None, activity=None):
     """The run, worked on by the user's own agent through desk (a Desk, from the start call); returns the report, as
@@ -369,9 +397,7 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
         message = first_message(session)
         with open(os.path.join(session.run_dir, REQUEST), "w", encoding="utf-8", newline="\n") as f:
             f.write(message)
-        desk.open(session, files, START.format(marker=desk.marker, project=project, message=message,
-                                               instructions=f"{session.run_rel}/{INSTRUCTIONS}",
-                                               request=f"{session.run_rel}/{REQUEST}"))
+        desk.open(session, files, start_text(desk.marker, project, prompt, message, session.run_rel))
         while True:
             if session.report is not None:
                 break

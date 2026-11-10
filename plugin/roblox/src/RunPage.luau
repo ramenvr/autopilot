@@ -519,7 +519,7 @@ function RunPage:_fold(parent: Instance, e: any, label: string, detail: string, 
 	b.LayoutOrder = T.nextOrder()
 	T.pad(b, 44, 0, 0, 0)
 	b.Parent = v
-	local box = T.selectable(v, string.sub(detail, 1, 16000), { multiline = true, size = 11, radius = 4 })
+	local box = T.selectable(v, M.shownDetail(detail), { multiline = true, size = 11, radius = 4 })
 	local indent = Instance.new("UISizeConstraint")
 	indent.MaxSize = Vector2.new(math.huge, 320)
 	indent.Parent = box

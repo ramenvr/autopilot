@@ -371,7 +371,7 @@ def result_frame(report, prompt, kind=None):
         return {"verdict": verdict, "reason": summary, "claim": prompt, "evidence": evidence, "changes": changes,
                 "exit_code": EXIT[verdict], **alerts}
     return {"kind": "goal", "reached": outcome in ("achieved", "CONFIRMED"), "goal": prompt,
-            "notes": [summary] + evidence[:8] + findings[:8], "changes": changes, "exit_code": code, **alerts}
+            "notes": [summary] + evidence + findings, "changes": changes, "exit_code": code, **alerts}
 
 
 def prompt_of(run):
