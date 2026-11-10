@@ -41,6 +41,7 @@ var ui
 var errors := ErrorLog.new()
 var enabled := true
 var counts := {}  # signature -> times seen
+var muted := {}  # detector names and signatures never reported (configure's mute): name -> true
 var config := {"long_fall_seconds": 8.0, "hitch_seconds": 0.75, "hud_every": 0.25, "scan_every": 0.5, "out_of_world_margin": 50.0,
 	"teleport_factor": 3.0, "teleport_min": 1000.0, "growth_seconds": 120.0, "property_every": 0.5}
 var _bodies := {}  # body -> {"at": kit point, "frames", "speed"}: the bodies teleport follows
@@ -74,6 +75,11 @@ func configure(args: Dictionary) -> void:
 	for k in config:
 		if args.has(k):
 			config[k] = float(args[k])
+	if typeof(args.get("mute")) == TYPE_ARRAY:
+		muted.clear()  # (the whole list each time: what is no longer in it is reported again)
+		for entry in args.mute:
+			if typeof(entry) == TYPE_STRING and entry.strip_edges() != "":
+				muted[entry.strip_edges()] = true
 
 
 ## Start afresh (the host's detectors were off, or a run began): what was seen before isn't this run's. The scene counts
@@ -157,6 +163,8 @@ static func _normalize(s: String) -> String:
 
 func _finding(emit: Callable, t: float, f: Dictionary) -> void:
 	var sig: String = f.signature
+	if muted.has(sig) or muted.has(str(f.get("detector", ""))):
+		return  # the project said it isn't a bug
 	var n: int = counts.get(sig, 0) + 1
 	counts[sig] = n
 	if not (n == 1 or n == 10 or n == 100 or n == 1000):
