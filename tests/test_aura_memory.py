@@ -628,3 +628,120 @@ def test_a_path_from_aura_cannot_leave_the_memory_folder(tmp_path):
         with pytest.raises(aura_memory.SyncError):
             aura_memory._inside(folder, bad)
     assert aura_memory._inside(folder, "codex/a.txt") == os.path.join(folder, "codex", "a.txt")
+
+
+# -- one folder for both kinds of runs, from more than one agent service ---------------------------------------------
+
+@pytest.fixture
+def install():
+    s = Storage(token="gti1.install")
+    yield s
+    s.server.shutdown()
+
+
+def lines(data):
+    return data.decode("utf-8").splitlines()
+
+
+def own_keys_run(install, folder, note, run_id):
+    """A shared run with the user's own keys: fetch this install's copy, learn, save it."""
+    install.install_sync().restore(folder)
+    before = read(folder, "notes.md") if os.path.exists(os.path.join(folder, "notes.md")) else ""
+    write(folder, "notes.md", before + note + "\n")
+    write(folder, f"runs/{run_id}/report.json", json.dumps({"run": run_id}))
+    install.install_sync().save(folder)
+
+
+def test_one_folder_for_runs_through_aura_and_own_key_runs_learns_both_ways(storage, install, folders):
+    shared, team_mate = folders
+    play(storage, team_mate, "from a team mate", "r0")
+    play(storage, shared, "through Aura", "r1")
+    own_keys_run(install, shared, "with own keys", "r2")
+    # what the run through Aura learned (and what it fetched from the team) reached this install's copy
+    assert lines(install.files["notes.md"]) == ["from a team mate", "through Aura", "with own keys"]
+    assert {"runs/r0/report.json", "runs/r1/report.json", "runs/r2/report.json"} <= set(install.files)
+    play(storage, shared, "through Aura again", "r3")
+    # and what the run with own keys learned reached the team's
+    assert lines(storage.files["notes.md"]) == ["from a team mate", "through Aura", "with own keys",
+                                                "through Aura again"]
+    assert "runs/r2/report.json" in storage.files
+    storage.sync().restore(team_mate)
+    assert read(team_mate, "notes.md") == read(shared, "notes.md")
+    # once both copies have it all, syncs send nothing more
+    install.install_sync().save(shared)
+    sent = puts(storage), puts(install)
+    assert storage.sync().save(shared) == (0, 0) and install.install_sync().save(shared) == (0, 0)
+    assert storage.sync().restore(shared) == 0 and install.install_sync().restore(shared) == 0
+    assert (puts(storage), puts(install)) == sent
+    assert learned(shared) == storage.files == install.files
+
+
+def test_a_file_removed_from_one_copy_is_never_sent_back_by_the_other(storage, install, folders):
+    shared, team_mate = folders
+    play(storage, shared, "n", "r1")
+    write(shared, "runs/r2/report.json", "{}")
+    storage.sync().save(shared)
+    install.install_sync().save(shared)
+    assert "runs/r1/report.json" in install.files
+    storage.sync().restore(team_mate)
+    os.remove(os.path.join(team_mate, "runs", "r1", "report.json"))
+    storage.sync().save(team_mate)  # (removed from the team's copy)
+    storage.sync().restore(shared)
+    assert not os.path.exists(os.path.join(shared, "runs", "r1", "report.json"))
+    assert install.install_sync().restore(shared) == 0  # (not fetched back from this install's copy)
+    assert not os.path.exists(os.path.join(shared, "runs", "r1", "report.json"))
+    assert install.install_sync().save(shared) == (0, 1) and "runs/r1/report.json" not in install.files
+    assert storage.sync().save(shared) == (0, 0) and "runs/r1/report.json" not in storage.files
+    assert "runs/r2/report.json" in storage.files and "runs/r2/report.json" in install.files
+
+
+def test_a_conflict_reaches_both_copies_once(storage, install, folders):
+    shared, team_mate = folders
+    write(shared, "lib.py", "def pump(): pass\n")
+    storage.sync().save(shared)
+    install.install_sync().save(shared)
+    storage.sync().restore(team_mate)
+    write(team_mate, "lib.py", "def pump(): press(3)\n")
+    storage.sync().save(team_mate)
+    write(shared, "lib.py", "def pump(): hold()\n")  # (a run here changed it too)
+    storage.sync().restore(shared)
+    assert read(shared, "lib.py") == "def pump(): press(3)\n"
+    for _ in range(2):
+        install.install_sync().save(shared)
+        storage.sync().save(shared)
+        install.install_sync().restore(shared)
+        storage.sync().restore(shared)
+    conflicts = {p.split("/")[1] for p in aura_memory.synced_files(shared) if p.startswith("runs/conflict-")}
+    assert len(conflicts) == 1
+    kept = f"runs/{conflicts.pop()}/lib.py"
+    assert read(shared, kept) == "def pump(): hold()\n"
+    assert kept in storage.files and kept in install.files
+    assert install.files["lib.py"] == storage.files["lib.py"] and lines(storage.files["lib.py"]) == [
+        "def pump(): press(3)"]
+    assert learned(shared) == storage.files == install.files
+
+
+def test_two_syncs_of_one_folder_take_turns(storage, install, folders):
+    """A save still going (the last run's, or another agent service's) when a run starts: the run's fetch waits
+    for it, and one that would wait too long is skipped and caught up by the next sync."""
+    shared, _ = folders
+    team_memory(storage)
+    with memory.locked(shared, "saving the memory"):
+        done = []
+        t = threading.Thread(target=lambda: done.append(storage.sync().restore(shared)))
+        t.start()
+        t.join(0.5)
+        assert t.is_alive() and storage.calls == []  # (waiting: nothing listed, nothing fetched)
+    t.join(10)
+    assert done == [3] and read(shared, "notes.md") == "the pump needs 3 presses"
+
+    write(shared, "notes.md", "the pump needs 3 presses\nand a lever\n")
+    impatient = aura_memory.MemorySync(storage.url, "grt1.run", lock_wait=0.2)
+    calls = len(storage.calls)
+    with memory.locked(shared, "fetching the memory"):
+        assert impatient.restore(shared) == 0 and impatient.save(shared) == (0, 0)
+    assert len(storage.calls) == calls  # (skipped: Aura wasn't asked)
+    # (and the codex an older Autopilot stored goes)
+    assert storage.sync().save(shared) == (1, 1) and lines(storage.files["notes.md"])[-1] == "and a lever"
+    assert not os.path.exists(os.path.join(shared, memory.LOCK))
+    assert not [n for n in os.listdir(shared) if n.endswith(memory.TEMP_SUFFIX)]

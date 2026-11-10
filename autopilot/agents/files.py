@@ -12,6 +12,8 @@ from collections import Counter
 
 from . import whole
 
+from .. import memory
+
 MAX_READ_LINES = 2000
 MAX_WRITE_BYTES = 2 * 1024 * 1024
 SKIP_DIRS = {".git", "__pycache__", ".agent", "node_modules"}
@@ -249,9 +251,7 @@ class FileTools:
         data = str(content)
         if len(data.encode("utf-8")) > MAX_WRITE_BYTES:
             raise Refused(f"{path}: over {MAX_WRITE_BYTES} bytes.")
-        os.makedirs(os.path.dirname(full), exist_ok=True)
-        with open(full, "w", encoding="utf-8", newline="\n") as f:
-            f.write(data)
+        memory.write_atomic(full, data)  # (in one step: another run or a memory sync never reads half of it)
         return f"Wrote {self.rel(full)} ({len(data.splitlines())} lines)."
 
     def edit_file(self, path, old, new, replace_all=False):
