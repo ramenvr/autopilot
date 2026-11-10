@@ -638,6 +638,34 @@ def test_the_dock_is_mirrored_in_the_playtests_client():
         assert "_act(" not in body[:body.index("end")], method
 
 
+def test_a_steer_is_a_hint_or_a_redirect_when_the_agent_service_tells_them_apart():
+    """As in the other plugins: with "steer_mode" in the welcome the steer box says play goes on, Send sends a hint and
+    Redirect beside it a redirect (the frame's "mode"); without it one Steer button and no mode, as before. The mirror's
+    dock passes which one back to the edit side."""
+    sources = _sources()
+    editor, mirror, run, dock = (sources[m] for m in ("Editor", "Mirror", "RunPage", "Dock"))
+    assert 'elseif f == "steer_mode" then\n\t\t\t\tself.brainSteerModes = true' in editor
+    steer = _function_body(editor, "function Editor:steer(")
+    assert 'local frame: any = { type = "steer", text = said }' in steer
+    assert 'if self:canRedirect() then\n\t\t\tframe.mode = if redirect then "redirect" else "hint"' in steer
+    assert "return self:canSteer() and self.brainSteerModes" in _function_body(editor, "function Editor:canRedirect(")
+    assert 'local STEER_HINT_MODES = "Add a hint; Autopilot keeps playing"' in run
+    assert 'T.button(well, "Redirect", "default", function()\n\t\tself:_onSteer(true)' in run
+    update = _function_body(run, "function RunPage:_updateSteer(")
+    assert "self.steerBox.PlaceholderText = if modes then STEER_HINT_MODES else STEER_HINT" in update
+    assert 'if modes then "Send" else "Steer"' in update and "self.redirectBtn.Visible = modes" in update
+    assert "T.disable(self.redirectBtn, not now or not typed)" in update
+    send = _function_body(run, "function RunPage:_onSteer(")
+    assert "ed:steer(said, redirecting)" in send and '"You (redirect): "' in send
+    # the mirror: its state carries steer_mode, its Redirect goes back to the edit side as such
+    assert "brainSteerModes = ed.brainSteerModes" in dock
+    assert "self.brainSteerModes = s.brainSteerModes == true" in mirror
+    assert 'self:_act({ action = "steer", text = text, redirect = redirect == true })' in mirror
+    act = _function_body(mirror, "function Mirror.act(")
+    assert "local redirect = f.redirect == true and editor:canRedirect()" in act
+    assert "editor:steer(text, redirect)" in act
+
+
 def test_the_edit_dock_always_comes_back_after_play():
     """The edit dock is hidden only while a mirror says it is drawing (dock_mirror, said every second): stale or gone,
     the edit dock shows again as it was, a stopped mirror clears it at once, the edit mirror's stop shows the dock, and

@@ -181,7 +181,9 @@ var _l_stop: Button
 var _l_steer_row: Control  # steer: the user's words to the live run while it plays
 var _l_steer: LineEdit
 var _l_steer_btn: Button
-var _l_steer_box: BoxContainer  # the box and its button: side by side, or the button under the box in a narrow dock
+var _l_redirect_btn: Button  # (beside Send when the agent service tells hints from redirects)
+var _l_steer_btns: HBoxContainer  # the buttons
+var _l_steer_box: BoxContainer  # the box and its buttons: side by side, or the buttons under the box in a narrow dock
 var _l_track
 var _l_now_title: Label
 var _l_now: Label
@@ -878,6 +880,11 @@ const PROMPT_PLACEHOLDER := "Describe what to verify, reach or explore"
 ## The steer box's placeholder (at every stage), and the Steer button's tooltip before the game plays (the Rollout stage).
 const STEER_HINT := "Send a steering prompt to Autopilot"
 const STEER_WAIT := "You can steer once the game is playing"
+## With an agent service that tells hints from redirects ("steer_mode"): the box's placeholder, its Send button (a hint:
+## play goes on) and Redirect beside it (the attempt playing now ends), with their tooltips once the game plays.
+const STEER_HINT_MODES := "Add a hint; Autopilot keeps playing"
+const STEER_SEND_TIP := "Autopilot reads your hint and keeps playing"
+const STEER_REDIRECT_TIP := "End the current attempt now and play on from your words"
 const RUN_NOTE := "A run is going: stop it or wait for its result."
 
 
@@ -1169,8 +1176,9 @@ func _build_live() -> void:
 	fv.add_child(fm)
 
 	# steer: the user's words to the run while it plays (it goes on from where the game is), in a box at the page's
-	# foot; the words can be typed at any stage, the Steer button sends them once the game plays. The button goes under
-	# the words when the box beside it would be too narrow for its placeholder (_fit_steer_row).
+	# foot; the words can be typed at any stage, the Steer button sends them once the game plays (with an agent service
+	# that tells hints from redirects: Send, a hint, and Redirect, ending the attempt playing now). The buttons go under
+	# the words when the box beside them would be too narrow for its placeholder (_fit_steer_row).
 	_l_steer_box = BoxContainer.new()
 	var sr := _l_steer_box
 	sr.add_theme_constant_override("separation", HT.px(8))
@@ -1182,9 +1190,16 @@ func _build_live() -> void:
 	_l_steer.text_changed.connect(func(_t: String) -> void: _update_steer_button())
 	_l_steer.text_submitted.connect(func(_t: String) -> void: _on_steer())
 	sr.add_child(_l_steer)
+	_l_steer_btns = HBoxContainer.new()
+	_l_steer_btns.add_theme_constant_override("separation", HT.px(6))
+	_l_steer_btns.size_flags_horizontal = Control.SIZE_SHRINK_END  # (under the words: at their right)
+	_l_steer_btns.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_l_steer_btn = _button("Steer", "AutopilotPrimary", _on_steer)
-	_l_steer_btn.size_flags_horizontal = Control.SIZE_SHRINK_END  # (under the words: at their right)
-	sr.add_child(_l_steer_btn)
+	_l_steer_btns.add_child(_l_steer_btn)
+	_l_redirect_btn = _button("Redirect", "Button", func() -> void: _on_steer(true))
+	_l_redirect_btn.visible = false
+	_l_steer_btns.add_child(_l_redirect_btn)
+	sr.add_child(_l_steer_btns)
 	var well := _panel(sr, HT.box(HT.WELL, HT.R_PLATE, HT.LINE, 1, Vector4(12, 6, 6, 6)))
 	_l_steer_row = _panel(well, HT.edge_box(HT.GROUND, HT.RULE, "top", 1, Vector4(16, 10, 16, 12)))
 	_l_steer_row.visible = false
@@ -2604,17 +2619,30 @@ func _update_steer_box() -> void:
 		_l_steer.editable = editable
 		if not editable and _l_steer.has_focus():
 			_l_steer.release_focus()
-	_l_steer.placeholder_text = STEER_HINT
+	var modes: bool = bridge.can_redirect()
+	var hint := STEER_HINT_MODES if modes else STEER_HINT
+	var fit := _l_steer.placeholder_text != hint or _l_redirect_btn.visible != modes
+	_l_steer.placeholder_text = hint
+	_l_steer_btn.text = "Send" if modes else "Steer"
+	_l_redirect_btn.visible = modes
 	_l_steer_box.get_parent().modulate = Color(1, 1, 1, 0.55 if stopping else 1.0)  # (the box dimmed once stopping)
 	_update_steer_button()
+	if fit:
+		_fit_steer_row()
 
 
 func _update_steer_button() -> void:
 	var now: bool = _can_steer_now() and not (active != null and active.stop_asked)
-	_l_steer_btn.disabled = not now or _l_steer.text.strip_edges() == ""
+	var off: bool = not now or _l_steer.text.strip_edges() == ""
+	_l_steer_btn.disabled = off
+	_l_redirect_btn.disabled = off
 	var stopping: bool = active != null and active.stop_asked
-	_l_steer_btn.tooltip_text = STEER_WAIT if not _can_steer_now() and not stopping else ""
-	_l_steer_btn.mouse_filter = Control.MOUSE_FILTER_PASS  # (its tooltip shows while it is disabled)
+	var modes: bool = bridge.can_redirect()
+	var wait := not _can_steer_now() and not stopping
+	_l_steer_btn.tooltip_text = STEER_WAIT if wait else STEER_SEND_TIP if modes and not stopping else ""
+	_l_redirect_btn.tooltip_text = STEER_WAIT if wait else STEER_REDIRECT_TIP if not stopping else ""
+	for b in [_l_steer_btn, _l_redirect_btn]:
+		b.mouse_filter = Control.MOUSE_FILTER_PASS  # (its tooltip shows while it is disabled)
 
 
 ## The button beside the box, or under it when the box beside it would be too narrow for its placeholder.
@@ -2622,25 +2650,27 @@ func _fit_steer_row() -> void:
 	if _l_steer_box == null:
 		return
 	var font: Font = _l_steer.get_theme_font("font")
-	var need: float = (font.get_string_size(STEER_HINT, HORIZONTAL_ALIGNMENT_LEFT, -1, _l_steer.get_theme_font_size("font_size")).x
+	var need: float = (font.get_string_size(_l_steer.placeholder_text, HORIZONTAL_ALIGNMENT_LEFT, -1, _l_steer.get_theme_font_size("font_size")).x
 		+ _l_steer.get_theme_stylebox("normal").get_minimum_size().x + 2.0)
 	# (the room inside the row's padding and the box's: the row's width less both panels' margins)
 	var well: Control = _l_steer_box.get_parent()
 	var outer := _l_steer_row.get_theme_stylebox("panel").get_minimum_size().x
 	var inner := well.get_theme_stylebox("panel").get_minimum_size().x
 	var room: float = (_l_steer_row.size.x - outer - inner - _l_steer_box.get_theme_constant("separation")
-		- _l_steer_btn.get_combined_minimum_size().x)
+		- _l_steer_btns.get_combined_minimum_size().x)
 	var stack := room < need
 	if _l_steer_box.vertical != stack:
 		_l_steer_box.vertical = stack
 
 
-func _on_steer() -> void:
+## Sends the box's words: a hint (Send, Steer, Enter), or with redirect a redirect (Redirect: the attempt playing now ends).
+func _on_steer(redirect := false) -> void:
 	var said := _l_steer.text.strip_edges()
 	if said == "" or not _can_steer_now():
 		return
-	bridge.steer_run(said)
-	active.add_feed("You: %s" % said, "status")
+	redirect = redirect and bridge.can_redirect()
+	bridge.steer_run(said, redirect)
+	active.add_feed(("You (redirect): %s" if redirect else "You: %s") % said, "status")
 	_l_steer.clear()
 	_update_steer_button()
 	_live_changed()

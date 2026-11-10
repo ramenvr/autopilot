@@ -262,7 +262,7 @@ class Sandbox:
         self._write({"type": "stop"})
 
     def end_episode(self):
-        """Ends the episode running in the child now (the user steered), not the run."""
+        """Ends the episode running in the child now (the user redirected), not the run."""
         self._write({"type": "end_episode"})
 
     def close(self):

@@ -2646,5 +2646,63 @@ namespace Autopilot.Playtest.Tests
                 }
             }
         }
+
+        [Test]
+        public void TheSteerBoxSendsAHintOrARedirect()
+        {
+            // An agent service that tells hints from redirects ("steer_mode"): the box says play goes on, Send (a hint)
+            // and Redirect beside it (the attempt playing now ends), both only at the Rollout, everything fitting
+            var c = Client();
+            c.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"layout\", \"features\": [\"account\", \"steer\", \"steer_mode\"]}");
+            c.StartRun(new Dictionary<string, object> { ["kind"] = "explore", ["minutes"] = 20 });
+            Assert.IsTrue(c.CanRedirect);
+            var now = AutopilotText.UnixNow;
+            var live = new AutopilotRun { Id = "layout-steer-modes", Kind = "explore", Started = now - 40, StageSince = now - 40, Prompt = "Explore for 20 minutes", Stage = 1 };
+            AutopilotSession.Runs.Add(live);
+            Assert.AreSame(live, AutopilotSession.Current);
+            var sizes = new[] { 300, 320, 360 }.Select(w => new Vector2Int(w, 700)).Concat(Sizes);
+            foreach (var size in sizes)
+            {
+                foreach (var stage in new[] { 3, AutopilotText.StageRollout })
+                {
+                    live.Stage = stage;
+                    var at = $"at {AutopilotText.Stages[stage]}, {size.x}x{size.y}";
+                    var view = Show(size, v => v.SelectedId = live.Id, v => v.TestUpdateSteer());
+                    var row = host.Q(className: "steer");
+                    var field = row.Q<TextField>();
+                    var send = row.Q(className: "primary");
+                    var redirect = row.Q(className: "steer-redirect");
+                    var rollout = stage == AutopilotText.StageRollout;
+                    Assert.AreEqual(AutopilotView.SteerHintModes, field.textEdition.placeholder, at);
+                    Assert.AreEqual("Add a hint; Autopilot keeps playing", AutopilotView.SteerHintModes);
+                    Assert.AreEqual("Send", send.Q<Label>().text, at);
+                    Assert.AreEqual("Redirect", redirect.Q<Label>().text, at);
+                    Assert.AreEqual(DisplayStyle.Flex, redirect.resolvedStyle.display, $"Redirect shown {at}");
+                    Assert.AreEqual(rollout ? AutopilotView.SteerSendTip : AutopilotView.SteerWaitHint, send.tooltip, at);
+                    Assert.AreEqual(rollout ? AutopilotView.SteerRedirectTip : AutopilotView.SteerWaitHint, redirect.tooltip, at);
+                    field.value = "go round the rocks";
+                    view.TestUpdateSteer();
+                    Assert.AreEqual(rollout, send.enabledInHierarchy, $"Send {at}");
+                    Assert.AreEqual(rollout, redirect.enabledInHierarchy, $"Redirect {at}");
+                    field.value = "";
+                    view.TestUpdateSteer();
+                    Layout();
+                    var text = field.Q<TextElement>();
+                    var room = text.contentRect;
+                    var hint = AutopilotView.SteerHintModes;
+                    foreach (var word in hint.Split(' '))
+                    {
+                        var w = text.MeasureTextSize(word, 0, VisualElement.MeasureMode.Undefined, 0, VisualElement.MeasureMode.Undefined).x;
+                        Assert.LessOrEqual(w, room.width + 0.5f, $"the hint's word \"{word}\" needs {w:0.#} px, the box has {room.width:0.#} {at}");
+                    }
+                    var need = text.MeasureTextSize(hint, room.width, VisualElement.MeasureMode.AtMost, 0, VisualElement.MeasureMode.Undefined);
+                    Assert.LessOrEqual(need.y, room.height + 0.5f, $"\"{hint}\" needs {need.y:0.#} px of height, the box has {room.height:0.#} {at}");
+                    Assert.LessOrEqual(field.worldBound.xMax, send.worldBound.xMin + 0.5f, $"the box beside Send {at}");
+                    Assert.LessOrEqual(send.worldBound.xMax, redirect.worldBound.xMin + 0.5f, $"Redirect after Send {at}");
+                    Assert.LessOrEqual(redirect.worldBound.xMax, row.worldBound.xMax + 0.5f, $"Redirect inside the row {at}");
+                    Assert.IsEmpty(Problems("live, steer modes " + at, size, out _));
+                }
+            }
+        }
     }
 }

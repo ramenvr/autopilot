@@ -587,6 +587,8 @@
     padding: 6px 6px 6px 12px;
 }
 .autopilot .steer-box > .unity-base-text-field { margin-right: 8px; }
+/* (Redirect beside Send, when the agent service tells hints from redirects) */
+.autopilot .steer-box > .steer-redirect { margin-left: 6px; }
 /* (stopping: the box and Steer locked, the whole box at 55 %) */
 .autopilot .steer-box.locked { opacity: 0.55; }
 .autopilot .steer-box.locked > .unity-base-text-field:disabled,

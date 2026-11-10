@@ -683,10 +683,11 @@ bool FAutopilotPanelLayoutTest::RunTest(const FString& Parameters)
 					Attempting->Attempt = WasAttempt;
 				}
 			}
-			// The steer row (as when the agent service takes steer): words can be typed at every stage, in the same place,
-			// its one hint fitting the box (every word within its width, its lines within its height); Steer pressable at
-			// the Rollout only; words typed are kept from stage to stage
+			// The steer row (as when the agent service takes steer and tells hints from redirects): words can be typed at
+			// every stage, in the same place, its one hint fitting the box (every word within its width, its lines within
+			// its height); Send and Redirect pressable at the Rollout only; words typed are kept from stage to stage
 			Panel->TestSteers = true;
+			Panel->TestSteerModes = true;
 			struct FSteerCase { EAutopilotStage Stage; const TCHAR* Name; bool bOpen; };
 			const FSteerCase SteerCases[] = { { EAutopilotStage::Rollout, TEXT("Rollout"), true }, { EAutopilotStage::Launch, TEXT("Launch"), false },
 				{ EAutopilotStage::Analyze, TEXT("Analyze"), false }, { EAutopilotStage::Probe, TEXT("Probe"), false },
@@ -712,7 +713,10 @@ bool FAutopilotPanelLayoutTest::RunTest(const FString& Parameters)
 				TestTrue(*FString::Printf(TEXT("%.0f %s: the steer box in the same place"), Size.Width, Case.Name), At.Equals(SteerAtFirst.GetValue(), 0.5));
 				TestTrue(*FString::Printf(TEXT("%.0f %s: the steer box takes words"), Size.Width, Case.Name), Panel->SteerBox->IsEnabled());
 				const FString Hint = Panel->SteerBox->GetHintText().ToString();
-				TestEqual(*FString::Printf(TEXT("%.0f %s: the steer hint"), Size.Width, Case.Name), Hint, FString(TEXT("Send a steering prompt to Autopilot")));
+				TestEqual(*FString::Printf(TEXT("%.0f %s: the steer hint"), Size.Width, Case.Name), Hint, FString(TEXT("Add a hint; Autopilot keeps playing")));
+				FGeometry RedirectAt;
+				TestTrue(*FString::Printf(TEXT("%.0f %s: Redirect shown beside Send"), Size.Width, Case.Name),
+					Find(Live, LiveRoot, Panel->RedirectButton.Get(), RedirectAt) && RedirectAt.GetAbsolutePosition().X > BoxAt.GetAbsolutePosition().X);
 				const FEditableTextBoxStyle& BoxStyle = FAutopilotStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("Autopilot.TextBox.Bare");
 				const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 				const FSlateFontInfo& Font = BoxStyle.TextStyle.Font;
@@ -742,11 +746,13 @@ bool FAutopilotPanelLayoutTest::RunTest(const FString& Parameters)
 				// Words typed: Steer pressable at the Rollout only, and kept (never sent, never cleared) at the other stages
 				Panel->SteerBox->SetText(FText::FromString(TEXT("go round the rocks to the left first")));
 				LayOut(Live, Main, Size.Height);  // (a widget's enabled state is read again as it is laid out)
-				TestEqual(*FString::Printf(TEXT("%.0f %s: Steer pressable"), Size.Width, Case.Name), Panel->SteerButton->IsEnabled(), Case.bOpen);
+				TestEqual(*FString::Printf(TEXT("%.0f %s: Send pressable"), Size.Width, Case.Name), Panel->SteerButton->IsEnabled(), Case.bOpen);
+				TestEqual(*FString::Printf(TEXT("%.0f %s: Redirect pressable"), Size.Width, Case.Name), Panel->RedirectButton->IsEnabled(), Case.bOpen);
 				if (!Case.bOpen)
 				{
 					const int32 Lines0 = Going->Feed.Num();
 					Panel->OnSteer();
+					Panel->OnSteer(true);
 					TestEqual(*FString::Printf(TEXT("%.0f %s: the words kept"), Size.Width, Case.Name), Panel->SteerBox->GetText().ToString(),
 						FString(TEXT("go round the rocks to the left first")));
 					TestEqual(*FString::Printf(TEXT("%.0f %s: nothing sent"), Size.Width, Case.Name), Going->Feed.Num(), Lines0);
@@ -754,6 +760,7 @@ bool FAutopilotPanelLayoutTest::RunTest(const FString& Parameters)
 			}
 			Panel->SteerBox->SetText(FText::GetEmpty());
 			Panel->TestSteers.Reset();
+			Panel->TestSteerModes.Reset();
 			LiveSession.Runs.Remove(Going);
 			Panel->SelectedId = INDEX_NONE;
 		}
@@ -2300,6 +2307,11 @@ bool FAutopilotStatusLineTest::RunTest(const FString& Parameters)
 		Panel->FeedSteerBox->SetText(FText::FromString(TEXT("go left")));
 		TestEqual(TEXT("the words, whichever box"), Panel->SteerText(), FString(TEXT("go left")));
 		TestEqual(TEXT("the steer hint, at any stage"), Panel->FeedSteerBox->GetHintText().ToString(), FString(TEXT("Send a steering prompt to Autopilot")));
+		TestFalse(TEXT("no Redirect without the agent service's steer_mode"), Panel->FeedRedirectButton->GetVisibility() == EVisibility::Visible);
+		Panel->TestSteerModes = true;  // (an agent service that tells hints from redirects)
+		TestEqual(TEXT("the hint's words, with steer modes"), Panel->FeedSteerBox->GetHintText().ToString(), FString(TEXT("Add a hint; Autopilot keeps playing")));
+		TestTrue(TEXT("Redirect, with steer modes"), Panel->FeedRedirectButton->GetVisibility() == EVisibility::Visible);
+		Panel->TestSteerModes.Reset();
 	}
 
 	// Back to the last run: the connect card, disconnected, after a run was shown
