@@ -28,8 +28,6 @@ def change_text(change):
             text += f" with {json.dumps(params, default=str)}"
     else:
         text = f"Set {name}.{change.get('property')} to {json.dumps(change.get('value'), default=str)}"
-    if len(text) > 200:
-        text = text[:197] + "..."
     if change.get("why"):
         text += f" ({plain_words(change['why'])})"
     return text
