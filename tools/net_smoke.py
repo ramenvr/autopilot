@@ -5,25 +5,33 @@ reads its Play settings when Play In Editor starts, and a run must not change th
 
     client      Play As Client, one client, one process: the player is the client's (input, view, screen, frames),
                 the server's copies are named, pausing reaches the server, restarts come back to the client
-    clients2    two clients: the first one's player is played, and only it moves
+    clients2    two clients: player 1 is the first one's, player 2 the second's ("player": 2), each moving alone
     separate    Run Under One Process off: the server is another process; play works, pausing says it can't
     listen      Play As Listen Server: the player hosts the game
+    listen2     a listen server and a client: player 1 hosts, player 2 is the client, each driven apart (keys, moves,
+                Enhanced Input, the mouse's turn, view, screen, context), a third player is a 404, the pointer is
+                player 1's, and another number of players is refused
     standalone  Play Standalone: as before
 
     python tools/net_smoke.py --engine "C:/Program Files/Epic Games/UE_5.4" --work C:/Users/me/nettest
         [--plugin <an Autopilot build>] [--template <a TP_ThirdPersonBP folder>] [--modes client,listen] [--port 8791]
+        [--rendered]
 
 Without --plugin, the test game is the C++ template with tools/net_smoke/Source in it (a training dummy only its
 server changes, and an attack, F, that the server carries out), built with this checkout's plugin source. With
 --plugin (a BuildPlugin package, e.g. a release zip's Autopilot/), the Blueprint template is played instead (no
 compiler needed) and the dummy's checks are skipped; --template gives the Blueprint template for an engine installed
-without templates. The editor's window is rendered (frames are checked). Exits 1 when a check fails.
+without templates. The editor runs headless (-nullrhi: stills answer that there is no picture); --rendered draws its
+window and checks the frames (a rendered editor beside other work can take a machine's GPU driver down: only on
+purpose). Exits 1 when a check fails.
 """
 
 import argparse
 import base64
+import glob
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -48,6 +56,7 @@ MODES = {  # mode: (PlayNetMode, clients, RunUnderOneProcess)
     "clients2": ("PIE_Client", 2, True),
     "separate": ("PIE_Client", 1, False),
     "listen": ("PIE_ListenServer", 1, True),
+    "listen2": ("PIE_ListenServer", 2, True),
     "standalone": ("PIE_Standalone", 1, True),
 }
 
@@ -84,10 +93,22 @@ def make_project(engine, work, plugin, template):
     uproject = os.path.join(project, f"{name}.uproject")
     with open(uproject, encoding="utf-8-sig") as f:
         descriptor = json.load(f)
-    descriptor["Plugins"] = [{"Name": "Autopilot", "Enabled": True}, {"Name": "EnhancedInput", "Enabled": True}]
+    # (the template's own plugins stay: a newer template's code needs them, e.g. StateTree)
+    ours = ("Autopilot", "EnhancedInput")
+    descriptor["Plugins"] = [p for p in descriptor.get("Plugins") or [] if p.get("Name") not in ours]
+    descriptor["Plugins"] += [{"Name": "Autopilot", "Enabled": True}, {"Name": "EnhancedInput", "Enabled": True}]
     with open(uproject, "w", encoding="utf-8") as f:
         json.dump(descriptor, f, indent="\t")
     if cpp:
+        # (a template of another engine version, --template: its targets build with this engine's settings, as an
+        # installed engine's shared build environment requires)
+        for target in glob.glob(os.path.join(project, "Source", "*.Target.cs")):
+            with open(target, encoding="utf-8-sig") as f:
+                text = f.read()
+            text = re.sub(r"BuildSettingsVersion\.\w+", "BuildSettingsVersion.Latest", text)
+            text = re.sub(r"EngineIncludeOrderVersion\.\w+", "EngineIncludeOrderVersion.Latest", text)
+            with open(target, "w", encoding="utf-8") as f:
+                f.write(text)
         build = os.path.join(engine, "Engine", "Build", "BatchFiles", "Build.bat")
         log = os.path.join(work, "build.log")
         print(f"building the test game ({log})", flush=True)
@@ -119,8 +140,8 @@ class Game:
     def __call__(self, op, args=None, timeout=30):
         return self.link.request(op, args or {}, timeout=timeout)
 
-    def context(self):
-        return self("context")
+    def context(self, player=None):
+        return self("context", {"player": player} if player else None)
 
     def call(self, obj, function, **params):
         return self("rc", {"verb": "call", "body": {"objectPath": obj, "functionName": function,
@@ -185,6 +206,13 @@ def check_play(game, check, ctx, mode):
     check("view: answers", isinstance(view, dict) and "camera" in view, ", ".join(list(view)[:6]))
     screen = game("screen")
     check("screen: answers", isinstance(screen.get("texts"), dict))
+    if "media" not in (game.link.hello.get("features") or []):
+        try:
+            game("capture", {"max_dim": 640, "quality": 80}, timeout=20)
+            check("capture: a headless game says it has no picture", False, "a picture came")
+        except bridge.BridgeError as e:
+            check("capture: a headless game says it has no picture", "no picture" in e.error, e.error)
+        return
     try:
         still = game("capture", {"max_dim": 640, "quality": 80}, timeout=20)
         jpeg = base64.b64decode(still["jpeg"])
@@ -231,6 +259,111 @@ def check_pause(game, check, ctx, cpp):
         check("unpause: the dummy walks again", moved(a, b) > 5, f"{moved(a, b):.0f} units")
 
 
+def check_players(game, check, ctx, mode):
+    """Two players in one editor: player 2 ("player": 2) has its own world, pawn, controller, keys, moves, Enhanced
+    Input, turn, view and screen, and what one player is told to do moves it alone; a third player is a 404, the pointer
+    is player 1's only, and a restart asking for another number of players is refused (the Play settings' stand)."""
+    check("hello: says it plays several players", "players" in (game.link.hello.get("features") or []),
+          game.link.hello.get("features"))
+    listed = ctx.get("players") or []
+    check("context: both players listed, player 1 the run's",
+          [p.get("player") for p in listed] == [1, 2] and listed[0].get("you") is True and ctx.get("you") == 1, listed)
+    two = game.until(lambda: (lambda c: c if c.get("character") else None)(game.context(2)), seconds=30)
+    if not two:
+        check("context: player 2's pawn", False, game.context(2))
+        return
+    first = "UEDPIE_2_" if mode == "clients2" else "UEDPIE_1_"  # (after a dedicated server and the first client)
+    check("context: player 2's own world, pawn and controller",
+          first in two["world"] and two["character"] != ctx["character"] and first in two["character"]
+          and two.get("you") == 2 and bool(two["controller"]) and bool(two["input_subsystem"]),
+          f"{two['world']} {two['character']} {two['controller']}")
+    net2 = two.get("net") or {}
+    check("context: player 2 is a client of the game, of 2 players",
+          net2.get("mode") == "client" and net2.get("players") == 2 and net2.get("player") == 2, net2)
+    if mode == "listen2":
+        check("context: player 2's server copy is in player 1's world",
+              "UEDPIE_0_" in net2.get("server_character", ""), net2.get("server_character"))
+    pawns = {1: ctx["character"], 2: two["character"]}
+
+    def where():
+        return location(game.link, pawns[1]), location(game.link, pawns[2])
+
+    def only(name, mover, act, settle=0.5):
+        """act() moves player `mover` (1 or 2): it walks, the other stands."""
+        a1, a2 = where()
+        act()
+        time.sleep(settle)
+        b1, b2 = where()
+        walked, stood = (moved(a2, b2), moved(a1, b1)) if mover == 2 else (moved(a1, b1), moved(a2, b2))
+        check(f"{name}: player {mover} walked, the other stood", walked > 50 and stood < 5,
+              f"walked {walked:.0f}, other {stood:.0f}")
+
+    time.sleep(2.0)  # (the client's pawn just spawned may still be dropping onto the floor)
+    forward = {"direction": {"X": 1, "Y": 0, "Z": 0}, "scale": 1.0, "seconds": 0.8}
+    only("move", 2, lambda: game("move", {**forward, "player": 2}, timeout=10))
+    only("move", 1, lambda: game("move", forward, timeout=10))
+
+    def hold_w(player):
+        whose = {"player": player} if player else {}
+        game("key", {"key": "W", "mode": "hold", "lease": 2.0, **whose})
+        time.sleep(0.8)
+        game("key", {"key": "W", "mode": "release", **whose})
+
+    only("key: W held", 2, lambda: hold_w(2))
+    only("key: W held", 1, lambda: hold_w(None))
+
+    def action(player):
+        game("input", {"action": MOVE, "value": {"X": 0, "Y": 1, "Z": 0}, "mode": "hold", "player": player})
+        time.sleep(0.6)
+        game("input", {"action": MOVE, "mode": "release", "player": player})
+
+    only("input: the Enhanced Input move action", 2, lambda: action(2))
+    z1, z2 = location(game.link, pawns[1])[2], location(game.link, pawns[2])[2]
+    game("key", {"key": "SpaceBar", "mode": "press", "player": 2})
+    peak1, peak2 = z1, z2
+    for _ in range(12):
+        time.sleep(0.05)
+        peak1, peak2 = max(peak1, location(game.link, pawns[1])[2]), max(peak2, location(game.link, pawns[2])[2])
+    check("key: player 2's SpaceBar jumped player 2 alone", peak2 - z2 > 20 and peak1 - z1 < 5,
+          f"player 2 rose {peak2 - z2:.0f}, player 1 {peak1 - z1:.0f}")
+    time.sleep(1.2)
+    yaw1, yaw2 = yaw(game.link, ctx["controller"]), yaw(game.link, two["controller"])
+    game("key", {"key": "MouseX", "mode": "hold", "value": 4.0, "lease": 0.3, "player": 2})
+    time.sleep(0.6)
+    turned1 = abs(((yaw(game.link, ctx["controller"]) - yaw1) + 180) % 360 - 180)
+    turned2 = abs(((yaw(game.link, two["controller"]) - yaw2) + 180) % 360 - 180)
+    check("key: player 2's MouseX turned player 2's view alone", turned2 > 2 and turned1 < 0.5,
+          f"player 2 {turned2:.0f} degrees, player 1 {turned1:.1f}")
+    view1, view2 = game("view", {"max_count": 4}), game("view", {"max_count": 4, "player": 2})
+    check("view: player 2's own camera", isinstance(view2, dict) and view2.get("camera") != view1.get("camera"),
+          f"{view1.get('camera')} / {view2.get('camera')}")
+    check("screen: player 2's answers", isinstance(game("screen", {"player": 2}).get("texts"), dict))
+    for name, op, args, status, words in (
+            ("a third player is a 404 that counts the players", "context", {"player": 3}, 404, "2 players"),
+            ("the pointer is player 1's only", "pointer", {"screen_x": 0, "screen_y": 0, "player": 2}, None,
+             "player 1's only"),
+            ("another number of players is refused", "session", {"action": "restart", "players": 3}, 400,
+             "can't be changed")):
+        try:
+            game(op, args)
+            check(name, False, "it went through")
+        except bridge.BridgeError as e:
+            check(name, words in e.error and (status is None or e.status == status), f"{e.status}: {e.error}")
+    check("session: still playing after the refused restart", game.context().get("session_running") is True)
+    restarted = game("session", {"action": "restart", "players": 2}, timeout=180)
+    again = game.context()
+    check("session: a restart with the same players plays both again at once",
+          restarted.get("running") is True and [p.get("player") for p in again.get("players") or []] == [1, 2],
+          again.get("players"))
+    two = game.until(lambda: (lambda c: c if c.get("character") else None)(game.context(2)), seconds=30)
+    if not two:
+        check("session: player 2's pawn after the restart", False, game.context(2))
+        return
+    pawns.update({1: again["character"], 2: two["character"]})
+    time.sleep(2.0)
+    only("move after the restart", 2, lambda: game("move", {**forward, "player": 2}, timeout=10))
+
+
 def check_mode(game, check, mode, cpp):
     started = game("session", {"action": "start"}, timeout=120)
     check("session: started", started.get("running") is True, started)
@@ -252,8 +385,8 @@ def check_mode(game, check, mode, cpp):
                   and "UEDPIE_0_" in net.get("server_controller", ""), net)
             check("context: clients counted", net.get("clients") == MODES[mode][1], net.get("clients"))
     else:
-        check(f"context: {mode}", net.get("mode") == {"listen": "listen_server"}.get(mode, mode)
-              and "UEDPIE_0_" in world, f"{world} {net}")
+        want = "listen_server" if mode.startswith("listen") else mode
+        check(f"context: {mode}", net.get("mode") == want and "UEDPIE_0_" in world, f"{world} {net}")
     check("context: the local player's controller and input", bool(ctx["controller"] and ctx["input_subsystem"]),
           f"{ctx['controller']} {ctx['input_subsystem']}")
 
@@ -266,6 +399,8 @@ def check_mode(game, check, mode, cpp):
         time.sleep(0.5)
         walked = {p.rsplit(".", 1)[-1]: round(moved(before[p], location(game.link, p))) for p in others}
         check("move: the other client's player stood still", bool(others) and max(walked.values()) < 5, walked)
+    if mode in ("clients2", "listen2"):
+        check_players(game, check, ctx, mode)
         return
 
     check_play(game, check, ctx, mode)
@@ -306,14 +441,15 @@ def check_mode(game, check, mode, cpp):
             check("session: the player walks after the restart", walked > 50, f"{walked:.0f} units")
 
 
-def run_mode(engine, uproject, mode, port, cpp, check):
+def run_mode(engine, uproject, mode, port, cpp, check, rendered=False):
     set_play(uproject, mode)
     log = os.path.join(os.path.dirname(uproject), f"editor-{mode}.log")
     exe = os.path.join(engine, "Engine", "Binaries", "Win64", "UnrealEditor.exe")
     url = f"ws://127.0.0.1:{port}/v1/bridge"
     print(f"== {mode} ({log})", flush=True)
     editor = subprocess.Popen([exe, uproject, "-unattended", "-nosplash", "-nosound", "-log", "-Playtest=goal",
-                               "-PlaytestStayOpen", f"-PlaytestUrl={url}", "-PlaytestShare=0", f"-abslog={log}"],
+                               "-PlaytestStayOpen", f"-PlaytestUrl={url}", "-PlaytestShare=0", f"-abslog={log}"]
+                              + ([] if rendered else ["-nullrhi"]),
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     link = None
     try:
@@ -340,6 +476,8 @@ def main():
     ap.add_argument("--modes", default=",".join(MODES))
     ap.add_argument("--port", type=int, default=8791)
     ap.add_argument("--reuse", action="store_true", help="play the test game already in --work (built before)")
+    ap.add_argument("--rendered", action="store_true",
+                    help="draw the editor's window (frames checked): on purpose only")
     args = ap.parse_args()
     os.makedirs(args.work, exist_ok=True)
     if args.reuse:
@@ -348,9 +486,12 @@ def main():
         cpp = names[0] == "TP_ThirdPerson.uproject"
     else:
         uproject, cpp = make_project(args.engine, args.work, args.plugin, args.template)
+    global MOVE  # (a newer template keeps its input actions in /Game/Input)
+    if os.path.exists(os.path.join(os.path.dirname(uproject), "Content", "Input", "Actions", "IA_Move.uasset")):
+        MOVE = "/Game/Input/Actions/IA_Move.IA_Move"
     check = Checks()
     for mode in args.modes.split(","):
-        run_mode(args.engine, uproject, mode, args.port, cpp, check)
+        run_mode(args.engine, uproject, mode, args.port, cpp, check, rendered=args.rendered)
     verdict = "all checks passed" if not check.failed else "FAILED: " + ", ".join(check.failed)
     print(f"{os.path.basename(args.engine)}: {verdict}")
     sys.exit(1 if check.failed else 0)
