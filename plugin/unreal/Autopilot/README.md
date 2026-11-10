@@ -607,6 +607,7 @@ The plugin has three modules:
 | `Private/PlaytestOpsUI.cpp` | `screen`, `ui`, `ui_act` |
 | `Private/PlaytestOpsView.cpp` | `view`: what the player sees and what its body feels |
 | `Private/PlaytestOpsOpenings.cpp`, `Private/PlaytestOpsSonar.cpp` | view's `openings` and `ways_up`, and its `sonar` |
+| `Private/PlaytestOpsTrace.cpp` | `trace`: a line trace or sphere sweep through the played world, on the pawn's own collision channel and responses (`sight`: Visibility) |
 | `Private/PlaytestOpsLook.cpp` | how a thing is drawn (meshes, effects, lights, animation), for `view` and `watch` |
 | `Private/PlaytestOpsWatch.cpp` | `watch`: what changes over a stretch of game time |
 | `Private/PlaytestDetectors.cpp` | the in-engine bug detectors |
