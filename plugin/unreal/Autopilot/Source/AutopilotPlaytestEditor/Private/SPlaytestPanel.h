@@ -126,6 +126,10 @@ private:
 	TSharedRef<SWidget> MakeVerdictBanner(const TSharedPtr<FAutopilotRun>& Run);
 	TSharedRef<SWidget> MakeAgentCard(const TSharedPtr<FAutopilotRun>& Run, const FString& Note, const TSharedPtr<FAutopilotFinding>& Finding);
 	TSharedRef<SWidget> MakeEngineCard(const TSharedPtr<FAutopilotRun>& Run, const TSharedPtr<FAutopilotFinding>& Finding);
+	/** One card for a detector with many kinds of finding in a run (FAutopilotRun::FindingGroupAt): every kind named, and
+	 *  Show each / Hide for the detector's own cards under it (OpenGroups). */
+	TSharedRef<SWidget> MakeEngineGroupCard(const TSharedPtr<FAutopilotRun>& Run, const TArray<TSharedPtr<FAutopilotFinding>>& Group);
+	static FString GroupKey(const FAutopilotRun& Run, const FString& Detector);
 	TSharedRef<SWidget> MakeFindingButtons(const TSharedPtr<FAutopilotRun>& Run, const TSharedPtr<FAutopilotFinding>& Finding);
 	TSharedRef<SWidget> MakeRunTag(const TSharedPtr<FAutopilotRun>& Run);
 	/** The run picked (or Shown: the layout test's) in the result view. */
@@ -387,6 +391,7 @@ private:
 	FString ConnectShownKey;
 	TWeakPtr<SButton> SettingsRerunSetup;     // the Settings page's (rebuilt with the account)
 	bool bConfirmReset = false;  // Reset memory asked, not yet answered
+	TSet<FString> OpenGroups;  // the finding groups whose own cards are shown (GroupKey: run and detector)
 	bool bConfirmRemove = false;      // Uninstall asked, not yet answered
 	TWeakPtr<SButton> RemoveAskButton;  // (the Uninstall that asks: the tests press this one, never the confirmation's)
 	bool bRemoveDeletesMemory = false;  // its Delete Autopilot's memories (unticked each time it asks)

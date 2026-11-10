@@ -65,3 +65,7 @@ pause_menu={
 "deadzone": 0.2,
 "events": [Object(InputEventKey,"physical_keycode":4194305)]
 }
+reset={
+"deadzone": 0.2,
+"events": [Object(InputEventKey,"physical_keycode":82)]
+}

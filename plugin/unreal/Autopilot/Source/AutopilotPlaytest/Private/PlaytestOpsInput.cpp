@@ -107,6 +107,7 @@ namespace
 			return;
 		}
 		SendKey(PC, Key, IE_Pressed);
+		Bridge.GetDetectors().NoteAgentInput(Name);
 		if (Mode == TEXT("hold"))
 		{
 			Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
@@ -157,6 +158,10 @@ namespace
 			return;
 		}
 		const FString Mode = StringField(Args, TEXT("mode"));
+		if (Mode != TEXT("release"))
+		{
+			Bridge.GetDetectors().NoteAgentInput(Action->GetName());
+		}
 		TSharedPtr<FJsonObject> ValueJson = ObjectField(Args, TEXT("value"));
 		const FVector V = ValueJson.IsValid() ? VectorField(Args, TEXT("value")) : FVector(1, 0, 0);
 		const FInputActionValue Value(Action->ValueType, V);
@@ -368,6 +373,7 @@ namespace
 				if (!bAxis)
 				{
 					SendKey(PC, Key, IE_Pressed);  // goes down once and stays down
+					Bridge.GetDetectors().NoteAgentInput(Key.ToString());
 				}
 			}
 			Held->Value = (float)Value;
@@ -390,6 +396,7 @@ namespace
 			return;
 		}
 		SendKey(PC, Key, IE_Pressed);
+		Bridge.GetDetectors().NoteAgentInput(Key.ToString());
 		TWeakObjectPtr<APlayerController> WeakPC(PC);
 		FPending Pending;
 		Pending.Id = Id;

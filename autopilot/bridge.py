@@ -24,6 +24,8 @@ import requests
 
 import autopilot
 
+from .detectors import is_muted
+
 PROTOCOL = 1
 TIMEOUT = 30.0  # seconds to wait for an answer from the game
 DEFERRED_SLACK = 15.0  # extra seconds for requests that answer when they finish (move, watch)
@@ -336,7 +338,7 @@ class Link:
             self.last_heartbeat = time.time()
         elif kind == "finding":
             finding = dict(event.get("finding", {}))
-            if self.muted and (finding.get("signature") in self.muted or finding.get("detector") in self.muted):
+            if self.muted and is_muted(finding, self.muted):
                 return
             finding.setdefault("t", event.get("t"))
             self.findings.append(finding)

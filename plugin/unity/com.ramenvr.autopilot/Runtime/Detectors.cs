@@ -2,9 +2,10 @@
 // steps are caught too. log_error (errors, exceptions and failed asserts in the log), nan (a body's transform not
 // finite), out_of_world (a body far below the level or beyond any sane distance), long_fall (the player falling for
 // 8 s), hitch (a frame longer than 0.75 s), hud_fraction (on-screen text a/b with a > b > 0), and as Unreal's:
-// teleport (a character moving farther in one frame than its speed allows), actor_growth (the objects of one kind
-// growing for 2 minutes: a leak), clamp (a game script's number outside its [Range] or [Min]) and over_max (a number
-// field above its sibling maximum: health above maxHealth).
+// teleport (a character moving farther in one frame than its speed allows; never what the agent's own rc moved, and
+// right after the agent's key press told as info), actor_growth (the objects of one kind the game made while playing,
+// not what a scene brought, growing for 2 minutes: a leak), clamp (a game script's number outside its [Range] or
+// [Min]) and over_max (a number field above its sibling maximum: health above maxHealth).
 
 using System;
 using System.Collections.Concurrent;
@@ -97,9 +98,71 @@ namespace Autopilot.Playtest
         double growthSeconds = 120.0;
         double propertyEvery = 0.5;
 
-        /// <summary>The frame the bridge last moved or called something in the game (rc): a teleport then is the
-        /// agent's own (a verification's setup), not the game's.</summary>
-        public static int BridgeActedFrame = -10;
+        double teleportAfterInputSeconds = 1.0;  // a teleport this soon after the agent's key press: told as info
+
+        /// <summary>The frames, of those that advance game time, a teleport is still the agent's own after an rc write
+        /// or call (a verification's setup, research's teleport): NoteAgentMove sets it, each teleport check counts
+        /// one down.</summary>
+        static int agentMoveFrames;
+
+        /// <summary>The agent's last key press, action or UI press (NoteAgentInput): its name and game time.</summary>
+        static string agentInputKey;
+        static double agentInputAt = double.NegativeInfinity;
+
+        /// <summary>The agent moved or changed something in the game directly (an rc write or call): a teleport in the
+        /// next 3 frames is its own, not the game's.</summary>
+        public static void NoteAgentMove()
+        {
+            agentMoveFrames = 3;
+        }
+
+        /// <summary>The agent pressed something (a key going down, an action, a UI element): a teleport soon after is
+        /// still told, as info naming it (a reset key may teleport on purpose).</summary>
+        public static void NoteAgentInput(string key)
+        {
+            if (!Application.isPlaying || string.IsNullOrEmpty(key)) return;
+            agentInputKey = key;
+            agentInputAt = Time.timeAsDouble;
+        }
+
+        /// <summary>Play mode starting over (domain reload off keeps statics).</summary>
+        public static void ResetAgentActs()
+        {
+            agentMoveFrames = 0;
+            agentInputKey = null;
+            agentInputAt = double.NegativeInfinity;
+            sceneBorn.Clear();
+        }
+
+        // -- what came in with a scene (actor_growth counts only what the game made while playing) -------------------
+
+        /// <summary>Per loaded scene, the Transforms it had when it loaded.</summary>
+        static readonly Dictionary<UnityEngine.SceneManagement.Scene, HashSet<Transform>> sceneBorn =
+            new Dictionary<UnityEngine.SceneManagement.Scene, HashSet<Transform>>();
+
+        /// <summary>SceneManager.sceneLoaded: what the scene brings (its objects, inactive too) is the level's, not
+        /// spawned while playing; an additive scene streamed in doesn't count as growth.</summary>
+        public static void NoteSceneLoaded(UnityEngine.SceneManagement.Scene scene)
+        {
+            if (!scene.IsValid() || !scene.isLoaded) return;
+            var born = new HashSet<Transform>();
+            foreach (var root in scene.GetRootGameObjects())
+                born.UnionWith(root.GetComponentsInChildren<Transform>(true));
+            sceneBorn[scene] = born;
+        }
+
+        public static void NoteSceneUnloaded(UnityEngine.SceneManagement.Scene scene)
+        {
+            sceneBorn.Remove(scene);
+        }
+
+        static bool CameWithScene(Transform t)
+        {
+            foreach (var set in sceneBorn.Values)
+                if (set.Contains(t))
+                    return true;
+            return false;
+        }
 
         sealed class Track
         {
@@ -141,6 +204,7 @@ namespace Autopilot.Playtest
             teleportMin = Json.Num(args, "teleport_min", teleportMin);
             growthSeconds = Json.Num(args, "growth_seconds", growthSeconds);
             propertyEvery = Json.Num(args, "property_every", propertyEvery);
+            teleportAfterInputSeconds = Json.Num(args, "teleport_after_input_seconds", teleportAfterInputSeconds);
             maxDistance = Json.Num(args, "max_distance", maxDistance);
             if (args != null && args.TryGetValue("mute", out var mute) && mute is IEnumerable<object> names)
             {
@@ -167,6 +231,9 @@ namespace Autopilot.Playtest
             Dictionary<string, object> details = null)
         {
             if (muted.Contains(detector) || muted.Contains(signature)) return;  // the project said it isn't a bug
+            // A teleport right after the agent's input ("teleport:<kind> after <key>") is muted with that kind's teleports too
+            var after = detector == "teleport" ? signature.LastIndexOf(" after ", StringComparison.Ordinal) : -1;
+            if (after >= 0 && muted.Contains(signature.Substring(0, after))) return;
             counts.TryGetValue(signature, out var count);
             counts[signature] = ++count;
             if (count != 1 && count != 10 && count != 100 && count != 1000) return;
@@ -279,13 +346,17 @@ namespace Autopilot.Playtest
         void CheckTeleports()
         {
             var alive = new HashSet<GameObject>();
-            var bridgeMoved = Time.frameCount - BridgeActedFrame <= 2;
+            // (the agent's own rc write or call in the last 3 frames moved it: a verification's setup, not the game)
+            var agentMoved = agentMoveFrames > 0;
+            if (agentMoveFrames > 0) --agentMoveFrames;
+            var sinceInput = Time.timeAsDouble - agentInputAt;
+            var afterInput = agentInputKey != null && sinceInput >= 0 && sinceInput <= teleportAfterInputSeconds;
             foreach (var go in Characters())
             {
                 if (go == null || !alive.Add(go)) continue;
                 if (!tracks.TryGetValue(go, out var track)) tracks[go] = track = new Track { At = go.transform.position };
                 var at = go.transform.position;
-                if (track.Frames > 5 && !bridgeMoved)
+                if (track.Frames > 5 && !agentMoved)
                 {
                     var speed = (double)Player.Velocity(go).magnitude;
                     speed = Math.Max(speed, Player.WalkSpeed(go));
@@ -294,12 +365,19 @@ namespace Autopilot.Playtest
                     if (moved > allowed)
                     {
                         var label = Label(go);
-                        Report("teleport", "suspicion", $"{label} moved {moved:0} units in one frame (at most {allowed:0} expected)", "teleport:" + label, go,
-                            new Dictionary<string, object>
-                            {
-                                ["from"] = Frame.Point(track.At, 0), ["to"] = Frame.Point(at, 0),
-                                ["moved"] = Math.Round(moved), ["allowed"] = Math.Round(allowed),
-                            });
+                        var details = new Dictionary<string, object>
+                        {
+                            ["from"] = Frame.Point(track.At, 0), ["to"] = Frame.Point(at, 0),
+                            ["moved"] = Math.Round(moved), ["allowed"] = Math.Round(allowed),
+                        };
+                        var summary = $"{label} moved {moved:0} units in one frame (at most {allowed:0} expected)";
+                        if (afterInput)
+                        {
+                            // Right after the agent pressed a key: maybe what the key is for (a reset key): told, as info
+                            details["after_input"] = new Dictionary<string, object> { ["key"] = agentInputKey, ["seconds"] = Json.Round(sinceInput, 2) };
+                            Report("teleport", "info", $"{summary} right after the agent pressed {agentInputKey}", $"teleport:{label} after {agentInputKey}", go, details);
+                        }
+                        else Report("teleport", "suspicion", summary, "teleport:" + label, go, details);
                     }
                 }
                 track.At = at;
@@ -313,9 +391,10 @@ namespace Autopilot.Playtest
         void CheckGrowth()
         {
             var counts = new Dictionary<string, int>();
+            // (only what the game made while playing: what a scene brought, streamed in additively too, isn't a leak)
             foreach (var t in Loaded.All<Transform>(FindObjectsInactive.Exclude))
             {
-                if (t == null || Paths.Hidden(t.gameObject)) continue;
+                if (t == null || Paths.Hidden(t.gameObject) || CameWithScene(t)) continue;
                 var label = Label(t.gameObject);
                 counts.TryGetValue(label, out var n);
                 counts[label] = n + 1;

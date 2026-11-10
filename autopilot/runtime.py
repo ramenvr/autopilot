@@ -608,7 +608,8 @@ class Runtime:
         if kind == "finding":
             f = event.get("finding") or {}
             self.trace("finding", t=event.get("t"), detector=f.get("detector"), severity=f.get("severity"),
-                       summary=f.get("summary"), actor=f.get("actor"), signature=f.get("signature"))
+                       summary=f.get("summary"), actor=f.get("actor"), signature=f.get("signature"),
+                       count=f.get("count"))
             key, now = f.get("signature") or f.get("summary"), time.time()
             if key not in self.stills_at and now - self.last_still >= STILL_GAP:
                 self.stills_at[key], self.last_still = now, now
@@ -1070,6 +1071,42 @@ def check(game, harness, seconds=CHECK_SECONDS, restart=True, only=None):
     return "\n".join(out)
 
 
+FINDING_GROUP_AT = 3  # a detector with more kinds (signatures) than this is told under one heading (as the editors do)
+
+
+def _findings_lines(finds, t_first):
+    """The trace's findings and error log lines, every one of them: by detector (the error log's lines as one), the
+    detector with the most first; in each, by signature, the most first. A detector with more than FINDING_GROUP_AT
+    signatures (one out_of_world per class of actor) gets a heading and its signatures under it. A signature's count is
+    the plugin's own (it sends a finding again at its 10th, 100th... time) when it said, else its lines in the trace."""
+    detectors = {}
+    for e in finds:
+        detector = e.get("detector") or ("error log" if e["kind"] == "game_log" else "other")
+        key = e.get("signature") or e.get("summary") or e.get("message")
+        group = detectors.setdefault(detector, {}).setdefault(key, {"lines": 0, "count": 0, "first": e})
+        group["lines"] += 1
+        if isinstance(e.get("count"), (int, float)):
+            group["count"] = max(group["count"], int(e["count"]))
+
+    def n(group):
+        return group["count"] or group["lines"]
+
+    def line(group, indent):
+        e = group["first"]
+        what = e.get("summary") or f"[{e.get('verbosity')}] {e.get('category')}: {e.get('message')}"
+        return f"{indent}x{n(group)} t={(e.get('t') or 0) - t_first:.1f} {e['kind']}: {what}"
+
+    out = []
+    for detector, groups in sorted(detectors.items(), key=lambda kv: -sum(n(g) for g in kv[1].values())):
+        ordered = sorted(groups.values(), key=lambda g: -n(g))
+        if len(ordered) <= FINDING_GROUP_AT:
+            out += [line(g, "  ") for g in ordered]
+            continue
+        out.append(f"  {detector}: {len(ordered)} kinds, x{sum(n(g) for g in ordered)}")
+        out += [line(g, "    ") for g in ordered]
+    return out
+
+
 def summarize(trace_path, error_log=False):
     """The trace in brief, for the implementer: how each option fared, decisions, errors, findings, then the timeline
     and the situation over time. Nothing in it is cut: a summary longer than a tool result holds is delivered from
@@ -1217,15 +1254,7 @@ def summarize(trace_path, error_log=False):
     finds = [e for e in events if e["kind"] in ("finding", "game_log")]
     if finds:
         out.append("\nWhat the game's own detectors and error log reported (count, first time):")
-        groups = {}
-        for e in finds:
-            key = e.get("signature") or e.get("summary") or e.get("message")
-            group = groups.setdefault(key, {"n": 0, "first": e})
-            group["n"] += 1
-        for key, group in sorted(groups.items(), key=lambda kv: -kv[1]["n"]):
-            e = group["first"]
-            what = e.get("summary") or f"[{e.get('verbosity')}] {e.get('category')}: {e.get('message')}"
-            out.append(f"  x{group['n']} t={(e.get('t') or 0) - t_first:.1f} {e['kind']}: {what}")
+        out += _findings_lines(finds, t_first)
     if error_log and not any(e["kind"] == "game_log" for e in events):
         out.append("\nThe game's error log: no errors logged during this episode.")
     writes = [e for e in events if e["kind"] == "write"]

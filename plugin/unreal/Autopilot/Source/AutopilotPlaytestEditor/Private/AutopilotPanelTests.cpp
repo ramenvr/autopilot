@@ -1837,6 +1837,37 @@ bool FAutopilotRunEndTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("report: an agent finding, with the agent's"), Report.Contains(TEXT("- [agent] The orb falls through the floor\n"))
 			&& Report.Find(TEXT("[agent] The orb")) < Report.Find(TEXT("[engine")));
 		TestTrue(TEXT("report: an engine finding"), Report.Contains(TEXT("- [engine · error · log_error] Accessed None (×3) (not a bug)\n")));
+
+		// A detector with more than three kinds is one line naming every kind (in the order they came), its highest
+		// severity; one with three or fewer keeps a line each
+		auto Add = [&Found](const TCHAR* Detector, const TCHAR* Severity, const FString& Kind, int32 Count, bool bDismissed)
+		{
+			const TSharedRef<FAutopilotFinding> F = MakeShared<FAutopilotFinding>();
+			F->Source = TEXT("engine");
+			F->Detector = Detector;
+			F->Severity = Severity;
+			F->Signature = FString::Printf(TEXT("%s:%s"), Detector, *Kind);
+			F->Summary = FString::Printf(TEXT("%s is below the world's KillZ (-1000)"), *Kind);
+			F->Count = Count;
+			F->bDismissed = bDismissed;
+			Found.Findings.Add(F);
+			return F;
+		};
+		Add(TEXT("out_of_world"), TEXT("warning"), TEXT("Cone"), 12, false);
+		Add(TEXT("teleport"), TEXT("info"), TEXT("Skater after R"), 1, false);
+		Add(TEXT("out_of_world"), TEXT("warning"), TEXT("Rail"), 1, false);
+		Add(TEXT("out_of_world"), TEXT("error"), TEXT("Bench"), 3, false);
+		const TSharedRef<FAutopilotFinding> Sign = Add(TEXT("out_of_world"), TEXT("warning"), TEXT("Sign"), 1, true);
+		const FString Grouped = Found.ReportMarkdown();
+		TestTrue(TEXT("report: a detector's many kinds on one line"), Grouped.Contains(
+			TEXT("- [engine · error · out_of_world] 4 kinds: Cone (×12), Rail, Bench (×3), Sign (not a bug) — e.g. Cone is below the world's KillZ (-1000)\n")));
+		TestEqual(TEXT("report: one out_of_world line"), Grouped.Find(TEXT("Rail is below")), (int32)INDEX_NONE);
+		TestTrue(TEXT("report: a detector with one kind keeps its line, after the group (where its first came)"),
+			Grouped.Contains(TEXT("- [engine · info · teleport] Skater after R is below the world's KillZ (-1000)\n"))
+			&& Grouped.Find(TEXT("· out_of_world]")) < Grouped.Find(TEXT("· teleport]")));
+		TestEqual(TEXT("kind index: the fourth out_of_world kind"), Found.KindIndex(*Sign), 3);
+		TestEqual(TEXT("kind: the signature without its detector"), FAutopilotRun::FindingKind(*Sign), FString(TEXT("Sign")));
+		TestEqual(TEXT("groups: by detector, in the order they came"), Found.EngineFindingGroups().Num(), 3);
 	}
 	TestTrue(TEXT("no alerts: none"), Older1->Alerts.IsEmpty());
 	TestFalse(TEXT("no alerts: none saved"), FAutopilotSession::RunToJson(*Older1)->HasField(TEXT("alerts")));

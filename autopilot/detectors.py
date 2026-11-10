@@ -24,6 +24,16 @@ def path(folder):
     return os.path.join(folder, FILE)
 
 
+def is_muted(finding, muted):
+    """Whether a finding is one the mute list names: its detector, its signature, or, for a teleport right after the
+    agent's input ("teleport:<kind> after <key>", told as info), that kind's teleports ("teleport:<kind>"), as every
+    plugin drops them."""
+    signature, detector = finding.get("signature"), finding.get("detector")
+    if signature in muted or detector in muted:
+        return True
+    return detector == "teleport" and " after " in str(signature) and str(signature).rsplit(" after ", 1)[0] in muted
+
+
 def _names(value):
     """The mute list as given, cleaned: strings only, stripped, empty ones and repeats dropped, in order."""
     if not isinstance(value, list):

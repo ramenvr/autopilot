@@ -14,6 +14,90 @@ using UnityEngine;
 
 namespace Autopilot.Playtest.Editor
 {
+    /// <summary>A run's engine findings by detector, as the four plugins group them: a detector with more than GroupAt
+    /// kinds (one per actor class, say) is told once (one report line, one card, few feed lines), naming every kind.
+    /// </summary>
+    public static class FindingGroups
+    {
+        public const int GroupAt = 3;
+
+        /// <summary>A finding's kind: its signature without a leading "detector:", else the signature; else its summary.</summary>
+        public static string KindOf(Dictionary<string, object> f)
+        {
+            var sig = Json.Str(f, "signature");
+            var prefix = Json.Str(f, "detector") + ":";
+            var kind = sig.StartsWith(prefix, StringComparison.Ordinal) ? sig.Substring(prefix.Length) : sig;
+            return string.IsNullOrEmpty(kind) ? Json.Str(f, "summary") : kind;
+        }
+
+        static int Rank(string severity)
+        {
+            switch (severity)
+            {
+                case "error": return 3;
+                case "suspicion": return 1;
+                case "info": return 0;
+                default: return 2;  // (warning, or anything else)
+            }
+        }
+
+        /// <summary>The highest severity of a group: error, warning, suspicion, info.</summary>
+        public static string Highest(IEnumerable<Dictionary<string, object>> group)
+        {
+            string best = null;
+            foreach (var f in group)
+            {
+                var s = Json.Str(f, "severity");
+                if (best == null || Rank(s) > Rank(best)) best = s;
+            }
+            return string.IsNullOrEmpty(best) ? "info" : best;
+        }
+
+        /// <summary>The engine findings in order, one entry each, except a detector with more than GroupAt findings
+        /// (kinds): one entry holding all of its findings (in the order first seen), where its first one was.</summary>
+        public static List<List<Dictionary<string, object>>> Of(List<Dictionary<string, object>> engine)
+        {
+            var byDetector = engine.GroupBy(f => Json.Str(f, "detector")).ToDictionary(g => g.Key, g => g.ToList());
+            var done = new HashSet<string>();
+            var groups = new List<List<Dictionary<string, object>>>();
+            foreach (var f in engine)
+            {
+                var det = Json.Str(f, "detector");
+                var all = byDetector[det];
+                if (all.Count <= GroupAt) groups.Add(new List<Dictionary<string, object>> { f });
+                else if (done.Add(det)) groups.Add(all);
+            }
+            return groups;
+        }
+
+        /// <summary>A grouped detector's report line: "- [engine · warning · out_of_world] 4 kinds: Cone (×12), Rail,
+        /// Bench (×3), Sign (not a bug) — e.g. Cone is below the world's KillZ (-1000)".</summary>
+        public static string ReportLine(List<Dictionary<string, object>> group, ICollection<string> notABug)
+        {
+            var kinds = group.Select(f =>
+            {
+                var count = (int)Json.Num(f, "count", 1);
+                return KindOf(f) + (count > 1 ? $" (×{count})" : "") + (notABug.Contains(Json.Str(f, "signature")) ? " (not a bug)" : "");
+            });
+            return $"- [engine · {Highest(group)} · {Json.Str(group[0], "detector")}] {group.Count} kinds: {string.Join(", ", kinds)}"
+                   + $" — e.g. {AutopilotText.Scrub(Json.Str(group[0], "summary"))}";
+        }
+
+        /// <summary>A finding's place among its detector's kinds in the run (first seen first, 0-based): the feed tells
+        /// the first GroupAt of them, says once that there are more, and no more after that.</summary>
+        public static int IndexOf(List<Dictionary<string, object>> findings, Dictionary<string, object> f)
+        {
+            var det = Json.Str(f, "detector");
+            var i = 0;
+            foreach (var x in findings)
+            {
+                if (ReferenceEquals(x, f)) return i;
+                if (AutopilotRun.IsEngine(x) && Json.Str(x, "detector") == det) ++i;
+            }
+            return i;
+        }
+    }
+
     /// <summary>A line of a run's feed: a status line as translated, a finding, the user's words, the result, or one event
     /// of the agent service's activity feed (Kind "activity": ActivityId, ActivityKind, Detail, and, for a call that came
     /// back, its result folded in: Result, ResultDetail, ResultId). Every line knows the stage it belongs to (the Feed tab
@@ -908,13 +992,17 @@ namespace Autopilot.Playtest.Editor
                 var same = string.IsNullOrEmpty(sig) ? -1 : run.Findings.FindIndex(x => Json.Str(x, "signature") == sig);
                 if (same >= 0) run.Findings[same] = f;  // the same finding again: its count went up
                 else run.Findings.Add(f);
-                if (same < 0 || run.Active)
+                // (an engine detector's first GroupAt kinds get lines; the next one says there are more; then none)
+                var index = AutopilotRun.IsEngine(f) ? FindingGroups.IndexOf(run.Findings, f) : 0;
+                var more = index == FindingGroups.GroupAt && same < 0;
+                if ((same < 0 || run.Active) && (index < FindingGroups.GroupAt || more))
                 {
                     var count = (int)Json.Num(f, "count", 1);
                     run.AddLine(new AutopilotFeedLine
                     {
                         At = AutopilotText.UnixNow - run.Started,
-                        Text = AutopilotText.Scrub(Json.Str(f, "summary")) + (count > 1 ? $" (×{count})" : ""),
+                        Text = AutopilotText.Scrub(Json.Str(f, "summary")) + (count > 1 ? $" (×{count})" : "")
+                               + (more ? $" (and more {Json.Str(f, "detector")} findings: all of them are in the result)" : ""),
                         Kind = AutopilotRun.IsEngine(f) ? "engine" : "agent",
                         Severity = Json.Str(f, "severity"),
                     });

@@ -970,6 +970,8 @@ namespace Autopilot.Playtest
             }
             if (mode == "hold")
             {
+                // (the agent's key going down, for the teleport detector: not a renewal of one already held, not an axis)
+                if (!c.IsAxis && !held.ContainsKey(c.Id + "#key")) Detectors.NoteAgentInput(name);
                 Hold(c, value, rate, "key");
                 held[c.Id + "#key"].Until = seconds > 0 ? Time.timeAsDouble + seconds : 0;
                 client.Respond(id, new Dictionary<string, object>());
@@ -982,6 +984,7 @@ namespace Autopilot.Playtest
                 client.Respond(id, new Dictionary<string, object>());
                 return;
             }
+            if (!c.IsAxis) Detectors.NoteAgentInput(name);
             Tap(client, id, c, value);
         }
 
@@ -1300,6 +1303,9 @@ namespace Autopilot.Playtest
                                         + string.Join(", ", action.bindings.Select(b => b.effectivePath)) + ")");
                 return;
             }
+            // (the agent pressing the action, for the teleport detector: not a renewal of a hold, not a mouse move)
+            if (plan.Any(x => !x.control.IsMouseMove) && (mode != "hold" || !held.Values.Any(h => h.Owner == owner)))
+                Detectors.NoteAgentInput(action.name);
             if (mode == "hold")
             {
                 // (a renewal holds on to what is down already: only what the new value doesn't press is let go)

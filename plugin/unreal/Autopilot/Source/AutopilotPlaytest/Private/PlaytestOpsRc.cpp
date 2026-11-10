@@ -148,6 +148,15 @@ namespace
 			}
 #endif
 		}
+		// A call that may change the game (not a read: pure, const, Get..., Find...) is the agent's own: a teleport it makes
+		// isn't the game's
+		const bool bRead = Function->HasAnyFunctionFlags(FUNC_BlueprintPure | FUNC_Const)
+			|| Name.StartsWith(TEXT("Get")) || Name.StartsWith(TEXT("K2_Get")) || Name.StartsWith(TEXT("Find"))
+			|| Name.StartsWith(TEXT("Is")) || Name.StartsWith(TEXT("Has")) || Name.StartsWith(TEXT("Can"));
+		if (!bRead)
+		{
+			Bridge.GetDetectors().NoteAgentMove();
+		}
 		Object->ProcessEvent(Function, Parms);
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
 		for (TFieldIterator<FProperty> It(Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
@@ -225,6 +234,7 @@ namespace
 				Bridge.RespondError(Id, Error);
 				return;
 			}
+			Bridge.GetDetectors().NoteAgentMove();
 			Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
 			return;
 		}
