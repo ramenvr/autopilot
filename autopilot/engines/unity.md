@@ -111,3 +111,9 @@ falling out of the level, long falls, hitches, on-screen counts above their maxi
 farther in one frame than its speed allows; never what the agent's own `rc` moved), `actor_growth` (objects of one
 kind growing for 2 minutes), `clamp` (a script's number outside its `[Range]` / `[Min]`) and `over_max` (a number
 above its sibling maximum: `health` above `maxHealth`).
+
+**Boxes and traces.** `game.bounds(path)` is the box round the object's enabled colliders (triggers too), or round
+its renderers when it has none; `visual=True`: round its renderers and colliders. `game.trace` asks the 3D physics:
+what stops the body is the layers the player's layer collides with (the Physics settings' collision matrix), a line
+of sight every layer a raycast takes by default; triggers never stop it. A line never meets a collider it starts in
+(a ball does: `inside`). Without the Physics module there is no trace.

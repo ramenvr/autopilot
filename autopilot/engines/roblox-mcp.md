@@ -79,6 +79,8 @@ the others. Plan for that (see **Limits**).
   health), the camera, and with `sonar=True` the ways the body could walk (shape casts the size of the root part, drops
   felt with rays). Its `omitted` lists what it can't tell here: held items, openings, ways up (so `walk_to` won't find
   ramps by itself: jump or route by the level's parts), how things look, effects.
+  There is no `game.trace` here: sonar is the collision you can ask, and a `workspace:Raycast` run with
+  `game.request("luau", ...)` in a probe tells what is in a lane.
 
 **Limits.** Every read and input is one or more MCP round trips. Put all of an observation's reads in one
 `game.batch` / `game.map`: they go to Studio as one `execute_luau` call and are read in the same frame. Separate reads

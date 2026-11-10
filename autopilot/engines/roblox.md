@@ -124,3 +124,8 @@
   or name, still growing after 120 s) and numbers over their maximum (an attribute or IntValue/NumberValue above its
   sibling `Max<Name>`, `max_<name>`, `<Name>Max`, `<name>_max`..., leaderstats too).  No `clamp`: Roblox declares no
   ranges.
+
+**Boxes and traces.** `game.bounds(path)` is a part's box, or a model's bounding box (all its parts, colliding or
+not: Roblox draws and collides the same parts). `game.trace` is a `workspace:Raycast` (with a radius, `Spherecast`)
+on the player's client: what stops the body is parts with CanCollide in the character's CollisionGroup, a line of
+sight any part a query meets (CanQuery). Roblox's casts never meet a part they start in (`inside` is always false).
