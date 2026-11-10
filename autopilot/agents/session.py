@@ -94,6 +94,9 @@ Your working directory is this game's folder:
   notes.md     what earlier requests on this game learned (verified facts, controls, pitfalls), if any
   lib.py       harness code earlier requests found reusable for this game (importable as `import lib`), if any
   runs/        earlier runs: their harness.py, trace summaries and reports (reuse what worked)
+  detectors.json  the game's detector findings the user muted, if any ({"mute": [a signature as the trace has it,
+               out_of_world:BP_Tree, or a detector's name]}): suggest one the game is meant to have in the report; edit
+               it only when asked
   {run}/  this request's folder: write harness.py here
 
 How to work:
