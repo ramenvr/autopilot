@@ -187,6 +187,29 @@ def test_the_proxy_passes_calls_through_and_keeps_them_whole_without_the_keys(up
                      "cache_write": 20}]
 
 
+def test_a_call_through_the_proxy_is_counted_before_its_answer_ends(upstream, monkeypatch):
+    """The caller reads the usage as soon as its call returns (a Describer, a run's last report): the proxy counts the
+    call before it sends the answer's last chunk, however long working out the usage takes."""
+    slow = telemetry.llm_usage
+
+    def llm_usage(response):
+        time.sleep(0.3)
+        return slow(response)
+
+    monkeypatch.setattr(telemetry, "llm_usage", llm_usage)
+    usage = telemetry.Usage()
+    proxy = telemetry.LLMProxy(usage, None)
+    proxy.route("anthropic", upstream.url)
+    try:
+        for body in ({"model": "claude-x", "stream": True, "messages": []}, {"model": "claude-x", "messages": []}):
+            r = requests.post(proxy.url("anthropic") + "/v1/messages", json=body, headers={"x-api-key": "k"})
+            assert r.status_code == 200
+            calls = usage.totals().get("llm", {}).get("calls")
+            assert calls == (2 if body.get("stream") is None else 1), usage.totals()
+    finally:
+        proxy.close()
+
+
 def test_the_proxy_counts_without_keeping_when_the_data_isnt_shared(upstream, tmp_path):
     usage = telemetry.Usage()
     proxy = telemetry.LLMProxy(usage, None)

@@ -14,8 +14,12 @@ OUT_DIR gets, for each engine, one download with the plugin, the agent service a
     Autopilot-<version>-Unity.zip               com.ramenvr.autopilot-<version>.tgz, for Package Manager > Add package
                                                  from tarball
     Autopilot-<version>-Godot.zip               addons/autopilot/, to copy into the project
+    Autopilot-<version>-Roblox.zip              Autopilot.rbxmx (tools/build_roblox.py), to copy into Studio's Plugins
+                                                 folder, and agent_service/: a Roblox plugin can't run the installer,
+                                                 so the user runs it (install.ps1 or install.sh) once
 
-and inside each plugin (Unreal Autopilot/AgentService/, Unity AgentService~/, Godot agent_service/): this checkout's
+and inside each plugin (Unreal Autopilot/AgentService/, Unity AgentService~/, Godot agent_service/; beside Roblox's):
+this checkout's
 autopilot wheel and install.ps1 / install.sh (packaging/standalone/), which install the agent service as the `autopilot`
 command with uv; the plugin's first-run setup runs them (Install), and starts the agent service itself after.
 Beside the zips: one README.md, the setup for every engine (packaging/standalone/README.md; no README goes in a zip,
@@ -37,7 +41,8 @@ Autopilot-<version>-Unreal<x.y>-Source-Win64.zip (-Mac.dmg), for that engine onl
 Engine/Build/InstalledBuild.txt) gets the editor's binaries only: its game builds compile the plugin's Source/
 themselves, and BuildPlugin would otherwise build the whole engine twice more for UnrealGame (Development and
 Shipping). An engine whose editor isn't built yet is built first, which takes as long as building it yourself.
-With --only-unreal (as tools/build_unreal.ps1 runs it), OUT_DIR gets the Unreal zips only, no Unity or Godot one.
+With --only-unreal (as tools/build_unreal.ps1 runs it), OUT_DIR gets the Unreal zips only, no Unity, Godot or Roblox
+one.
 
 --aura-server: the downloads use that Aura server (a preview, before Autopilot's endpoints are on Aura's own): they
 carry settings.env beside the installer, which the installer writes into the user's autopilot.env
@@ -84,6 +89,7 @@ STANDALONE = os.path.join(HERE, "packaging", "standalone")
 UNREAL = os.path.join(HERE, "plugin", "unreal", "Autopilot")
 UNITY = os.path.join(HERE, "plugin", "unity", "com.ramenvr.autopilot")
 GODOT = os.path.join(HERE, "plugin", "godot", "addons", "autopilot")
+ROBLOX = os.path.join(HERE, "plugin", "roblox", "src")
 MAC = sys.platform == "darwin"  # Unreal builds are for the platform this runs on: Mac or Win64
 PLATFORM = "Mac" if MAC else "Win64"
 EPIC = "/Users/Shared/Epic Games" if MAC else "C:/Program Files/Epic Games"
@@ -116,7 +122,8 @@ def git(*args):
 
 # What the downloads are built from (beside HERE): a copy without git's history is named by these files' hash
 SOURCES = ["pyproject.toml", "README.md", "LICENSE", "autopilot", "packaging/standalone", "plugin/unreal/Autopilot",
-           "plugin/unity/com.ramenvr.autopilot", "plugin/godot/addons/autopilot"]
+           "plugin/unity/com.ramenvr.autopilot", "plugin/godot/addons/autopilot", "plugin/roblox/src",
+           "tools/build_roblox.py"]
 # ... but not what building or running them leaves there (Unreal's build output, OpenCode's packages, the wheel's stamp)
 SOURCE_SKIP = SKIP_NAMES | {"Binaries", "Intermediate", "node_modules", "build.json"}
 FILES_EPOCH = 1767225600  # 2026-01-01: the date in a copy's wheel, so the same files build the same bytes
@@ -621,6 +628,26 @@ def godot_zip(out, wheel, stem, commit):
     return path
 
 
+def roblox_zip(out, wheel, stem, commit):
+    """The Roblox Studio plugin (Autopilot.rbxmx: tools/build_roblox.py) and, beside it, the agent service's installer,
+    which the user runs once (a Roblox plugin can't start programs), and README.txt: how to install both and start the
+    agent service each time (packaging/standalone/README-Roblox.txt)."""
+    sys.path.insert(0, os.path.join(HERE, "tools"))
+    import build_roblox
+
+    path = os.path.join(out, f"{stem}-Roblox.zip")
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as z:
+        info = zipfile.ZipInfo("Autopilot.rbxmx", (2026, 1, 1, 0, 0, 0))
+        info.external_attr = 0o644 << 16
+        z.writestr(info, build_roblox.model_xml(), zipfile.ZIP_DEFLATED)
+        add_agent_service(z, wheel, "agent_service", commit)
+        with open(os.path.join(STANDALONE, "README-Roblox.txt"), "rb") as f:
+            info = zipfile.ZipInfo("README.txt", (2026, 1, 1, 0, 0, 0))
+            info.external_attr = 0o644 << 16
+            z.writestr(info, f.read(), zipfile.ZIP_DEFLATED)
+    return path
+
+
 def installed_unreals(epic):
     found = []
     for folder in glob.glob(os.path.join(epic, "UE_5.*")):
@@ -634,8 +661,9 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="Build Autopilot downloads for users (no repository needed).")
     ap.add_argument("out")
     ap.add_argument("--unreal", help="the Unreal versions to build for, e.g. 5.6,5.7,5.8 (default: those installed)")
-    ap.add_argument("--no-unreal", action="store_true", help="only the Unity and Godot downloads")
-    ap.add_argument("--only-unreal", action="store_true", help="only the Unreal downloads (no Unity or Godot zip)")
+    ap.add_argument("--no-unreal", action="store_true", help="only the Unity, Godot and Roblox downloads")
+    ap.add_argument("--only-unreal", action="store_true",
+                    help="only the Unreal downloads (no Unity, Godot or Roblox zip)")
     ap.add_argument("--epic", default=EPIC, help=f"where Unreal engines are installed (default: {EPIC})")
     ap.add_argument("--engine-dir", action="append", default=[],
                     help="an Unreal engine's folder to build for too, e.g. one built from source (C:/UnrealEngine); "
@@ -683,6 +711,7 @@ def main(argv=None):
     if not args.only_unreal:
         made.append(unity_zip(out, wheel, plugin_version, stem, commit, work, args.sign and not args.no_upm))
         made.append(godot_zip(out, wheel, stem, commit))
+        made.append(roblox_zip(out, wheel, stem, commit))
     for engine, root in engines:
         print(f"Building the plugin for Unreal {engine} ({root})...")
         package = build_unreal(engine, root, work)

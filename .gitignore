@@ -27,6 +27,10 @@ logs/
 # The commit a release wheel is built from (tools/package_release.py writes it, then removes it)
 autopilot/build.json
 
+# Roblox Studio's lock beside a place it has open
+*.rbxl.lock
+*.rbxlx.lock
+
 # Unreal plugin build output
 plugin/unreal/Autopilot/Binaries/
 plugin/unreal/Autopilot/Intermediate/
@@ -37,5 +41,6 @@ plugin/unreal/Autopilot/Intermediate/
 .DS_Store
 Thumbs.db
 
-# Bench results
+# Bench results, and autopilot evolve's experiments log
 bench/results/
+bench/evolve/

@@ -29,8 +29,10 @@ def default_memory(here=HERE):
     return bridge.brain_file("memory")
 
 
-# Where Autopilot keeps what it learns about each game (autopilot/memory.py): AUTOPILOT_MEMORY, else default_memory()
-MEMORY = os.environ.get("AUTOPILOT_MEMORY") or default_memory()
+# Where Autopilot keeps what it learns about each game (autopilot/memory.py): AUTOPILOT_MEMORY, else default_memory().
+# Absolute, so that it names the same folder from anywhere: the sandboxed child that plays an episode runs inside the
+# project's memory folder (autopilot/sandbox.py), where a relative path would land a second copy of it
+MEMORY = os.path.abspath(os.environ.get("AUTOPILOT_MEMORY") or default_memory())
 
 
 def project_dir(project):

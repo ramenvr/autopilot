@@ -96,6 +96,131 @@ def test_local_server_accepts_the_plugin_and_answers():
     link.server.shutdown()
 
 
+def test_the_bridge_takes_plugins_and_refuses_web_pages():
+    """A plugin that sends no Origin gets in, and so does Unreal's WebSocket library, which always sends
+    http://<host>; a web page's Origin (another site, or another port on this machine) is refused."""
+    import threading
+
+    from websockets.exceptions import InvalidStatus
+    from websockets.sync.client import connect as ws_connect
+
+    port = 18769
+    served = {}
+    threading.Thread(target=lambda: served.update(link=bridge.serve_local(port=port, wait=5)), daemon=True).start()
+    hello = json.dumps({"type": "hello", "protocol": bridge.PROTOCOL, "project": "p", "engine": "unreal"})
+
+    def opens(origin):
+        for _ in range(50):
+            try:
+                with ws_connect(f"ws://127.0.0.1:{port}/v1/bridge", origin=origin, proxy=None) as ws:
+                    ws.send(hello)
+                    return json.loads(ws.recv(timeout=5))["type"] == "welcome"
+            except InvalidStatus as e:
+                assert e.response.status_code == 403
+                return False
+            except OSError:
+                time.sleep(0.05)
+        raise AssertionError("the bridge didn't start")
+
+    try:
+        assert opens("http://127.0.0.1") and opens(None) and opens("http://localhost")
+        for page in ("https://untrusted.invalid", "http://127.0.0.1:3000", "http://localhost:3000", "null", ""):
+            assert not opens(page), page
+    finally:
+        served["link"].server.shutdown()
+
+
+def test_a_pipe_joins_a_plugins_parts_to_its_link():
+    """A plugin's parts that can't reach each other (Roblox Studio's edit, server and client DataModels) meet through
+    /v1/pipe/<the link's session>: the editor's {"type": "pipe"} frames go to every part, a part's "to": "brain" frames
+    are the plugin's own (a request it answers), "to": "edit" ones reach the editor wrapped as pipe frames, the rest go
+    to the other parts. A key that is no session's is a plain pipe."""
+    import threading
+
+    from websockets.sync.client import connect as ws_connect
+
+    port = 18768
+    editor = {}
+
+    def plugin():
+        for _ in range(50):
+            try:
+                ws = ws_connect(f"ws://127.0.0.1:{port}/v1/bridge").__enter__()
+                break
+            except OSError:
+                time.sleep(0.1)
+        ws.send(json.dumps({"type": "hello", "protocol": 1, "project": "piped", "host": "editor"}))
+        editor["welcome"] = json.loads(ws.recv())
+        editor["ws"] = ws
+        editor["got"] = []
+        try:
+            for message in ws:
+                editor["got"].append(json.loads(message))
+        except Exception:
+            pass
+
+    threading.Thread(target=plugin, daemon=True).start()
+    link = bridge.serve_local(port=port, wait=10)
+    try:
+        key = link.session
+        deadline = time.time() + 5
+        while "ws" not in editor and time.time() < deadline:
+            time.sleep(0.02)
+        assert editor["welcome"]["session"] == key
+        client = ws_connect(f"ws://127.0.0.1:{port}/v1/pipe/{key}?dm=client").__enter__()
+        server = ws_connect(f"ws://127.0.0.1:{port}/v1/pipe/{key}?dm=server").__enter__()
+        time.sleep(0.2)  # (both joined)
+        # The editor sends a request on to the parts; the client answers the brain itself
+        answer = {}
+
+        def ask():
+            answer["view"] = link.request("view", {}, timeout=5)
+
+        asker = threading.Thread(target=ask)
+        asker.start()
+        req = json.loads(editor_frame(editor, "request"))
+        editor["ws"].send(json.dumps({"type": "pipe", "frame": {"to": "client", **req}}))
+        got = json.loads(client.recv(timeout=5))
+        assert got["to"] == "client" and got["op"] == "view"
+        assert json.loads(server.recv(timeout=5))["op"] == "view"  # (every part reads it: each keeps its own)
+        client.send(json.dumps({"to": "brain", "from": "client", "type": "response", "id": got["id"], "ok": True,
+                                "result": {"visible": []}, "t": 2.5}))
+        asker.join(5)
+        assert answer["view"] == {"visible": []} and link.game_time == 2.5
+        # A part's frame to the editor; to the other parts
+        client.send(json.dumps({"to": "edit", "from": "client", "type": "ready"}))
+        deadline = time.time() + 5
+        while time.time() < deadline and not any(f.get("type") == "pipe" for f in editor["got"]):
+            time.sleep(0.05)
+        piped = [f for f in editor["got"] if f.get("type") == "pipe"]
+        assert piped and piped[0]["frame"] == {"to": "edit", "from": "client", "type": "ready"}
+        server.send('{"to": "client", "type": "request", "op": "rc"}')
+        assert json.loads(client.recv(timeout=5))["op"] == "rc"
+        # A plain pipe (no session's key): every frame to the others
+        a = ws_connect(f"ws://127.0.0.1:{port}/v1/pipe/plain").__enter__()
+        b = ws_connect(f"ws://127.0.0.1:{port}/v1/pipe/plain").__enter__()
+        time.sleep(0.2)
+        a.send("hi")
+        assert b.recv(timeout=5) == "hi"
+        with pytest.raises(TimeoutError):
+            client.recv(timeout=0.3)
+        for ws in (client, server, a, b):
+            ws.close()
+        assert not link.closed and link.server_state["current"] is link
+    finally:
+        link.server.shutdown()
+
+
+def editor_frame(editor, kind, seconds=5):
+    """The first frame of a kind the fake editor got (waiting for it)."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        for f in editor.get("got", []):
+            if f.get("type") == kind:
+                editor["got"].remove(f)
+                return json.dumps(f)
+        time.sleep(0.02)
+    raise AssertionError(f"no {kind} frame: {editor.get('got')}")
 UNITY_A = {"engine": "unity", "project": "A", "project_id": "1"}
 
 
@@ -259,3 +384,65 @@ def test_the_brain_file_is_in_the_folder_unreal_calls_the_user_settings_folder(m
     monkeypatch.setattr(sys, "platform", "linux")
     monkeypatch.setenv("XDG_CONFIG_HOME", "/home/u/.config")
     assert bridge.brain_file().replace("\\", "/") == "/home/u/.config/Autopilot/brain.json"
+
+
+def test_a_plugin_without_websockets_talks_over_http():
+    """A plugin that can't keep a WebSocket (Roblox Studio's DataModels have four, every plugin's counted) opens its
+    connection over HTTP (bridge.HTTP_PATH): its hello and the welcome, a request answered, its parts' pipe, the
+    close."""
+    import threading
+
+    port = 18767
+    base = f"http://127.0.0.1:{port + 1}/v1/http/"
+    got = {}
+
+    def plugin():
+        for _ in range(50):
+            try:
+                peer = requests.post(base + "open?path=/v1/bridge", headers={"Authorization": "Bearer t0k"},
+                                     timeout=5).json()["peer"]
+                break
+            except requests.ConnectionError:
+                time.sleep(0.1)
+        requests.post(base + f"send?peer={peer}", json=[{"type": "hello", "protocol": 1, "project": "polled",
+                                                        "host": "editor"}], timeout=5)
+        frames = []
+        while not any(f.get("type") == "request" for f in frames):
+            frames += requests.get(base + f"poll?peer={peer}", timeout=20).json()
+        got["welcome"] = next(f for f in frames if f["type"] == "welcome")
+        req = next(f for f in frames if f["type"] == "request")
+        requests.post(base + f"send?peer={peer}", json=[{"type": "response", "id": req["id"], "ok": True,
+                                                        "result": {"pong": 1}, "t": 4.0}], timeout=5)
+        got["peer"] = peer
+
+    threading.Thread(target=plugin, daemon=True).start()
+    link = bridge.serve_local(port=port, wait=10, http_port=port + 1)
+    try:
+        assert link.hello["project"] == "polled" and link.loopback and link.auth_token == "t0k"
+        assert link.request("ping", timeout=10) == {"pong": 1} and link.game_time == 4.0
+        assert got["welcome"]["session"] == link.session
+        # A part on the pipe over HTTP: its "to": "brain" frames are the plugin's
+        part = requests.post(base + f"open?path=/v1/pipe/{link.session}", timeout=5).json()["peer"]
+        time.sleep(0.2)
+        answer = {}
+        asker = threading.Thread(target=lambda: answer.setdefault("v", link.request("view", {}, timeout=10)))
+        asker.start()
+        frames = requests.get(base + f"poll?peer={got['peer']}", timeout=20).json()
+        req = next(f for f in frames if f["type"] == "request")
+        requests.post(base + f"send?peer={got['peer']}", json=[{"type": "pipe", "frame": {"to": "client", **req}}],
+                      timeout=5)
+        piped = requests.get(base + f"poll?peer={part}", timeout=20).json()
+        assert piped[0]["op"] == "view" and piped[0]["to"] == "client"
+        requests.post(base + f"send?peer={part}", json=[{"to": "brain", "type": "response", "id": req["id"],
+                                                        "ok": True, "result": {"visible": []}}], timeout=5)
+        asker.join(10)
+        assert answer["v"] == {"visible": []}
+        # Closing ends the link
+        requests.post(base + f"close?peer={got['peer']}&code=1000", timeout=5)
+        deadline = time.time() + 5
+        while not link.closed and time.time() < deadline:
+            time.sleep(0.05)
+        assert link.closed
+        assert requests.get(base + f"poll?peer={got['peer']}", timeout=5).status_code == 410
+    finally:
+        link.server.shutdown()

@@ -1,14 +1,20 @@
-"""The engines a game can be made in, each one adapter (see base.Engine): Unreal, Unity and Godot. The plugin's hello
-says which (`engine`; a plugin that doesn't say is Unreal's)."""
+"""The engines a game can be made in, each one adapter (see base.Engine): Unreal, Unity, Godot, Roblox (its Studio
+plugin) and roblox-mcp. The plugin's hello says which (`engine`; a plugin that doesn't say is Unreal's). roblox-mcp has
+no plugin inside Studio: its connector (engines/roblox_connector.py) speaks for Roblox Studio's built-in MCP server.
+
+A project two engines could play (a Roblox place: roblox and roblox-mcp both can) goes to the engine registered first;
+AUTOPILOT_ENGINE (an engine's name) chooses one instead, for every project found by its path."""
 
 import os
 
 from .base import Engine, OpEngine  # noqa: F401
 from .godot import Godot
+from .roblox import Roblox
+from .roblox_connector import RobloxMcp
 from .unity import Unity
 from .unreal import Unreal
 
-ENGINES = {e.name: e for e in (Unreal(), Unity(), Godot())}
+ENGINES = {e.name: e for e in (Unreal(), Unity(), Godot(), Roblox(), RobloxMcp())}
 DEFAULT = "unreal"
 
 
@@ -37,6 +43,9 @@ def find_project(path, engine=None):
     (None, None) when it holds none."""
     if not path or not os.path.exists(path):
         return None, None
+    if not engine:  # (AUTOPILOT_ENGINE: one engine for every path; a name no engine has is ignored)
+        chosen = (os.environ.get("AUTOPILOT_ENGINE") or "").strip().lower()
+        engine = chosen if chosen in ENGINES else None
     for eng in ([get(engine)] if engine else ENGINES.values()):
         project = eng.project_at(path)
         if project:

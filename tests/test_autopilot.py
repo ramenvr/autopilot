@@ -1974,3 +1974,24 @@ def test_jev_client_keeps_its_connection_and_server_warm(monkeypatch):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_a_roblox_games_network_note_says_the_reads_go_to_the_server(tmp_path, monkeypatch):
+    """Roblox's context `net` ({"mode": "client", "rc_side": "server"}): every play session is a client of the game's
+    server, and the plugin's reads go to the server, so the note says that, not Unreal's server world or Godot's other
+    process; a multiplayer test's players are counted. Other engines' notes are as before."""
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    opening = session.Session(Game(NetLink({"mode": "client", "rc_side": "server"})), "fake", "Verify that x",
+                              "r1").opening()
+    line = next(x for x in opening.splitlines() if x.startswith("network: "))
+    assert "client of it" in line and "go to the server" in line and "sticks" in line
+    assert "dedicated server" not in line and "another process" not in line and "player 1 of" not in line
+    assert "Play settings" not in line
+    two = session.network_note({"mode": "client", "rc_side": "server", "clients": 2})
+    assert "player 1 of 2 players" in two and "game.player(n)" in two
+    # (the other engines' wording is unchanged)
+    assert "another process" in session.network_note({"mode": "client", "server_world": ""})
+    assert "listen server" in session.network_note({"mode": "listen_server", "rc_side": "server"})

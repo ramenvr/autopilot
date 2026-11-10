@@ -1,0 +1,50 @@
+{
+  "name": "Autopilot Test Place",
+  "tree": {
+    "$className": "DataModel",
+    "Workspace": {
+      "$properties": {
+        "Gravity": 196.2
+      },
+      "Baseplate": {
+        "$className": "Part",
+        "$properties": {
+          "Anchored": true,
+          "Size": [128, 1, 256],
+          "Position": [0, -0.5, -64],
+          "Color": [0.35, 0.55, 0.35]
+        }
+      },
+      "Start": {
+        "$className": "SpawnLocation",
+        "$properties": {
+          "Anchored": true,
+          "Size": [8, 1, 8],
+          "Position": [0, 0.5, 0],
+          "Neutral": true,
+          "Duration": 0
+        }
+      }
+    },
+    "ReplicatedStorage": {
+      "$path": "src/shared",
+      "Remotes": {
+        "$className": "Folder",
+        "StageReached": {
+          "$className": "RemoteEvent"
+        }
+      }
+    },
+    "ServerScriptService": {
+      "$path": "src/server"
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "$path": "src/client"
+      }
+    },
+    "StarterGui": {
+      "$path": "src/gui"
+    }
+  }
+}

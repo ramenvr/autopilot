@@ -1,0 +1,39 @@
+{
+  "className": "ScreenGui",
+  "properties": {
+    "ResetOnSpawn": false
+  },
+  "children": [
+    {
+      "name": "Coins",
+      "className": "TextLabel",
+      "properties": {
+        "Text": "Coins: 0",
+        "Position": {"UDim2": [[0, 16], [0, 16]]},
+        "Size": {"UDim2": [[0, 160], [0, 32]]},
+        "TextScaled": true
+      }
+    },
+    {
+      "name": "Stage",
+      "className": "TextLabel",
+      "properties": {
+        "Text": "Stage: 0",
+        "Position": {"UDim2": [[0, 16], [0, 56]]},
+        "Size": {"UDim2": [[0, 160], [0, 32]]},
+        "TextScaled": true
+      }
+    },
+    {
+      "name": "Message",
+      "className": "TextLabel",
+      "properties": {
+        "Text": "",
+        "Visible": false,
+        "Position": {"UDim2": [[0.5, -200], [0, 96]]},
+        "Size": {"UDim2": [[0, 400], [0, 48]]},
+        "TextScaled": true
+      }
+    }
+  ]
+}

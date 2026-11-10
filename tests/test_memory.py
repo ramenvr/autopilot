@@ -213,3 +213,17 @@ def test_the_relays_spending_limit_words_are_logged_never_shown(tmp_path, monkey
     assert [f.get("text") for f in shown if f.get("kind") == "text"] == ["The gate is open."]
     with open(session.log, encoding="utf-8") as f:
         assert "spending limit" in f.read()
+
+
+def test_a_relative_memory_folder_is_made_absolute(tmp_path):
+    """A relative AUTOPILOT_MEMORY (the bench's, from a relative --out) names the folder from where Autopilot started:
+    the sandboxed child that plays an episode runs inside the project's memory, where the same relative path would
+    land the episode's trace in a second copy of the folder, and its regression would never be saved."""
+    import subprocess
+    import sys
+
+    repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env = dict(os.environ, AUTOPILOT_MEMORY=os.path.join("bench", "memory"), PYTHONPATH=repo)
+    out = subprocess.run([sys.executable, "-c", "from autopilot import codex; print(codex.MEMORY)"], cwd=tmp_path,
+                         env=env, capture_output=True, text=True, check=True).stdout.strip()
+    assert os.path.realpath(out) == os.path.join(os.path.realpath(tmp_path), "bench", "memory")

@@ -1558,10 +1558,23 @@ class Session:
 
 def network_note(net, paused=None):
     """The opening's line on a multiplayer game (the plugin's context `net`): whose player the run plays, where the
-    truth is kept, and whether the game pauses. A single-player game has none."""
+    truth is kept, and whether the game pauses. A single-player game has none; a Roblox game (`rc_side` "server": a
+    client of the game's server, its reads made on the server) has its own, one player or several."""
     if net.get("mode") == "listen_server":
         return ("Multiplayer: the game is hosted by the player you play (a listen server), so this world has "
                 "authority: what you read is the game's truth and a change from a probe sticks.")
+    if net.get("rc_side") == "server":
+        # (Roblox: every play session is a client of the game's server, and the plugin's reads go to the server)
+        clients = int(net.get("clients") or 1)
+        note = ["The game runs on a server and you play a client of it" + (
+            f" (player 1 of {clients} players: game.player(n) is player n)" if clients > 1 else "") + ". "
+            "game.pawn, input, the view and the screen are the client's: what this player sees and controls, a moment "
+            "after the server changed it. Reads, writes and calls (game.get, game.set, game.call) go to the server, "
+            "where the game's truth is (its rules, health, other players), so a change from a probe sticks; a path "
+            "the client alone has (its GUI, its camera, a client: path) is read on the client."]
+        if isinstance(paused, dict) and paused.get("why"):
+            note.append(f"The game can't be paused ({paused['why']}): it runs on while you read or think.")
+        return " ".join(note)
     server = net.get("server_world") or ""
     clients = int(net.get("clients") or 1)
     note = ["Multiplayer: you play a client of a dedicated server" + (
@@ -2014,6 +2027,13 @@ def finish(session, started, stopped, last_text, **facts):
         report["reading_usage"] = session.reader.model.tokens
     with open(os.path.join(session.run_dir, "report.json"), "w", encoding="utf-8") as f:
         json.dump(report, f, indent=1)
+    # A CONFIRMED claim's harness is kept as a regression that plays again without a model (autopilot/regress.py)
+    if str(report.get("outcome") or "").strip().upper() == "CONFIRMED":
+        from .. import regress
+
+        kept = regress.save_from_session(session, report)
+        if kept:
+            session.note(f"kept as a regression: {kept}")
     # The codex this run worked from: the next run is told what changed since. Only a run that played or reported
     # counts, so changes a run stopped (or crashed) before it worked on them are told to the next one. A named change
     # this run was told of is checked once the passages naming it were edited (or none names it any more); the rest

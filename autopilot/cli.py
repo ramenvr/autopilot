@@ -852,7 +852,7 @@ def answer_again(link, hello, done):
 def cmd_codex(args):
     eng, path = engines.find_project(args.path)
     if not eng:
-        print(f"No Unreal, Unity or Godot project at {args.path}")
+        print(f"No Unreal, Unity, Godot or Roblox project at {args.path}")
         return 1
     project = args.name or eng.project_name(path)
     remember_project(project, path, eng)
@@ -922,6 +922,69 @@ def cmd_run(link, args):
         result = rt.run()
     print(runtime.summarize(trace))
     return 0 if (result.get("status") or {}).get("state") == "done" else 1
+
+
+def regress_on(game, project, args, say=print):
+    """Replay the project's regressions (or --regressions') on game without a model (autopilot/regress.py): 0 when
+    every one passes. --json: the results there."""
+    from . import regress
+
+    root = codexmod.project_dir(project)
+    base = getattr(args, "regressions", None) or regress.folder(project, root)
+    regs = regress.listing(base) if os.path.isdir(base) else []
+    if not regs:
+        say(f"No regressions at {base}")
+        summary = regress.summary([])
+    else:
+        say(f"Replaying {len(regs)} regression(s) from {base}, without a model")
+        results = regress.replay_all(game, regs, project_root=root, frozen_lib=getattr(args, "frozen_lib", False),
+                                     seconds=getattr(args, "seconds", None), say=say,
+                                     retries=getattr(args, "retries", regress.RETRIES))
+        summary = regress.summary(results)
+        say(f"{summary['passed']}/{summary['total']} passed"
+            + (f" ({len(summary['flaky'])} flaky: passed only on a retry)" if summary["flaky"] else ""))
+    if getattr(args, "json", None):
+        with open(args.json, "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=1)
+    return 0 if summary["passed"] == summary["total"] else 1
+
+
+def cmd_regress(link, args):
+    project = codexmod.project_of(link.hello)
+    game = Game(link, codexmod.Codex.for_project(project))
+    try:
+        with run_holds(link):  # (the replays drive the game: another game's plugin can't take the link over)
+            return regress_on(game, project, args)
+    finally:
+        if getattr(args, "game_process", None) is not None:
+            processes.kill(args.game_process)
+
+
+def launch_headless(args, url, say=print):
+    """Start the project's game headless (its engine's launch_command), connecting to url, a moment after this process
+    listens; the Popen is kept on args.game_process. False when the engine has no headless game (Roblox Studio): then
+    nothing starts, and the editor's plugin is waited for, as with --no-launch."""
+    eng, path = engines.find_project(args.path)
+    if not eng:
+        raise SystemExit(f"No Unreal, Unity, Godot or Roblox project at {args.path}")
+    log = os.path.join(HERE, "logs", f"regress-{time.strftime('%Y%m%d-%H%M%S')}.log")
+    os.makedirs(os.path.dirname(log), exist_ok=True)
+    try:
+        cmd = eng.launch_command(path, url, log, exe=getattr(args, "engine", None))
+    except NotImplementedError as e:
+        say(f"{e}. Waiting for the plugin instead: open the project in its editor, with the plugin connecting to {url}")
+        return False
+
+    def start():
+        time.sleep(1.5)
+        import subprocess
+
+        args.game_process = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                             **processes.GROUP)
+        processes.track(args.game_process)
+
+    threading.Thread(target=start, daemon=True).start()
+    return True
 
 
 def decision_key_missing():
@@ -1097,15 +1160,20 @@ def cmd_serve(link, args):
             time.sleep(1.0)
 
 
+HTTP_HELP = ("where plugins that can't keep a WebSocket open talk over HTTP (Roblox Studio's, when its DataModels' "
+             "few sockets are taken): default the next port after --port (any free port with --port 0)")
 SERVER_HELP = f"the Aura server (default: AUTOPILOT_AURA_URL, else AUTOPILOT_AURA_SERVER, else {aura.DEFAULT_URL})"
 
 
 def parser():
-    ap = argparse.ArgumentParser(prog="autopilot", description="Automated playtesting for Unreal, Unity and Godot.")
+    ap = argparse.ArgumentParser(prog="autopilot",
+                                 description="Automated playtesting for Unreal, Unity, Godot and Roblox.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    project_help = "the game's project on this machine: a .uproject, a Unity project folder or a project.godot"
+    project_help = ("the game's project on this machine: a .uproject, a Unity project folder, a project.godot, or a "
+                    "Roblox place (a Rojo project folder or a .rbxl/.rbxlx)")
     s = sub.add_parser("serve", help="run what the editor's Autopilot tab starts")
     s.add_argument("--port", type=int, default=8765)
+    s.add_argument("--http-port", type=int, help=HTTP_HELP)
     s.add_argument("--project", dest="path", help=project_help)
     s.add_argument("--model", help="the language model (default: AUTOPILOT_MODEL)")
     s.add_argument("--aura", action="store_true",
@@ -1115,6 +1183,7 @@ def parser():
     p = sub.add_parser("play", help="run one prompt and exit with its result")
     p.add_argument("prompt")
     p.add_argument("--port", type=int, default=8765)
+    p.add_argument("--http-port", type=int, help=HTTP_HELP)
     p.add_argument("--project", dest="path", help=project_help)
     p.add_argument("--model", help="the language model (default: AUTOPILOT_MODEL)")
     p.add_argument("--level", help="the level to play: a path or a name (default: the one the prompt means, as the "
@@ -1131,6 +1200,21 @@ def parser():
     r.add_argument("--no-restart", action="store_true", help="go on from where the game is")
     r.add_argument("--aura", action="store_true",
                    help="sign in with Aura: run on your Aura plan instead of your own keys")
+    rg = sub.add_parser("regress", help="replay the regressions (harnesses of CONFIRMED claims) without a model: "
+                                        "starts the game headless, or waits for the editor (--no-launch)")
+    rg.add_argument("--project", dest="path", help=project_help)
+    rg.add_argument("--regressions", help="a regressions folder (default: the project's, AUTOPILOT_REGRESSIONS or "
+                                          "memory/<project>/regressions)")
+    rg.add_argument("--seconds", type=float, help="each replay's longest episode (default: 1.5x the recorded one)")
+    rg.add_argument("--frozen-lib", action="store_true",
+                    help="use each regression's own lib.py snapshot, not the project's lib.py now")
+    rg.add_argument("--json", help="write the results there")
+    rg.add_argument("--retries", type=int, default=1,
+                    help="replay a failed regression again this many times; one that then passes is reported flaky "
+                         "(default 1; 0: no retries)")
+    rg.add_argument("--port", type=int, default=8765)
+    rg.add_argument("--engine", help="the game's executable (default: the engine adapter's)")
+    rg.add_argument("--no-launch", action="store_true", help="don't start the game: wait for the editor's plugin")
     li = sub.add_parser("login", help="sign in to Aura on its website (for runs with Aura without the Aura app)")
     li.add_argument("--server", help=SERVER_HELP)
     lo = sub.add_parser("logout", help="sign out of Aura (the sign-in `autopilot login` kept)")
@@ -1146,6 +1230,9 @@ def parser():
                                         "frame describer (autopilot/connect.py)")
     co.add_argument("client", choices=("claude", "codex"))
     co.add_argument("--remove", action="store_true", help="take out what connect set up")
+    from . import evolve as evolvemod  # (autopilot/evolve.py: its own options)
+
+    evolvemod.add_parser(sub)
     return ap
 
 
@@ -1168,6 +1255,10 @@ def main(argv=None):
 
     load_dotenv(os.path.join(HERE, ".env"))
     load_user_keys()
+    if args.cmd == "evolve":  # (no game link of its own, and not a run: the bench starts each prompt's brain and game)
+        from . import evolve
+
+        return evolve.main(args)
     # An Autopilot the Aura app starts (AUTOPILOT_AURA_URL set for it) says where it listens under Aura's own name,
     # which only plugins set to Use with Aura read; one started with --aura is the user's own Autopilot, found as any
     # other
@@ -1196,12 +1287,17 @@ def main(argv=None):
 
         args.control = Control()
         extra = {"control": args.control.url}
+    if args.cmd == "regress" and args.path and not args.no_launch:
+        launch_headless(args, f"ws://127.0.0.1:{args.port}/v1/bridge")
     print(f"Waiting for the plugin on ws://127.0.0.1:{args.port}/v1/bridge ...")
+    http_port = getattr(args, "http_port", None)
+    if http_port is None:
+        http_port = args.port + 1 if args.port else 0
     link = bridge.serve_local(port=args.port, role="service" if args.cmd == "serve" else "cli", announce_as=announce_as,
-                              extra=extra)
+                              extra=extra, http_port=http_port)
     print(f"Connected: {link.hello.get('project')} ({link.hello.get('host')}, {engines.for_hello(link.hello).title})")
     link = LiveLink(link)
-    return {"play": cmd_play, "run": cmd_run, "serve": cmd_serve}[args.cmd](link, args)
+    return {"play": cmd_play, "run": cmd_run, "serve": cmd_serve, "regress": cmd_regress}[args.cmd](link, args)
 
 
 if __name__ == "__main__":

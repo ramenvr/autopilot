@@ -3,21 +3,25 @@
     python bench/run_autopilot.py --project <copy>/Game.uproject --prompt "Open the gate"
     python bench/run_autopilot.py --project <copy>/Game.uproject --suite bench/example.json [--only A,B] [--parallel 2]
         [--codex memory/<project>/codex] [--warm <memory dir>] [--minutes 30] [--out <dir>] [--model ...]
-        [--agent opencode|claude|codex]
+        [--agent opencode|claude|codex] [--lib lib.py] [--memory memory/<project>]
 
---project is any engine's project: an Unreal .uproject, a Unity project folder or a Godot project folder. The game
-runs headless as its engine's adapter says (Engine.launch_command): Unreal `-game -nullrhi` (or a packaged build given
-with --engine <Game.exe>); Unity a player build given with --engine <Game.exe> (`-batchmode -nographics`); Godot
-`--headless --path <folder>` (or an exported build given with --engine <Game.exe>). --engine: the engine's (or the
-build's) executable, when not the adapter's default.
+--project is any engine's project: an Unreal .uproject, a Unity project folder, a Godot project folder, or a Roblox
+place (a Rojo project folder or a .rbxl/.rbxlx). The game runs headless as its engine's adapter says
+(Engine.launch_command): Unreal `-game -nullrhi` (or a packaged build given with --engine <Game.exe>); Unity a player
+build given with --engine <Game.exe> (`-batchmode -nographics`); Godot `--headless --path <folder>` (or an exported
+build given with --engine <Game.exe>). Roblox has no headless game: the bench starts the Roblox connector
+(autopilot/engines/roblox_connector.py, the engine "roblox-mcp"), which plays the place open in Roblox Studio through
+Studio's MCP server, so Studio must be open on it and prompts run one at a time (--parallel 1). --engine: the engine's
+(or the build's) executable, when not the adapter's default.
 
 A suite is a JSON file: {"prompts": [{"id": "A", "prompt": "...", "expected": "CONFIRMED"}, ...]} ("expected" is
 optional; bench/example.json shows the format).
 
 Each prompt gets its own folder and its own memory (AUTOPILOT_MEMORY): cold by default (only the project's codex, which
-comes from the project's files, not from play, is copied in), or --warm <dir>, shared one prompt after another
-(notes.md, lib.py and earlier runs carry over). A brain (`python -m autopilot play`) listens on its own port; the game
-runs headless and connects to it. Results go to bench/results/<time>/summary.json.
+comes from the project's files, not from play, is copied in, and --lib's lib.py), or a copy of --memory's folder (a
+warm start: what earlier runs learned, frozen, the same for every prompt), or --warm <dir>, shared one prompt
+after another (notes.md, lib.py and earlier runs carry over). A brain (`python -m autopilot play`) listens on its own
+port; the game runs headless and connects to it. Results go to bench/results/<time>/summary.json.
 
 Each brain has its own empty settings folder (<prompt>/settings), so runs use the keys in .env and the environment:
 never this machine's first-run setup (an Aura choice would send every prompt through Aura, restoring and saving the
@@ -59,11 +63,15 @@ def run_one(item, args, root):
     os.makedirs(work)
     eng, path = args.engine_of, args.project_path
     project = eng.project_name(path)
-    memory = args.warm or os.path.join(work, "memory")
+    memory = os.path.abspath(args.warm or os.path.join(work, "memory"))  # (see codex.MEMORY)
     pdir = os.path.join(memory, project)
     os.makedirs(pdir, exist_ok=True)
+    if args.memory and not args.warm:
+        seed_memory(args.memory, pdir)
     if args.codex and not os.path.isdir(os.path.join(pdir, "codex")):
         shutil.copytree(args.codex, os.path.join(pdir, "codex"))
+    if args.lib and not args.warm:  # (each prompt starts with this lib.py: autopilot evolve's lib: targets)
+        shutil.copyfile(args.lib, os.path.join(pdir, "lib.py"))
     port = free_port()
     started = time.time()
     # (the brain's own budget follows --minutes too: without it a run believes it has the default 30 whatever the
@@ -72,6 +80,9 @@ def run_one(item, args, root):
                AUTOPILOT_TIMEOUT=str(int(args.minutes * 60)))
     settings = os.path.join(work, "settings")  # (bridge.brain_file's base: the game keeps the real one, for its DDC)
     os.makedirs(settings)
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        # (Roblox Studio's MCP server is started from the real one: %LOCALAPPDATA%\Roblox\mcp.bat)
+        env.setdefault("AUTOPILOT_ROBLOX_LOCALAPPDATA", os.environ["LOCALAPPDATA"])
     env["LOCALAPPDATA" if os.name == "nt" else "XDG_CONFIG_HOME"] = settings
     if args.model:
         env["AUTOPILOT_MODEL"] = args.model
@@ -86,7 +97,8 @@ def run_one(item, args, root):
     game = subprocess.Popen(
         eng.launch_command(path, f"ws://127.0.0.1:{port}/v1/bridge", os.path.join(work, "game.log"), map=args.map,
                            exe=args.engine) + fps_cap(eng, args.fps),
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **processes.GROUP)
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env if eng.name == "roblox-mcp" else None,
+        cwd=HERE if eng.name == "roblox-mcp" else None, **processes.GROUP)
     processes.track(game)
     try:
         # (a run's budget starts once the game is up, over a minute from here: the wait has to outlast it, or a run
@@ -113,8 +125,16 @@ def run_one(item, args, root):
             "correct": (got == expected) if expected else None, "summary": report.get("summary", ""),
             "evidence": report.get("evidence", [])[:4], "seconds": round(time.time() - started),
             "implementer_seconds": report.get("seconds"), "episodes": report.get("episodes"),
-            "cost_usd": report.get("cost_usd"), "turns": report.get("turns"), "agent": report.get("agent"),
+            "cost_usd": report.get("cost_usd"), "tokens": report.get("tokens"), "turns": report.get("turns"),
+            "agent": report.get("agent"),
             "dir": work}
+
+
+def seed_memory(src, pdir):
+    """A prompt's memory starts as a copy of src, a project's memory folder (notes.md, lib.py, runs/, codex/): what
+    earlier runs learned, frozen, so every prompt (and every evolve experiment) starts warm from the same place. Its
+    regressions aren't copied."""
+    shutil.copytree(src, pdir, dirs_exist_ok=True, ignore=shutil.ignore_patterns("regressions", "__pycache__"))
 
 
 def fps_cap(eng, fps):
@@ -137,6 +157,9 @@ def main():
     p.add_argument("--parallel", type=int, default=1)
     p.add_argument("--codex", help="a codex folder to start each prompt's memory with")
     p.add_argument("--warm", help="a memory folder the prompts share, one after another")
+    p.add_argument("--lib", help="a lib.py each prompt's memory starts with (not with --warm)")
+    p.add_argument("--memory", help="a project's memory folder (memory/<project>) each prompt's memory starts as a "
+                                    "copy of: a warm start, the same for every prompt (not with --warm)")
     p.add_argument("--minutes", type=float, default=30)
     p.add_argument("--engine", help="the executable that runs the game (default: the engine adapter's)")
     p.add_argument("--map")
@@ -150,7 +173,7 @@ def main():
     args = p.parse_args()
     args.engine_of, args.project_path = engines.find_project(args.project)
     if not args.engine_of:
-        sys.exit(f"no Unreal, Unity or Godot project at {args.project}")
+        sys.exit(f"no Unreal, Unity, Godot or Roblox project at {args.project}")
     try:  # (an engine whose headless launch isn't there yet says so before anything starts)
         args.engine_of.launch_command(args.project_path, "ws://127.0.0.1:0/v1/bridge", "game.log", map=args.map,
                                       exe=args.engine)
@@ -168,7 +191,7 @@ def main():
     if args.only:
         keep = set(args.only.split(","))
         items = [i for i in items if i["id"] in keep]
-    if args.warm:
+    if args.warm or args.engine_of.name == "roblox-mcp":  # (Roblox: one Studio, one play session at a time)
         args.parallel = 1
     root = args.out or os.path.join(HERE, "bench", "results", time.strftime("%Y%m%d-%H%M%S"))
     os.makedirs(root, exist_ok=True)

@@ -5,11 +5,11 @@ a Mac, in either order:
     uv run --no-project --python 3.12 tools/release.py [--unreal 5.4,5.5,5.6,5.7,5.8] [--work-dir DIR] [--publish]
                                                        [--no-upm] [--respin N]
 
-A release has two halves, built where their engines are: on Windows the plugin for Unreal 5.4-5.8 (Win64), Unity and
-Godot; on a Mac the plugin for Unreal 5.4-5.8 (Mac). Each run builds its half and uploads it to the release's draft,
-and the run that completes the draft publishes it as Latest. The repository has immutable releases on (a published
-release's files and tag can't change), so nothing can be added after that: the draft is where the halves meet. A run
-whose half the newest draft is missing builds that draft's commit (when main has moved on since the other half was
+A release has two halves, built where their engines are: on Windows the plugin for Unreal 5.4-5.8 (Win64), Unity, Godot
+and Roblox; on a Mac the plugin for Unreal 5.4-5.8 (Mac). Each run builds its half and uploads it to the release's
+draft, and the run that completes the draft publishes it as Latest. The repository has immutable releases on (a
+published release's files and tag can't change), so nothing can be added after that: the draft is where the halves meet.
+A run whose half the newest draft is missing builds that draft's commit (when main has moved on since the other half was
 built); otherwise it builds origin/main's newest commit, and a draft for an older commit is deleted (it would never be
 complete). --publish publishes the draft with what it has, e.g. when there is no Mac to build the other half on.
 
@@ -62,7 +62,7 @@ import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GITHUB = "ramenvr/autopilot"
-HALVES = {"Win64": "the Unreal plugin for Windows, Unity and Godot", "Mac": "the Unreal plugin for Mac"}
+HALVES = {"Win64": "the Unreal plugin for Windows, Unity, Godot and Roblox", "Mac": "the Unreal plugin for Mac"}
 TAG = re.compile(r"^v.+-[0-9a-f]{7}(\.[0-9]+)?$")  # (this script's tags: v<version>-<commit>, .<N> for a respin)
 # What the release's notes say is signed: all of it, or (--no-upm) all but the Unity package
 SIGNED = ("The Unity package is signed, and the Unreal plugins' binaries are signed by TribeVR Inc (the macOS ones "
@@ -99,9 +99,9 @@ def half(name):
 
 
 def complete(names):
-    """Whether a release's files are both halves: Unreal for Windows and for Mac, Unity and Godot."""
+    """Whether a release's files are both halves: Unreal for Windows and for Mac, Unity, Godot and Roblox."""
     return (any(n.endswith("-Win64.zip") for n in names) and any(n.endswith(MAC_DOWNLOADS) for n in names)
-            and "Autopilot-Unity.zip" in names and "Autopilot-Godot.zip" in names)
+            and all(f"Autopilot-{engine}.zip" in names for engine in ("Unity", "Godot", "Roblox")))
 
 
 def contains(commit, older):

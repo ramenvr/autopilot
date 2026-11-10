@@ -2,8 +2,8 @@
 (docs/protocol.md, "Account").
 
     account frame     {"type": "account", "mode": "aura"|"own_keys"|"none", "email"?, "signed_in", "keys": {...},
-                      "llm_provider", "bill"?, "out_of_credits"?}: sent after every welcome, after a sign-in or
-                      sign-out, after a run through Aura, and when the plugin asks ("account"). "keys" are the BYOK
+                      "llm_provider", "share_data", "bill"?, "out_of_credits"?}: sent after every welcome, sign-in,
+                      sign-out, run through Aura, and when the plugin asks ("account"). "keys" are the BYOK
                       keys, masked, and "llm_provider" whose LLM key "llm" is ("anthropic" or "openai"). With Aura,
                       "bill" is what Aura billed for Autopilot this billing period ({"usd", "runs", "from", "to"}, or
                       null until Aura says), and "out_of_credits" Aura's words when the team has no credits left for a
@@ -12,6 +12,14 @@
     aura_sign_in      the plugin asks for a sign-in on Aura's website: the browser opens (autopilot/aura_login.py), and
                       the plugin is told "waiting" (with the page's url), then "signed_in" or "error"
     aura_sign_in_cancel, aura_sign_out
+    save_setup        {"type": "save_setup", "access": "aura"|"own_keys", "share", "coding_agent", "llm_provider",
+                      "keys": {"decision"?, "llm"?}}: the first-run setup's choices, from a plugin that can't write the
+                      files below itself (Roblox Studio's plugins have no file access), saved here as the other
+                      plugins save them; answered {"type": "setup_saved", "ok", "message"?}, then the account frame.
+                      Only from this machine. Saved credentials and access mode apply before the next run;
+                      saving and reporting them never changes an active run's environment
+    save_preferences  {"type": "save_preferences", "share": bool}: explicitly change the saved sharing preference
+                      from a local editor; answered {"type": "preferences_saved", "ok", "message"?}, then account
 
 The plugin never holds Aura's tokens: the sign-in is this agent service's, kept for the computer
 (Autopilot/aura-session.json), so every editor's Autopilot and every `autopilot serve` use it.
@@ -273,17 +281,18 @@ def llm_keys(provider):
 
 def state():
     """The account frame."""
-    follow_preferences()
-    access = preferences().get("access")
+    prefs = preferences()
+    access = prefs.get("access")
     saved = user_settings()  # (the next run's keys: the setup's, else the environment's)
     setting = lambda name: saved.get(name) or os.environ.get(name)
     provider = llm_provider(saved)
     frame = {"type": "account", "keys": {"decision": masked(setting("TYPESAFE_API_KEY")),
                                          "llm": masked(next(filter(None, map(setting, llm_keys(provider))), None))},
-             "coding_agent": coding_agent(saved), "llm_provider": provider}
+             "coding_agent": coding_agent(saved), "llm_provider": provider,
+             "share_data": prefs.get("share_data") is not False}
     # A kept sign-in is told whatever the mode: the plugin's first-run setup signs in before it records the choice
     kept = aura_login.saved(server())
-    if aura.enabled() or access == "aura":
+    if _fixed or (aura.enabled() and not _from_preferences) or access == "aura":
         signed_in = bool(kept) or aura.app_running()
         frame.update(mode="aura", signed_in=signed_in, email=(kept or {}).get("email"),
                      bill=bill() if signed_in else None, out_of_credits=out_of_credits() if signed_in else None)
@@ -404,10 +413,98 @@ class SignIn:
         send_state(self.link)
 
 
+# The Coding Agents and OpenCode providers the setup offers (the plugins' first-run setup)
+SETUP_AGENTS = ("opencode", "claude", "codex")
+SETUP_PROVIDERS = ("anthropic", "openai", "opencode", "openrouter", "deepseek", "google")
+
+
+def _set_env_lines(path, values):
+    """Replace these keys' lines in an env file (adding those it lacks), leaving every other line as it is."""
+    lines = []
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            lines = [line.rstrip("\r\n") for line in f]
+    kept = [line for line in lines if not ((m := _ENV_LINE.match(line)) and m.group(1) in values)]
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.writelines(f"{line}\n" for line in kept + [f"{k}={v}" for k, v in values.items()])
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+
+
+def _save_preferences(changes):
+    prefs = {**preferences(), **changes}
+    path = _preferences_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path + ".tmp", "w", encoding="utf-8") as f:
+        json.dump(prefs, f, indent=1)
+    os.replace(path + ".tmp", path)
+
+
+def save_setup(frame):
+    """Save the first-run setup's choices a plugin sends (save_setup, above): preferences.json (onboarded, share_data,
+    access; its other keys kept) and, for BYOK, autopilot.env's AUTOPILOT_AGENT, AUTOPILOT_OPENCODE_PROVIDER (OpenCode
+    only) and the keys given (a key not given keeps its line). Returns (ok, why not)."""
+    access = frame.get("access")
+    if access not in ("aura", "own_keys"):
+        return False, "access must be aura or own_keys"
+    env = {}
+    if access == "own_keys":
+        agent = str(frame.get("coding_agent") or "opencode").strip().lower()
+        if agent not in SETUP_AGENTS:
+            return False, f"unknown coding agent {agent}"
+        env["AUTOPILOT_AGENT"] = agent
+        provider = {"claude": "anthropic", "codex": "openai"}.get(agent)
+        if provider is None:
+            provider = str(frame.get("llm_provider") or "anthropic").strip().lower()
+            if provider not in SETUP_PROVIDERS:
+                return False, f"unknown LLM provider {provider}"
+            env["AUTOPILOT_OPENCODE_PROVIDER"] = provider
+        keys = frame.get("keys") if isinstance(frame.get("keys"), dict) else {}
+        for given, name in ((keys.get("decision"), "TYPESAFE_API_KEY"), (keys.get("llm"), llm_keys(provider)[0])):
+            value = str(given or "").strip()
+            if value and not re.search(r"[\s'\"#]", value):
+                env[name] = value
+            elif value:
+                return False, f"{name} has spaces or quotes: paste the key alone"
+    try:
+        if env:
+            _set_env_lines(_user_env_path(), env)
+        changes = dict(version=1, onboarded=True, access=access)
+        if isinstance(frame.get("share"), bool):
+            changes["share_data"] = frame["share"]
+        _save_preferences(changes)
+    except OSError as e:
+        return False, f"couldn't write the settings: {e}"
+    return True, None
+
+
 def handle(link, frame, sign_in):
     """A plugin frame about the account; returns whether it was one."""
     kind = frame.get("type")
     if kind == "account":
+        send_state(link)
+    elif kind in ("save_setup", "save_preferences"):
+        if getattr(link, "loopback", None) is not True:
+            ok, why = False, "the setup is saved only for an editor on this computer"
+        elif kind == "save_preferences":
+            if not isinstance(frame.get("share"), bool):
+                ok, why = False, "share must be a boolean"
+            else:
+                try:
+                    _save_preferences({"share_data": frame["share"]})
+                    ok, why = True, None
+                except OSError as e:
+                    ok, why = False, f"couldn't write the settings: {e}"
+        else:
+            ok, why = save_setup(frame)
+        if ok and isinstance(frame.get("share"), bool) and getattr(link, "hello", None) is not None:
+            link.hello["share"] = frame["share"]
+        try:
+            reply = "setup_saved" if kind == "save_setup" else "preferences_saved"
+            link.send({"type": reply, "ok": ok, **({"message": why} if why else {})})
+        except Exception:
+            pass
         send_state(link)
     elif kind == "aura_sign_in":
         sign_in.start()  # (one going already: its waiting frame again)

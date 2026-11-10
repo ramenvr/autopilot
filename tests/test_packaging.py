@@ -56,6 +56,37 @@ def test_the_godot_download_has_the_addon_the_agent_service_and_how_to_install(t
     assert not any("readme" in n.lower() for n in names)  # (the one README is beside the zips)
 
 
+def test_the_roblox_download_has_the_plugin_and_the_agent_services_installer(tmp_path):
+    """A Roblox plugin can't run programs: the download carries the installer beside the plugin, for the user."""
+    path = package_release.roblox_zip(str(tmp_path), wheel(tmp_path), "Autopilot-1.0.0", "abc123")
+    assert os.path.basename(path) == "Autopilot-1.0.0-Roblox.zip"
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        model = z.read("Autopilot.rbxmx").decode("utf-8")
+        stamp = json.loads(z.read("agent_service/agent-service.json"))
+    assert {"Autopilot.rbxmx", "agent_service/install.sh", "agent_service/install.ps1",
+            "agent_service/agent-service.json"} <= names
+    assert any(n.startswith("agent_service/") and n.endswith(".whl") for n in names)
+    assert model.startswith("<roblox") and 'name="Name">Main</string>' in model and stamp["commit"] == "abc123"
+    assert 'name="Name">DevRelay</string>' not in model  # (the dev loader's own, never in a download)
+
+
+def test_the_roblox_download_says_how_to_install_it_and_start_the_agent_service(tmp_path):
+    """Nothing else in the Roblox download says what to do, and the dock can't install the agent service: README.txt
+    gives the steps, and the installer's last words, beside Autopilot.rbxmx, are Roblox's (start `autopilot serve` in a
+    new terminal), not the other engines' (the plugin starts it with the editor)."""
+    path = package_release.roblox_zip(str(tmp_path), wheel(tmp_path), "Autopilot-1.0.0", "abc123")
+    with zipfile.ZipFile(path) as z:
+        text = z.read("README.txt").decode("utf-8")
+    for step in ("Autopilot.rbxmx", "Plugins", "install.ps1", "install.sh", "-ExecutionPolicy Bypass",
+                 "autopilot serve", "new terminal"):
+        assert step in text, step
+    for name in ("install.ps1", "install.sh"):
+        with open(os.path.join(package_release.STANDALONE, name), encoding="utf-8") as f:
+            script = f.read()
+        assert "Autopilot.rbxmx" in script and "open a new terminal" in script, name
+
+
 def test_every_download_says_which_agent_service_it_carries(tmp_path):
     """agent-service.json beside the installer: the wheel's hash and commit (the installer keeps a copy; a plugin whose
     copy differs from the installed one installs its own)."""
@@ -310,6 +341,7 @@ def test_engine_dir_builds_for_that_engine_only_unless_unreal_names_more(tmp_pat
     monkeypatch.setattr(package_release, "unreal_zip", lambda out, engine, *a: str(tmp_path / "x.zip"))
     monkeypatch.setattr(package_release, "unity_zip", lambda *a: str(tmp_path / "x.zip"))
     monkeypatch.setattr(package_release, "godot_zip", lambda *a: str(tmp_path / "x.zip"))
+    monkeypatch.setattr(package_release, "roblox_zip", lambda *a: str(tmp_path / "x.zip"))
     (tmp_path / "x.zip").write_bytes(b"zip")
     out = str(tmp_path / "out")
     package_release.main([out, "--epic", str(epic), "--engine-dir", os.path.join(source, "Engine")])
@@ -330,13 +362,13 @@ def test_only_unreal_makes_no_unity_or_godot_download(tmp_path, monkeypatch):
     monkeypatch.setattr(package_release, "build_wheel", lambda out, commit, epoch: wheel(tmp_path))
     monkeypatch.setattr(package_release, "build_unreal", lambda engine, root, work: work)
     (tmp_path / "x.zip").write_bytes(b"zip")
-    for name in ("unreal_zip", "unity_zip", "godot_zip"):
+    for name in ("unreal_zip", "unity_zip", "godot_zip", "roblox_zip"):
         monkeypatch.setattr(package_release, name, lambda *a, name=name: made.append(name) or str(tmp_path / "x.zip"))
     package_release.main([str(tmp_path / "out"), "--engine-dir", source, "--only-unreal"])
     assert made == ["unreal_zip"]
     made.clear()
     package_release.main([str(tmp_path / "out"), "--engine-dir", source])
-    assert made == ["unity_zip", "godot_zip", "unreal_zip"]
+    assert made == ["unity_zip", "godot_zip", "roblox_zip", "unreal_zip"]
     with pytest.raises(SystemExit, match="leave nothing to build"):
         package_release.main([str(tmp_path / "out"), "--no-unreal", "--only-unreal"])
     with open(os.path.join(package_release.HERE, "tools", "build_unreal.ps1"), encoding="utf-8") as f:
@@ -351,9 +383,11 @@ def test_unversioned_zips_have_the_same_names_in_every_release(tmp_path, monkeyp
     monkeypatch.setattr(package_release, "source", lambda: ("abc123", 1767225600, "commit abc123"))
     monkeypatch.setattr(package_release, "build_wheel", lambda out, commit, epoch: wheel(tmp_path))
     package_release.main([out, "--no-unreal", "--unversioned"])
-    assert sorted(os.listdir(out)) == ["Autopilot-Godot.zip", "Autopilot-Unity.zip", "README.md", "SHA256SUMS.txt"]
+    assert sorted(os.listdir(out)) == ["Autopilot-Godot.zip", "Autopilot-Roblox.zip", "Autopilot-Unity.zip",
+                                       "README.md", "SHA256SUMS.txt"]
     with open(os.path.join(out, "SHA256SUMS.txt"), encoding="utf-8") as f:
-        assert [line.split("  ")[1] for line in f.read().splitlines()] == ["Autopilot-Unity.zip", "Autopilot-Godot.zip"]
+        assert [line.split("  ")[1] for line in f.read().splitlines()] == ["Autopilot-Unity.zip", "Autopilot-Godot.zip",
+                                                                          "Autopilot-Roblox.zip"]
     readme = package_release.readme("1.0.0", "commit abc123", "Autopilot")
     assert "Autopilot 1.0.0" in readme and "`Autopilot-Unity.zip`" in readme and "Autopilot-1.0.0-" not in readme
     assert "`Autopilot-1.0.0-Unity.zip`" in package_release.readme("1.0.0", "commit abc123")
@@ -366,10 +400,11 @@ def release_(tag, draft, files, created="2026-10-29T10:00:00Z"):
 def test_a_release_is_published_when_windows_and_the_mac_have_both_built_their_half():
     """tools/release.py: Windows builds Unreal for Windows, Unity and Godot, a Mac builds Unreal for Mac, into one
     draft (a published release can't be added to); the run that completes it publishes it."""
-    windows = ["Autopilot-Unreal5.8-Win64.zip", "Autopilot-Unity.zip", "Autopilot-Godot.zip", "README.md",
-               "SHA256SUMS.txt"]
+    windows = ["Autopilot-Unreal5.8-Win64.zip", "Autopilot-Unity.zip", "Autopilot-Godot.zip", "Autopilot-Roblox.zip",
+               "README.md", "SHA256SUMS.txt"]
     mac = ["Autopilot-Unreal5.8-Mac.dmg", "README.md", "SHA256SUMS.txt"]
-    assert [release.half(n) for n in windows] == ["Win64", "Win64", "Win64", None, None]
+    assert [release.half(n) for n in windows] == ["Win64", "Win64", "Win64", "Win64", None, None]
+    assert not release.complete([n for n in windows if "Roblox" not in n] + mac)
     assert release.half("Autopilot-Unreal5.8-Source-Mac.dmg") == "Mac"
     assert release.half("Autopilot-Unreal5.8-Mac.zip") == "Mac"  # (a draft made before the Mac downloads were dmgs)
     assert release.complete(windows + ["Autopilot-Unreal5.8-Mac.zip"])
@@ -395,8 +430,8 @@ def test_a_release_is_published_when_windows_and_the_mac_have_both_built_their_h
     assert '"--sign"' in script  # (a published release can't be signed after)
 
 
-WINDOWS_HALF = ["Autopilot-Unity.zip", "Autopilot-Godot.zip", "Autopilot-Unreal5.8-Win64.zip", "README.md",
-                "SHA256SUMS.txt"]
+WINDOWS_HALF = ["Autopilot-Unity.zip", "Autopilot-Godot.zip", "Autopilot-Roblox.zip", "Autopilot-Unreal5.8-Win64.zip",
+                "README.md", "SHA256SUMS.txt"]
 MAC_HALF = ["Autopilot-Unreal5.8-Mac.dmg", "README.md", "SHA256SUMS.txt"]
 
 
@@ -852,6 +887,7 @@ def test_one_readme_sets_up_every_engine():
         assert engine in readme
     for folder in ("Plugins/Autopilot/AgentService/", "AgentService~/", "addons/autopilot/agent_service/"):
         assert folder in readme
+    assert "Autopilot.rbxmx" in readme and "agent_service/install.sh" in readme and "autopilot serve" in readme
 
 
 def copy_without_git(root, edit=None):
@@ -892,7 +928,8 @@ def test_a_copy_without_git_history_is_named_by_its_files(tmp_path, monkeypatch)
 def test_the_files_a_copy_is_named_by_are_what_the_downloads_are_built_from():
     for top in package_release.SOURCES:  # (one renamed would drop out of the hash unnoticed)
         assert os.path.exists(os.path.join(package_release.HERE, top)), top
-    for folder in (package_release.UNREAL, package_release.UNITY, package_release.GODOT, package_release.STANDALONE):
+    for folder in (package_release.UNREAL, package_release.UNITY, package_release.GODOT, package_release.ROBLOX,
+                   package_release.STANDALONE):
         assert os.path.relpath(folder, package_release.HERE).replace(os.sep, "/") in package_release.SOURCES
 
 

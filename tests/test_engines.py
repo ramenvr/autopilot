@@ -310,12 +310,19 @@ def _godot_forward(rot):
     return {"x": -math.cos(x) * math.sin(y), "y": math.sin(x), "z": -math.cos(x) * math.cos(y)}
 
 
+def _roblox_forward(rot):
+    """Roblox's forward (a CFrame's LookVector) for CFrame.fromEulerAnglesYXZ(x, y, 0), radians: as Godot's basis."""
+    return _godot_forward(rot)
+
+
 def _close(a, b, tol=1e-6):
     return all(abs(p - q) <= tol for p, q in zip((a.x, a.y, a.z), (b.x, b.y, b.z)))
 
 
-@pytest.mark.parametrize("name, native_forward", [("unity", _unity_forward), ("godot", _godot_forward)])
-def test_frames_round_trip(name, native_forward):
+@pytest.mark.parametrize("name, native_forward, scale", [("unity", _unity_forward, 100.0),
+                                                         ("godot", _godot_forward, 100.0),
+                                                         ("roblox", _roblox_forward, 28.0)])
+def test_frames_round_trip(name, native_forward, scale):
     eng = engines.get(name)
     for v in (Vec(120, -35.5, 980), Vec(0, 0, 0), Vec(-1, 2, -3)):
         assert _close(eng.to_kit(eng.to_native(v)), v)
@@ -327,7 +334,7 @@ def test_frames_round_trip(name, native_forward):
             # the native view's forward, in the kit's frame, is the kit's forward for that yaw and pitch: the axes,
             # the turning ways and the handedness agree
             f = eng.to_kit(native_forward(rot))
-            assert _close(f / 100.0, forward(yaw, pitch)), (name, yaw, pitch)
+            assert _close(f / scale, forward(yaw, pitch)), (name, yaw, pitch)
 
 
 def test_frames_known_values():
@@ -350,8 +357,15 @@ def test_frames_known_values():
         x, y, z = (eng.to_kit(v) for v in ([1, 0, 0], [0, 1, 0], [0, 0, 1]))
         return x.x * (y.y * z.z - y.z * z.y) - x.y * (y.x * z.z - y.z * z.x) + x.z * (y.x * z.y - y.y * z.x)
 
-    # Unity is left-handed like the kit (a turn of the axes); Godot is right-handed (a mirror)
-    assert det(unity) > 0 and det(godot) < 0
+    # Unity is left-handed like the kit (a turn of the axes); Godot and Roblox are right-handed (a mirror)
+    roblox = engines.get("roblox")
+    assert det(unity) > 0 and det(godot) < 0 and det(roblox) < 0
+    # Roblox: studs (28 cm) on Godot's axes; its rc reads a CFrame with a look vector
+    assert roblox.to_kit({"x": 0, "y": 0, "z": -1}) == Vec(28, 0, 0)
+    assert roblox.to_kit({"x": 1, "y": 0, "z": 0}) == Vec(0, 28, 0) and roblox.to_kit([0, 1, 0]) == Vec(0, 0, 28)
+    assert roblox.to_native(Vec(56, 0, 0)) == {"x": 0.0, "y": 0.0, "z": -2.0}
+    yaw, pitch = roblox.rotation_to_kit({"look": {"x": 1, "y": 0, "z": 0}, "euler": {"x": 0, "y": 9, "z": 0}})
+    assert abs(yaw - 90) < 1e-9 and abs(pitch) < 1e-9  # (the look vector decides: facing +x is a right turn)
     unreal = engines.get("unreal")
     assert (unreal.to_kit({"X": 1, "Y": 2, "Z": 3}) == Vec(1, 2, 3)
             and unreal.to_native(Vec(1, 2, 3)) == {"X": 1, "Y": 2, "Z": 3})
@@ -477,7 +491,7 @@ def test_game_backend_over_the_engine_ops():
 
 def test_controllers_play_over_the_engine_ops():
     """The kit's controllers work unchanged on a Unity or Godot game: they read through the backend."""
-    for engine in ("unity", "godot"):
+    for engine in ("unity", "godot", "roblox"):
         link = OpLink(engine)
         game = Game(link)
         game.look = {"x": 0.1, "y": 0.1}

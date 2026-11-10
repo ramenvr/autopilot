@@ -42,7 +42,7 @@ def test_the_account_says_how_runs_go(monkeypatch, own_preferences):
     monkeypatch.setattr(aura, "client_session", lambda *a, **k: (None, None))
     assert account.state() == {"type": "account", "mode": "none", "signed_in": False, "email": None,
                                "keys": {"decision": None, "llm": None}, "coding_agent": "opencode",
-                               "llm_provider": "anthropic"}
+                               "llm_provider": "anthropic", "share_data": True}
     monkeypatch.setenv("TYPESAFE_API_KEY", "ts-123456789a91f")
     s = account.state()
     assert s["mode"] == "own_keys" and s["keys"] == {"decision": "••••a91f", "llm": None}
@@ -139,7 +139,7 @@ def test_signing_out_forgets_the_sign_in_for_every_editor(monkeypatch, own_prefe
     assert link.frames("account")[-1] == {"type": "account", "mode": "aura", "signed_in": False, "email": None,
                                           "bill": None, "out_of_credits": None,
                                           "keys": {"decision": None, "llm": None},
-                                          "coding_agent": "opencode", "llm_provider": "anthropic"}
+                                          "coding_agent": "opencode", "llm_provider": "anthropic", "share_data": True}
 
 
 def test_the_period_s_bill_is_asked_of_aura_in_the_background_and_told_again(monkeypatch, own_preferences,
@@ -338,3 +338,43 @@ def test_the_coding_agent_decides_the_llm_provider(tmp_path):
 
 def test_other_frames_are_left_to_the_serve_loop():
     assert not account.handle(Link(), {"type": "start"}, account.SignIn(Link()))
+
+
+def test_a_plugin_without_files_saves_the_setup_through_the_agent_service(monkeypatch, own_preferences, tmp_path):
+    """Roblox Studio's plugin can't write Autopilot/'s files: its first-run setup sends them (save_setup), and they are
+    saved as the other plugins save them: preferences.json merged, autopilot.env's lines replaced, the rest kept."""
+    env = tmp_path / "autopilot.env"
+    env.write_text("AUTOPILOT_AURA_SERVER=https://staging.test\nAUTOPILOT_AGENT=codex\nTYPESAFE_API_KEY=old\n")
+    own_preferences.write_text(json.dumps({"share_data": True, "other": 1}))
+    monkeypatch.setattr(account, "_user_env_path", lambda: str(env))
+    monkeypatch.setattr(account, "_from_user_env", {})
+    for name in ("TYPESAFE_API_KEY", "AUTOPILOT_AGENT", "AUTOPILOT_OPENCODE_PROVIDER", "OPENROUTER_API_KEY",
+                 "AUTOPILOT_AURA_URL", "AUTOPILOT_AURA_SERVER"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(aura, "client_session", lambda *a, **k: (None, None))
+    link = Link()
+    link.loopback = True
+    assert account.handle(link, {"type": "save_setup", "access": "own_keys", "share": False, "coding_agent": "opencode",
+                                 "llm_provider": "openrouter", "keys": {"decision": "ts-1234567890ab",
+                                                                        "llm": "or-abcdefgh9876"}}, None)
+    assert link.frames("setup_saved") == [{"type": "setup_saved", "ok": True}]
+    lines = env.read_text().splitlines()
+    assert "AUTOPILOT_AURA_SERVER=https://staging.test" in lines
+    assert {"AUTOPILOT_AGENT=opencode", "AUTOPILOT_OPENCODE_PROVIDER=openrouter", "TYPESAFE_API_KEY=ts-1234567890ab",
+            "OPENROUTER_API_KEY=or-abcdefgh9876"} <= set(lines)
+    assert "TYPESAFE_API_KEY=old" not in lines and "AUTOPILOT_AGENT=codex" not in lines
+    prefs = json.loads(own_preferences.read_text())
+    assert prefs == {"share_data": False, "other": 1, "version": 1, "onboarded": True, "access": "own_keys"}
+    state = link.frames("account")[-1]
+    assert state["mode"] == "own_keys" and state["keys"] == {"decision": "••••90ab", "llm": "••••9876"}
+    assert state["coding_agent"] == "opencode" and state["llm_provider"] == "openrouter"
+    # A key left out keeps its line; a bad one is refused and nothing changes; another machine's editor can't save
+    assert account.save_setup({"access": "own_keys", "coding_agent": "claude", "keys": {}}) == (True, None)
+    assert "TYPESAFE_API_KEY=ts-1234567890ab" in env.read_text() and "AUTOPILOT_AGENT=claude" in env.read_text()
+    assert account.save_setup({"access": "own_keys", "keys": {"llm": "has space"}})[0] is False
+    assert account.save_setup({"access": "maybe"})[0] is False
+    far = Link()
+    far.loopback = False
+    account.handle(far, {"type": "save_setup", "access": "aura"}, None)
+    assert far.frames("setup_saved")[0]["ok"] is False
+    assert json.loads(own_preferences.read_text())["access"] == "own_keys"

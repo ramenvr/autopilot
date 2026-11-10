@@ -44,8 +44,8 @@ include = ["autopilot*"]
 namespaces = false
 
 [tool.setuptools.package-data]
-autopilot = ["KIT.md", "build.json", "engines/*.md", "assistants/*.md", "agents/opencode_host/package.json",
-         "agents/opencode_host/bun.lock", "agents/opencode_host/host.ts"]
+autopilot = ["KIT.md", "build.json", "engines/*.md", "engines/*.luau", "assistants/*.md",
+         "agents/opencode_host/package.json", "agents/opencode_host/bun.lock", "agents/opencode_host/host.ts"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -54,7 +54,7 @@ pythonpath = [".", "tests"]
 [tool.ruff]
 line-length = 120
 target-version = "py312"
-extend-exclude = ["memory", "data"]
+extend-exclude = ["memory", "data", "regressions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]

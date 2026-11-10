@@ -33,6 +33,16 @@ def no_background_researcher(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def no_dotenv(monkeypatch):
+    """Tests never load the clone's .env (runtime.py and cli.py call load_dotenv): what it set would stay in the
+    environment for every later test (its keys, AUTOPILOT_REGRESSIONS moving saved regressions into the clone's own
+    folder, AUTOPILOT_SHARE...)."""
+    import dotenv
+
+    monkeypatch.setattr(dotenv, "load_dotenv", lambda *args, **kwargs: False)
+
+
+@pytest.fixture(autouse=True)
 def no_kept_aura_session(tmp_path, monkeypatch):
     """Tests never read or write the Aura sign-in this machine keeps (autopilot/aura_login.py)."""
     from autopilot import aura_login

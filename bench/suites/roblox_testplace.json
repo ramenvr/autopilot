@@ -1,0 +1,12 @@
+{
+ "note": "Prompts for examples/roblox_testplace (a Rojo project: open its built place in Roblox Studio with Studio's MCP server on, then run bench/run_autopilot.py --project examples/roblox_testplace --suite bench/suites/roblox_testplace.json). 'expected' is what the place's code says (src/server/Game.server.luau); none of these has been run against a live Studio yet.",
+ "prompts": [
+  {"id": "A", "prompt": "Verify that pulling the lever opens the door", "expected": "CONFIRMED"},
+  {"id": "B", "prompt": "Collect the coin", "expected": "achieved"},
+  {"id": "C", "prompt": "Verify that picking up the coin adds 2 to the player's coin count", "expected": "DENIED"},
+  {"id": "D", "prompt": "Reach the final checkpoint of the obby", "expected": "achieved"},
+  {"id": "E", "prompt": "Verify that touching the lava sends the player back to their last checkpoint", "expected": "CONFIRMED"},
+  {"id": "F", "prompt": "Verify that the door can be walked through while it is shut", "expected": "DENIED"},
+  {"id": "G", "prompt": "Explore the obby for bugs"}
+ ]
+}

@@ -1,7 +1,7 @@
 """The game, as harness code sees it: reads of any object (privileged), and the player's inputs (keys, mouse, Enhanced
 Input actions, UI clicks). Everything goes over the plugin's bridge (bridge.Link, docs/protocol.md). How things are
-found and read depends on the game's engine (autopilot.engines: Unreal, Unity, Godot); positions are in the kit's frame
-(Unreal's) whatever the engine.
+found and read depends on the game's engine (autopilot.engines: Unreal, Unity, Godot, Roblox); positions are in the
+kit's frame (Unreal's) whatever the engine.
 
 Reads are synchronous; `game.batch([...])` sends several at once so they resolve in one game frame. Inputs are
 fire-and-forget. Held keys are leased: the plugin lets go of a key that isn't renewed, so a crashed harness never
@@ -52,6 +52,9 @@ class Game:
         self.level = None
         self.level_info = None
         self._waited = threading.local()  # reads this thread waited on, one by one (see waits())
+        self._bodies = {}  # n -> Body: the other players of a multiplayer game (player())
+        self.index = 1  # which player this is (1: the run's own; a Body is another)
+        self._primary = self  # (player 1's game, which a Body shares)
 
     # -- low level -------------------------------------------------------------------------------------
 
@@ -341,6 +344,12 @@ class Game:
         self.log("input", key=key, mode="release")
 
     def release_all(self):
+        """Let go of every key held, the other players' too."""
+        self._release_own()
+        for body in list(self._bodies.values()):
+            body._release_own()
+
+    def _release_own(self):
         with self._lock:
             held = list(self._held)
             self._held.clear()
@@ -356,7 +365,12 @@ class Game:
             return dict(self._held)
 
     def renew(self):
-        """Renew every held key's lease (the runtime calls this every tick)."""
+        """Renew every held key's lease (the runtime calls this every tick), the other players' too."""
+        self._renew_own()
+        for body in list(self._bodies.values()):
+            body._renew_own()
+
+    def _renew_own(self):
         for key, value in self.held().items():
             if not key.startswith("/"):
                 args = {"key": key, "mode": "hold", "lease": KEY_LEASE}
@@ -398,6 +412,12 @@ class Game:
             from .geom import wrap
 
             moved = wrap(y1 - y0) if axis == "x" else (p1 - p0)
+            if abs(moved) <= 0.05:
+                # (a turn can come in late: e.g. Roblox's camera turns only once the right button it presses has locked
+                # the mouse, a few frames after the move was sent)
+                time.sleep(0.25)
+                y1, p1 = self.view_rotation()
+                moved = wrap(y1 - y0) if axis == "x" else (p1 - p0)
             if abs(moved) > 0.05:
                 self.look[axis] = moved / counts
                 # turn back
@@ -421,18 +441,25 @@ class Game:
     def pause(self, paused=True):
         return self.request("pause", {"paused": paused})
 
-    def restart(self, map=None, wait_for_pawn=20.0):
+    def restart(self, map=None, wait_for_pawn=20.0, players=None):
         """Start the level over (or open `map`, e.g. the gameplay level of a game that boots into a menu) and wait up
         to wait_for_pawn seconds for the player's pawn. Returns whether a pawn is there (False: a menu, or loading).
-        Without a map, the run's level (self.level) starts over when it has one."""
+        Without a map, the run's level (self.level) starts over when it has one. players: how many players the game
+        starts with, for an engine whose plugin plays multiplayer (its hello's features say "players": Roblox); the
+        others are game.player(2), game.player(3)..."""
         self.release_all()
         args = {"action": "restart"}
         map = map or self.level
         if map:
             args["map"] = map
-        self.request("session", args, timeout=120)  # (Unity's is a Stop and a Play; its plugin gives up after 90 s)
+        if players is not None:
+            args["players"] = int(players)
+        # (Unity's is a Stop and a Play; its plugin gives up after 90 s. Each further player is another client to start)
+        self.request("session", args, timeout=120 + 40 * max(0, int(players or 1) - 1))
         self.restarts += 1
         self._ctx = None
+        for body in self._bodies.values():
+            body._ctx = None
         deadline = time.monotonic() + wait_for_pawn
         while time.monotonic() < deadline:
             try:
@@ -446,6 +473,49 @@ class Game:
     def sleep(self, seconds):
         """Wait (wall time; the game keeps running)."""
         time.sleep(seconds)
+
+    # -- the other players ---------------------------------------------------------------------------------
+
+    def player(self, n):
+        """Player n of a multiplayer game, as a game of its own (a Body): its pawn, view, screen, keys, UI and every kit
+        function (walk_to(game.player(2), ...)) are that player's; reads of the world are the same. 1 is the run's own
+        player: this game. Start a game with more players first: game.restart(players=2)."""
+        n = int(n)
+        if n <= 1:
+            return self._primary
+        if n not in self._bodies:
+            self._bodies[n] = Body(self._primary, n)
+        return self._bodies[n]
+
+    def players(self):
+        """The game's players: [{"player": n, "name", "path", "character", "you"}], 1 the run's own."""
+        return list(self.context(fresh=True).get("players") or [])
+
+
+class Body(Game):
+    """Another player of a multiplayer game (Game.player): the same game, its requests sent as player n's (their
+    "player"), its keys held and its camera calibrated apart."""
+
+    def __init__(self, game, n):
+        self.__dict__.update(game.__dict__)  # (the link, engine, codex, log, pool, writes and bodies are shared)
+        self.index = n
+        self._ctx, self._ctx_at = None, 0.0
+        self._held = {}
+        self._lock = threading.Lock()
+        self.look = {"x": None, "y": None}
+        self.turn_asked = 0.0
+
+    def request(self, op, args=None, timeout=None):
+        return super().request(op, {**(args or {}), "player": self.index}, timeout=timeout)
+
+    def post(self, op, args=None):
+        super().post(op, {**(args or {}), "player": self.index})
+
+    def renew(self):
+        self._renew_own()
+
+    def release_all(self):
+        self._release_own()
 
 
 def name_of(path):

@@ -1,4 +1,4 @@
-"""Autopilot: automated playtesting for Unreal, Unity and Godot.
+"""Autopilot: automated playtesting for Unreal, Unity, Godot and Roblox.
 
 An agent researches a game's code and writes a harness; Jev, a fast decision model, plays inside it. See
 docs/architecture.md.

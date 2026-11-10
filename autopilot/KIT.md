@@ -54,6 +54,11 @@ Inputs (the player's hands; the only way to act in play):
 - `game.restart(map=None)`: start the run's level over (the briefing's), or open a map (`/Game/Maps/Level`). For a
   game that boots into a main menu, set the harness's `start_map` to its gameplay level (from the codex's maps.txt /
   config), or click through the menu in setup() (`game.ui()`, `game.ui_act`).
+- Several players (when `game.features` has "players": the engine notes say how): `game.restart(players=2)` starts
+  the game with two; `game.player(2)` is player 2 as a game of its own (its `pawn`, `pose()`, `view()`, `screen()`,
+  `press`/`hold`, `ui_act`, and every controller: `walk_to(game.player(2), ...)`), `game.players()` lists them.
+  `game` itself is player 1. The runtime renews and lets go of every player's held keys. Use it when the request is
+  about players together (handing things over, one seeing another, shared state); a request about one player needs one.
 
 ## Controllers (kit.control): generators, `yield from` them inside executors
 
