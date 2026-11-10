@@ -16,7 +16,7 @@ The installation (and uninstallation) instructions in this README are relevant f
 
 ### Step 1: Download
 
-Download the latest Autopilot build for your game engine and OS from [tryaura.dev/autopilot](https://www.tryaura.dev/autopilot/). We currently support Unreal Engine 5, Unity 6, Godot 4 and Roblox Studio on both Windows and macOS.
+Download the latest Autopilot build for your game engine and OS from [tryaura.dev/autopilot](https://www.tryaura.dev/autopilot/). We currently support Unreal Engine 5, Unity 6, Godot 4, and Roblox Studio on both Windows and macOS.
 
 For advanced Unreal Engine users on Windows, we also support installing Autopilot from source and building it against your own Unreal Engine source build. Select the **Unreal source build** option in [tryaura.dev/autopilot](https://www.tryaura.dev/autopilot/). If you install Autopilot from source, you can skip to **Step 3: Onboarding**.
 
@@ -59,25 +59,24 @@ Autopilot has a build for Godot 4 (v4.7 or later). If you haven't already, downl
 5. Enable Autopilot in **Project > Project Settings > Plugins**.
 6. Proceed to **Step 3: Onboarding**.
 
-### Step 2D: Adding to your place (Roblox Studio)
+### Step 2D: Adding to your project (Roblox Studio)
 
-Follow these instructions if your game is on Roblox. [docs/roblox-studio-setup.md](docs/roblox-studio-setup.md) goes through them step by step, with what to do if something goes wrong.
+Follow these instructions if your project is on Roblox Studio.
 
-The Roblox build is an `Autopilot-<version>-Roblox.zip`. It contains the plugin, `Autopilot.rbxmx`, and the agent service's installer in `agent_service/`. From a clone of this repository, `python tools/build_roblox.py --install` builds the plugin and puts it in Studio's Plugins folder instead (skip to step 3 below).
+If you haven't already, download the Autopilot build for Roblox Studio from [tryaura.dev/autopilot](https://www.tryaura.dev/autopilot/). You should see an `Autopilot-Roblox.zip` in your downloads folder.
 
-1. Extract the downloaded `Autopilot-<version>-Roblox.zip`.
-2. Install the agent service, which gives you the `autopilot` command: from the extracted folder, run `powershell -ExecutionPolicy Bypass -File agent_service\install.ps1` (Windows) or `sh agent_service/install.sh` (macOS). A Roblox plugin can't install or start programs, so this step is yours.
-3. Start the agent service: open a new terminal (the one you installed from doesn't have the command yet), run `autopilot serve`, and leave it running while you use Autopilot. Do this each time you use Autopilot in Studio.
-4. Move `Autopilot.rbxmx` into Studio's Plugins folder: `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS).
-5. Open your place in Studio. The Autopilot dock appears on the right (**Plugins > Autopilot** toggles it) and connects to the agent service by itself.
-6. For screenshots and recordings of your game, turn on Studio's MCP server once: **Assistant** (far right of Studio's top bar), **…**, **Settings** (or **Manage MCP Servers**), **MCP Servers** tab, **Enable Studio as MCP server**. The status changes to **MCP Ready**.
-7. Proceed to **Step 3: Onboarding**. More on the Roblox plugin is in [plugin/roblox](plugin/roblox/README.md).
+1. Extract the downloaded `Autopilot-Roblox.zip`.
+2. From the extracted folder in your terminal, run `powershell -ExecutionPolicy Bypass -File agent_service\install.ps1` (Windows) or `sh agent_service/install.sh` (macOS). This installs the autopilot command.
+3. Copy `Autopilot.rbxmx` found in the extracted folder into your Roblox Studio Plugins folder, which is `%LOCALAPPDATA%\Roblox\Plugins` (Windows) or `~/Documents/Roblox/Plugins` (macOS).
+4. Open your project in Roblox Studio.
+5. Enable the Roblox Studio MCP server. Find the `Assistant` panel in Roblox Studio, then go to `... > Settings > MCP Servers` and enable `Enable Studio as MCP server`. You should see "MCP Ready" on the bottom right corner.
+6. Run `autopilot serve` in a new terminal window. This terminal window must be open throughout your Autopilot use.
 
 ### Step 3: Onboarding
 
 The Autopilot onboarding flow installs the agent service and sets up the models (LLMs and decision models) for Autopilot to work.
 
-1. Open the Autopilot window. For Unreal and Godot users, click the Autopilot icon (orange controller). For Unity users, click **Window > Autopilot**. For Roblox Studio users, it's the Autopilot dock (**Plugins > Autopilot**).
+1. Open the Autopilot window. For Unreal and Godot users, click the Autopilot icon (orange controller). For Unity users, click **Window > Autopilot**. For Roblox Studio users, click **Plugins > Autopilot**.
 2. We recommend using Autopilot with your Aura account so you can track your usage in one centralized platform. Click **Create Account** if you don't yet have an Aura account, or **Sign in** if you are a returning user. You also have the option to BYOK.
 3. Wait for Autopilot to set up and start the agent service. Once it is done, you are automatically redirected to the signup/signin page.
 4. Complete the signup/signin process. If you are a new user (signup), confirm your email and then sign in to your Aura account through the Autopilot window.
@@ -117,7 +116,7 @@ To do a clean uninstall of Autopilot, do the following steps:
    - **Unreal**: Close the editor and delete `Plugins/Autopilot/`.
    - **Unity**: Remove the Autopilot package in the Package Manager.
    - **Godot**: Disable Autopilot in **Project > Project Settings > Plugins**, then delete `addons/autopilot/`.
-   - **Roblox Studio**: Delete `Autopilot.rbxmx` from Studio's Plugins folder.
+   - **Roblox Studio**: Delete `Autopilot.rbxmx` from your Roblox Studio Plugins folder.
 
 ## Roblox through Studio's MCP server (experimental)
 
