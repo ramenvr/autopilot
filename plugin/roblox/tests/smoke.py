@@ -131,6 +131,16 @@ def main():
     expect("rc call an instance method by argument name", lambda: req("rc", {"verb": "call", "body": {
         "objectPath": "/Workspace/Grove/Crate", "functionName": "GetAttribute", "parameters": {"attribute": "Nope"}}}),
         lambda r: r == {"ReturnValue": None})
+    # An argument name the function doesn't take is refused (the call not made), never dropped unread
+    for path, fn, params, needle in (
+            ("/Workspace/Grove/Crate", "GetAttribute", {"attribut": "Nope"}, "unknown argument(s) attribut; it takes attribute"),
+            ("/ReplicatedStorage/GameState", "summary", {"self": True, "verbose": True},
+             "unknown argument(s) verbose; a module's function takes its arguments in order: args=[...]")):
+        try:
+            req("rc", {"verb": "call", "body": {"objectPath": path, "functionName": fn, "parameters": params}})
+            check(f"rc unknown argument refused ({fn} {params})", False)
+        except BridgeError as e:
+            check(f"rc unknown argument refused ({fn} {params})", needle in e.error, e.error)
     expect("rc describe a module", lambda: req("rc", {"verb": "describe", "body": {
         "objectPath": "/ReplicatedStorage/GameState"}}), lambda r: any(f["Name"] == "addLantern" for f in r["Functions"])
         and any(p["Name"] == "collected" for p in r["Properties"]))
