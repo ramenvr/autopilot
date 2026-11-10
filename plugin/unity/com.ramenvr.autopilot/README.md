@@ -247,7 +247,9 @@ optionally, a first exploration run (10 minutes unless changed), which is safe t
      for the computer. When the agent service isn't running yet the card (*Getting ready*) first installs it
      (*Setting up the agent service…*) and starts it (*Starting the agent service…*). Then *Finish signing in in your browser…* with the
      page's link (**Copy link**, **Open again**, **Cancel**); signed in, *Signed in as* your email with **Continue**
-     and **Use another account**; a problem says what happened in one line with **Try again**.
+     and **Use another account** (signed out, then `aura_sign_in` with `another_account`: Aura's page is asked to let
+     you pick the account; while it waits the card adds *If the page shows the wrong account, sign out of Aura in your
+     browser, then open the sign-in page again.*); a problem says what happened in one line with **Try again**.
    - *Bring your own keys (BYOK)* (folded, **Show** opens it and **Hide** folds it again; dimmed after signing in;
      hidden while a sign-in gets ready or waits, back with **Cancel**): **Decision provider API key**, under it **Coding Agent** (a dropdown: *Claude
      Code*, *Codex* or *OpenCode*), and under that **LLM provider API key**, each full width, the LLM key with its

@@ -212,6 +212,7 @@ var auto_start_allowed := false  # the dock may start the agent service (not in 
 ## "no_installer", "url", "email", "message", "log"}
 var sign_in := {}
 var _sign_in_send := false  # aura_sign_in is still to be sent (once the agent service is connected)
+var sign_in_another := false  # the sign-in is "Use another account"'s (the setup says what to do if the page is wrong)
 var _sign_in_installed := false  # this sign-in ran the installer already
 var _connect_when_ready := false  # connect once the agent service started is ready
 var _ensure_at := 0.0
@@ -3380,6 +3381,7 @@ func begin_sign_in() -> void:
 	sign_in = {"state": "preparing"}
 	_sign_in_send = true
 	_sign_in_installed = false
+	sign_in_another = false
 	if _with_aura():
 		_set_use_with_aura(false, false)  # (the sign-in is the user's own agent service's)
 	if service.state in ["stopped", "failed", "install_failed"]:
@@ -3395,14 +3397,17 @@ func cancel_sign_in() -> void:
 		bridge.aura_sign_in_cancel()
 	sign_in = {}
 	_sign_in_send = false
+	sign_in_another = false
 	_render_pages()
 
 
-## Use another account: sign out, then sign in again.
+## Use another account: sign out, then sign in again with Aura's page asked to let the user pick the account (an
+## older agent service ignores that and signs in as before).
 func another_account() -> void:
 	bridge.aura_sign_out()
 	sign_in = {"state": "preparing"}
 	_sign_in_send = true
+	sign_in_another = true
 	_tick_sign_in()
 	_render_pages()
 
@@ -3433,7 +3438,7 @@ func _tick_sign_in() -> void:
 		sign_in = {"state": "preparing"}  # (its page may have gone with it)
 	if bridge.is_connected_to_brain():
 		if bridge.brain_account:
-			_sign_in_send = not bridge.aura_sign_in()
+			_sign_in_send = not bridge.aura_sign_in(sign_in_another)
 		else:
 			sign_in = {"state": "error", "message": "This agent service can’t sign in to Aura: install it again, then try again."}
 	elif service.state in ["stopped", "failed", "install_failed"]:

@@ -291,9 +291,14 @@ function Editor:askAccount()
 	end
 end
 
-function Editor:signIn(): boolean
+-- anotherAccount: "Use another account", Aura's page asked to let the user pick the account (an older agent service
+-- ignores it).
+function Editor:signIn(anotherAccount: boolean?): boolean
 	if not (self:connected() and self.brainAccount) then
 		return false
+	end
+	if anotherAccount then
+		return self.link:send({ type = "aura_sign_in", another_account = true })
 	end
 	return self.link:send({ type = "aura_sign_in" })
 end

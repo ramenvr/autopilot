@@ -1230,13 +1230,15 @@ function Dock:cancelSignIn()
 	self:renderPages()
 end
 
--- Use another account: sign out, then sign in again.
+-- Use another account: sign out, then sign in again with Aura's page asked to let the user pick the account (an older
+-- agent service ignores that and signs in as before). "another" stays with the sign-in while it waits: the setup says
+-- what to do if the page shows the wrong account.
 function Dock:anotherAccount()
 	self.editor:signOut()
-	self.signIn = { state = "preparing" }
+	self.signIn = { state = "preparing", another = true }
 	task.delay(0.5, function()
 		if self.signIn and self.signIn.state == "preparing" then
-			self.editor:signIn()
+			self.editor:signIn(true)
 		end
 	end)
 	self:renderPages()
@@ -1252,7 +1254,7 @@ function Dock:_onSignIn(f: any)
 	end
 	local state = tostring(f.state or "")
 	if state == "waiting" then
-		self.signIn = { state = "waiting", url = tostring(f.url or "") }
+		self.signIn = { state = "waiting", url = tostring(f.url or ""), another = self.signIn.another }
 	elseif state == "signed_in" then
 		-- (in the setup: Continue; on the Settings page the account frame that follows shows it)
 		self.signIn = if self.setupOpen then { state = "signed_in", email = tostring(f.email or "") } else nil

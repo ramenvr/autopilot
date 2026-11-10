@@ -90,6 +90,59 @@ def test_signing_in_keeps_a_session_of_its_own(no_kept_aura_session):
     assert fake.calls[0][0] == f"{SERVER}/api/auth/cli/token"
 
 
+def test_the_sign_in_page_asks_for_the_account_only_for_another_account():
+    plain = urllib.parse.urlsplit(aura_login.sign_in_url(SERVER + "/", 5000, "st", "ch"))
+    assert f"{plain.scheme}://{plain.netloc}{plain.path}" == f"{SERVER}/auth/cli"
+    assert dict(urllib.parse.parse_qsl(plain.query)) == {"port": "5000", "state": "st", "code_challenge": "ch"}
+    other = aura_login.sign_in_url(SERVER, 5000, "st", "ch", choose_account=True)
+    assert dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(other).query)) == {
+        "port": "5000", "state": "st", "code_challenge": "ch", "prompt": "select_account"}
+
+
+def test_signing_in_with_another_account_lets_the_page_pick_it_and_ends_the_one_kept(no_kept_aura_session):
+    fake, said, opened = FakeAura(), [], []
+    aura_login.save(SERVER, {"access_token": "old-access", "refresh_token": "r-old", "expires_at": time.time() + 3600,
+                             "email": "first@game.test"})
+
+    def open_browser(url):
+        opened.append(url)
+        return browser(fake)(url)
+
+    session = aura_login.sign_in(SERVER, open_browser=open_browser, say=said.append, timeout=10, http=fake,
+                                 choose_account=True)
+    assert "prompt=select_account" in opened[0]
+    assert session["refresh_token"] == "r-1" and aura_login.saved(SERVER)["refresh_token"] == "r-1"
+    assert (f"{SERVER}/api/logout", {"session_token": "old-access"}) in fake.calls  # (the one replaced, ended)
+    assert aura_login.WRONG_ACCOUNT in said[0]
+
+
+def test_a_plain_sign_in_doesnt_ask_for_the_account(no_kept_aura_session):
+    fake, opened, said = FakeAura(), [], []
+
+    def open_browser(url):
+        opened.append(url)
+        return browser(fake)(url)
+
+    aura_login.sign_in(SERVER, open_browser=open_browser, say=said.append, timeout=10, http=fake)
+    assert "prompt" not in dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(opened[0]).query))
+    assert not any(url.endswith("/api/logout") for url, _ in fake.calls)
+    assert aura_login.WRONG_ACCOUNT not in said[0]
+
+
+def test_autopilot_login_another_account_asks_for_the_account(monkeypatch):
+    assert cli.parser().parse_args(["login", "--another-account"]).another_account
+    assert not cli.parser().parse_args(["login"]).another_account
+    asked = []
+
+    def sign_in(server, choose_account=False, **k):
+        asked.append(choose_account)
+        return {"email": "dev@game.test"}
+
+    monkeypatch.setattr(aura_login, "sign_in", sign_in)
+    assert aura_login.main_login(SERVER, choose_account=True) == 0 and aura_login.main_login(SERVER) == 0
+    assert asked == [True, False]
+
+
 def test_a_cancelled_or_foreign_sign_in_keeps_nothing(no_kept_aura_session):
     fake = FakeAura()
     with pytest.raises(aura_login.SignInError, match="cancelled"):

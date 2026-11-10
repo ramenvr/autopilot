@@ -43,6 +43,11 @@ namespace Autopilot.Playtest.Editor
         public string SetupEmail = "";
         /// <summary>A browser sign-in is being prepared (the agent service installed, started, connected to).</summary>
         public bool SigningIn;
+        /// <summary>What the Aura card says while the browser is open after Use another account (the other plugins
+        /// say the same).</summary>
+        public const string WrongAccount =
+            "If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in page again.";
+        bool signInAnother;  // (the sign-in being prepared is Use another account's: signed out, then asked for the account)
         bool creatingAccount;  // (Create Account opened Aura's account creation page: the Aura card says Sign in next)
         bool setupShare = true;
         string setupProblem = "";
@@ -477,9 +482,12 @@ namespace Autopilot.Playtest.Editor
 
         /// <summary>Sign in with Aura through the browser: the agent service is installed, started and connected to
         /// as needed (DriveSignIn, each tick), then asked to sign in.</summary>
-        void BeginSignIn()
+        void BeginSignIn() => BeginSignIn(false);
+
+        void BeginSignIn(bool anotherAccount)
         {
             creatingAccount = false;
+            signInAnother = anotherAccount;
             var s = PlaytestSettings.Get();
             if (s.UseWithAura)
             {
@@ -520,7 +528,9 @@ namespace Autopilot.Playtest.Editor
             if (SigningIn && client != null && client.CanSignIn)
             {
                 SigningIn = false;
-                client.AskAuraSignIn();
+                if (signInAnother) client.AuraSignOut();
+                client.AskAuraSignIn(signInAnother);
+                signInAnother = false;
                 Changed();
                 MarkDirty();
                 return;
@@ -598,6 +608,12 @@ namespace Autopilot.Playtest.Editor
 
             var url = client.SignIn.Url;
             card.Add(Progress("Finish signing in in your browser…", "big"));
+            if (client.SignIn.AnotherAccount)
+            {
+                var wrong = L(WrongAccount, "small t-muted");
+                wrong.style.whiteSpace = WhiteSpace.Normal;
+                card.Add(wrong);
+            }
             void Open()
             {
                 if (!string.IsNullOrEmpty(url)) Application.OpenURL(url);
@@ -672,14 +688,16 @@ namespace Autopilot.Playtest.Editor
             }, "primary"));
             buttons.Add(Btn("Use another account", () =>
             {
+                // (signed out first, then signed in with Aura's page asked to let the user pick the account; an older
+                // agent service ignores that and signs in as before)
                 var c = EditorHost.Client;
                 if (c == null || !c.CanSignIn)
                 {
-                    BeginSignIn();
+                    BeginSignIn(true);
                     return;
                 }
                 c.AuraSignOut();
-                c.AskAuraSignIn();
+                c.AskAuraSignIn(true);
                 Refresh(true);
             }, "quiet"));
             card.Add(buttons);

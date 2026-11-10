@@ -22,7 +22,8 @@
 --aura signs in with Aura: runs are billed to your Aura plan (autopilot/aura.py), instead of using your own keys. So
 does choosing Aura in a plugin's first-run setup (read before every run: autopilot/account.py), whose sign-in the plugin
 asks this agent service for. Without the Aura app, a run with no sign-in opens Aura's sign-in in the browser; `autopilot
-login` signs in ahead of time and `autopilot logout` signs out (autopilot/aura_login.py).
+login` signs in ahead of time (`--another-account`: pick the account on Aura's page rather than go on with the one the
+browser is signed in to) and `autopilot logout` signs out (autopilot/aura_login.py).
 
 PATH is any engine's project: an Unreal .uproject (or its folder), a Unity project folder (the one with
 ProjectSettings/), or a Godot project.godot (or its folder).
@@ -1217,6 +1218,10 @@ def parser():
     rg.add_argument("--no-launch", action="store_true", help="don't start the game: wait for the editor's plugin")
     li = sub.add_parser("login", help="sign in to Aura on its website (for runs with Aura without the Aura app)")
     li.add_argument("--server", help=SERVER_HELP)
+    li.add_argument("--another-account", action="store_true",
+                    help="sign in with another account: Aura's page lets you pick it rather than going on with the one "
+                         "your browser is signed in to (if it still shows that one, sign out of Aura in the browser "
+                         "and try again); the sign-in kept before is ended")
     lo = sub.add_parser("logout", help="sign out of Aura (the sign-in `autopilot login` kept)")
     lo.add_argument("--server", help=SERVER_HELP)
     u = sub.add_parser("uninstall", help="remove Autopilot from this computer (shared run data already sent stays)")
@@ -1272,7 +1277,9 @@ def main(argv=None):
     account.follow_preferences()
     if args.cmd in ("login", "logout"):
         server = (args.server or "").rstrip("/") or account.server()
-        return aura_login.main_login(server) if args.cmd == "login" else aura_login.main_logout(server)
+        if args.cmd == "logout":
+            return aura_login.main_logout(server)
+        return aura_login.main_login(server, choose_account=args.another_account)
     if args.cmd == "codex":
         return cmd_codex(args)
     if args.cmd == "connect":

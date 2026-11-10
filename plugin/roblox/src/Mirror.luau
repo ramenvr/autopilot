@@ -272,7 +272,7 @@ function MirrorEditor:askAccount() end
 function MirrorEditor:helloChanged() end
 function MirrorEditor:signInCancel() end
 function MirrorEditor:signOut() end
-function MirrorEditor:signIn(): boolean
+function MirrorEditor:signIn(_anotherAccount: boolean?): boolean
 	return false
 end
 function MirrorEditor:saveSetup(): boolean

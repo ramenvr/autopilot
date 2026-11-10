@@ -70,6 +70,7 @@ var brain_account := false
 var account := {}
 var connection_serial := 0  # one more at every welcome
 var _sign_in_on := -1  # the connection a sign-in still going was asked on (-1: none)
+var _sign_in_another := false  # that sign-in is "Use another account"'s (asked again the same way)
 
 var _game_session := -1
 var _game_ready := false
@@ -236,11 +237,18 @@ func can_sign_in() -> bool:
 
 
 ## Ask the agent service to sign in to Aura (it opens the browser; aura_sign_in frames follow). Whether it was sent.
-func aura_sign_in() -> bool:
-	if not (can_sign_in() and link.send({"type": "aura_sign_in"})):
+## another_account: "Use another account", Aura's page asked to let the user pick the account (an older agent service
+## ignores it).
+func aura_sign_in(another_account := false) -> bool:
+	if not (can_sign_in() and link.send(_sign_in_frame(another_account))):
 		return false
 	_sign_in_on = connection_serial
+	_sign_in_another = another_account
 	return true
+
+
+func _sign_in_frame(another_account: bool) -> Dictionary:
+	return {"type": "aura_sign_in", "another_account": true} if another_account else {"type": "aura_sign_in"}
 
 
 func aura_sign_in_cancel() -> bool:
@@ -262,7 +270,7 @@ func _resume_sign_in(frame: Dictionary) -> void:
 		_sign_in_on = -1
 		sign_in_frame.emit({"type": "aura_sign_in", "state": "signed_in", "email": email})
 	else:
-		link.send({"type": "aura_sign_in"})
+		link.send(_sign_in_frame(_sign_in_another))
 
 
 ## Forget the Aura sign-in on this computer (every editor here): an account frame follows.

@@ -399,6 +399,45 @@ namespace Autopilot.Playtest.Tests
         }
 
         [Test]
+        public void UseAnotherAccountAsksForTheAccountAndAgainAfterTheConnectionComesBack()
+        {
+            // "Use another account": the sign-in frame carries another_account (a plain one doesn't), kept through the
+            // waiting frame and on the new connection's sign-in asked again
+            var sent = new List<Dictionary<string, object>>();
+            var client = new PlaytestClient(EditorHost.Instance) { TestWire = s => sent.Add(Json.ParseObject(s)) };
+            void Connect()
+            {
+                client.TestConnected(true);
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"another-test\", \"features\": [\"account\"]}");
+            }
+            List<Dictionary<string, object>> SignIns() => sent.FindAll(f => Json.Str(f, "type") == "aura_sign_in");
+            try
+            {
+                Connect();
+                Assert.IsTrue(client.AskAuraSignIn());
+                Assert.IsFalse(SignIns()[0].ContainsKey("another_account"));
+                Assert.IsFalse(client.SignIn.AnotherAccount);
+                client.CancelAuraSignIn();
+
+                Assert.IsTrue(client.AskAuraSignIn(true));
+                Assert.AreEqual(true, SignIns()[1]["another_account"]);
+                client.TestReceive("{\"type\": \"aura_sign_in\", \"state\": \"waiting\", \"url\": \"https://aura.test/x\"}");
+                Assert.IsTrue(client.SignIn.AnotherAccount, "kept while waiting");
+
+                client.TestConnected(false);
+                Connect();
+                client.TestReceive("{\"type\": \"account\", \"mode\": \"aura\", \"signed_in\": false, \"keys\": {}}");
+                Assert.AreEqual(3, SignIns().Count, "asked again on the new connection");
+                Assert.AreEqual(true, SignIns()[2]["another_account"]);
+            }
+            finally
+            {
+                client.Disconnect();
+                client.TestWire = null;
+            }
+        }
+
+        [Test]
         public void TheSettingsPagesAccountCorner()
         {
             AccountInfo A(string json) => AccountInfo.From(Frame(json));
