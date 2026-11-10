@@ -245,7 +245,8 @@ ASIDE_RETRY_SECONDS = 20.0
 
 def digest(codex_root, rel):
     """One line on what a codex file is, from its text (no model): a Blueprint's parent, events and functions; a data
-    table's rows and columns; a C++ file's classes; else its first line. Every name the file has is in it."""
+    table's rows and columns; a C++ or AngelScript file's classes; else its first line. Every name the file has is in
+    it."""
     try:
         with open(os.path.join(codex_root, rel), encoding="utf-8", errors="replace") as f:
             text = f.read()
@@ -268,10 +269,11 @@ def digest(codex_root, rel):
         lines = text.splitlines()
         columns = lines[0].split(",")[1:] if lines else []
         return f"data table, {max(0, len(lines) - 1)} rows; columns: {', '.join(columns)}"
-    if rel.startswith("source/"):
+    if rel.startswith(("source/", "script/")):
         classes = re.findall(r"^\s*(?:class|struct)\s+(?:\w+_API\s+)?(\w+)\s*(?::|\{|$)", text, re.M)
         if classes:
-            return "C++: " + ", ".join(dict.fromkeys(classes))
+            language = "AngelScript" if rel.startswith("script/") else "C++"
+            return f"{language}: " + ", ".join(dict.fromkeys(classes))
     if rel == "maps.txt":
         maps = re.findall(r"^Map (\S+)", text, re.M)
         return f"{len(maps)} maps so far: " + ", ".join(m.rsplit("/", 1)[-1] for m in maps)

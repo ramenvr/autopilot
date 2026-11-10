@@ -14,6 +14,7 @@
 class AActor;
 class FProperty;
 class UBlueprint;
+class UClass;
 class UEnum;
 class UInputAction;
 class UInputMappingContext;
@@ -51,6 +52,9 @@ namespace AutopilotCodex
 	FString Clean(const FString& In, int32 Max = MaxValueLen);
 	/** /Game/Foo/Bar -> Foo/Bar; /Plugin/Foo -> Plugin/Foo */
 	FString RelPath(const FString& PackageName);
+	/** A class the game's makers wrote outside C++: a Blueprint's, or an AngelScript class's (the Hazelight engine fork:
+	 *  in /Script/Angelscript, a UClass of its own rather than a UBlueprintGeneratedClass). */
+	bool IsScriptedClass(const UClass* C);
 
 	FString TerminalStr(const FName& Cat, const FName& SubCat, const UObject* Obj);
 	FString PinTypeStr(const FEdGraphPinType& T);
@@ -69,7 +73,7 @@ namespace AutopilotCodex
 		int32 MaxLen = MaxValueLen;
 		bool bRequireEdit = false;
 		bool bInstanceEditableOnly = false;
-		bool bBlueprintDeclaredOnly = false;  // only properties declared in a Blueprint class
+		bool bBlueprintDeclaredOnly = false;  // only properties declared in a Blueprint or AngelScript class
 		bool bSkipOwnClass = false;           // skip properties declared by the object's own class
 		bool bSimpleOnly = false;
 		bool bExpandStructs = true;

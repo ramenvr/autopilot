@@ -161,6 +161,8 @@ FPlaytestDetectors::FPlaytestDetectors(UPlaytestSubsystem& InBridge)
 			ProjectPackages.Add(FString::Printf(TEXT("/Script/%s"), *Module.Name.ToString()));
 		}
 	}
+	// The game's AngelScript classes (the Hazelight engine fork), its Script/**/*.as: none in a stock engine
+	ProjectPackages.Add(TEXT("/Script/Angelscript"));
 }
 
 void FPlaytestDetectors::Configure(const TSharedPtr<FJsonObject>& Args)

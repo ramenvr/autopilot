@@ -415,7 +415,7 @@ plays at its normal speed:
 | `long_fall` | a character keeps falling for 8 s |
 | `hitch` | a frame takes longer than 0.75 s |
 | `actor_growth` | the number of actors of one class keeps growing for 2 minutes |
-| `clamp` | a project property is outside its `ClampMin`/`ClampMax` |
+| `clamp` | a project property (declared in the project's C++, Blueprints or AngelScript) is outside its `ClampMin`/`ClampMax` |
 | `over_max` | a project number `X` is above its sibling `MaxX` |
 | `hud_fraction` | on-screen text shows `a/b` with `a > b` (e.g. a bag showing `6/5`) |
 
@@ -592,7 +592,7 @@ The plugin has three modules:
 | `Private/PlaytestOpsWatch.cpp` | `watch`: what changes over a stretch of game time |
 | `Private/PlaytestDetectors.cpp` | the in-engine bug detectors |
 | `Private/PlaytestScreen.cpp`, `Private/PlaytestUI.cpp` | reading what is on screen (widgets and text) and clicking or dragging game UI |
-| `Private/PlaytestCodex.cpp` | the codex ops: exporting the project's game logic and data for the agent to research |
+| `Private/PlaytestCodex.cpp` | the codex ops: exporting the project's game logic and data for the agent to research, its AngelScript (`Script/**/*.as`) with its C++ |
 | `Private/PlaytestMedia.cpp` | `record` and `capture`: the game viewport's part of its window's back buffer, read back with `FRHIGPUTextureReadback` on the render thread, scaled and JPEG-encoded on a pool thread |
 | `Public/PlaytestPreferences.h`, `Private/PlaytestPreferences.cpp` | `preferences.json` (setup, data sharing), `autopilot.env` (the setup's keys, Coding Agent and LLM provider: written, merged, read back) and the agent service's `usage` counts |
 | `Public/PlaytestAura.h`, `Private/PlaytestAura.cpp` | Use with Aura: where the Aura app's agent service listens, starting Aura; the user settings folder (`SettingsDir`) |
