@@ -3,6 +3,10 @@
     autopilot login     sign in: the browser opens Aura's sign-in (<Aura server>/auth/cli); once the user allows
     Autopilot
                     on this computer, the session comes back here and is kept for later runs
+    autopilot login --another-account
+                    the same, asking Aura's page to let the user pick the account (prompt=select_account) rather
+                    than go on with the one the browser is signed in to; the session kept before is ended once the
+                    new one is kept
     autopilot logout    forget it (and end it on Aura's side)
 
 The flow (Aura's /auth/cli page and /api/auth/cli routes): Autopilot listens on http://127.0.0.1:<port>/callback and
@@ -38,6 +42,10 @@ SESSION_FILE = "aura-session.json"
 SIGN_IN_TIMEOUT = 300.0  # seconds the user has to sign in in the browser
 REFRESH_MARGIN = 120.0  # seconds before the access token expires that it is refreshed
 TIMEOUT = 20.0
+# What signing in with another account tells the user (the plugins say the same while they wait): Aura's page may
+# still go on with the account the browser is signed in to
+WRONG_ACCOUNT = ("If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in page "
+                 "again.")
 _lock = threading.Lock()
 
 
@@ -236,24 +244,37 @@ class _Server(socketserver.TCPServer):
         self.result = None
 
 
+def sign_in_url(server, port, state, challenge, choose_account=False):
+    """The page the browser opens. choose_account ("Use another account", `autopilot login --another-account`) adds
+    prompt=select_account, the OAuth way of asking the page to let the user pick the account rather than go on with
+    the one the browser is signed in to (a page that doesn't know it goes on as before)."""
+    query = {"port": port, "state": state, "code_challenge": challenge}
+    if choose_account:
+        query["prompt"] = "select_account"
+    return f"{server.rstrip('/')}/auth/cli?" + urllib.parse.urlencode(query)
+
+
 def sign_in(server, open_browser=webbrowser.open, say=print, timeout=SIGN_IN_TIMEOUT, http=requests,
-            cancelled=lambda: False):
+            cancelled=lambda: False, choose_account=False):
     """Sign in on Aura's website and keep the session; returns it. say(text) tells the user what to do (the browser
-    may not open by itself: the URL is in the text). Raises SignInError (cancelled, timed out, refused)."""
+    may not open by itself: the URL is in the text). choose_account: the page is asked to let the user pick the
+    account (sign_in_url), and a session kept before is ended once the new one is kept. Raises SignInError
+    (cancelled, timed out, refused)."""
     server = server.rstrip("/")
     verifier, challenge = pkce()
     state = _b64url(secrets.token_bytes(24))
     callback = _Server(state)
     callback.timeout = 0.5
     port = callback.server_address[1]
-    url = f"{server}/auth/cli?" + urllib.parse.urlencode({"port": port, "state": state, "code_challenge": challenge})
+    url = sign_in_url(server, port, state, challenge, choose_account)
     try:
         opened = False
         try:
             opened = bool(open_browser(url))
         except Exception:
             pass
-        say("Sign in to Aura in your browser" + ("" if opened else f": {url}"))
+        say("Sign in to Aura in your browser" + ("" if opened else f": {url}")
+            + (f"\n{WRONG_ACCOUNT}" if choose_account else ""))
         print(f"Aura sign-in: {url}")
         deadline = time.time() + timeout
         while callback.result is None:
@@ -275,9 +296,21 @@ def sign_in(server, open_browser=webbrowser.open, say=print, timeout=SIGN_IN_TIM
     if r.status_code != 200:
         raise SignInError(f"Aura refused the sign-in (HTTP {r.status_code}). Try again.")
     session = _session_of(r.json())
+    previous = saved(server) if choose_account else None  # (as it is now: it may have been refreshed meanwhile)
     save(server, session)
+    if previous and previous.get("refresh_token") != session["refresh_token"]:
+        _end(server, previous, http)  # (replaced: nothing here uses it any more)
     say("Signed in to Aura" + (f" as {session['email']}" if session.get("email") else ""))
     return session
+
+
+def _end(server, entry, http=requests):
+    """End a session on Aura's side (best effort: Aura unreachable leaves it to expire)."""
+    try:
+        http.post(f"{server.rstrip('/')}/api/logout", json={"session_token": entry.get("access_token")},
+                  timeout=TIMEOUT)
+    except requests.RequestException:
+        pass
 
 
 def sign_out(server, http=requests):
@@ -285,17 +318,13 @@ def sign_out(server, http=requests):
     entry = forget(server)
     if not entry:
         return False
-    try:
-        http.post(f"{server.rstrip('/')}/api/logout", json={"session_token": entry.get("access_token")},
-                  timeout=TIMEOUT)
-    except requests.RequestException:
-        pass
+    _end(server, entry, http)
     return True
 
 
-def main_login(server):
+def main_login(server, choose_account=False):
     try:
-        session = sign_in(server)
+        session = sign_in(server, choose_account=choose_account)
     except SignInError as e:
         print(e, file=sys.stderr)
         return 1

@@ -10,7 +10,10 @@
                       run ({"message", "url"}: where to add some, when Aura names it), else null
     bill frame        {"type": "bill", "usd", "billed"}: what Aura billed a run, sent before its result
     aura_sign_in      the plugin asks for a sign-in on Aura's website: the browser opens (autopilot/aura_login.py), and
-                      the plugin is told "waiting" (with the page's url), then "signed_in" or "error"
+                      the plugin is told "waiting" (with the page's url), then "signed_in" or "error". With
+                      "another_account": true (the plugins' "Use another account", sent after aura_sign_out), Aura's
+                      page is asked to let the user pick the account (prompt=select_account) rather than go on with
+                      the one the browser is signed in to; an older agent service ignores the field
     aura_sign_in_cancel, aura_sign_out
     save_setup        {"type": "save_setup", "access": "aura"|"own_keys", "share", "coding_agent", "llm_provider",
                       "keys": {"decision"?, "llm"?}}: the first-run setup's choices, from a plugin that can't write the
@@ -362,9 +365,10 @@ class SignIn:
         except Exception:
             pass
 
-    def start(self):
+    def start(self, another_account=False):
         """Start a sign-in; one already going is told again (a plugin that lost it: a script reload, a new tab)
-        rather than started twice. Returns whether a new one started."""
+        rather than started twice. another_account: the plugin's "Use another account", Aura's page asked to let the
+        user pick the account (aura_login.sign_in's choose_account). Returns whether a new one started."""
         if self.thread is not None and self.thread.is_alive():
             if self.waiting:
                 try:
@@ -373,11 +377,11 @@ class SignIn:
                     pass
             return False
         self.cancel = threading.Event()
-        self.thread = threading.Thread(target=self._run, name="aura-sign-in", daemon=True)
+        self.thread = threading.Thread(target=self._run, args=(another_account,), name="aura-sign-in", daemon=True)
         self.thread.start()
         return True
 
-    def _run(self):
+    def _run(self, another_account=False):
         def opened(url):
             import webbrowser
 
@@ -389,7 +393,7 @@ class SignIn:
 
         try:
             session = aura_login.sign_in(server(), open_browser=opened, say=lambda text: None,
-                                         cancelled=self.cancel.is_set)
+                                         cancelled=self.cancel.is_set, choose_account=another_account)
             self._send(state="signed_in", email=session.get("email"))
         except aura_login.SignInError as e:
             text = str(e)
@@ -507,7 +511,7 @@ def handle(link, frame, sign_in):
             pass
         send_state(link)
     elif kind == "aura_sign_in":
-        sign_in.start()  # (one going already: its waiting frame again)
+        sign_in.start(another_account=frame.get("another_account") is True)  # (one going already: its waiting frame)
     elif kind == "aura_sign_in_cancel":
         sign_in.stop()
     elif kind == "aura_sign_out":
