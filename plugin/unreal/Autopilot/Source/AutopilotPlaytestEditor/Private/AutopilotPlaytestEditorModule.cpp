@@ -11,6 +11,7 @@
 #include "PlaytestLevels.h"
 #include "PlaytestRunInput.h"
 #include "PlaytestSubsystem.h"
+#include "Settings/LevelEditorPlaySettings.h"
 #include "SPlaytestPanel.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
@@ -63,6 +64,31 @@ namespace
 		}));
 	}
 
+	/** Once player 1 plays: wait a while for the editor's other players (Number of Players, run under one process) to
+	 *  join too, so a run's first request for player 2 finds it; then Done, all joined or not (player 1 plays). */
+	void WaitForPlayers(TFunction<void()> Done)
+	{
+		constexpr double PlayersTimeout = 20.0;
+		const double Start = FPlatformTime::Seconds();
+		FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([Done, Start](float)
+		{
+			const UPlaytestSubsystem* Bridge = UPlaytestSubsystem::Get();
+			const int32 Want = Bridge && Bridge->PlaySettingsPlayers ? Bridge->PlaySettingsPlayers() : 1;
+			const TArray<UWorld*> Worlds = Bridge ? Bridge->GetPlayerWorlds() : TArray<UWorld*>();
+			bool bAll = Worlds.Num() >= Want;
+			for (const UWorld* World : Worlds)
+			{
+				bAll &= World && World->HasBegunPlay();
+			}
+			if (bAll || !PieRunning() || FPlatformTime::Seconds() - Start > PlayersTimeout)
+			{
+				Done();
+				return false;
+			}
+			return true;
+		}));
+	}
+
 	/** Play In Editor, in the level Map when given (else the one open in the editor). Another level plays through
 	 *  the play session's map override, as Movie Render Queue's PIE renders do: the editor keeps its own level open,
 	 *  unsaved changes and all. */
@@ -89,7 +115,15 @@ namespace
 			}
 			GEditor->RequestPlaySession(Params);
 		}
-		WaitFor(&PieReady, [Done](const FString& Error) { Done(PieRunning(), Error); });
+		WaitFor(&PieReady, [Done](const FString& Error)
+		{
+			if (!Error.IsEmpty())
+			{
+				Done(PieRunning(), Error);
+				return;
+			}
+			WaitForPlayers([Done]() { Done(PieRunning(), FString()); });
+		});
 	}
 
 	void StopPie(TFunction<void(bool, const FString&)> Done)
@@ -161,6 +195,20 @@ public:
 		{
 			Bridge->SessionHandler = &HandleSession;
 			Bridge->SessionRequested = []() { return GEditor && GEditor->IsPlaySessionRequestQueued(); };
+			// How many players Play In Editor starts in this editor: Number of Players, when run under one process (else
+			// the others are games of their own, out of the plugin's reach)
+			Bridge->PlaySettingsPlayers = []()
+			{
+				const ULevelEditorPlaySettings* Settings = GetDefault<ULevelEditorPlaySettings>();
+				int32 Clients = 1;
+				bool bOneProcess = true;
+				if (Settings)
+				{
+					Settings->GetPlayNumberOfClients(Clients);
+					Settings->GetRunUnderOneProcess(bOneProcess);
+				}
+				return bOneProcess ? FMath::Max(1, Clients) : 1;
+			};
 		}
 		FAutopilotStyle::Initialize();
 		FAutopilotSession::Get().Startup();  // (the runs are kept whether the tab is open or not)
@@ -211,6 +259,7 @@ public:
 			{
 				Bridge->SessionHandler = nullptr;
 				Bridge->SessionRequested = nullptr;
+				Bridge->PlaySettingsPlayers = nullptr;
 			}
 		}
 		PlaytestRunInput::EditorKey() = nullptr;

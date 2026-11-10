@@ -34,3 +34,76 @@ def test_a_tap_lasts_two_engine_frames():
         tap = source[source.index(op):]
         tap = tap[:tap.index("Bridge.AddPending")]
         assert "StartFrame = GFrameCounter" in tap and "TapDone(P, Now, StartFrame)" in tap
+
+
+def _read(*parts):
+    return open(os.path.join(ROOT, *parts), encoding="utf-8").read()
+
+
+def _private(name):
+    return open(os.path.join(PRIVATE, name), encoding="utf-8").read()
+
+
+def test_a_request_for_another_player_plays_that_players_world():
+    """Unreal's multiplayer Play In Editor: a request's "player" n (the kit's game.player(n), as Roblox's plugin takes
+    it) is read once in Handle, a player not in the game is a 404 that says how many there are, and the player's ops
+    (keys, input, move, view, screen, ui, watch, context, a still, rc's world context) act on that player's world.
+    The hello says "players"; Unity's and Godot's don't (one player)."""
+    ops = _private("PlaytestOps.cpp")
+    handle = ops[ops.index("void Handle("):]
+    assert handle.index("PlayerOf(Args)") < handle.index('Op == TEXT("key")')
+    assert "!Bridge.GetPlayerWorld(Player)" in handle and "No player %d in the game" in handle and "404" in handle
+    assert 'NumberField(Args, TEXT("player"), 1.0)' in ops
+    subsystem = _private("PlaytestSubsystem.cpp")
+    assert 'TEXT("players")' in subsystem[subsystem.index("void UPlaytestSubsystem::SendHello()"):]
+    worlds = subsystem[subsystem.index("TArray<UWorld*> UPlaytestSubsystem::GetPlayerWorlds()"):]
+    worlds = worlds[:worlds.index("\n}\n")]
+    assert "RunAsDedicated" in worlds and "PIEInstance" in worlds and "StableSort" in worlds
+    assert "return GetPlayerWorld(1);" in subsystem  # (GetGameWorld: player 1, as before)
+    for name, count in (("PlaytestOpsInput.cpp", 3), ("PlaytestOpsUI.cpp", 3), ("PlaytestOpsView.cpp", 1),
+                        ("PlaytestOpsSession.cpp", 1), ("PlaytestOpsRc.cpp", 1)):
+        assert _private(name).count("PlayerWorld(Bridge, Args)") >= count, name
+    watch = _private("PlaytestOpsWatch.cpp")
+    assert "Bridge.GetPlayerWorld(Watcher)" in watch and "Bridge.GetGameWorld()" not in watch
+    media = _private("PlaytestMedia.cpp")
+    capture = media[media.index("void FPlaytestMedia::Capture("):]
+    assert 'TEXT("player")' in capture[:capture.index("\n}\n")]
+    session = _private("PlaytestOpsSession.cpp")
+    context = session[session.index("void Context("):]
+    assert 'SetArrayField(TEXT("players"), Players(Bridge, Player))' in context
+    assert 'SetNumberField(TEXT("you"), Player)' in context
+    assert "Bridge.GetServerWorld(World)" in session  # (a client player's own server copies)
+    unity = _read("plugin", "unity", "com.ramenvr.autopilot", "Runtime", "PlaytestClient.cs")
+    godot = _read("plugin", "godot", "addons", "autopilot", "playtest.gd")
+    godot_editor = _read("plugin", "godot", "addons", "autopilot", "editor_bridge.gd")
+    for hello in (unity[unity.index('["features"]'):][:200], godot[godot.index('"features":'):][:120],
+                  godot_editor[godot_editor.index('"features":'):][:120]):
+        assert '"players"' not in hello
+
+
+def test_each_player_holds_its_own_keys_and_the_pointer_is_player_ones():
+    """Held keys are kept per player (a key player 2 holds isn't player 1's, and each player's lease runs out apart);
+    the one pointer is player 1's: another player's pointer request is refused with what to use instead."""
+    source = _private("PlaytestOpsInput.cpp")
+    assert "TMap<int32, FPlayerKeys> HeldKeys;" in source and "KeysController" not in source
+    tick = source[source.index("void TickKeys("):]
+    assert "TickPlayerKeys(Bridge, PlayerKeys.Key, PlayerKeys.Value, DeltaTime)" in tick
+    assert "Bridge.GetGameWorld()" not in source  # (every player's own world)
+    pointer = _private("PlaytestOpsPointer.cpp")
+    op = pointer[pointer.index("void PointerOp("):]
+    assert op.index("PlayerOf(Args) != 1") < op.index("Bridge.GetGameWorld()") and "player 1's only" in op
+
+
+def test_the_number_of_players_is_the_editors():
+    """A session start or restart asking for another number of players than the editor's Play settings start is refused
+    before anything changes (the run plays the game as the user set it up); the editor waits for its other players to
+    join after player 1 plays, then answers whether or not they did."""
+    session = _private("PlaytestOpsSession.cpp")
+    start = session[session.index("void Session("):]
+    asked = start.index('TEXT("players"), AskedPlayers')
+    assert asked < start.index("Bridge.SessionHandler(") and "can't be changed from here" in start
+    assert "Bridge.PlaySettingsPlayers" in start
+    editor = _read("plugin", "unreal", "Autopilot", "Source", "AutopilotPlaytestEditor", "Private",
+                   "AutopilotPlaytestEditorModule.cpp")
+    assert "GetPlayNumberOfClients(Clients)" in editor and "GetRunUnderOneProcess(bOneProcess)" in editor
+    assert "WaitForPlayers(" in editor[editor.index("void StartPie("):]

@@ -167,7 +167,8 @@ namespace
 		bool bDrawn = false;
 		Args->TryGetBoolField(TEXT("drawn"), bDrawn);
 		const int32 PartCount = FMath::Clamp(FMath::RoundToInt32(NumberField(Args, TEXT("parts"), 3.0)), 0, 16);
-		const APlayerController* Player = PlayerController(Bridge.GetGameWorld());
+		const int32 Watcher = PlayerOf(Args);  // (whose view the drawn parts are told for: the request's player)
+		const APlayerController* Player = PlayerController(Bridge.GetPlayerWorld(Watcher));
 		const APawn* PlayerPawn = Player ? Player->GetPawn() : nullptr;
 		auto Add = [&Watched](USceneComponent* Component, const FString& Path, int32 Thing)
 		{
@@ -220,11 +221,11 @@ namespace
 		Pending.Op = TEXT("watch");
 		Pending.StartReal = FPlatformTime::Seconds();
 		Pending.Seconds = NumberField(Args, TEXT("seconds"), 0.6);
-		Pending.Tick = [&Bridge, State, LookState, Turned, MovedLimit, Resized, bDrawn](FPending& P, double Now)
+		Pending.Tick = [&Bridge, State, LookState, Turned, MovedLimit, Resized, bDrawn, Watcher](FPending& P, double Now)
 		{
 			const double GameTime = FMath::Max(0.0, Bridge.GameTime());
-			const UWorld* World = Bridge.GetGameWorld();
-			const APlayerController* PC = PlayerController(Bridge.GetGameWorld());
+			UWorld* World = Bridge.GetPlayerWorld(Watcher);
+			const APlayerController* PC = PlayerController(World);
 			const APawn* Pawn = PC ? PC->GetPawn() : nullptr;
 			// The lights helpers draw at things' places, each counted for whichever watched thing it is at
 			const TArray<FPlacedLight> Placed = LookState->Num() > 0 ? PlacedLights(World, Pawn, PC) : TArray<FPlacedLight>();
