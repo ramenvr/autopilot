@@ -122,7 +122,8 @@ game closes by itself and Autopilot shows its report.
    Linux. It installs the `autopilot` command.
 3. Run `autopilot serve` before you open the editor. Autopilot connects to it instead of starting its own.
 
-`autopilot login` signs in to Aura from a terminal (`autopilot logout` signs out); `autopilot uninstall` removes
+`autopilot login` signs in to Aura from a terminal (`autopilot login --another-account` lets you pick another
+account on Aura's page; `autopilot logout` signs out); `autopilot uninstall` removes
 Autopilot from the computer (see [Uninstalling](#uninstalling)).
 
 ## From your own Claude Code or Codex

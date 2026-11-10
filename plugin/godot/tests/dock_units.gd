@@ -463,6 +463,7 @@ func run_checks() -> void:
 	check("waiting: finish in the browser, the url, Open again, Copy link, Cancel", "Finish signing in in your browser…" in t
 		and "https://aura.example/auth/cli?c=1" in t and "Open again" in t and "Copy link" in t and "Cancel" in t and "IN YOUR BROWSER" in t
 		and not "then choose Allow" in t and _no_keys_card() and not "Use my keys" in t, t)
+	check("waiting for a plain sign-in: nothing about the wrong account", not "wrong account" in t, t)
 	check("Cancel", press(dock._setup, "Cancel") and fake.types()[-1] == "aura_sign_in_cancel" and dock.sign_in.is_empty())
 	bridge._on_brain_frame({"type": "aura_sign_in", "state": "error", "reason": "cancelled", "message": "x"})
 	t = setup_text()
@@ -524,8 +525,13 @@ func run_checks() -> void:
 	check("signed in: the keys card folded, Bring your own keys (BYOK) [Show]", "BRING YOUR OWN KEYS (BYOK)" in t
 		and "Show" in t and not "Use my keys" in t, t)
 	fake.sent.clear()
-	check("Use another account: signed out, then signed in again", press(dock._setup, "Use another account")
-		and fake.types() == ["aura_sign_out", "aura_sign_in"], fake.sent)
+	check("Use another account: signed out, then signed in again, asking for the account", press(dock._setup, "Use another account")
+		and fake.sent == [{"type": "aura_sign_out"}, {"type": "aura_sign_in", "another_account": true}], fake.sent)
+	bridge._on_brain_frame({"type": "aura_sign_in", "state": "waiting", "url": "https://aura.example/auth/cli?c=3"})
+	t = setup_text()
+	check("waiting for another account: what to do if the page shows the wrong account",
+		"If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in page again." in t
+		and "Open again" in t, t)
 	bridge._on_brain_frame({"type": "aura_sign_in", "state": "signed_in", "email": "dev@example.org"})
 	dock.service.state = "ready"
 	dock.service.url = url

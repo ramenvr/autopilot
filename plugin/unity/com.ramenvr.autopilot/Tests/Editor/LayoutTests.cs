@@ -662,9 +662,15 @@ namespace Autopilot.Playtest.Tests
 
             var c = Client();
             c.TestReceive("{\"type\": \"aura_sign_in\", \"state\": \"waiting\", \"url\": \"https://app.tryaura.dev/auth/cli?code=AB12CD34EF56GH78IJ90KL12MN34OP56\"}");
+            notSaid.Add(AutopilotView.WrongAccount);  // (a plain sign-in says nothing about the wrong account)
             Check("waiting for the browser", v => Setup(v, 1), null,
                 "In your browser", "Finish signing in in your browser…",
                 "app.tryaura.dev", "Open again", "Copy link", "Cancel");
+            notSaid.Remove(AutopilotView.WrongAccount);
+            c.SignIn.AnotherAccount = true;  // (Use another account's sign-in)
+            Check("waiting for the browser, another account", v => Setup(v, 1), null,
+                "In your browser", "Finish signing in in your browser…", AutopilotView.WrongAccount, "Open again", "Cancel");
+            c.SignIn.AnotherAccount = false;
 
             // The connection to the agent service gone meanwhile: being prepared again (asked again once connected), or
             // the agent service's problem with Try again

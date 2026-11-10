@@ -26,6 +26,8 @@ const Model = preload("model.gd")
 
 const DISCLOSURE := ("Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot."
 	+ " For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.")
+## What the Aura card says while the browser is open after Use another account (the other plugins say the same)
+const WRONG_ACCOUNT := "If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in page again."
 ## The Aura card's line, with the Aura app or without
 const AURA_BILLED := ("Autopilot is maintained by the developers behind Aura, the multiagent AI solution to Unreal and "
 	+ "Unity game development. You can use your Aura subscription to run Autopilot. New users get free Aura credits.")
@@ -401,6 +403,8 @@ func _aura_card() -> void:
 			else:
 				_head(a, "Sign in with Aura", "In your browser", "info")
 				_spinning(a, "Finish signing in in your browser…", "AutopilotTitle")
+				if host.sign_in_another:
+					a.add_child(_dim_text(WRONG_ACCOUNT))
 				var url := str(si.get("url", ""))
 				a.add_child(_well(url, "Copy link"))
 				var r := _row()

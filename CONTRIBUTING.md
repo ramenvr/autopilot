@@ -86,6 +86,7 @@ autopilot codex --project path/to/Game       # build a project's codex without t
 autopilot run memory/<project>/runs/<run>/harness.py --seconds 90   # replay a saved harness (no language model)
 autopilot regress --project path/to/Game     # replay every CONFIRMED verification, no language model
 autopilot login | logout                     # sign in to Aura on its website (without the Aura app), or out again
+autopilot login --another-account            # ... picking the account on Aura's page (not the browser's)
 autopilot connect claude|codex [--remove]    # set up your own Claude Code or Codex to playtest through Autopilot,
                                              # on your own plan (its MCP server, `autopilot mcp`; a skill; a describer)
 autopilot mcp                                # that MCP server (your agent starts it)

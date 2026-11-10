@@ -809,15 +809,23 @@ namespace Autopilot.Playtest
         public bool CanSignIn => Connected && BrainRole != null && BrainHasAccount;
 
         /// <summary>Ask the brain to sign in to Aura (it opens the browser on Aura's sign-in). Returns false when it
-        /// can't be asked (not connected, or a brain without the account feature).</summary>
-        public bool AskAuraSignIn()
+        /// can't be asked (not connected, or a brain without the account feature). anotherAccount: "Use another
+        /// account", Aura's page asked to let the user pick the account (an older agent service ignores it).</summary>
+        public bool AskAuraSignIn(bool anotherAccount = false)
         {
             if (!CanSignIn) return false;
-            SignIn.Ask();
+            SignIn.Ask(anotherAccount);
             signInSerial = connectionSerial;
             AccountChanged();
-            Send(new Dictionary<string, object> { ["type"] = "aura_sign_in" });
+            SendSignIn();
             return true;
+        }
+
+        void SendSignIn()
+        {
+            var frame = new Dictionary<string, object> { ["type"] = "aura_sign_in" };
+            if (SignIn.AnotherAccount) frame["another_account"] = true;
+            Send(frame);
         }
 
         /// <summary>A sign-in asked on a connection that closed since: the agent service kept it going, but what it said
@@ -831,7 +839,7 @@ namespace Autopilot.Playtest
             if (Account != null && Account.SignedIn && !string.IsNullOrEmpty(Account.Email))
                 SignIn.SignedInAs(Account.Email);
             else if (CanSignIn)
-                Send(new Dictionary<string, object> { ["type"] = "aura_sign_in" });
+                SendSignIn();
         }
 
         /// <summary>Stop waiting for the browser (the brain answers with a cancelled error, which shows nothing).</summary>
