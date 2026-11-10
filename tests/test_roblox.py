@@ -447,7 +447,8 @@ def test_a_teleport_the_agent_made_is_not_the_games():
     assert "function Editor.acted(op: string, args: any): any" in editor
     assert 'acted.to = "server"' in editor and 'acted.type = "acted"' in editor
     request = editor[editor.index("function Editor:_onRequest("):]
-    assert request.index("local acted = Editor.acted(op, args)") < request.index('if op == "rc" then')  # (before it goes)
+    # the agent's act is noted before the request goes on
+    assert request.index("local acted = Editor.acted(op, args)") < request.index('if op == "rc" then')
     assert 'kind == "acted"' in sources["Host"] and "detectors:noteActed(frame)" in sources["Server"]
     readme = open(os.path.join(ROOT, "plugin", "roblox", "README.md"), encoding="utf-8").read()
     row = next(line for line in readme.splitlines() if line.startswith("| `detectors` |"))
