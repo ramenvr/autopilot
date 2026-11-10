@@ -132,6 +132,10 @@ namespace PlaytestOps
 		{
 			View(Bridge, Id, Args);
 		}
+		else if (Op == TEXT("trace"))
+		{
+			Trace(Bridge, Id, Args);
+		}
 		else if (Op == TEXT("rc"))
 		{
 			Rc(Bridge, Id, Args);

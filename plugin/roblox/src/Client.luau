@@ -1,7 +1,8 @@
 --!strict
 -- The play session's client (the player's DataModel): what the player sees and does. Answers view, screen, ui, ui_act,
--- pointer, touch, key, input, move, watch, find, transforms, pose, movement, device, context, ping, capture, record and
--- rc on the client's own instances (the editor sends rc to the server unless the path is the client's: Editor.route).
+-- pointer, touch, key, input, move, watch, find, transforms, trace, pose, movement, device, context, ping, capture,
+-- record and rc on the client's own instances (the editor sends rc to the server unless the path is the client's:
+-- Editor.route).
 -- Runs the client's detectors. Holds are leased as in every plugin: a held key not renewed within its lease is let go.
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -460,6 +461,9 @@ function Client.start(plugin: Plugin)
 		end,
 		transforms = function(args)
 			return true, World.transforms(args, Paths.resolve)
+		end,
+		trace = function(args)
+			return Sight.trace(args)
 		end,
 		pose = function()
 			return World.pose()

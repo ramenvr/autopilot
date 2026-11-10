@@ -261,6 +261,29 @@ class Game:
                 out[a]["crosshair_on"] = bool(t.get("crosshair_on"))
         return out
 
+    def trace(self, start, end, radius=0.0, sight=False):
+        """The first thing a line from `start` to `end` meets (a ball of `radius` swept along it, when radius > 0: room
+        for a body that wide), by the game's collision: what is solid, whatever its box says. Asked of what stops the
+        player's body (its own collision; sight=True: what stops a line of sight instead). The player's own body and
+        what it carries are never hit. -> None when nothing is in the way, else {"location" (where the line stops: the
+        ball's center when it touches), "point" (where it touches), "normal", "distance" (from start to location),
+        "actor" (its path), "name", "component"?, "inside" (start was already in it: distance 0)}. Positions in the
+        kit's frame."""
+        if "trace" not in self.features:
+            raise GameError("trace: this game's Autopilot plugin can't trace yet (update the plugin)")
+        args = {"start": Vec.of(start).ue(), "end": Vec.of(end).ue(), "radius": max(0.0, float(radius or 0.0))}
+        if sight:
+            args["channel"] = "sight"
+        hit = (self.request("trace", args) or {}).get("hit")
+        if not hit:
+            return None
+        out = dict(hit)
+        for k in ("location", "point", "normal"):
+            if out.get(k) is not None:
+                out[k] = Vec.of(out[k])
+        out["inside"] = bool(out.get("inside"))
+        return out
+
     def screen(self):
         """{key: text} of every text on screen."""
         return (self.request("screen") or {}).get("texts", {})

@@ -10,6 +10,7 @@
 //   PlaytestOpsSonar.cpp      view's `sonar`
 //   PlaytestOpsLook.cpp       how a thing is drawn, and its visible body: for `view` and `watch`
 //   PlaytestOpsWatch.cpp      `watch`: what changes over a stretch of game time
+//   PlaytestOpsTrace.cpp      `trace`: the first thing a line or a swept ball meets, by the world's collision
 //   PlaytestMedia.cpp         `record` and `capture`: the game's picture (FPlaytestMedia, PlaytestInternal.h)
 //
 // Handle and TickKeys, which the subsystem calls, are declared in PlaytestInternal.h.
@@ -76,6 +77,8 @@ namespace PlaytestOps
 	void UiAct(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void View(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void Watch(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** `trace` (PlaytestOpsTrace.cpp): the first thing a line or a swept ball meets, by the world's collision. */
+	void Trace(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 
 	// --- how a thing looks (PlaytestOpsLook.cpp; see the comments there) ----------------------------------------
 

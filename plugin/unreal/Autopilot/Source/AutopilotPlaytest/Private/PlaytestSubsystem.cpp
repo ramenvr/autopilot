@@ -564,6 +564,7 @@ void UPlaytestSubsystem::SendHello()
 	Features.Add(MakeShared<FJsonValueString>(TEXT("timed_hold")));  // key hold with "seconds", let go in-game
 	Features.Add(MakeShared<FJsonValueString>(TEXT("levels")));  // `levels`, and `session` playing the `map` asked for
 	Features.Add(MakeShared<FJsonValueString>(TEXT("pointer")));  // `pointer`: the mouse to a place, clicks land there
+	Features.Add(MakeShared<FJsonValueString>(TEXT("trace")));  // `trace`: a line or a ball by the world's collision
 	if (FPlaytestMedia::CanCapture())
 	{
 		Features.Add(MakeShared<FJsonValueString>(TEXT("media")));  // `record` and `capture` (a game that renders)

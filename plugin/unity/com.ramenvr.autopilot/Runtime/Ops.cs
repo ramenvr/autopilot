@@ -113,6 +113,9 @@ namespace Autopilot.Playtest
                 case "transforms":
                     client.Respond(id, Transforms(args));
                     break;
+                case "trace":
+                    Trace.Handle(client, id, args);
+                    break;
                 case "pose":
                     client.Respond(id, Player.Pose());
                     break;

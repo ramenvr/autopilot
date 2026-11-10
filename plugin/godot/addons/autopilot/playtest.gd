@@ -26,6 +26,7 @@ const Media = preload("lib/media.gd")
 const Prefs = preload("lib/prefs.gd")
 const Isolation = preload("lib/isolation.gd")
 const MouseReads = preload("lib/mouse_reads.gd")
+const Trace = preload("lib/trace.gd")
 
 const CAPTURE := "autopilot"
 const KEY_TAP_SECONDS := 0.05
@@ -228,9 +229,9 @@ func hello(host: String) -> Dictionary:
 		"engine_version": Engine.get_version_info().string, "project": str(ProjectSettings.get_setting("application/config/name", "")),
 		"host": host,
 		# what this addon does beyond the protocol's first version: the brain falls back for one without them (a key
-		# hold with "seconds" let go in the game; `levels`, and `session` playing the `map` asked for; `pointer`;
+		# hold with "seconds" let go in the game; `levels`, and `session` playing the `map` asked for; `pointer`; `trace`;
 		# `record` and `capture`, in a game that draws)
-		"features": ["timed_hold", "levels", "pointer"] + (["media"] if Media.can_capture() else []),
+		"features": ["timed_hold", "levels", "pointer", "trace"] + (["media"] if Media.can_capture() else []),
 		# whether the user shares runs' data (preferences.json, or -PlaytestShare on the command line)
 		"share": Prefs.share_for_run(cli_share),
 		# how input reaches the game (as Unity's: point before clicking, what headless changes)
@@ -634,6 +635,8 @@ func dispatch(id, op: String, args: Dictionary):
 			return world.find(args)
 		"transforms":
 			return [true, world.transforms(args, rc.resolve)]
+		"trace":
+			return Trace.trace(world, args)
 		"pose":
 			return world.pose(args)
 		"movement":
