@@ -118,13 +118,6 @@ To do a clean uninstall of Autopilot, do the following steps:
    - **Godot**: Disable Autopilot in **Project > Project Settings > Plugins**, then delete `addons/autopilot/`.
    - **Roblox Studio**: Delete `Autopilot.rbxmx` from your Roblox Studio Plugins folder.
 
-## Roblox through Studio's MCP server (experimental)
-
-`roblox-mcp` plays a Roblox place through Roblox Studio's built-in MCP server: no plugin inside Studio, a small
-connector process instead, so runs can be scripted (the bench runs Roblox places with it). Whole runs work on
-Windows; it is still experimental. [docs/roblox-mcp.md](docs/roblox-mcp.md) explains how to set it up,
-how to measure its latency, and what it can't do yet.
-
 ## Contributing
 
 Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) explains how to set up a development environment, run the tests, and add support for a new engine. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
