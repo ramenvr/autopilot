@@ -43,7 +43,8 @@ var enabled := true
 var counts := {}  # signature -> times seen
 var muted := {}  # detector names and signatures never reported (configure's mute): name -> true
 var config := {"long_fall_seconds": 8.0, "hitch_seconds": 0.75, "hud_every": 0.25, "scan_every": 0.5, "out_of_world_margin": 50.0,
-	"teleport_factor": 3.0, "teleport_min": 1000.0, "growth_seconds": 120.0, "property_every": 0.5}
+	"teleport_factor": 3.0, "teleport_min": 1000.0, "growth_seconds": 120.0, "property_every": 0.5,
+	"teleport_after_input_seconds": 1.0}
 var _bodies := {}  # body -> {"at": kit point, "frames", "speed"}: the bodies teleport follows
 var _growth := []  # node counts by kind, one sample every 10 s of game time (actor_growth)
 var _growth_at := 0.0
@@ -56,6 +57,9 @@ var _kill_y = null
 var _scene: Node = null
 var _scene_at := 0
 var _flagged := {}
+var _t := 0.0  # the game time of the last tick
+var _input := {}  # the agent's last input (note_input): {"key", "t"}
+var _move_frames := 0  # frames (game time going on) left in which a teleport is the agent's own move (note_move)
 
 
 func _init(owner_node: Node, world_module, ui_module) -> void:
@@ -82,17 +86,32 @@ func configure(args: Dictionary) -> void:
 				muted[entry.strip_edges()] = true
 
 
+## The agent's input reached the game: a key going down, an input action, a UI element acted on. A teleport soon
+## after it (teleport_after_input_seconds) may be what that input does (a reset key): told as info, with the key.
+func note_input(key: String) -> void:
+	_input = {"key": key, "t": _t}
+
+
+## The agent moved something itself (an rc write or call: game.set, game.call, a research teleport): a teleport in the
+## next 3 frames is its own, not the game's.
+func note_move() -> void:
+	_move_frames = 3
+
+
 ## Start afresh (the host's detectors were off, or a run began): what was seen before isn't this run's. The scene counts
 ## as new on the next tick, with its time to settle.
 func restart() -> void:
 	errors.drain()
 	counts.clear()
 	_scene = null
+	_input = {}
+	_move_frames = 0
 
 
 ## Log events and findings for this frame. emit(event_dict) sends an event; t: game time; real_dt: the frame's wall
 ## time; paused: whether the game is paused.
 func tick(emit: Callable, t: float, real_dt: float, paused: bool) -> void:
+	_t = t
 	for e in errors.drain():
 		var error: bool = e.type != Logger.ERROR_TYPE_WARNING
 		var category := "Script" if e.type == Logger.ERROR_TYPE_SCRIPT else ("Shader" if e.type == Logger.ERROR_TYPE_SHADER else "Engine")
@@ -114,6 +133,8 @@ func tick(emit: Callable, t: float, real_dt: float, paused: bool) -> void:
 		_bodies.clear()
 		_growth.clear()
 		_growth_at = t
+		_input = {}
+		_move_frames = 0
 	var loading := Time.get_ticks_msec() - _scene_at < 3000
 	if not paused and not loading and real_dt > config.hitch_seconds:
 		_finding(emit, t, {"detector": "hitch", "severity": "warning", "summary": "A frame took %.2f s" % real_dt,
@@ -250,9 +271,19 @@ static func _vec1(k: Dictionary) -> Dictionary:
 
 
 ## teleport: a character body (the player's or another's) moved farther in one frame than teleport_factor times its
-## speed allows (at least teleport_min units): a respawn, a bad snap, a body pushed out of a wall. A suspicion.
+## speed allows (at least teleport_min units): a respawn, a bad snap, a body pushed out of a wall. A suspicion. Not
+## what the agent moved itself (note_move: an rc write or call, in the 3 frames after it); right after the agent's
+## input (note_input, within teleport_after_input_seconds) info, naming the key: what the key does may be meant.
 func _teleports(emit: Callable, t: float, s: Node) -> void:
 	var dt := host.get_process_delta_time() * Engine.time_scale
+	var agent_moved := _move_frames > 0
+	if dt > 0.0 and _move_frames > 0:
+		_move_frames -= 1
+	var after_input := {}
+	if not _input.is_empty():
+		var since: float = t - float(_input.t)
+		if since >= 0.0 and since <= config.teleport_after_input_seconds:
+			after_input = {"key": str(_input.key), "seconds": snappedf(since, 0.01)}
 	var alive := {}
 	var bodies: Array = s.find_children("*", "CharacterBody3D", true, false) + s.find_children("*", "CharacterBody2D", true, false)
 	var p: Node = world.player()
@@ -274,13 +305,19 @@ func _teleports(emit: Callable, t: float, s: Node) -> void:
 		if track.frames > 5:
 			var allowed := maxf(config.teleport_min, config.teleport_factor * maxf(speed, track.speed) * dt)
 			var moved := here.distance_to(track.at)
-			if moved > allowed:
+			if moved > allowed and not agent_moved:
 				var label := kind_of(b)
-				_finding(emit, t, {"detector": "teleport", "severity": "suspicion",
+				var f := {"detector": "teleport", "severity": "suspicion",
 					"summary": "%s moved %.0f units in one frame (at most %.0f expected)" % [label, moved, allowed],
 					"signature": "teleport:" + label, "actor": str(b.name), "where": _vec1(at),
 					"details": {"from": _vec1({"X": track.at.x, "Y": track.at.y, "Z": track.at.z}), "to": _vec1(at),
-						"moved": roundf(moved), "allowed": roundf(allowed)}})
+						"moved": roundf(moved), "allowed": roundf(allowed)}}
+				if not after_input.is_empty():
+					f.severity = "info"
+					f.summary += " right after the agent pressed %s" % after_input.key
+					f.signature += " after %s" % after_input.key
+					f.details.after_input = after_input
+				_finding(emit, t, f)
 		_bodies[b] = {"at": here, "frames": track.frames + 1, "speed": speed}
 	for b in _bodies.keys():
 		if not alive.has(b):
@@ -298,14 +335,16 @@ func _game_roots() -> Array:
 
 ## actor_growth: every 10 s of game time, how many nodes of each kind (kind_of) the game has, counting the nodes that
 ## are things of their own (with a script, an instanced scene's root, a physics body or area: not every mesh and shape
-## under them); a kind that kept growing over growth_seconds, to at least twice as many and 50 more, is a possible leak.
+## under them) that the game made while playing: not saved inside a scene (no owner), so a level or chunk instanced as
+## the player goes counts once (its root), not every node it brought; a kind that kept growing over growth_seconds, to
+## at least twice as many and 50 more, is a possible leak.
 func _count_kinds(emit: Callable, t: float) -> void:
 	var counts := {}
 	var stack: Array = _game_roots()
 	while stack.size() > 0:
 		var n: Node = stack.pop_back()
 		stack.append_array(n.get_children())
-		if n.get_script() != null or n.scene_file_path != "" or n is CollisionObject3D or n is CollisionObject2D:
+		if n.owner == null and (n.get_script() != null or n.scene_file_path != "" or n is CollisionObject3D or n is CollisionObject2D):
 			var k := kind_of(n)
 			counts[k] = counts.get(k, 0) + 1
 	_growth.append(counts)
