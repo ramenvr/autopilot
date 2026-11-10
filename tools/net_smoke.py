@@ -176,6 +176,7 @@ def check_play(game, check, ctx, mode):
     """The player's own play: walking, jumping, turning, an Enhanced Input action, what it sees, the picture."""
     character, controller = ctx["character"], ctx["controller"]
     server = (ctx.get("net") or {}).get("server_character")
+    time.sleep(2.0)  # (a pawn just spawned drops onto the floor first: walking in the air covers little)
     server_start = server and location(game.link, server)
     walked = game("move", {"direction": {"X": 1, "Y": 0, "Z": 0}, "scale": 1.0, "seconds": 0.8}, timeout=10)["moved"]
     check("move: the player walked", walked > 50, f"{walked:.0f} units")
@@ -225,7 +226,11 @@ def check_play(game, check, ctx, mode):
 def check_attack(game, check, ctx):
     """F, the test game's attack: the client asks its server, which counts it (the controller's Hits)."""
     controller = ctx["controller"]
-    hits = game.get(controller, "Hits")
+    try:
+        hits = game.get(controller, "Hits")
+    except bridge.BridgeError as e:  # (a newer template's game mode Blueprint picks its own controller)
+        print(f"  skip key: F reached the server (the controller isn't the test game's: {e.error})", flush=True)
+        return
     game("key", {"key": "F", "mode": "press"})
     got = game.until(lambda: game.get(controller, "Hits") > hits, seconds=5, step=0.2)
     check("key: F reached the server (an attack it counted)", bool(got),
