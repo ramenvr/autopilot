@@ -412,7 +412,7 @@ plays at its normal speed:
 |---|---|
 | `log_error` / `ensure` | an Error-level log line, an `ensure` failure, or a Blueprint runtime error such as "Accessed None" |
 | `nan` | an actor's transform is NaN or infinite |
-| `out_of_world` | an actor is below KillZ or outside the world bounds |
+| `out_of_world` | a movable actor is below KillZ, or beyond the world bounds: past the level's own extent (what its static and stationary actors' colliding parts span, and in the editor a World Partition's bounds) by half its size (at least 2^19 units), and never within 2^20 units (UE4's world size) of the origin; `max_distance` sets a fixed distance from the origin instead |
 | `teleport` | a pawn moves farther in one frame than its speed allows |
 | `long_fall` | a character keeps falling for 8 s |
 | `hitch` | a frame takes longer than 0.75 s |
@@ -423,6 +423,23 @@ plays at its normal speed:
 
 The agent service adds its own checks on top, confirms findings by replaying them, and can turn them into
 claims to verify.
+
+### Muting a finding
+
+A finding your game is meant to have (a big world's far-off actors, a hitch you know of) can be
+muted for the project: press **Not a bug** on it in the run's report, and it isn't reported again, in this run or the
+next ones. The agent service keeps the list in `detectors.json` in the project's memory folder
+(`Autopilot/memory/<project>/` in your user settings folder, or under `AUTOPILOT_MEMORY`; `memory/<project>/` when
+Autopilot runs from a checkout of its repository), where you can edit it by hand:
+
+```json
+{"mute": ["out_of_world:BP_Tree", "hitch"], "max_distance": 5000000}
+```
+
+`mute` takes a finding's signature (`out_of_world:BP_Tree`: that class's) or a detector's name (`out_of_world`: all of
+its findings); the other keys are the detectors' settings (`max_distance`, `teleport_min`, `hitch_seconds`,
+`long_fall_seconds`...). Each run sends the file to the game as it starts. Reset memory keeps it: it is your setting,
+not something runs learned.
 
 ## Headless and CI runs (command line)
 
