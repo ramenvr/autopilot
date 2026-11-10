@@ -61,7 +61,7 @@ def test_a_request_for_another_player_plays_that_players_world():
     assert "RunAsDedicated" in worlds and "PIEInstance" in worlds and "StableSort" in worlds
     assert "return GetPlayerWorld(1);" in subsystem  # (GetGameWorld: player 1, as before)
     for name, count in (("PlaytestOpsInput.cpp", 3), ("PlaytestOpsUI.cpp", 3), ("PlaytestOpsView.cpp", 1),
-                        ("PlaytestOpsSession.cpp", 1), ("PlaytestOpsRc.cpp", 1)):
+                        ("PlaytestOpsSession.cpp", 1), ("PlaytestOpsRc.cpp", 1), ("PlaytestOpsTrace.cpp", 1)):
         assert _private(name).count("PlayerWorld(Bridge, Args)") >= count, name
     watch = _private("PlaytestOpsWatch.cpp")
     assert "Bridge.GetPlayerWorld(Watcher)" in watch and "Bridge.GetGameWorld()" not in watch
