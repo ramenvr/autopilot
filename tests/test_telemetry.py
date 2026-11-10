@@ -386,6 +386,35 @@ def test_each_episode_is_a_video_of_its_own_and_the_report_shows_the_last(tmp_pa
     assert [c["episode"] for c in rec.summary()["episodes"]] == [1, 2]
 
 
+def test_the_recording_shown_is_the_episode_the_report_names(tmp_path):
+    from autopilot import cli
+
+    link = SendLink({"project": "fake", "features": ["media"]})  # (no picture of an episode's end)
+    now = time.time() - 60
+    with media.Recorder(link, str(tmp_path)) as rec:
+        send = link.frame_listeners[0]
+        for n in (1, 2, 3):
+            rec.begin(n)
+            if n != 3:  # (episode 3 got no frames at all: its window hidden)
+                for k in range(3):
+                    send({"n": k, "t": k, "wall": now + n * 10 + k * 0.2, "jpeg": base64.b64encode(jpeg()).decode()})
+            rec.end(n)
+    shown = rec.shown(1)
+    assert shown["episode"] == 1 and shown["video"] == os.path.abspath(tmp_path / "media" / "recording-1.mp4")
+    assert "instead_of" not in shown
+    assert rec.shown()["episode"] == 2  # (none named: the last one with a video)
+    # The one named has no video: the last one's is shown, and the result says so
+    assert rec.shown(3) == {**rec.shown(), "instead_of": 3}
+    tel = types.SimpleNamespace(recording=rec.shown)
+    recording, report = cli.shown_recording(tel, {"outcome": "CONFIRMED", "episode": 3, "alerts": ["earlier"]})
+    assert recording == rec.shown() and "instead_of" not in recording
+    assert report["alerts"][0] == "earlier" and "named episode 3" in report["alerts"][1]
+    assert "episode 2's" in report["alerts"][1]
+    recording, report = cli.shown_recording(tel, {"outcome": "CONFIRMED", "episode": 1})
+    assert recording["episode"] == 1 and "alerts" not in report
+    assert cli.shown_recording(tel, {"outcome": "CONFIRMED"})[0]["episode"] == 2
+
+
 def test_godots_recording_is_also_a_flipbook_at_a_fixed_rate(tmp_path):
     link = SendLink({"project": "fake", "features": ["media"], "engine": "godot"})
     with media.Recorder(link, str(tmp_path), flipbook=True) as rec:

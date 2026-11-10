@@ -486,10 +486,11 @@ class RunTelemetry:
             except Exception as e:  # noqa: BLE001 - its calls go on uncounted
                 print(f"note: {provider}'s calls aren't counted: {type(e).__name__}: {e}")
 
-    def recording(self):
-        """The run's recording as the result tells the plugin (media.Recorder.shown), or None."""
+    def recording(self, episode=None):
+        """The run's recording as the result tells the plugin (media.Recorder.shown: episode's, the one the report
+        named, else the last episode's), or None."""
         try:
-            return self.recorder.shown() if self.recorder is not None else None
+            return self.recorder.shown(episode) if self.recorder is not None else None
         except Exception as e:  # noqa: BLE001
             print(f"note: the recording isn't shown: {type(e).__name__}: {e}")
             return None
@@ -578,8 +579,8 @@ class RunTelemetry:
             "engine": {k: hello.get(k) for k in ("engine", "engine_version", "plugin_version", "host", "project_id")},
             "agent": {k: report.get(k) for k in ("agent", "client", "provider", "model", "fast", "turns",
                                                  "cost_usd")},
-            "outcome": {k: report.get(k) for k in ("outcome", "summary", "evidence", "findings", "episodes",
-                                                   "seconds", "stopped")},
+            "outcome": {k: report.get(k) for k in ("outcome", "summary", "evidence", "findings", "episode",
+                                                   "episodes", "seconds", "stopped")},
             "usage": self.usage.snapshot(),
             "recording": self.recorder.summary() if self.recorder else None,
             "clock": CLOCK,

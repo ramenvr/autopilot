@@ -330,6 +330,20 @@ def prepare(link, path=None, level=None):
 
 # -- what the user reads ------------------------------------------------------------------------------------------
 
+def shown_recording(tel, report):
+    """(the result's `recording`, the report): the video of the episode the report named (its `episode`: the one that
+    shows the result best), else the last episode's. When the one named has no video, the last one's is shown and
+    the report's alerts say so."""
+    episode = report.get("episode") if isinstance(report, dict) else None
+    recording = tel.recording(episode)
+    instead = recording.pop("instead_of", None) if recording else None
+    if instead is not None:
+        report = dict(report, alerts=list(report.get("alerts") or []) + [
+            f"The report named episode {instead} as the one that shows the result, but it has no recording: the "
+            f"recording shown is episode {recording['episode']}'s, the last one recorded."])
+    return recording, report
+
+
 def result_frame(report, prompt, kind=None):
     """The `result` the plugin is sent for a report (docs/protocol.md, Runs): a verdict for a claim, else a goal's.
     kind: the run's (verify, goal or explore), which decides the result's shape: a goal worded as a claim ("Confirm
@@ -739,7 +753,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 if learned["updated"]:
                     with contextlib.suppress(Exception):
                         link.status(SAVING_MEMORY)
-            recording = tel.recording()
+            recording, report = shown_recording(tel, report)
             missing = None if recording else tel.no_recording()
             close_game(link)  # (every harness has run, and the recording has stopped)
             if share:
