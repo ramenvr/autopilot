@@ -256,6 +256,13 @@ void FPlaytestDetectors::Report(const FString& Detector, const FString& Severity
 	{
 		return;  // the project said it isn't a bug (Not a bug, or its detectors.json)
 	}
+	// A teleport right after the agent's input ("teleport:<kind> after <key>") is muted with that kind's teleports too
+	const int32 After = Detector == TEXT("teleport")
+		? Signature.Find(TEXT(" after "), ESearchCase::CaseSensitive, ESearchDir::FromEnd) : INDEX_NONE;
+	if (After != INDEX_NONE && Muted.Contains(Signature.Left(After)))
+	{
+		return;
+	}
 	int32& Count = Seen.FindOrAdd(Signature);
 	++Count;
 	if (Count != 1 && Count != 10 && Count != 100 && Count != 1000)

@@ -74,6 +74,13 @@ func mute_tests() -> void:
 	d.configure({"mute": []})
 	d._finding(emit, 3.0, {"detector": "hitch", "severity": "warning", "summary": "A frame took 3 s", "signature": "hitch"})
 	check("mute: an emptied list reports it again", sent.size() == 2 and sent[1].finding.signature == "hitch", sent)
+	d.configure({"mute": ["teleport:Player"]})
+	d._finding(emit, 4.0, {"detector": "teleport", "severity": "info", "summary": "Player moved right after R",
+		"signature": "teleport:Player after R"})
+	d._finding(emit, 4.0, {"detector": "teleport", "severity": "info", "summary": "Enemy moved right after R",
+		"signature": "teleport:Enemy after R"})
+	check("mute: a muted kind's teleport right after the agent's key is muted too, another kind's isn't",
+		sent.size() == 3 and sent[2].finding.signature == "teleport:Enemy after R", sent)
 	d.shutdown()
 	host.free()
 

@@ -186,6 +186,10 @@ func _finding(emit: Callable, t: float, f: Dictionary) -> void:
 	var sig: String = f.signature
 	if muted.has(sig) or muted.has(str(f.get("detector", ""))):
 		return  # the project said it isn't a bug
+	# A teleport right after the agent's input ("teleport:<kind> after <key>") is muted with that kind's teleports too
+	var after := sig.rfind(" after ") if str(f.get("detector", "")) == "teleport" else -1
+	if after >= 0 and muted.has(sig.substr(0, after)):
+		return
 	var n: int = counts.get(sig, 0) + 1
 	counts[sig] = n
 	if not (n == 1 or n == 10 or n == 100 or n == 1000):

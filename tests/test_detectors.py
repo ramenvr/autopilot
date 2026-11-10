@@ -163,6 +163,31 @@ def test_the_service_drops_muted_findings_a_plugin_still_sends():
     assert [e["finding"]["signature"] for e in seen] == ["out_of_world:BP_Rock"]
 
 
+def test_a_muted_teleport_is_muted_right_after_the_agents_input_too():
+    # A teleport right after the agent's key is told as "teleport:<kind> after <key>" (info): muting the kind's teleport
+    # ("Not a bug" on it) mutes that one too, in the service and in every plugin; muting the info alone doesn't mute
+    # the kind's other teleports
+    import pathlib
+
+    muted = frozenset({"teleport:BP_Player"})
+    assert detectors.is_muted({"detector": "teleport", "signature": "teleport:BP_Player after R"}, muted)
+    assert detectors.is_muted({"detector": "teleport", "signature": "teleport:BP_Player"}, muted)
+    assert not detectors.is_muted({"detector": "teleport", "signature": "teleport:BP_Enemy after R"}, muted)
+    assert not detectors.is_muted({"detector": "teleport", "signature": "teleport:BP_Player"},
+                                  frozenset({"teleport:BP_Player after R"}))
+    # (only a teleport's: another detector's signature may say "after" in its own words)
+    assert not detectors.is_muted({"detector": "log_error", "signature": "log_error:x after y"},
+                                  frozenset({"log_error:x"}))
+    root = pathlib.Path(__file__).resolve().parent.parent / "plugin"
+    for rel, check in (("unreal/Autopilot/Source/AutopilotPlaytest/Private/PlaytestDetectors.cpp",
+                        "Muted.Contains(Signature.Left(After))"),
+                       ("unity/com.ramenvr.autopilot/Runtime/Detectors.cs",
+                        "muted.Contains(signature.Substring(0, after))"),
+                       ("godot/addons/autopilot/lib/detectors.gd", "muted.has(sig.substr(0, after))"),
+                       ("roblox/src/Detectors.luau", 'string.match(sig, "^(.*) after ")')):
+        assert check in (root / rel).read_text("utf-8"), rel
+
+
 def test_the_agent_is_told_where_muting_is():
     from autopilot.agents import session
 

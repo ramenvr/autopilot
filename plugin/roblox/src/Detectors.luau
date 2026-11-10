@@ -200,6 +200,11 @@ function Detectors:_finding(f: any)
 	if self.muted[sig] or self.muted[f.detector] then
 		return -- the project said it isn't a bug
 	end
+	-- A teleport right after the agent's input ("teleport:<kind> after <key>") is muted with that kind's teleports too
+	local base = if f.detector == "teleport" then string.match(sig, "^(.*) after ") else nil
+	if base and self.muted[base] then
+		return
+	end
 	local n = (self.counts[sig] or 0) + 1
 	self.counts[sig] = n
 	if not (n == 1 or n == 10 or n == 100 or n == 1000) then

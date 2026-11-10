@@ -446,8 +446,9 @@ Autopilot runs from a checkout of its repository), where you can edit it by hand
 ```
 
 `mute` takes a finding's signature (`out_of_world:BP_Tree`: that class's) or a detector's name (`out_of_world`: all of
-its findings); the other keys are the detectors' settings (`max_distance`, `teleport_min`, `hitch_seconds`,
-`long_fall_seconds`...). Each run sends the file to the game as it starts. Reset memory keeps it: it is your setting,
+its findings); a muted `teleport:<kind>` mutes that kind's teleports right after the agent's key
+(`teleport:<kind> after <key>`) too. The other keys are the detectors' settings (`max_distance`, `teleport_min`,
+`teleport_after_input_seconds`, `hitch_seconds`, `long_fall_seconds`...). Each run sends the file to the game as it starts. Reset memory keeps it: it is your setting,
 not something runs learned.
 
 ## Headless and CI runs (command line)

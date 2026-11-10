@@ -231,6 +231,9 @@ namespace Autopilot.Playtest
             Dictionary<string, object> details = null)
         {
             if (muted.Contains(detector) || muted.Contains(signature)) return;  // the project said it isn't a bug
+            // A teleport right after the agent's input ("teleport:<kind> after <key>") is muted with that kind's teleports too
+            var after = detector == "teleport" ? signature.LastIndexOf(" after ", StringComparison.Ordinal) : -1;
+            if (after >= 0 && muted.Contains(signature.Substring(0, after))) return;
             counts.TryGetValue(signature, out var count);
             counts[signature] = ++count;
             if (count != 1 && count != 10 && count != 100 && count != 1000) return;
