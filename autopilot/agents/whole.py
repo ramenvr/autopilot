@@ -9,6 +9,8 @@ agent: a note first, then the lines that fit.
 import os
 import re
 
+from .. import memory
+
 # The most characters one tool result carries in all: the tool's answer, what the user typed since, the news and the
 # clock. Claude Code refuses an MCP tool result over 25,000 tokens (MAX_MCP_OUTPUT_TOKENS), and plain text takes at
 # least about a character a token, so a result of this size gets through whatever it holds (a briefing of ~52,000
@@ -30,9 +32,9 @@ def next_name(folder, stem, ext=".txt"):
 
 
 def write(path, text):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w", encoding="utf-8", newline="\n") as f:
-        f.write(text)
+    """text to path, in one step (memory.write_atomic: a run's folder is in the game's memory, which a memory sync
+    may read meanwhile)."""
+    memory.write_atomic(path, str(text))
 
 
 def kept(run_dir, run_rel, stem, text, ext=".txt"):

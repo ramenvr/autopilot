@@ -10,9 +10,8 @@ import os
 import re
 from collections import Counter
 
-from . import whole
-
 from .. import memory
+from . import whole
 
 MAX_READ_LINES = 2000
 MAX_WRITE_BYTES = 2 * 1024 * 1024
