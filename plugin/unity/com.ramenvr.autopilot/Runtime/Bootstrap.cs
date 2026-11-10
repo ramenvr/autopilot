@@ -43,6 +43,7 @@ namespace Autopilot.Playtest
             Ops.FirstScene = "";
             Ops.ResetSession();
             Paths.Reset();
+            Detectors.ResetAgentActs();
         }
 
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
@@ -57,7 +58,11 @@ namespace Autopilot.Playtest
                 if (string.IsNullOrEmpty(Ops.LaunchScene) && mode == LoadSceneMode.Single) Ops.LaunchScene = scene.path;
                 if (string.IsNullOrEmpty(Ops.FirstScene) && mode == LoadSceneMode.Single) Ops.FirstScene = scene.path;
                 Paths.Prune();
+                Detectors.NoteSceneLoaded(scene);  // (what it brings isn't actor_growth's: a streamed scene too)
             };
+            SceneManager.sceneUnloaded -= Detectors.NoteSceneUnloaded;  // (once: domain reload off keeps handlers)
+            SceneManager.sceneUnloaded += Detectors.NoteSceneUnloaded;
+            for (var i = 0; i < SceneManager.sceneCount; ++i) Detectors.NoteSceneLoaded(SceneManager.GetSceneAt(i));  // (play mode without a scene reload: no sceneLoaded for them)
             if (Application.isBatchMode && Application.targetFrameRate <= 0)
                 Application.targetFrameRate = 60;  // (headless: no vsync to hold the frame rate)
             if (Application.isEditor) return;  // (the editor's own host starts it)

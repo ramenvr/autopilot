@@ -45,7 +45,6 @@ namespace Autopilot.Playtest
                     client.Respond(id, View.Look(args));
                     break;
                 case "rc":
-                    Detectors.BridgeActedFrame = Time.frameCount;  // (what it moves isn't the game teleporting it)
                     Rc(client, id, args);
                     break;
                 case "context":
@@ -78,6 +77,8 @@ namespace Autopilot.Playtest
                     break;
                 case "ui_act":
                 {
+                    var element = Json.Str(args, "id");
+                    Detectors.NoteAgentInput(element.Substring(element.LastIndexOf('/') + 1));  // (a press, as a key's)
                     var error = ScreenUI.Act(args);
                     if (string.IsNullOrEmpty(error)) client.Respond(id, new Dictionary<string, object>());
                     else client.RespondError(id, error);
@@ -143,6 +144,13 @@ namespace Autopilot.Playtest
                 client.RespondError(id, "rc needs a body");
                 return;
             }
+            // (a write, or a call that isn't a read, is the agent changing the game itself: what it moves isn't the game
+            // teleporting it. Get*/Find*/Is*/Has*/Can* calls, which the kit makes every step, read)
+            var function = Json.Str(body, "functionName");
+            var read = new[] { "Get", "Find", "Is", "Has", "Can" }.Any(p => function.StartsWith(p, StringComparison.Ordinal));
+            if (verb == "call" && !read || verb == "property" && (Json.Obj(body, "propertyValue") != null
+                                                                 || Json.Str(body, "access").StartsWith("WRITE", StringComparison.Ordinal)))
+                Detectors.NoteAgentMove();
             switch (verb)
             {
                 case "call":

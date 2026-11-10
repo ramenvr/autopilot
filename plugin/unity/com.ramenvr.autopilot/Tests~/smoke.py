@@ -696,6 +696,20 @@ def test_parity(g):
     f = g.wait_for("teleport finding", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "teleport"], 5)
     check("detector teleport: the game moves the player 17 m in one frame", f and f[0]["severity"] == "suspicion" and f[0]["signature"] == "teleport:PlayerController"
           and f[0]["details"]["moved"] > 1600 and f[0]["details"]["allowed"] >= 1000, f[0] if f else None)
+    # Right after the agent's own key press (an unbound R here; a game's reset key in real life): still told, as info
+    teleport(g, player, {"x": 0, "y": 1.08, "z": 0})
+    time.sleep(0.5)
+    check("detector teleport: quiet again when the agent moves the player back (rc)",
+          len([x for x in g.link.findings[before:] if x.get("detector") == "teleport"]) == 1)
+    before = len(g.link.findings)
+    g.req("key", {"key": "R", "mode": "press"})
+    g.call(hazard, "Blink")
+    f = g.wait_for("teleport after the key", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "teleport"], 5)
+    check("detector teleport: right after the agent's key press it is info, naming the key",
+          f and f[0]["severity"] == "info" and f[0]["signature"] == "teleport:PlayerController after R"
+          and f[0]["summary"].endswith("right after the agent pressed R") and f[0]["details"]["after_input"]["key"] == "R"
+          and 0 <= f[0]["details"]["after_input"]["seconds"] <= 1.0, f[0] if f else None)
+    before = len(g.link.findings)
     g.set(hazard, "stamina", 150)
     f = g.wait_for("clamp finding", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "clamp"], 5)
     check("detector clamp: a [Range(0, 100)] field at 150", f and f[0]["signature"] == "clamp:Hazard.stamina" and f[0]["details"]["clamp"] == "[0, 100]"

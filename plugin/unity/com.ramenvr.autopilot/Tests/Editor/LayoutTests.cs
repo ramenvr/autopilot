@@ -2278,6 +2278,52 @@ namespace Autopilot.Playtest.Tests
             StringAssert.Contains("## Findings", ReportText(run));
         }
 
+        [Test]
+        public void ManyKindsOfOneDetectorAreOneLineAndOneCard()
+        {
+            var now = AutopilotText.UnixNow;
+            var run = new AutopilotRun
+            {
+                Id = "layout-kinds", Kind = "explore", Prompt = "Explore the game", Started = now - 60, Ended = now,
+                Result = Json.ParseObject("{\"bugs\": [], \"memory\": {\"updated\": false}}"),
+            };
+            Dictionary<string, object> Oow(string kind, int count, string severity = "warning") => Json.ParseObject(
+                $"{{\"source\": \"engine\", \"severity\": \"{severity}\", \"detector\": \"out_of_world\", \"summary\": \"{kind} is below the world's KillZ (-1000)\", \"signature\": \"out_of_world:{kind}\", \"count\": {count}}}");
+            run.Findings.Add(Json.ParseObject("{\"source\": \"engine\", \"severity\": \"suspicion\", \"detector\": \"teleport\", \"summary\": \"Pawn moved 5000 units in one frame (at most 1000 expected)\", \"signature\": \"teleport:Pawn\", \"count\": 1}"));
+            run.Findings.Add(Oow("Cone", 12));
+            run.Findings.Add(Oow("Rail", 1));
+            run.Findings.Add(Oow("Bench", 3, "error"));
+            run.Findings.Add(Oow("Sign", 1));
+            run.NotABug.Add("out_of_world:Sign");
+            AutopilotSession.Runs.Add(run);
+            var report = ReportText(run).Replace("\r", "");
+            StringAssert.Contains("- [engine · suspicion · teleport] Pawn moved 5000 units in one frame (at most 1000 expected)\n", report);
+            StringAssert.Contains("- [engine · error · out_of_world] 4 kinds: Cone (×12), Rail, Bench (×3), Sign (not a bug) — e.g. Cone is below the world's KillZ (-1000)\n", report);
+            Assert.AreEqual(2, report.Split('\n').Count(l => l.StartsWith("- [engine", StringComparison.Ordinal)), report);
+            // One card for the detector, every kind on it; its own cards under Show each
+            notSaid.Add("Rail is below");
+            Check("result, many kinds", v => v.SelectedId = run.Id, null, "ENGINE FINDINGS · 5", "4 kinds", "Cone ×12 · Rail · Bench ×3 · Sign", "Show each",
+                "Cone is below the world's KillZ");
+            notSaid.Clear();
+
+            // The feed: the first 3 kinds of a detector, then one line saying there are more, then none
+            var live = new AutopilotRun { Id = "layout-kinds-feed", Kind = "explore", Prompt = "Explore the game", Started = now };
+            AutopilotSession.Runs.Add(live);
+            var onFinding = typeof(AutopilotSession).GetMethod("OnFinding", BindingFlags.Static | BindingFlags.NonPublic);
+            foreach (var kind in new[] { "A", "B", "C", "D", "E" })
+                onFinding.Invoke(null, new object[] { Oow(kind, 1) });
+            onFinding.Invoke(null, new object[] { Oow("A", 10) });
+            onFinding.Invoke(null, new object[] { Oow("E", 10) });
+            var lines = live.Feed.Where(l => l.Kind == "engine").Select(l => l.Text).ToList();
+            CollectionAssert.AreEqual(new[]
+            {
+                "A is below the world's KillZ (-1000)", "B is below the world's KillZ (-1000)", "C is below the world's KillZ (-1000)",
+                "D is below the world's KillZ (-1000) (and more out_of_world findings: all of them are in the result)",
+                "A is below the world's KillZ (-1000) (×10)",
+            }, lines, string.Join("\n", lines));
+            Assert.AreEqual(5, live.Findings.Count);
+        }
+
         static string ReportText(AutopilotRun run) =>
             (string)typeof(AutopilotView).GetMethod("Report", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { run });
 

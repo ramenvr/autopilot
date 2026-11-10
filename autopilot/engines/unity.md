@@ -108,9 +108,12 @@ capsule) gets no openings, ways up or sonar, and a project without the Physics m
 how a thing is drawn: "part shown" / "part hidden", "effect started" / "effect stopped", "light on" / "light off",
 "animation started" / "animation ended", "went limp". Detectors: errors and exceptions in the log, NaN transforms,
 falling out of the level, long falls, hitches, on-screen counts above their maximum, `teleport` (a character moved
-farther in one frame than its speed allows; never what the agent's own `rc` moved), `actor_growth` (objects of one
-kind growing for 2 minutes), `clamp` (a script's number outside its `[Range]` / `[Min]`) and `over_max` (a number
-above its sibling maximum: `health` above `maxHealth`).
+farther in one frame than its speed allows; never what the agent's own `rc` write or call (not a
+`Get`/`Find`/`Is`/`Has`/`Can` read) moved; within 1 s of the agent's own key press, action or UI press it comes as
+`info`, its summary ending "right after the agent pressed <key>", `details.after_input` {key, seconds}: a reset key may
+teleport on purpose), `actor_growth` (objects of one kind the game made while playing growing for 2 minutes; what a
+scene brought, additive scenes streamed in too, isn't counted), `clamp` (a script's number outside its `[Range]` /
+`[Min]`) and `over_max` (a number above its sibling maximum: `health` above `maxHealth`).
 
 **Boxes and traces.** `game.bounds(path)` is the box round the object's enabled colliders (triggers too), or round
 its renderers when it has none; `visual=True`: round its renderers and colliders. `game.trace` asks the 3D physics:
