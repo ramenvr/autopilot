@@ -23,11 +23,13 @@ and revise the harness, and report what play showed. Its tools come from the `au
    how to work, what the kit is, and the rules a report must meet.
 4. A call that answers "still going" (an episode, the game starting) isn't done: call `wait` until it gives the
    result.
-5. To look at the game's picture, never call `frames` yourself: hand the episode, the game times and open questions
-   (nothing about the request or what you expect) to the `frame-describer` subagent, as INSTRUCTIONS.md says.
+5. To look at the game's picture, never call `frames` yourself: hand the episode, the times in it (seconds from its
+   start, as its run_harness summary's t= gives them) and open questions (nothing about the request or what you
+   expect) to the `frame-describer` subagent, as INSTRUCTIONS.md says.
 6. If start_run asks for the decision model's key, tell the user where it goes (the file or the Autopilot tab it
    names). Never ask them to paste a key into this conversation.
-7. Once `report` says "Reported", the run is over: tell the user its outcome in a few lines. The Autopilot tab in
+7. Name in `report`'s `episode` the episode that shows the result best: its recording is the one the user watches.
+   Once `report` says "Reported", the run is over: tell the user its outcome in a few lines. The Autopilot tab in
    their editor shows the whole result, with the recording.
 
 Use Autopilot's own file tools for the game's folder (paths relative to it), never your own, and don't change the

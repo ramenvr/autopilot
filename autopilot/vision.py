@@ -126,6 +126,11 @@ class Frames:
             return [f for f in self.items if wall0 <= f["wall"] <= wall1]
 
 
+def times_of(frames, base=0.0):
+    """The frames' times as an agent is told them: seconds from base (the episode's first game time), "?" unknown."""
+    return ", ".join(f"{f['t'] - base:.2f}" if f["t"] is not None else "?" for f in frames)
+
+
 def pick(frames, count):
     """count of frames, spread evenly from the first to the last."""
     if len(frames) <= count:
@@ -208,48 +213,54 @@ class Describer:
             if changed:
                 recorder.set_fps(before)
 
-    def describe(self, wall0, wall1, questions, count=DEFAULT_FRAMES, t0=None, t1=None, label=""):
-        """The vision model's description of up to count frames captured from wall0 to wall1 (and, given, showing game
-        times t0 to t1), with questions. Returns (text, ok): ok False when nothing was described (text says why)."""
+    def describe(self, wall0, wall1, questions, count=DEFAULT_FRAMES, t0=None, t1=None, label="", base=0.0):
+        """The vision model's description of up to count frames captured from wall0 to wall1 (and, given, showing
+        times t0 to t1 of the episode: seconds from base, its first game time), with questions. Returns (text, ok): ok
+        False when nothing was described (text says why)."""
+        base = float(base or 0.0)
         why = self.unavailable()
         if why:
             return f"Can't look at the game's picture in this run: {why}.", False
-        chosen, frames, why = self.frames_of(wall0, wall1, count, t0, t1, label)
+        chosen, frames, why = self.frames_of(wall0, wall1, count, t0, t1, label, base)
         if why:
             return why, False
         questions = [str(q).strip() for q in (questions or []) if str(q).strip()][:MAX_QUESTIONS]
         started = time.time()
         try:
-            text, model, usage = self._ask(chosen, questions)
+            text, model, usage = self._ask(chosen, questions, base)
         except Exception as e:  # noqa: BLE001 - the agent is told, and the run goes on
-            return f"The frames couldn't be described: {type(e).__name__}: {str(e)[:300]}", False
+            return f"The frames couldn't be described: {type(e).__name__}: {e}", False
         with self.lock:
             self.calls += 1
-        self._log(chosen, questions, text, model, usage, time.time() - started, label)
-        head = (f"{len(chosen)} frames of {len(frames)} ({label or 'the stretch asked for'}), at game times "
-                + ", ".join(f"{f['t']:.2f}" if f["t"] is not None else "?" for f in chosen) + " s:")
+        self._log(chosen, questions, text, model, usage, time.time() - started, label, base)
+        head = (f"{len(chosen)} frames of {len(frames)} ({label or 'the stretch asked for'}), at t= "
+                f"{times_of(chosen, base)} s (seconds from the episode's start, as its summary's t=):")
         return f"{head}\n{text}", True
 
-    def frames_of(self, wall0, wall1, count=DEFAULT_FRAMES, t0=None, t1=None, label=""):
-        """(up to count frames captured from wall0 to wall1, spread over them, and given game times t0 to t1 shown;
-        the frames there were to pick from; None) for describe() or the user's own agent to look at, or (None, None,
-        why there are none)."""
+    def frames_of(self, wall0, wall1, count=DEFAULT_FRAMES, t0=None, t1=None, label="", base=0.0, live=True):
+        """(up to count frames captured from wall0 to wall1, spread over them, and given times t0 to t1 shown (seconds
+        from base: the episode's first game time, as its summary counts them); the frames there were to pick from;
+        None) for describe() or the user's own agent to look at, or (None, None, why there are none). live: the run
+        is still going (the stretch can be played again)."""
+        base = float(base or 0.0)
         frames = self.frames.between(wall0, wall1) if self.frames is not None else []
         if t0 is not None or t1 is not None:
-            lo = -1e18 if t0 is None else float(t0)
-            hi = 1e18 if t1 is None else float(t1)
+            lo = -1e18 if t0 is None else base + float(t0)
+            hi = 1e18 if t1 is None else base + float(t1)
             shown = [f for f in frames if f["t"] is not None and lo <= float(f["t"]) <= hi]
             if not shown:
-                times = [f["t"] for f in frames if f["t"] is not None]
-                span = f" (its frames show game times {min(times):.2f} to {max(times):.2f} s)" if times else ""
-                return None, None, f"No frames of {label or 'that stretch'} show game times {t0} to {t1}{span}."
+                times = [f["t"] - base for f in frames if f["t"] is not None]
+                span = f" (its frames show t={min(times):.2f} to {max(times):.2f} s)" if times else ""
+                return None, None, (f"No frames of {label or 'that stretch'} show t={t0} to {t1} s (seconds from the "
+                                    f"episode's start){span}.")
             frames = shown
         self.no_picture = False
         if not frames:
             dropped = self.frames.dropped_before if self.frames is not None else None
             if dropped is not None and wall1 <= dropped:
                 return None, None, (f"The frames of {label or 'that stretch'} aren't kept any more (only the last "
-                                    "minutes of play are): play it again, then look at it.")
+                                    "minutes of play are): " + ("play it again, then look at it." if live else
+                                                                "its video in the run's media folder has them."))
             self.no_picture = True  # (the game drew nothing then: its window minimized or hidden)
             return None, None, (f"No frames of {label or 'that stretch'}: the game wasn't filmed while it played "
                                 f"({self.recorder.missing() or 'no picture came'}).")
@@ -261,24 +272,25 @@ class Describer:
 
     # -- the call ------------------------------------------------------------------------------------------
 
-    def _content(self, frames, questions):
-        """The request's parts in order: per frame its label and its picture, then the questions. (kind, value)."""
-        parts = [("text", "Frames of a video game, in order, with the game time each shows:")]
+    def _content(self, frames, questions, base=0.0):
+        """The request's parts in order: per frame its label and its picture, then the questions. (kind, value). A
+        frame's time is seconds from base (the episode's start), as the agent asking counts them."""
+        parts = [("text", "Frames of a video game, in order, with the time each shows (seconds of game time):")]
         prev = None
         for i, f in enumerate(frames, 1):
             gap = f" ({f['t'] - prev:.2f} s after the one before)" if prev is not None and f["t"] is not None else ""
-            t = f"{f['t']:.2f} s" if f["t"] is not None else "unknown"
-            parts.append(("text", f"Frame {i}: game time {t}{gap}"))
+            t = f"{f['t'] - base:.2f} s" if f["t"] is not None else "unknown"
+            parts.append(("text", f"Frame {i}: time {t}{gap}"))
             parts.append(("image", base64.standard_b64encode(f["jpeg"]).decode("ascii")))
             prev = f["t"] if f["t"] is not None else prev
         asked = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)) or "1. Describe what happens."
         parts.append(("text", f"Questions:\n{asked}\n{SWEEP}"))
         return parts
 
-    def _ask(self, frames, questions):
+    def _ask(self, frames, questions, base=0.0):
         """(the description, the model that gave it, its usage)."""
         wire, root, key, model, path = self.route
-        parts = self._content(frames, questions)
+        parts = self._content(frames, questions, base)
         if wire == "anthropic":
             try:
                 return self._anthropic(root, key, model, parts)
@@ -363,12 +375,13 @@ class Describer:
         if usage:
             self.usage.add("llm", model, **usage)
 
-    def _log(self, frames, questions, text, model, usage, seconds, label):
+    def _log(self, frames, questions, text, model, usage, seconds, label, base=0.0):
         """One line of telemetry/describe.jsonl in a shared run: what was asked about which frames (by time: the
-        pictures are in the recording), and what came back."""
+        pictures are in the recording; `t` the game's own, `base` the episode's first game time the model was told
+        times from), and what came back."""
         if not self.log:
             return
-        line = {"wall": round(time.time(), 3), "label": label, "model": model, "questions": questions,
+        line = {"wall": round(time.time(), 3), "label": label, "model": model, "questions": questions, "base": base,
                 "frames": [{"t": f["t"], "wall": round(f["wall"], 3), "width": f["width"], "height": f["height"]}
                            for f in frames],
                 "description": text, "usage": usage, "seconds": round(seconds, 2)}
