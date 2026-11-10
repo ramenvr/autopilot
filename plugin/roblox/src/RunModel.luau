@@ -116,6 +116,37 @@ function M.folds(detail: string): boolean
 	return detail ~= "" and (string.find(detail, "\n", 1, true) ~= nil or #detail > 80)
 end
 
+-- What a fold shows of a detail: all of it up to DETAIL_SHOWN bytes (what a text box here shows well); past that, the
+-- whole lines that fit, then where the rest is. Nothing is lost: the agent service keeps a detail within that size
+-- itself (a longer one whole in a file it names), and every detail is whole in the run's activity.jsonl.
+M.DETAIL_SHOWN = 16000
+
+function M.shownDetail(detail: string): string
+	if #detail <= M.DETAIL_SHOWN then
+		return detail
+	end
+	local room = M.DETAIL_SHOWN - 200
+	local at = 0
+	local from = 1
+	while true do
+		local i = string.find(detail, "\n", from, true)
+		if i == nil or i > room then
+			break
+		end
+		at = i - 1
+		from = i + 1
+	end
+	if at == 0 then
+		at = room
+		-- (not inside a UTF-8 character: back to the start of one)
+		while at > 1 and bit32.band(string.byte(detail, at + 1) or 0, 0xC0) == 0x80 do
+			at -= 1
+		end
+	end
+	return string.sub(detail, 1, at)
+		.. "\n… (the rest isn't shown here: all of it is in this run's activity.jsonl, in its folder)"
+end
+
 function M.foldLabel(label: string, open: boolean): string
 	return (if open then "– hide " else "+ inspect ") .. label
 end
