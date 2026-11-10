@@ -25,6 +25,9 @@ local DISCLOSURE = "Enabling this sends recordings, screenshots, and agent trace
 local AURA_BILLED = "Autopilot is maintained by the developers behind Aura, the multiagent AI solution to Unreal and "
 	.. "Unity game development. You can use your Aura subscription to run Autopilot. New users get free Aura credits."
 local SIGN_UP_URL = "https://app.tryaura.dev/auth/signup?src=autopilot"
+-- What the Aura card says while the browser is open after Use another account (the other plugins say the same)
+local WRONG_ACCOUNT = "If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in "
+	.. "page again."
 local FIRST_RUN_TEXT = "You’ve never used Autopilot with this game before. To help Autopilot understand your game, use "
 	.. "this first exploration run and watch it improve. Autopilot still works if you skip this step."
 local AGENTS = { "claude", "codex", "opencode" }
@@ -242,6 +245,9 @@ local function auraCard(d: any, v: Instance)
 		else
 			head(a, "Sign in with Aura", "In your browser", "info")
 			spinning(a, "Finish signing in in your browser…", "title")
+			if si.another then
+				T.label(a, WRONG_ACCOUNT, "small")
+			end
 			T.label(a, "If no page opened, open this address in your browser:", "small")
 			T.selectable(a, tostring(si.url or ""), { multiline = true, size = 11 })
 		end
