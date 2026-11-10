@@ -1288,7 +1288,7 @@ bool FAutopilotSession::SteerRun(const FString& Text, bool bRedirect)
 	}
 	bRedirect = bRedirect && B->CanRedirect();
 	B->SteerRun(Said, bRedirect);
-	AddLine(*Live, FString::Printf(bRedirect ? TEXT("You (redirect): %s") : TEXT("You: %s"), *Said), EAutopilotFeedKind::Notice);
+	AddLine(*Live, FString(bRedirect ? TEXT("You (redirect): ") : TEXT("You: ")) + Said, EAutopilotFeedKind::Notice);
 	Changed(Live.Get());
 	return true;
 }
