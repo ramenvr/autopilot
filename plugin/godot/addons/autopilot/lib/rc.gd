@@ -75,6 +75,26 @@ func method_info(obj: Object, name: String) -> Dictionary:
 	return {}
 
 
+## Why a call's named arguments are refused for names the method has no parameter for, "" when they aren't: such a
+## value would go unread and the call be made without it, while the caller believes it was passed. As Unity's and
+## Unreal's: "unknown argument(s) X; it takes A, B". A vararg method takes the extra values (in order).
+static func unknown_arguments(info: Dictionary, params: Dictionary) -> String:
+	if int(info.get("flags", 0)) & METHOD_FLAG_VARARG:
+		return ""
+	var takes := PackedStringArray()
+	for a in info.get("args", []):
+		takes.append(str(a.name))
+	var unknown := PackedStringArray()
+	for k in params:
+		if not takes.has(str(k)):
+			unknown.append(str(k))
+	if unknown.is_empty():
+		return ""
+	if info.is_empty():
+		return "unknown argument(s) %s; its arguments aren't listed, so give them as a list, in order" % ", ".join(unknown)
+	return "unknown argument(s) %s; it takes %s" % [", ".join(unknown), ", ".join(takes) if not takes.is_empty() else "no arguments"]
+
+
 func _call(body: Dictionary) -> Array:
 	var path := str(body.get("objectPath", ""))
 	var obj := resolve(path)
@@ -96,6 +116,9 @@ func _call(body: Dictionary) -> Array:
 			var a: Dictionary = args[i] if i < args.size() else {}
 			argv.append(Values.from_json(params[i], a.get("type", TYPE_NIL), null, a, resolve))
 	else:
+		var unknown := unknown_arguments(info, params) if typeof(params) == TYPE_DICTIONARY else ""
+		if unknown != "":
+			return [false, "%s on %s: %s" % [fname, path, unknown]]
 		var used := {}
 		for i in args.size():
 			var a: Dictionary = args[i]
