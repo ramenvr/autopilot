@@ -65,7 +65,9 @@ default; safe to skip) and send your first prompt. In detail:
      website: the tab installs and starts it if needed ("Setting up the agent service…", "Starting the agent
      service…"), asks it to sign in, and your browser opens on Aura's page. While it waits, the card shows the link
      (**Open again**, **Copy link**, **Cancel**); once you choose Allow it shows **Signed in as** *your email*, with
-     **Continue** and **Use another account**. If the sign-in is denied, times out or Aura can't be reached, it says
+     **Continue** and **Use another account** (it signs out, then opens Aura's page asking it to let you pick the
+     account; while it waits the card adds "If the page shows the wrong account, sign out of Aura in your browser,
+     then open the sign-in page again."). If the sign-in is denied, times out or Aura can't be reached, it says
      so in one line with **Try again**. While the sign-in goes on (getting ready, in your browser, waiting for the
      agent service) the BYOK card is not shown; **Cancel** brings it back. Once signed in it is folded and dimmed,
      with **Show**. The plugin never sees Aura's tokens: the agent service keeps the sign-in for

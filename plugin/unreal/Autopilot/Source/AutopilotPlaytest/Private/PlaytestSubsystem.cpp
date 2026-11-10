@@ -975,7 +975,7 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 			}
 			else
 			{
-				SendType(TEXT("aura_sign_in"));
+				SendSignIn();
 			}
 		}
 	}
@@ -1040,21 +1040,35 @@ void UPlaytestSubsystem::RequestAccount()
 	}
 }
 
-bool UPlaytestSubsystem::SignInWithAura(bool bSignOutFirst)
+void UPlaytestSubsystem::SendSignIn()
+{
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("type"), TEXT("aura_sign_in"));
+	if (bSignInAnotherAccount)
+	{
+		Message->SetBoolField(TEXT("another_account"), true);  // (an older agent service ignores it)
+	}
+	Send(Message);
+}
+
+bool UPlaytestSubsystem::SignInWithAura(bool bAnotherAccount)
 {
 	if (!HasAccountFeature())
 	{
 		return false;
 	}
-	if (bSignOutFirst)
+	if (bAnotherAccount)
 	{
+		// (the sign-in kept ends at once, whatever the browser does next; an older agent service, which ignores
+		// another_account, still signs in again after it)
 		SendType(TEXT("aura_sign_out"));
 	}
 	SignIn = FPlaytestSignIn();
 	SignIn.State = TEXT("asked");
 	SignInSerial = ConnectionSerial;
+	bSignInAnotherAccount = bAnotherAccount;
 	++AccountRevision;
-	SendType(TEXT("aura_sign_in"));
+	SendSignIn();
 	return true;
 }
 
@@ -1079,6 +1093,7 @@ void UPlaytestSubsystem::SignOutOfAura()
 void UPlaytestSubsystem::ClearSignIn()
 {
 	SignIn = FPlaytestSignIn();
+	bSignInAnotherAccount = false;
 	++AccountRevision;
 }
 

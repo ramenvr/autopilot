@@ -970,11 +970,12 @@ bool FPlaytestAccountStandInTest::RunTest(const FString& Parameters)
 		B()->SignOutOfAura();
 	});
 	WaitUntil(TEXT("signed out"), [B]() { return B() && B()->GetAccount().Mode == TEXT("aura") && !B()->GetAccount().bSignedIn; }, 5.0);
-	Then([B]() { B()->SignInWithAura(true); });  // ("Use another account": sign out first, then in)
+	Then([B]() { B()->SignInWithAura(true); });  // ("Use another account": sign out first, then in with another_account)
 	WaitUntil(TEXT("denied"), [Phase]() { return Phase() == EPlaytestSignInPhase::Error; }, 5.0);
 	Then([this, B]()
 	{
 		TestEqual(TEXT("denied line"), PlaytestAccount::ErrorLine(B()->GetSignIn()), FString(TEXT("Sign-in was cancelled in the browser.")));
+		TestTrue(TEXT("asked for another account"), B()->IsSignInForAnotherAccount());
 		B()->RequestAccount();
 	});
 	WaitUntil(TEXT("the account asked for again"), [B]() { return B() && B()->GetAccountRevision() > 0 && B()->GetAccount().Email == TEXT("asked@studio.test"); }, 5.0);

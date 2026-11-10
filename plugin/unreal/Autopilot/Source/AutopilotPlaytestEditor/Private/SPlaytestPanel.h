@@ -220,7 +220,7 @@ private:
 	FString SignInLine() const;
 	/** The sign-in's state in widgets (Preparing, Waiting, Error): for the Aura card and the Settings page. */
 	TSharedRef<SWidget> MakeSignInBody(bool bCompact);
-	void BeginSignIn(bool bSignOutFirst);
+	void BeginSignIn(bool bAnotherAccount);
 	void CancelSignIn();
 	void TickSignIn();
 
@@ -356,7 +356,7 @@ private:
 	FString SetupShownKey;
 
 	bool bSignInWanted = false;        // asked for, not yet sent (the agent service is being installed, started or connected)
-	bool bSignOutFirst = false;        // "Use another account"
+	bool bAnotherAccount = false;        // "Use another account"
 	bool bCreatingAccount = false;     // Create Account opened Aura's account creation page: the Aura card says Sign in next
 	bool bSignInSent = false;          // sent: the subsystem's sign-in state shows
 	bool bSignInConnectTried = false;

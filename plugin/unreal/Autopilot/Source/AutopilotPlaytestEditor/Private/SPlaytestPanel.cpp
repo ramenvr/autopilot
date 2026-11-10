@@ -3643,11 +3643,11 @@ FString SPlaytestPanel::SignInLine() const
 	return TEXT("Connecting to the agent service…");
 }
 
-void SPlaytestPanel::BeginSignIn(bool bOutFirst)
+void SPlaytestPanel::BeginSignIn(bool bAnother)
 {
 	bSignInWanted = true;
 	bKeysShown = false;
-	bSignOutFirst = bOutFirst;
+	bAnotherAccount = bAnother;
 	bCreatingAccount = false;
 	bSignInSent = false;
 	bSignInConnectTried = false;
@@ -3673,7 +3673,7 @@ void SPlaytestPanel::CancelSignIn()
 		}
 	}
 	bSignInWanted = false;
-	bSignOutFirst = false;
+	bAnotherAccount = false;
 	bSignInSent = false;
 	SignInProblem.Empty();
 }
@@ -3717,9 +3717,9 @@ void SPlaytestPanel::TickSignIn()
 		SignInProblem = TEXT("This agent service can’t sign in to Aura: install it again, then try again.");
 		return;
 	}
-	B->SignInWithAura(bSignOutFirst);
+	B->SignInWithAura(bAnotherAccount);
 	bSignInWanted = false;
-	bSignOutFirst = false;
+	bAnotherAccount = false;
 	bSignInSent = true;
 }
 
@@ -3776,6 +3776,15 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSignInBody(bool bCompact)
 	{
 		const FString Url = B ? B->GetSignIn().Url : FString();
 		Box->AddSlot().AutoHeight()[Progress(TEXT("Finish signing in in your browser…"), bCompact ? 13.f : 15.f)];
+		if (B && B->IsSignInForAnotherAccount())
+		{
+			// ("Use another account": Aura's page may still go on with the account the browser is signed in to)
+			Box->AddSlot().AutoHeight().Padding(0.f, Gap, 0.f, 0.f)
+			[
+				AutopilotUI::Body(Str(TEXT("If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in page again.")),
+					12.f, AutopilotColor::Muted())
+			];
+		}
 		Box->AddSlot().AutoHeight().Padding(0.f, Gap, 0.f, 0.f)
 		[
 			Well(Url, SmallButton(LOCTEXT("S_CopyLink", "Copy link"), "Autopilot.Button.Quiet", FOnClicked::CreateSP(this, &SPlaytestPanel::OnCopy, Url)))

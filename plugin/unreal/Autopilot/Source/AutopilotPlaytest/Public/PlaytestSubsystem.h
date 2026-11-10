@@ -114,8 +114,13 @@ public:
 	int32 GetAccountRevision() const { return AccountRevision; }
 	/** Ask for the account frame again. */
 	void RequestAccount();
-	/** Ask the agent service to sign in to Aura in the browser (bSignOutFirst: "Use another account"). False when it can't. */
-	bool SignInWithAura(bool bSignOutFirst = false);
+	/**
+	 * Ask the agent service to sign in to Aura in the browser. False when it can't. bAnotherAccount: "Use another account",
+	 * the sign-in kept is ended first and Aura's page is asked to let the user pick the account ("another_account").
+	 */
+	bool SignInWithAura(bool bAnotherAccount = false);
+	/** The sign-in going on is "Use another account"'s (the tab says what to do if the page shows the wrong account). */
+	bool IsSignInForAnotherAccount() const { return bSignInAnotherAccount; }
 	/** Stop waiting for the browser. */
 	void CancelAuraSignIn();
 	/** Sign out of Aura on this computer (every editor here). */
@@ -297,9 +302,11 @@ private:
 	FPlaytestAccount Account;
 	FPlaytestSignIn SignIn;
 	int32 SignInSerial = 0;  // the connection the sign-in going on was asked on
+	bool bSignInAnotherAccount = false;  // the sign-in going on is "Use another account"'s
 	int32 AccountRevision = 0;
 	TSharedPtr<FPlaytestAgentService> AgentService;
 	void SendType(const TCHAR* Type);
+	void SendSignIn();
 	bool bMemoryKnown = false;  // a memory_state came on this connection
 	int32 MemoryRuns = 0;
 	bool bMemoryNotes = false;
