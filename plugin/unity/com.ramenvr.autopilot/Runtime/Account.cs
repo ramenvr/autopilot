@@ -290,16 +290,20 @@ namespace Autopilot.Playtest
         public string Reason = "";
         /// <summary>The error in plain words, as the window shows it.</summary>
         public string Message = "";
+        /// <summary>"Use another account"'s sign-in: Aura's page asked to let the user pick the account (the frame's
+        /// another_account), and the window says what to do if it still shows the wrong one.</summary>
+        public bool AnotherAccount;
 
         public bool Going => State == Asked || State == Waiting;
 
-        public void Ask()
+        public void Ask(bool anotherAccount = false)
         {
             State = Asked;
             Url = "";
             Email = "";
             Reason = "";
             Message = "";
+            AnotherAccount = anotherAccount;
         }
 
         public void Reset()
@@ -309,6 +313,7 @@ namespace Autopilot.Playtest
             Email = "";
             Reason = "";
             Message = "";
+            AnotherAccount = false;
         }
 
         /// <summary>Take an `aura_sign_in` frame. A cancelled sign-in (the window's own Cancel) shows nothing: back to
