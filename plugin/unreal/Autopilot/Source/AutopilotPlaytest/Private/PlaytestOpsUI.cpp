@@ -37,6 +37,7 @@ namespace PlaytestOps
 			Bridge.RespondError(Id, Error);
 			return;
 		}
+		Bridge.GetDetectors().NoteAgentInput(StringField(Args, TEXT("id")));
 		Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
 	}
 }
