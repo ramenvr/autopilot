@@ -129,8 +129,8 @@ Using it from then on:
    `user://playtest/<time>/`; disabled when the folder isn’t there). From there you can also mark an alert **Not a bug**, **Show in level** (selects the nearest node in the open
    scene) or **Verify a fix** for a finding (it fills the prompt box: "Verify that this is fixed: ...").
 
-   **The recording**: when the agent service recorded the run (the result's `recording`: the last episode's, the one
-   whose play settled the result, its end held a second), it plays under the verdict as a flipbook of its JPEG frames
+   **The recording**: when the agent service recorded the run (the result's `recording`: the episode the agent's report
+   names as the one that shows the result best, else the last one, its end held a second), it plays under the verdict as a flipbook of its JPEG frames
    (Godot plays no MP4, only Ogg Theora; the agent service writes the frames 2 a second, at most 640 px, beside its MP4): a picture as wide as the page and 230 px tall (200 in a narrow
    dock; letterboxed, a play mark on it while paused), a play / pause button (its icon), a 2 px scrub bar, the time and
    the length, and a button with Run folder's icon (the folder) ("Show in File Explorer", "Show in

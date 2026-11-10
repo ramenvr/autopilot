@@ -72,16 +72,17 @@ only through the game's tools.
 Call the game's tools one at a time: the game runs only inside a call and is paused between them. A call that takes
 long (an episode, starting the game) answers "still going": call wait until it gives the result. Once report says
 "Reported", the run is over: tell the user its outcome in a few lines (the Autopilot tab in their editor shows the
-whole result).
+whole result). Only `frames` still answers then, on the frames the run kept (a describer still looking).
 
 ## Looking at the picture here
 
 Here describe_frames above means a describer subagent of yours, not a model of Autopilot's: hand it the moment, it
 looks at the episode's frames (the `frames` tool) and answers your open questions. Don't call `frames` yourself:
 reading frames while you know what you hope to see colours what you see. Brief it with this, filled in, and nothing
-else (never the request, the claim, the harness or what you expect):
+else (never the request, the claim, the harness or what you expect); each <t> is seconds from the episode's start, as
+its run_harness summary's t= gives them:
 
-    Call the autopilot tool `frames` with episode=<n>, start=<game time>, end=<game time>, count=<up to {max_frames}>.
+    Call the autopilot tool `frames` with episode=<n>, start=<t>, end=<t>, count=<up to {max_frames}>.
     Then describe the frames. {describer}
     Questions:
     1. <an open question: what moves and how, what is at a spot, what the text says; never yes/no>
@@ -104,8 +105,9 @@ is. The request and its briefing follow (also in {request}).
 FRAMES_SPEC = (
     "frames",
     "For a describer subagent only (not the agent working on the request): up to 12 of an episode's frames, as "
-    "images, spread over game times start-end. episode: its number (default: the latest); start, end: game times in "
-    "it, in seconds (default: all of it); count: how many (default 8).",
+    "images, spread over times start-end of it. episode: its number (default: the latest); start, end: times in it, "
+    "in seconds from its start, as its summary's t= gives them (default: all of it); count: how many (default 8). "
+    "It works after the run has ended too, on the frames the run kept.",
     {"type": "object", "properties": {"episode": {"type": "integer"}, "start": {"type": "number"},
                                       "end": {"type": "number"}, "count": {"type": "integer"}}})
 
@@ -129,6 +131,12 @@ def text_result(text, error=False):
     return {"content": [{"type": "text", "text": text}], "isError": bool(error)}
 
 
+def image_content(images):
+    """JPEG bytes as an MCP result's image parts."""
+    return [{"type": "image", "data": base64.standard_b64encode(jpeg).decode("ascii"), "mimeType": "image/jpeg"}
+            for jpeg in images]
+
+
 class Desk:
     """One run's tool calls (autopilot/mcp.py's client: its name, e.g. claude-code or codex)."""
 
@@ -142,7 +150,7 @@ class Desk:
         self.lock = threading.Lock()  # one call at a time
         self.last_call = time.time()
         self.busy = False
-        self.ended = None  # why the run ended: no call is taken after it
+        self.ended = None  # why the run ended: no call is taken after it but frames (read only)
         self.reported_at = None
 
     def open(self, session, files, opening):
@@ -171,6 +179,13 @@ class Desk:
         if self.session is None:
             return text_result("No run has started: call start_run first.", error=True)
         if self.ended is not None:
+            if tool == "frames":  # (a describer still looking: the frames the run kept, read only)
+                refused = unknown_args(tool, args, (FRAMES_SPEC,))
+                return text_result(refused, error=True) if refused else self._frames_after(args)
+            if tool == "describe_frames":
+                return text_result(f"This run has ended ({self.ended}): describe_frames, Autopilot's own describer, "
+                                   "worked only while it went. Its frames are still there: a describer subagent of "
+                                   "yours can look at them with `frames`.", error=True)
             return text_result(f"This run has ended ({self.ended}). Tell the user its outcome; start_run starts "
                                "another.", error=True)
         s = self.session
@@ -207,9 +222,21 @@ class Desk:
             if tool == "report" and s.report is not None:
                 self.reported_at = time.time()
             content = [{"type": "text", "text": text + s.steer_note() + s.news() + "\n" + s.clock()}]
-            content += [{"type": "image", "data": base64.standard_b64encode(jpeg).decode("ascii"),
-                         "mimeType": "image/jpeg"} for jpeg in images]
-            return {"content": content, "isError": False}
+            return {"content": content + image_content(images), "isError": False}
+
+    def _frames_after(self, args):
+        """frames once the run has ended (reported, stopped, timed out): the frames it kept, read and nothing else (no
+        feed line, no status, no clock: the run is over). Refused only when the run's files are gone."""
+        with self.lock:
+            try:
+                text, images = self.session.frames(args.get("episode"), args.get("start"), args.get("end"),
+                                                   args.get("count"), live=False)
+            except Exception:
+                text, images = "Tool failed:\n" + traceback.format_exc(limit=5), []
+        if self.marker and self.marker not in text:
+            text += f" (run {self.marker})"  # (every answer names the run: the describer's transcript is found)
+        text += f"\n(The run has ended: {self.ended}. These are the frames it kept.)"
+        return {"content": [{"type": "text", "text": text}] + image_content(images), "isError": False}
 
     def _game_tool(self, tool, args):
         s = self.session

@@ -119,6 +119,7 @@ class MyHarness(Harness):
     tempo = 2.0             # decisions/second while an option runs (reflex play: 4-8; deliberate: 0.5-2)
     tick_hz = 15.0          # observe + one executor step per tick
     switch_margin = 0.25    # how much more Jev must prefer another option to interrupt the running one
+    trace_every = 1.0       # seconds between the observations kept in the trace (0: every one, each tick's)
 
     def setup(self, game): ...                 # find things, set game.keys, calibrate
     def observe(self, game) -> dict: ...       # cheap reads each tick; "_"-keys hidden from Jev
@@ -131,6 +132,14 @@ class MyHarness(Harness):
 
 `Option(name, description, run, facts={}, interruptible=True, urgent=False, effect=None, max_seconds=30)`.
 `Status(state="running"|"done"|"failed", note="", evidence={})`.
+
+The trace (traceN.jsonl beside harness.py) keeps the observation (its facts, status, options, step: an `obs` event)
+once every `trace_every` seconds of game time, 1 by default: coarse for something fast (at 20 m/s the player moves 20 m
+between two). Set `trace_every = 0` to keep every observation (each tick's, `tick_hz` a second), or e.g. 0.1. Options,
+decisions, inputs and findings are kept as they happen, whatever trace_every says. `game.log("kind", t=game.t,
+**fields)` in harness code writes an event of your own to the trace at once, never sampled: the moment that matters (a
+landing, a hit, the speed at an edge) with the numbers to check it by; give it `t=game.t`, as the trace's other events
+have, so it lines up with their times (the summary's t= counts from the episode's first).
 
 ## The plan (a request of more than one step)
 

@@ -112,6 +112,10 @@ class Harness:
     goal: str = ""  # the goal as Jev should see it, in the game's own terms
     tempo: float = 2.0  # decisions a second while an option runs (0: only when it ends or the options change)
     tick_hz: float = 15.0  # runtime ticks a second (observe + one executor step)
+    # Seconds of game time between the observations written to the trace (traceN.jsonl's "obs" events: the facts,
+    # status, options, step). 0: every observation (each tick's), for something fast (a 20 m/s move, a reflex) that
+    # one a second can't show. game.log(...) events are written at once, never sampled
+    trace_every: float = 1.0
     switch_margin: float = 0.25  # how much more Jev must prefer another option to stop the running one
     instructions: Optional[str] = None  # the Choice's instructions (default: see runtime.DEFAULT_INSTRUCTIONS)
     recent_kept: int = 6  # how many recent option outcomes Jev sees
