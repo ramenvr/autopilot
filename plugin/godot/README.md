@@ -239,7 +239,10 @@ the setup at step 2 instead of the connect page, the account as chosen then, so 
      agent service…") and asks it to sign in (`aura_sign_in`, the protocol's "Account"): the agent service opens
      Aura's page in your browser and keeps the sign-in for the computer; the addon never sees Aura's tokens. While it
      waits: "Finish signing in in your browser…", the page's address, **Open again**, **Copy link**, **Cancel**. Then
-     "Signed in as *email*", **Continue** (to step 2) or **Use another account**; or what went wrong in one line, and
+     "Signed in as *email*", **Continue** (to step 2) or **Use another account** (signed out, then
+     `aura_sign_in` with `another_account`: Aura's page is asked to let you pick the account; while it waits the card
+     adds "If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in page again.");
+     or what went wrong in one line, and
      **Try again**.
    - The card has two buttons, the Aura app installed or not: **Sign in** signs in as above. **Create Account** (the
      default) opens Aura's account creation page in your browser, and the card then says "Finish creating your Aura
