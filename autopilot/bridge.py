@@ -38,7 +38,8 @@ REPEAT_SECONDS = 180
 # What this brain does that a plugin may offer only when told (the welcome's "features"): "steer", the user's
 # words to a run while it plays (a `steer` frame); "steer_mode", the frame's "mode": "hint" (the default: a note read
 # with the agent's next tool result while play goes on) or "redirect" (it also ends the episode playing now; a plugin
-# sends "mode" only when this is offered, and a frame without one is a hint); "usage", the tokens a run uses (`usage` frames); "account", how runs
+# sends "mode" only when this is offered, and a frame without one is a hint); "usage", the tokens a run uses
+# (`usage` frames); "account", how runs
 # go and the Aura sign-in the plugin may ask for (`account`, `aura_sign_in` frames: autopilot/account.py); "setup", the
 # first-run setup's choices saved for a plugin that can't write Autopilot/'s files itself (`save_setup`: Roblox's)
 BRAIN_FEATURES = ["steer", "steer_mode", "usage", "account", "setup"]

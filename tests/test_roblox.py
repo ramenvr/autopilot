@@ -658,10 +658,12 @@ def test_a_steer_is_a_hint_or_a_redirect_when_the_agent_service_tells_them_apart
     send = _function_body(run, "function RunPage:_onSteer(")
     assert "ed:steer(said, redirecting)" in send and '"You (redirect): "' in send
     # the mirror: its state carries steer_mode, its Redirect goes back to the edit side as such
-    assert "brainSteerModes = ed.brainSteerModes" in dock and "self.brainSteerModes = s.brainSteerModes == true" in mirror
+    assert "brainSteerModes = ed.brainSteerModes" in dock
+    assert "self.brainSteerModes = s.brainSteerModes == true" in mirror
     assert 'self:_act({ action = "steer", text = text, redirect = redirect == true })' in mirror
     act = _function_body(mirror, "function Mirror.act(")
-    assert "local redirect = f.redirect == true and editor:canRedirect()" in act and "editor:steer(text, redirect)" in act
+    assert "local redirect = f.redirect == true and editor:canRedirect()" in act
+    assert "editor:steer(text, redirect)" in act
 
 
 def test_the_edit_dock_always_comes_back_after_play():
