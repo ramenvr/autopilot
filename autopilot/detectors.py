@@ -16,6 +16,8 @@ import json
 import os
 import sys
 
+from . import memory
+
 FILE = "detectors.json"
 
 
@@ -78,12 +80,9 @@ def mute(folder, signature):
     if signature in names:
         return False
     data["mute"] = names + [signature]
-    os.makedirs(folder, exist_ok=True)
-    tmp = path(folder) + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path(folder))
+    # (in one step, a temporary file of its own: another agent service on this memory folder, or a memory sync, never
+    # reads half of it nor shares the temporary file; memory.write_atomic)
+    memory.write_atomic(path(folder), json.dumps(data, indent=2) + "\n")
     return True
 
 

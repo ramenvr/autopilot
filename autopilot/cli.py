@@ -180,8 +180,7 @@ def remember_project(project, path, engine=None):
         info["project"] = os.path.abspath(canonical or path)
         if engine or found:
             info["engine"] = (engine or found).name
-        with open(file, "w", encoding="utf-8") as f:
-            json.dump(info, f, indent=1)
+        memory.write_atomic(file, json.dumps(info, indent=1))
     return info.get("project")
 
 
@@ -832,6 +831,10 @@ def reset_memory(link, sleep=time.sleep):
             if attempt + 1 < RESET_TRIES:
                 sleep(1.0)
                 continue
+            if e.path == memory.LOCK:  # (another run's memory sync, in this agent service or another one)
+                return {"type": "memory_cleared", "ok": False,
+                        "message": "another run is saving or fetching this game's memory, so nothing was moved. Try "
+                                   "again in a moment."}
             return {"type": "memory_cleared", "ok": False,
                     "message": f"a file of an earlier run is in use ({e.path}), so nothing was moved. Try again in a "
                                "moment."}

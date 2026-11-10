@@ -16,7 +16,7 @@ import shutil
 import threading
 import time
 
-from . import bridge, engines
+from . import bridge, engines, memory
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -63,9 +63,7 @@ def project_of(hello):
         if owner == pid:
             return folder
         if not owner:  # (a new folder, or one from before ids were recorded: this project's from now on)
-            os.makedirs(project_dir(folder), exist_ok=True)
-            with open(file, "w", encoding="utf-8") as f:
-                json.dump({**info, "project_id": pid}, f, indent=1)
+            memory.write_atomic(file, json.dumps({**info, "project_id": pid}, indent=1))
             return folder
     return f"{name}-{digits}"  # (unreachable unless the full id's folder is another id's)
 
@@ -632,11 +630,9 @@ def seen(project_root):
 def record_seen(project_root, run_id, files, pending=None):
     """Note `files` (a fingerprint()) as the codex run_id worked from, and the changes still to check (`pending`): the
     next run's changes are counted from it."""
-    tmp = os.path.join(project_root, SEEN_FILE + ".tmp")
-    with gzip.open(tmp, "wt", encoding="utf-8") as f:
-        json.dump({"run": run_id, "at": round(time.time()), "files": files, "pending": pending or {}}, f,
-                  separators=(",", ":"))
-    os.replace(tmp, os.path.join(project_root, SEEN_FILE))
+    record = json.dumps({"run": run_id, "at": round(time.time()), "files": files, "pending": pending or {}},
+                        separators=(",", ":"))
+    memory.write_atomic(os.path.join(project_root, SEEN_FILE), gzip.compress(record.encode("utf-8")))
 
 
 def changes(before, now):
