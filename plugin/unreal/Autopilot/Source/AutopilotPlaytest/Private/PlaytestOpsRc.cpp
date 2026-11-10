@@ -78,7 +78,8 @@ namespace
 			Takes.Num() > 0 ? *FString::Join(Takes, TEXT(", ")) : TEXT("no arguments"));
 	}
 
-	void Call(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Body)
+	/** World: the world a function's world context gets when the call doesn't give one (the request's player's). */
+	void Call(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Body, UWorld* World)
 	{
 		const FString Path = StringField(Body, TEXT("objectPath"));
 		UObject* Object = PlaytestJson::ResolveObject(Path);
@@ -136,7 +137,7 @@ namespace
 			{
 				if (FObjectPropertyBase* ObjParam = CastField<FObjectPropertyBase>(Param))
 				{
-					ObjParam->SetObjectPropertyValue(ValuePtr, Bridge.GetGameWorld());
+					ObjParam->SetObjectPropertyValue(ValuePtr, World);
 				}
 				continue;
 			}
@@ -325,7 +326,7 @@ namespace
 		}
 		else if (Verb == TEXT("call"))
 		{
-			Call(Bridge, Id, Body);
+			Call(Bridge, Id, Body, PlayerWorld(Bridge, Args));
 		}
 		else if (Verb == TEXT("property"))
 		{

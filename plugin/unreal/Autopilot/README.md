@@ -394,6 +394,15 @@ world or an object) and click or drag there: the game's own mouse reads (`GetMou
 `GetHitResultUnderCursor`, click events) see that place, and a click over the game's UI goes to that UI as the
 mouse's would. Your computer's own cursor doesn't move.
 
+**Multiplayer games: every player of Play In Editor.** When the editor plays several players in one process (Play
+settings: Number of Players above 1, Run Under One Process on; a listen server or clients of a dedicated server), the
+agent plays player 1 (the listen server's host, or the first client) and can drive the others too: each player's keys,
+movement, view, on-screen texts and UI are its own. A player the agent doesn't drive stands idle where it is; the agent
+drives the others when the prompt is about players together (co-op, handing things over, one player seeing another) or
+when the game needs every player to go on. Play In Editor plays as you set it up: the agent never changes the number of
+players or the net mode. Pointing the mouse at a place is player 1's only for now (another player's UI is clicked
+through its widgets directly), and the recording and the bug detectors follow player 1's world.
+
 **While a run plays, the game gets the agent's input alone.** Your own keyboard, mouse and gamepads don't reach the
 game: a key or stick while the game has focus, or the mouse over the game's view, is held off before anything else in
 the engine sees it, so nothing you press (or a controller in your hands) mixes with the agent's input. The rest of the

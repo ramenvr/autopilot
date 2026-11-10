@@ -565,6 +565,9 @@ void UPlaytestSubsystem::SendHello()
 	Features.Add(MakeShared<FJsonValueString>(TEXT("levels")));  // `levels`, and `session` playing the `map` asked for
 	Features.Add(MakeShared<FJsonValueString>(TEXT("pointer")));  // `pointer`: the mouse to a place, clicks land there
 	Features.Add(MakeShared<FJsonValueString>(TEXT("trace")));  // `trace`: a line or a ball by the world's collision
+	// A request's "player" n is for player n of the editor's multiplayer Play In Editor (its own world: its keys, view,
+	// screen, UI, watch and context); how many there are is the editor's Play settings' (context's `players`)
+	Features.Add(MakeShared<FJsonValueString>(TEXT("players")));
 	if (FPlaytestMedia::CanCapture())
 	{
 		Features.Add(MakeShared<FJsonValueString>(TEXT("media")));  // `record` and `capture` (a game that renders)
@@ -717,13 +720,18 @@ void UPlaytestSubsystem::ClearMemory()
 
 UWorld* UPlaytestSubsystem::GetGameWorld() const
 {
+	return GetPlayerWorld(1);
+}
+
+TArray<UWorld*> UPlaytestSubsystem::GetPlayerWorlds() const
+{
+	TArray<UWorld*> Out;
 	if (!GEngine)
 	{
-		return nullptr;
+		return Out;
 	}
 	UWorld* Game = nullptr;
-	UWorld* Pie = nullptr;
-	int32 PieInstance = MAX_int32;
+	TArray<TPair<int32, UWorld*>> Pie;
 	bool bAnyPie = false;
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
 	{
@@ -734,12 +742,11 @@ UWorld* UPlaytestSubsystem::GetGameWorld() const
 		}
 		if (Context.WorldType == EWorldType::PIE)
 		{
-			// (the first of several clients: the lowest PIE instance; a dedicated server's is never played)
+			// (a dedicated server's is never played: no local player, no viewport)
 			bAnyPie = true;
-			if (!Context.RunAsDedicated && World->GetNetMode() != NM_DedicatedServer && Context.PIEInstance < PieInstance)
+			if (!Context.RunAsDedicated && World->GetNetMode() != NM_DedicatedServer)
 			{
-				Pie = World;
-				PieInstance = Context.PIEInstance;
+				Pie.Emplace(Context.PIEInstance, World);
 			}
 		}
 		else if (Context.WorldType == EWorldType::Game && !Game)
@@ -747,15 +754,38 @@ UWorld* UPlaytestSubsystem::GetGameWorld() const
 			Game = World;
 		}
 	}
-	return bAnyPie ? Pie : Game;
+	if (!bAnyPie)
+	{
+		if (Game)
+		{
+			Out.Add(Game);
+		}
+		return Out;
+	}
+	Pie.StableSort([](const TPair<int32, UWorld*>& A, const TPair<int32, UWorld*>& B) { return A.Key < B.Key; });
+	for (const TPair<int32, UWorld*>& Entry : Pie)
+	{
+		Out.Add(Entry.Value);
+	}
+	return Out;
+}
+
+UWorld* UPlaytestSubsystem::GetPlayerWorld(int32 Player) const
+{
+	const TArray<UWorld*> Worlds = GetPlayerWorlds();
+	return Worlds.IsValidIndex(Player - 1) ? Worlds[Player - 1] : nullptr;
 }
 
 UWorld* UPlaytestSubsystem::GetServerWorld() const
 {
-	UWorld* Played = GetGameWorld();
+	return GetServerWorld(GetGameWorld());
+}
+
+UWorld* UPlaytestSubsystem::GetServerWorld(const UWorld* Played) const
+{
 	if (!Played || Played->GetNetMode() != NM_Client || !GEngine)
 	{
-		return Played;
+		return const_cast<UWorld*>(Played);
 	}
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
 	{
@@ -1438,7 +1468,10 @@ bool UPlaytestSubsystem::Tick(float DeltaTime)
 	}
 
 	CheckSessionChange();
-	PlaytestScreen::TickUnpainted(GetGameWorld(), DeltaTime);
+	for (UWorld* Played : GetPlayerWorlds())
+	{
+		PlaytestScreen::TickUnpainted(Played, DeltaTime);  // (every player's HUD: any of them can be read)
+	}
 
 	for (int32 i = PendingOps.Num() - 1; i >= 0; --i)
 	{

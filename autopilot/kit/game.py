@@ -472,8 +472,11 @@ class Game:
         """Start the level over (or open `map`, e.g. the gameplay level of a game that boots into a menu) and wait up
         to wait_for_pawn seconds for the player's pawn. Returns whether a pawn is there (False: a menu, or loading).
         Without a map, the run's level (self.level) starts over when it has one. players: how many players the game
-        starts with, for an engine whose plugin plays multiplayer (its hello's features say "players": Roblox); the
-        others are game.player(2), game.player(3)..."""
+        starts with, for an engine whose plugin plays multiplayer (its hello's features say "players"); the others are
+        game.player(2), game.player(3)... Roblox starts that many; Unreal plays the number its editor's Play settings
+        start and refuses another."""
+        if players is not None and int(players) != 1:
+            self._need_players(f"restart(players={int(players)})")
         self.release_all()
         args = {"action": "restart"}
         map = map or self.level
@@ -506,17 +509,28 @@ class Game:
     def player(self, n):
         """Player n of a multiplayer game, as a game of its own (a Body): its pawn, view, screen, keys, UI and every kit
         function (walk_to(game.player(2), ...)) are that player's; reads of the world are the same. 1 is the run's own
-        player: this game. Start a game with more players first: game.restart(players=2)."""
+        player: this game. A game the plugin plays with one player only refuses n > 1 (GameError) rather than play
+        player 1 for it. How many there are: game.players()."""
         n = int(n)
         if n <= 1:
             return self._primary
+        self._need_players(f"player({n})")
         if n not in self._bodies:
             self._bodies[n] = Body(self._primary, n)
         return self._bodies[n]
 
     def players(self):
         """The game's players: [{"player": n, "name", "path", "character", "you"}], 1 the run's own."""
+        self._need_players("players()")
         return list(self.context(fresh=True).get("players") or [])
+
+    def _need_players(self, what):
+        """Several players need a plugin that plays them (its hello's features say "players"): without one a request's
+        "player" would go unread, and player 1 would be played for player 2."""
+        if "players" not in self.features:
+            engine = getattr(self.engine, "title", "") or getattr(self.engine, "name", "") or "engine"
+            raise GameError(f"game.{what}: this game's {engine} plugin plays one player only (its features don't "
+                            "include 'players'): play game itself, player 1")
 
 
 class Body(Game):

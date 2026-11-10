@@ -29,10 +29,11 @@ namespace PlaytestOps
 	// channel)} -> {"channel": the one asked of, "hit": null | {"location" (where the line stops: the ball's center when
 	// it touches), "point" (where it touches), "normal", "distance" (start to location), "actor" (path, the whole actor
 	// for a child actor's part), "name", "label"? (editor), "component", "inside" (start was already in it)}}. The
-	// player's own pawn and what it carries are never hit.
+	// player's own pawn and what it carries are never hit. "player" n: in player n's world, its pawn never hit (the
+	// editor's multiplayer Play In Editor gives each player a world of its own).
 	void Trace(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args)
 	{
-		UWorld* World = Bridge.GetGameWorld();
+		UWorld* World = PlayerWorld(Bridge, Args);
 		if (!World)
 		{
 			Bridge.RespondError(Id, TEXT("No game world"));

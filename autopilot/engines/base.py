@@ -72,6 +72,9 @@ NEUTRAL_KIT = [
      "(from the codex),\n  or click through the menu in setup() (`game.ui()`, `game.ui_act`).\n"),
     ('"step" (MaxStepHeight)', '"step" (the highest step it walks up)'),
     ('"air_control"}, read from its CharacterMovement and capsule.\n', '"air_control"}, read from the game.\n'),
+    ("  Unreal's players are the editor's multiplayer Play In Editor (Number of Players in its Play settings, run "
+     "under one\n  process: a listen server's host or the first client is player 1): `game.restart(players=N)` can't "
+     "change how many,\n  and `game.pointer` is player 1's only (another player's UI: its `ui_act`).\n", ""),
 ]
 
 

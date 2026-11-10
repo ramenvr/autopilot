@@ -190,6 +190,14 @@ namespace
 
 	void PointerOp(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args)
 	{
+		// One pointer, player 1's: Slate has one mouse cursor, and a button held on one player's UI would move with
+		// another's pointer. Another player's UI takes `ui_act`, its keys and mouse movement `key`
+		if (PlayerOf(Args) != 1)
+		{
+			Bridge.RespondError(Id, TEXT("The pointer is player 1's only: act on another player's UI with ui_act (game.player(n)"
+				".ui_act), and turn its view with its keys and mouse movement"));
+			return;
+		}
 		UWorld* World = Bridge.GetGameWorld();
 		APlayerController* PC = PlayerController(World);
 		UGameViewportClient* Client = World ? World->GetGameViewport() : nullptr;

@@ -38,7 +38,7 @@ namespace PlaytestOps
 
 	void View(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args)
 	{
-		UWorld* World = Bridge.GetGameWorld();
+		UWorld* World = PlayerWorld(Bridge, Args);
 		APlayerController* PC = PlayerController(World);
 		APlayerCameraManager* CameraManager = PC ? PC->PlayerCameraManager : nullptr;
 		if (!World || !CameraManager)

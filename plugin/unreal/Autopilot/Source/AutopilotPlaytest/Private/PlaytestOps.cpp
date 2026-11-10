@@ -118,8 +118,28 @@ namespace PlaytestOps
 		return O;
 	}
 
+	int32 PlayerOf(const TSharedPtr<FJsonObject>& Args)
+	{
+		return FMath::FloorToInt32(NumberField(Args, TEXT("player"), 1.0));
+	}
+
+	UWorld* PlayerWorld(UPlaytestSubsystem& Bridge, const TSharedPtr<FJsonObject>& Args)
+	{
+		return Bridge.GetPlayerWorld(PlayerOf(Args));
+	}
+
 	void Handle(UPlaytestSubsystem& Bridge, int64 Id, const FString& Op, const TSharedPtr<FJsonObject>& Args)
 	{
+		// A request for another player (its "player" n: the kit's game.player(n)) needs that player in the game: player n
+		// of the editor's multiplayer Play In Editor (as Roblox's plugin answers it). Player 1 is asked for as before
+		const int32 Player = PlayerOf(Args);
+		if (Player != 1 && !Bridge.GetPlayerWorld(Player))
+		{
+			const int32 Count = Bridge.GetPlayerWorlds().Num();
+			Bridge.RespondError(Id, FString::Printf(TEXT("No player %d in the game: %d player%s (the editor's Play settings "
+				"start them: Number of Players, run under one process)"), Player, Count, Count == 1 ? TEXT("") : TEXT("s")), 404);
+			return;
+		}
 		if (Op == TEXT("key"))
 		{
 			KeyOp(Bridge, Id, Args);
@@ -142,7 +162,7 @@ namespace PlaytestOps
 		}
 		else if (Op == TEXT("context"))
 		{
-			Context(Bridge, Id);
+			Context(Bridge, Id, Args);
 		}
 		else if (Op == TEXT("session"))
 		{
@@ -174,7 +194,7 @@ namespace PlaytestOps
 		}
 		else if (Op == TEXT("ui"))
 		{
-			UiList(Bridge, Id);
+			UiList(Bridge, Id, Args);
 		}
 		else if (Op == TEXT("ui_act"))
 		{
@@ -199,7 +219,7 @@ namespace PlaytestOps
 		}
 		else if (Op == TEXT("capture"))
 		{
-			Bridge.GetMedia().Capture(Id, Args);  // (answered once the picture is read back and encoded)
+			Bridge.GetMedia().Capture(Id, Args);  // (answered once the picture is read back and encoded; the player's own)
 		}
 		else if (Op == TEXT("codex_manifest"))
 		{

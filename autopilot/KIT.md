@@ -73,6 +73,10 @@ Inputs (the player's hands; the only way to act in play):
   `press`/`hold`, `ui_act`, and every controller: `walk_to(game.player(2), ...)`), `game.players()` lists them.
   `game` itself is player 1. The runtime renews and lets go of every player's held keys. Use it when the request is
   about players together (handing things over, one seeing another, shared state); a request about one player needs one.
+  Without "players" in `game.features`, `game.player(2)` and `game.players()` raise GameError.
+  Unreal's players are the editor's multiplayer Play In Editor (Number of Players in its Play settings, run under one
+  process: a listen server's host or the first client is player 1): `game.restart(players=N)` can't change how many,
+  and `game.pointer` is player 1's only (another player's UI: its `ui_act`).
 
 ## Controllers (kit.control): generators, `yield from` them inside executors
 
