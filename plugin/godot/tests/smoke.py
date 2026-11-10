@@ -272,6 +272,16 @@ def run(c, brain, link):
         c.check("rc missing function error", False)
     except BridgeError as e:
         c.check("rc missing function error", "does not exist" in e.error, e.error)
+    # An argument name the method has no parameter for is refused (the call not made), never dropped unread
+    for fn, params, needle in (("tire", {"amout": 7}, "tire on /root/GameState: unknown argument(s) amout; it takes amount"),
+                               ("tire", {"amount": 7, "times": 2}, "unknown argument(s) times; it takes amount"),
+                               ("basket_full", {"which": 1}, "unknown argument(s) which; it takes no arguments")):
+        try:
+            rc("call", objectPath="/root/GameState", functionName=fn, parameters=params)
+            c.check(f"rc unknown argument error ({fn} {params})", False)
+        except BridgeError as e:
+            c.check(f"rc unknown argument error ({fn} {params})", e.error.endswith(needle), e.error)
+    c.check("rc refused call not made", gs("stamina") == 100, str(gs("stamina")))
 
     # --- mouse look, keys, move ------------------------------------------------------------------
     p0 = req("pose")

@@ -118,3 +118,21 @@ def test_a_run_has_only_so_many_researcher_questions(tmp_path, monkeypatch):
     assert decision == "deny" and "2 researcher questions are used" in why
     assert ask("Read", {"file_path": os.path.join(s.root, "codex", "x.txt")}) == ("allow", "")  # (reading goes on)
     assert "this run has 2 questions in all" in cc.agents_note(4)
+
+
+def test_a_game_tool_refuses_an_argument_name_it_doesnt_take(monkeypatch):
+    import claude_agent_sdk
+
+    made = {}
+    monkeypatch.setattr(claude_agent_sdk, "create_sdk_mcp_server", lambda name, tools: made.update(tools=tools) or {})
+    calls = []
+    session = types.SimpleNamespace(tool_seconds=0.0, steer_note=lambda: "", news=lambda: "", clock=lambda: "[clock]",
+                                    run_harness=lambda *a, **k: calls.append((a, k)) or "episode 1")
+    cc._tools(session)
+    run_harness = next(t for t in made["tools"] if t.name == "run_harness")
+    refused = asyncio.run(run_harness.handler({"seconds": 10, "fps": 30}))
+    assert refused["isError"] and not calls
+    assert refused["content"][0]["text"].startswith("run_harness: unknown argument(s) fps; it takes seconds, restart, "
+                                                    "frames_fps.")
+    done = asyncio.run(run_harness.handler({"seconds": 10, "frames_fps": 30}))
+    assert done["content"][0]["text"].startswith("episode 1") and calls == [((10, True), {"frames_fps": 30})]

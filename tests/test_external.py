@@ -127,6 +127,51 @@ def test_file_calls_are_never_held_up_by_a_call_still_going(started):
     assert box["report"]["stopped"] == "stopped" and box["report"]["outcome"] == "not_achieved"
 
 
+def test_an_argument_name_a_tool_doesnt_take_is_refused_never_dropped(started):
+    front, control, box = started
+    # start_run: refused before a run starts; an argument of another tool is named with it
+    refused = front.call("start_run", {"request": "Reach the gate", "frames_fps": 30})
+    words = text_of(refused)
+    assert refused["isError"] and control.desk is None
+    assert words.startswith("start_run: unknown argument(s) frames_fps; it takes request, kind, minutes, "
+                            "time_limit_minutes, level. frames_fps is an argument of run_harness.")
+    assert "Nothing was done" in words
+    settled(front, front.call("start_run", {"request": "Reach the gate"}))
+    desk = control.desk
+    calls = []
+    desk.session.run_harness = lambda *a, **k: calls.append((a, k)) or "episode 1"
+    # The game's tools, the report and the file tools, through the front
+    refused = front.call("run_harness", {"seconds": 10, "fps": 30, "Restart": False})
+    assert refused["isError"] and not calls
+    assert text_of(refused).startswith("run_harness: unknown argument(s) fps, Restart; it takes seconds, restart, "
+                                       "frames_fps.")
+    refused = front.call("report", {"outcome": "achieved", "summary": "s", "evidence": [], "notes": "x"})
+    assert refused["isError"] and desk.session.report is None
+    assert "unknown argument(s) notes; it takes outcome, summary, evidence, findings, visual" in text_of(refused)
+    assert "it takes no arguments" in text_of(front.call("snapshot", {"what": "all"}))
+    restart = front.call("restart_level", {"episode": 2})
+    assert "episode is an argument of describe_frames and frames" in text_of(restart)
+    assert "unknown argument(s) file" in text_of(front.call("read_file", {"file": "runs/r1/REQUEST.md"}))
+    assert "unknown argument(s) timeout" in text_of(front.call("wait", {"timeout": 5}))
+    # And at the agent service, for a front older than the check
+    direct = control.call("run_harness", {"run": desk.marker, "args": {"seconds": 10, "fps": 30}})
+    assert direct["isError"] and "unknown argument(s) fps" in text_of(direct) and not calls
+    assert "unknown argument(s) path" in text_of(control.call("frames", {"run": desk.marker, "args": {"path": "x"}}))
+    # The arguments a tool takes still go through
+    assert "episode 1" in text_of(settled(front, front.call("run_harness", {"seconds": 10, "frames_fps": 30})))
+    assert calls == [((10, True), {"frames_fps": 30})]
+    desk.session.stop = lambda: True
+    box["thread"].join(30)
+
+
+def test_unknown_args_names_the_tool_an_argument_belongs_to():
+    assert sessionmod.unknown_args("probe", {"code": "1"}) is None
+    assert sessionmod.unknown_args("nope", {"x": 1}) is None  # (an unknown tool is answered as one)
+    why = sessionmod.unknown_args("probe", {"code": "1", "level": "L", "zzz": 2})
+    assert why == ("probe: unknown argument(s) level, zzz; it takes code. level is an argument of restart_level. "
+                   "Nothing was done: call it again with only the arguments it takes.")
+
+
 def test_a_start_call_is_told_why_a_run_wont_start():
     control = external.Control()
     try:

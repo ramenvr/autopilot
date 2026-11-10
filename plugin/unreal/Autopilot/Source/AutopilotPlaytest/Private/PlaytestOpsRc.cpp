@@ -28,6 +28,56 @@ namespace
 		return FString();
 	}
 
+	/** An argument the function takes from a caller: not its return value, nor an out parameter only written. */
+	bool IsInput(const FProperty* Param)
+	{
+		return !Param->HasAnyPropertyFlags(CPF_ReturnParm)
+			&& (!Param->HasAnyPropertyFlags(CPF_OutParm) || Param->HasAnyPropertyFlags(CPF_ReferenceParm | CPF_ConstParm));
+	}
+
+	/** Why a call's arguments are refused for names the function has no parameter for, "" when they aren't: such a
+	 *  value would go unread and the call be made without it, while the caller believes it was passed. Names match
+	 *  as the arguments are found (case-insensitive). The words are Unity's and Godot's: "unknown argument(s) X; it
+	 *  takes A, B". */
+	FString UnknownArguments(UFunction* Function, const TSharedPtr<FJsonObject>& Params)
+	{
+		if (!Params.IsValid())
+		{
+			return FString();
+		}
+		TArray<FString> Unknown;
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Params->Values)
+		{
+			bool bKnown = false;
+			for (TFieldIterator<FProperty> It(Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+			{
+				if (!It->HasAnyPropertyFlags(CPF_ReturnParm) && It->GetName().Equals(Pair.Key, ESearchCase::IgnoreCase))
+				{
+					bKnown = true;
+					break;
+				}
+			}
+			if (!bKnown)
+			{
+				Unknown.Add(Pair.Key);
+			}
+		}
+		if (Unknown.Num() == 0)
+		{
+			return FString();
+		}
+		TArray<FString> Takes;
+		for (TFieldIterator<FProperty> It(Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+		{
+			if (IsInput(*It))
+			{
+				Takes.Add(It->GetName());
+			}
+		}
+		return FString::Printf(TEXT("unknown argument(s) %s; it takes %s"), *FString::Join(Unknown, TEXT(", ")),
+			Takes.Num() > 0 ? *FString::Join(Takes, TEXT(", ")) : TEXT("no arguments"));
+	}
+
 	void Call(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Body)
 	{
 		const FString Path = StringField(Body, TEXT("objectPath"));
@@ -51,6 +101,12 @@ namespace
 			return;
 		}
 		const TSharedPtr<FJsonObject> Params = ObjectField(Body, TEXT("parameters"));
+		const FString Unknown = UnknownArguments(Function, Params);
+		if (!Unknown.IsEmpty())
+		{
+			Bridge.RespondError(Id, FString::Printf(TEXT("%s on %s: %s"), *Name, *Path, *Unknown));
+			return;
+		}
 		FStructOnScope Scope(Function);
 		uint8* Parms = Scope.GetStructMemory();
 #if WITH_METADATA
@@ -232,9 +288,7 @@ namespace
 			TArray<TSharedPtr<FJsonValue>> Arguments;
 			for (TFieldIterator<FProperty> P(Function); P && P->HasAnyPropertyFlags(CPF_Parm); ++P)
 			{
-				const bool bInput = !P->HasAnyPropertyFlags(CPF_ReturnParm)
-					&& (!P->HasAnyPropertyFlags(CPF_OutParm) || P->HasAnyPropertyFlags(CPF_ReferenceParm | CPF_ConstParm));
-				if (!bInput)
+				if (!IsInput(*P))
 				{
 					continue;
 				}

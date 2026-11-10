@@ -9,7 +9,7 @@ Reads (privileged: any object, any property, protected and Blueprint variables i
 - `game.actors("BP_Door")` / `game.actors("Door")` / `game.actors("/Game/X/BP_Door.BP_Door_C")`: actor paths of a class (subclasses too). A Blueprint's name is resolved from the codex, a C++ class name from the project's modules.
 - `game.named("Door")`: actors whose object name contains the text. `game.all_actors()`.
 - `game.get(path, "Health")`: one property. `game.props(path)`: all of them. Components: `f"{actor}.MeshComp"`.
-- `game.call(path, "FunctionName", Param=value, ...)` -> dict (`ReturnValue` and out params); `game.ret(...)` -> its ReturnValue.
+- `game.call(path, "FunctionName", Param=value, ...)` -> dict (`ReturnValue` and out params); `game.ret(...)` -> its ReturnValue. An argument name the function doesn't take is refused (a GameError naming the ones it takes).
   Static library functions go to class default objects, e.g. `game.ret(GAMEPLAY, "GetPlayerCharacter", WorldContextObject=game.world, PlayerIndex=0)`.
 - `game.describe(path)`: its class, properties, Blueprint-callable functions (with their arguments).
 - `game.exists(path)`: whether it is in the level now. An actor the game destroyed (picked up, broken, killed) is gone

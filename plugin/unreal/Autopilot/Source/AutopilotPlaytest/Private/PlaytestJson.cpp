@@ -585,13 +585,34 @@ bool JsonToProperty(const FProperty* Property, void* ValuePtr, const TSharedPtr<
 						: TEXT(""));
 				return false;
 			}
+			// A partial struct leaves the fields it doesn't name as they are; a name the struct has no field for would
+			// go unread (a misspelt "Pich" leaves the pitch as it was), so it is refused before any field is written,
+			// as Unity refuses one
+			TArray<FString> Unknown;
+			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*Object)->Values)
+			{
+				if (!FindProperty(Struct->Struct, Pair.Key))
+				{
+					Unknown.Add(Pair.Key);
+				}
+			}
+			if (Unknown.Num() > 0)
+			{
+				TArray<FString> Fields;
+				for (TFieldIterator<FProperty> It(Struct->Struct); It; ++It)
+				{
+					if (!IsHidden(*It))
+					{
+						Fields.Add(It->GetAuthoredName());
+					}
+				}
+				OutError = FString::Printf(TEXT("%s: unknown field(s) %s for %s; it has %s"), *Property->GetName(),
+					*FString::Join(Unknown, TEXT(", ")), *Struct->Struct->GetName(), *FString::Join(Fields, TEXT(", ")));
+				return false;
+			}
 			for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : (*Object)->Values)
 			{
 				FProperty* Field = FindProperty(Struct->Struct, Pair.Key);
-				if (!Field)
-				{
-					continue;  // unknown fields are ignored, as a partial struct leaves the rest as it is
-				}
 				if (!JsonToProperty(Field, Field->ContainerPtrToValuePtr<void>(ValuePtr), Pair.Value, OutError))
 				{
 					return false;
