@@ -153,3 +153,27 @@ def test_every_engines_plugin_refuses_an_argument_name_its_function_doesnt_take(
     json_cpp = open(os.path.join(root, "plugin/unreal/Autopilot/Source/AutopilotPlaytest/Private/PlaytestJson.cpp"),
                     encoding="utf-8").read()
     assert "unknown field(s) %s for %s; it has %s" in json_cpp and "unknown fields are ignored" not in json_cpp
+
+
+def test_every_plugin_mutes_what_the_project_muted():
+    """The `detectors` op's `mute` (autopilot/detectors.py): every plugin takes the whole list and drops a finding whose
+    detector or signature is in it, where its findings are made; Unreal and Unity take `max_distance` for the far
+    bound too (Godot and Roblox have no far check)."""
+    import pathlib
+
+    root = pathlib.Path(__file__).resolve().parent.parent / "plugin"
+    sources = {
+        "unreal": (root / "unreal/Autopilot/Source/AutopilotPlaytest/Private/PlaytestDetectors.cpp").read_text("utf-8"),
+        "unity": (root / "unity/com.ramenvr.autopilot/Runtime/Detectors.cs").read_text("utf-8"),
+        "godot": (root / "godot/addons/autopilot/lib/detectors.gd").read_text("utf-8"),
+        "roblox": (root / "roblox/src/Detectors.luau").read_text("utf-8"),
+    }
+    takes = {"unreal": 'TryGetArrayField(TEXT("mute")', "unity": 'TryGetValue("mute"', "godot": 'args.get("mute")',
+             "roblox": "type(args.mute) == \"table\""}
+    drops = {"unreal": "Muted.Contains(Detector) || Muted.Contains(Signature)",
+             "unity": "muted.Contains(detector) || muted.Contains(signature)",
+             "godot": 'muted.has(sig) or muted.has(str(f.get("detector", "")))',
+             "roblox": "self.muted[sig] or self.muted[f.detector]"}
+    for name, source in sources.items():
+        assert takes[name] in source and drops[name] in source, name
+    assert 'TEXT("max_distance")' in sources["unreal"] and '"max_distance"' in sources["unity"]

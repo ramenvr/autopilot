@@ -116,6 +116,9 @@ class Link:
         self.game_time_at = None  # ... and the wall time (time.time()) it came in
         self.last_heartbeat = None  # wall time of the latest heartbeat
         self.findings = []  # finding dicts from in-engine detectors, in arrival order
+        # Detector names and signatures the project muted (autopilot/detectors.py): their findings are dropped here too,
+        # for a plugin that doesn't drop them itself
+        self.muted = frozenset()
         self.logs = []  # log events (errors and Blueprint warnings), in arrival order
         self.messages = queue.Queue()  # other frames from the plugin: start, stop, feedback
         self.listeners = []  # callables taking each event dict
@@ -330,6 +333,8 @@ class Link:
             self.last_heartbeat = time.time()
         elif kind == "finding":
             finding = dict(event.get("finding", {}))
+            if self.muted and (finding.get("signature") in self.muted or finding.get("detector") in self.muted):
+                return
             finding.setdefault("t", event.get("t"))
             self.findings.append(finding)
         elif kind == "log":

@@ -53,6 +53,7 @@ from . import (
     training,
 )
 from . import codex as codexmod
+from . import detectors as detectorsmod
 from . import levels as levelsmod
 from .agents.session import Steering, cut_off, default_timeout, go_on, scrub
 from .agents.session import model as agent_model
@@ -288,6 +289,10 @@ def prepare(link, path=None, level=None):
     game = Game(link, codexmod.Codex.for_project(project))
     name = (link.hello or {}).get("project") or "game"
     path = remember_project(project, path or find_project(game, project, name), game.engine)
+    # The project's detector settings (what it muted: autopilot/detectors.py), before the game starts, so its first
+    # findings are filtered too: every plugin keeps them for its play sessions, and they are sent again after a reload
+    detectorsmod.send(link, codexmod.project_dir(project))
+    detectorsmod.watch(link, codexmod.project_dir(project))
     # In the editor the game may not be running yet (Unreal's Play In Editor, Unity's play mode, Godot's scene)
     game.level_info = choose_level(link, level)
     try:
@@ -835,6 +840,26 @@ def reset_memory(link, sleep=time.sleep):
             return {"type": "memory_cleared", "ok": False, "message": f"the agent service couldn't move the files: {e}"}
 
 
+def take_feedback(link, msg):
+    """The editor's feedback on a finding ({"type": "feedback", "signature", "verdict"}: its Not a bug button). A
+    finding that is "not_a_bug" is muted for the project from now on (its signature in detectors.json:
+    autopilot/detectors.py), and the game's detectors are told at once, a run's going on included. Whether it was
+    added (False: no signature, already muted, another verdict, or the file couldn't be written)."""
+    signature = str(msg.get("signature") or "").strip()
+    if msg.get("verdict") != "not_a_bug" or not signature:
+        return False
+    folder = codexmod.project_dir(codexmod.project_of(link.hello))
+    try:
+        added = detectorsmod.mute(folder, signature)
+    except OSError as e:
+        print(f"note: couldn't mute {signature}: {e}")
+        return False
+    if added:
+        print(f"Muted for this project: {signature} ({detectorsmod.path(folder)})")
+    detectorsmod.send(link, folder, wait=False)
+    return added
+
+
 def same_run(a, b):
     """Whether two `run`s that hellos carried are the same command-line run."""
     return json.dumps(a, sort_keys=True) == json.dumps(b, sort_keys=True)
@@ -1139,6 +1164,10 @@ def cmd_serve(link, args):
             send_memory_state(link, msg)
             account.send_state(link)
             feed.watch_rebind(link)
+            if going is not None:  # (the run goes on through the new link: what the project muted, there too)
+                folder = codexmod.project_dir(codexmod.project_of(link.hello))
+                detectorsmod.send(link, folder, wait=False)
+                detectorsmod.watch(link, folder)
             if msg.get("activity_since") is not None:  # (the tab asks for the run's feed, from where it was)
                 print(f"hello: activity since {msg.get('activity_since')}")
                 try:
@@ -1158,6 +1187,8 @@ def cmd_serve(link, args):
         elif kind == "steer" and going is not None:
             if going[2].add(msg.get("text")):
                 link.status("Steering: " + str(msg.get("text")).strip()[:120])
+        elif kind == "feedback":
+            take_feedback(link, msg)
         elif kind == "clear_memory":
             with lock:  # (a start call of the user's own agent waits while the memory moves)
                 if going is not None and going[0].is_alive():

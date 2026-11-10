@@ -49,6 +49,7 @@ function Detectors.new(emit: (any) -> (), now: () -> number, screen: (() -> { [s
 	self.enabled = true
 	self.active = false -- a run uses the game (the host's runUsingGame): only then do the detectors work
 	self.counts = {}
+	self.muted = {} -- detector names and signatures never reported (configure's mute): name -> true
 	self.config = { long_fall_seconds = 8.0, hitch_seconds = 0.75, hud_every = 0.25, scan_every = 0.5,
 		out_of_world_margin = 50.0, teleport_factor = 3.0, teleport_min = 1000.0, growth_seconds = 120.0,
 		property_every = 0.5 }
@@ -126,6 +127,14 @@ function Detectors:configure(args: any)
 			self.config[k] = tonumber(args[k])
 		end
 	end
+	if type(args.mute) == "table" then
+		self.muted = {} -- (the whole list each time: what is no longer in it is reported again)
+		for _, name in ipairs(args.mute) do
+			if type(name) == "string" and string.match(name, "%S") then
+				self.muted[string.match(name, "^%s*(.-)%s*$")] = true
+			end
+		end
+	end
 end
 
 local function noise(message: string): boolean
@@ -143,6 +152,9 @@ end
 
 function Detectors:_finding(f: any)
 	local sig = f.signature
+	if self.muted[sig] or self.muted[f.detector] then
+		return -- the project said it isn't a bug
+	end
 	local n = (self.counts[sig] or 0) + 1
 	self.counts[sig] = n
 	if not (n == 1 or n == 10 or n == 100 or n == 1000) then

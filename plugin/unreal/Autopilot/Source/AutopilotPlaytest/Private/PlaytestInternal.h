@@ -7,6 +7,7 @@
 
 class UPlaytestSubsystem;
 class UWorld;
+class ULevel;
 class AActor;
 class UClass;
 class UObject;
@@ -180,11 +181,20 @@ public:
 	double GrowthSeconds = 120.0;
 	double HudEvery = 0.5;
 	double PropertyEvery = 0.5;
+	/** out_of_world's far bound in units from the origin (max_distance); 0: the level's own extent (BeyondWorld) */
+	double MaxDistance = 0.0;
+	/** Detector names ("out_of_world") and signatures ("out_of_world:BP_Tree") never reported (mute) */
+	TSet<FString> Muted;
 
 private:
 	void Report(const FString& Detector, const FString& Severity, const FString& Summary, const FString& Signature,
 		double GameTime, const AActor* Actor = nullptr, const TSharedPtr<FJsonObject>& Details = nullptr);
 	void CheckActors(UWorld* World, double GameTime);
+	/** Whether Location is beyond the world bounds; OutBox: the box it is outside of (MaxDistance's, or the levels'
+	 *  extent with its margin). */
+	bool BeyondWorld(UWorld* World, const FVector& Location, FBox& OutBox);
+	/** Adds the extent of each level not measured yet (and a World Partition's bounds, once) to LevelExtent. */
+	void MeasureLevels(UWorld* World);
 	void CheckPawns(UWorld* World, double GameTime, double WorldDelta);
 	void CheckGrowth(UWorld* World, double GameTime);
 	void CheckProperties(UWorld* World, double GameTime);
@@ -235,4 +245,9 @@ private:
 	TMap<TWeakObjectPtr<AActor>, FPawnTrack> Pawns;
 	TArray<TMap<FString, int32>> GrowthSamples;
 	TSet<FString> ProjectPackages;
+	/** What the world's levels span: their static and stationary actors (and a World Partition's bounds), measured
+	 *  as each level comes in, so a body flung away later is never part of it */
+	FBox LevelExtent = FBox(ForceInit);
+	TSet<TWeakObjectPtr<ULevel>> MeasuredLevels;
+	bool bPartitionMeasured = false;
 };

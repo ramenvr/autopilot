@@ -1,6 +1,9 @@
 #include "PlaytestInternal.h"
 
 #include "Components/ActorComponent.h"
+#include "Components/SceneComponent.h"
+#include "Engine/Engine.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Misc/App.h"
@@ -18,6 +21,7 @@
 #include "Runtime/Launch/Resources/Version.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
+#include "WorldPartition/WorldPartition.h"
 
 // ---------------------------------------------------------------------------------------------------
 // Log capture
@@ -179,6 +183,21 @@ void FPlaytestDetectors::Configure(const TSharedPtr<FJsonObject>& Args)
 	Args->TryGetNumberField(TEXT("growth_seconds"), GrowthSeconds);
 	Args->TryGetNumberField(TEXT("hud_every"), HudEvery);
 	Args->TryGetNumberField(TEXT("property_every"), PropertyEvery);
+	Args->TryGetNumberField(TEXT("max_distance"), MaxDistance);
+	const TArray<TSharedPtr<FJsonValue>>* Mute = nullptr;
+	if (Args->TryGetArrayField(TEXT("mute"), Mute))
+	{
+		// (the whole list each time: what is no longer in it is reported again)
+		Muted.Reset();
+		for (const TSharedPtr<FJsonValue>& Value : *Mute)
+		{
+			FString Name;
+			if (Value.IsValid() && Value->TryGetString(Name) && !Name.TrimStartAndEnd().IsEmpty())
+			{
+				Muted.Add(Name.TrimStartAndEnd());
+			}
+		}
+	}
 }
 
 void FPlaytestDetectors::Reset()
@@ -195,6 +214,9 @@ void FPlaytestDetectors::Reset()
 	Seen.Reset();
 	Pawns.Reset();
 	GrowthSamples.Reset();
+	LevelExtent = FBox(ForceInit);
+	MeasuredLevels.Reset();
+	bPartitionMeasured = false;
 	World.Reset();
 	SessionStartReal = FPlatformTime::Seconds();
 	LastGameTime = -1;
@@ -214,6 +236,10 @@ bool FPlaytestDetectors::IsProjectClass(const UClass* Class) const
 void FPlaytestDetectors::Report(const FString& Detector, const FString& Severity, const FString& Summary, const FString& Signature,
 	double GameTime, const AActor* Actor, const TSharedPtr<FJsonObject>& Details)
 {
+	if (Muted.Contains(Detector) || Muted.Contains(Signature))
+	{
+		return;  // the project said it isn't a bug (Not a bug, or its detectors.json)
+	}
 	int32& Count = Seen.FindOrAdd(Signature);
 	++Count;
 	if (Count != 1 && Count != 10 && Count != 100 && Count != 1000)
@@ -431,11 +457,89 @@ void FPlaytestDetectors::CheckActors(UWorld* InWorld, double GameTime)
 				FString::Printf(TEXT("%s is below the world's KillZ (%.0f)"), *ClassLabel(Actor), Settings->KillZ),
 				FString::Printf(TEXT("out_of_world:%s"), *ClassLabel(Actor)), GameTime, Actor);
 		}
-		else if (Location.GetAbsMax() > UE_OLD_HALF_WORLD_MAX)
+		else if (FBox Bounds(ForceInit); BeyondWorld(InWorld, Location, Bounds))
 		{
+			TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
+			Details->SetObjectField(TEXT("bounds_min"), Vec(Bounds.Min));
+			Details->SetObjectField(TEXT("bounds_max"), Vec(Bounds.Max));
 			Report(TEXT("out_of_world"), TEXT("warning"),
-				FString::Printf(TEXT("%s is beyond the world bounds (%.0f)"), *ClassLabel(Actor), Location.GetAbsMax()),
-				FString::Printf(TEXT("out_of_world:%s"), *ClassLabel(Actor)), GameTime, Actor);
+				FString::Printf(TEXT("%s is beyond the world bounds (%.0f units past them)"), *ClassLabel(Actor),
+					FMath::Sqrt(Bounds.ComputeSquaredDistanceToPoint(Location))),
+				FString::Printf(TEXT("out_of_world:%s"), *ClassLabel(Actor)), GameTime, Actor, Details);
+		}
+	}
+}
+
+bool FPlaytestDetectors::BeyondWorld(UWorld* InWorld, const FVector& Location, FBox& OutBox)
+{
+	const double Far = Location.GetAbsMax();
+	if (MaxDistance > 0)
+	{
+		OutBox = FBox(FVector(-MaxDistance), FVector(MaxDistance));
+		return Far > MaxDistance;
+	}
+	// Within UE4's world size nothing is: most levels never measure. Past it, the levels' own extent decides, with a
+	// margin of half its size (a world built at a large scale puts its actors far from the origin, and they belong)
+	if (Far <= UE_OLD_HALF_WORLD_MAX)
+	{
+		return false;
+	}
+	MeasureLevels(InWorld);
+	if (!LevelExtent.IsValid)
+	{
+		OutBox = FBox(FVector(-HALF_WORLD_MAX), FVector(HALF_WORLD_MAX));  // (the engine's own limit)
+		return Far > HALF_WORLD_MAX;
+	}
+	OutBox = LevelExtent.ExpandBy(FMath::Max(LevelExtent.GetSize().GetMax() * 0.5, UE_OLD_HALF_WORLD_MAX * 0.5));
+	return !OutBox.IsInsideOrOn(Location);
+}
+
+void FPlaytestDetectors::MeasureLevels(UWorld* InWorld)
+{
+#if WITH_EDITOR
+	if (!bPartitionMeasured)
+	{
+		// A World Partition's bounds take in its cells that aren't loaded. Only the editor's world has them (its
+		// editor hash; a play-in-editor world's copy hasn't), so it is read from the editor's world of the same map
+		bPartitionMeasured = true;
+		const FString Map = UWorld::RemovePIEPrefix(InWorld->GetOutermost()->GetName());
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* Editor = Context.WorldType == EWorldType::Editor ? Context.World() : nullptr;
+			UWorldPartition* Partition = Editor ? Editor->GetWorldPartition() : nullptr;
+			if (Partition && Partition->EditorHash && Editor->GetOutermost()->GetName() == Map)
+			{
+				const FBox Bounds = Partition->GetRuntimeWorldBounds();
+				if (Bounds.IsValid)
+				{
+					LevelExtent += Bounds;
+				}
+			}
+		}
+	}
+#endif
+	for (ULevel* Level : InWorld->GetLevels())
+	{
+		if (!Level || MeasuredLevels.Contains(Level))
+		{
+			continue;
+		}
+		MeasuredLevels.Add(Level);
+		for (const AActor* Actor : Level->Actors)
+		{
+			const USceneComponent* Root = IsValid(Actor) ? Actor->GetRootComponent() : nullptr;
+			if (!Root || Root->Mobility == EComponentMobility::Movable || !Actor->IsLevelBoundsRelevant())
+			{
+				continue;  // (what moves may already be somewhere it shouldn't be)
+			}
+			const FVector At = Root->GetComponentLocation();
+			if (!FMath::IsFinite(At.X) || !FMath::IsFinite(At.Y) || !FMath::IsFinite(At.Z) || At.GetAbsMax() > HALF_WORLD_MAX)
+			{
+				continue;
+			}
+			// What collides (the ground, a landscape, walls), not a sky dome's or a fog's reach: else where it stands
+			const FBox Solid = Actor->GetComponentsBoundingBox(false);
+			LevelExtent += Solid.IsValid && Solid.GetExtent().GetMax() < HALF_WORLD_MAX ? Solid : FBox(At, At);
 		}
 	}
 }

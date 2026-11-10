@@ -8,6 +8,8 @@ A project's memory is the folder Autopilot works in, ``memory/<project>/``:
 - ``codex/``: the text copy of the game's code (rebuilt as needed, so it doesn't count as memory)
 - ``.codex-seen.json.gz``: the codex the last run worked from, as paths and hashes only (autopilot/codex.py), so the
   next run is told what changed since
+- ``detectors.json``: the project's settings for the game's detectors, its muted findings above all
+  (autopilot/detectors.py): the user's, not learned, so a reset keeps it
 
 The Autopilot tab shows a summary of it (the ``memory_state`` frame, docs/protocol.md); its Reset memory
 button forgets what runs learned (``forget``): the files are moved aside, never deleted.
@@ -72,7 +74,8 @@ def learned(folder, before, run_id):
     return {"updated": notes or lib or harness, "notes": notes, "lib": lib}
 
 
-# What forget() moves aside: what runs learned. The codex (it comes from the project's files) and project.json stay.
+# What forget() moves aside: what runs learned. The codex (it comes from the project's files), project.json and
+# detectors.json (the user's own settings: what the project muted) stay.
 LEARNED = ("notes.md", "lib.py", "runs")
 # Where a reset puts them: beside the projects' folders, <memory>/.reset-backup/<project>/<time>/. Autopilot never reads
 # it
