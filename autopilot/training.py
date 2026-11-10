@@ -38,7 +38,7 @@ import threading
 
 import requests
 
-from . import bridge, dataset, retry
+from . import bridge, dataset, memory, retry
 
 DEFAULT_URL = "https://app.tryaura.dev/api/autopilot/training"  # AUTOPILOT_TRAINING_URL names another
 # {"schema": 2, "runs": {run id: its prefix in storage}, "codex": [paths stored] (by an Autopilot that sent the codex)}
@@ -205,10 +205,7 @@ def _read(folder):
 
 
 def _write(folder, state):
-    tmp = os.path.join(folder, SYNC_FILE + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"schema": dataset.SCHEMA, **state}, f)
-    os.replace(tmp, os.path.join(folder, SYNC_FILE))
+    memory.write_atomic(os.path.join(folder, SYNC_FILE), json.dumps({"schema": dataset.SCHEMA, **state}))
 
 
 def upload(folder, project, aura_run=None, http=None, sleep=None):

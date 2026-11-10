@@ -23,6 +23,9 @@ def test_the_mute_list_is_kept_clean_and_the_other_settings_pass_as_written(tmp_
     data = json.loads((tmp_path / "Game" / "detectors.json").read_text())
     assert data["mute"] == ["out_of_world:BP_Tree", "hitch", "teleport:BP_Board"]
     assert data["note"] == "the trees are far out" and data["max_distance"] == 5e6  # (the user's own keys stay)
+    # (written in one step, as every memory file: nothing but the file is left in the folder, and a sync skips nothing)
+    assert sorted(p.name for p in (tmp_path / "Game").iterdir()) == ["detectors.json"]
+    assert list(memory.files(folder)) == ["detectors.json"]
 
 
 def test_a_broken_file_leaves_the_detectors_as_they_are(tmp_path, capsys):

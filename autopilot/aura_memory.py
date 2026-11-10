@@ -49,6 +49,15 @@ machine's install token (autopilot/training.py), in Aura's storage for this inst
 stored copy too. Each copy has its own SYNC_FILE, and a reset is passed on to each copy once (RESET_MARK says which have
 it), whether it was pressed in this folder or reached it through the other copy.
 
+So one folder serves both kinds of runs, from any agent service on this machine that uses it: what a run through Aura
+learned is sent to this install's copy at the next shared run with the user's own keys, and what such a run learned to
+the team's at the next run through Aura. A file removed from one copy leaves the folder, and so is then removed from the
+other copy as a removal made here, never sent back to it (a reset is passed on as a reset, above); a file changed in
+both places is kept under a name made from its content, so one conflict never makes two. A sync holds the
+project's lock (memory.locked) from its first listing to its SYNC_FILE, so two syncs of one folder (one agent service
+saving a run while the next starts, or two agent services) never interleave; one that waits for the other longer than
+memory.LOCK_WAIT_SECONDS is skipped, like a sync that failed, and the next one catches up.
+
 A save or a restore that fails for a reason that passes (the network, Aura or the storage busy or down:
 autopilot/retry.py) is tried again at once, after short waits that double from RETRY_SECONDS (both happen while the run
 starts or ends); one refused (a quota, a bad token) is reported as below.
@@ -79,7 +88,8 @@ SYNC_VERSION = 2  # a sync file with no version: an older Autopilot's, whose MD5
 RESET_ID = ".memory-reset-id"  # stored, never in a folder: names the last reset, for the folders that haven't seen it
 NOTES = "notes.md"  # the one file merged line by line
 # (project.json: where the project is on this machine; .training-sync.json: what shared run data was sent)
-LOCAL_ONLY = ("project.json", SYNC_FILE, INSTALL_SYNC_FILE, ".training-sync.json", memory.RESET_MARK, RESET_ID)
+LOCAL_ONLY = ("project.json", SYNC_FILE, INSTALL_SYNC_FILE, ".training-sync.json", memory.RESET_MARK, RESET_ID,
+              memory.LOCK)
 TELEMETRY = "telemetry"  # a run's shared data (autopilot/telemetry.py): sent by autopilot/training.py, never synced
 MEDIA = "media"  # a run's recording when its data isn't shared (autopilot/media.py): this machine's only
 CODEX = "codex"  # the game's code as text (autopilot/codex.py): this machine's only, rebuilt by every run
@@ -182,8 +192,10 @@ class MemorySync:
     SYNC_FILE, and what a reset mark lists once the reset reached it."""
 
     def __init__(self, url, run_token, http=None, say=None, project=None, copy="aura", sync_file=SYNC_FILE,
-                 sleep=None):
+                 sleep=None, lock_wait=None):
         self.sleep = sleep  # (between tries: retry.pause unless given)
+        # (how long a sync waits for another one on the same folder to finish: memory.locked)
+        self.lock_wait = memory.LOCK_WAIT_SECONDS if lock_wait is None else lock_wait
         self.url = url
         self.headers = {"Authorization": f"Bearer {run_token}"}
         self.http = http or requests.Session()
@@ -270,7 +282,8 @@ class MemorySync:
             return fetched
 
         try:
-            return retry.call(attempt, "fetching the memory from Aura", RETRY_SECONDS, sleep=self.sleep)
+            with memory.locked(folder, "fetching the memory", wait=self.lock_wait):
+                return retry.call(attempt, "fetching the memory from Aura", RETRY_SECONDS, sleep=self.sleep)
         except Exception as e:  # noqa: BLE001 - the run goes on from the memory this machine has
             print(f"Couldn't restore the memory from Aura (the next run tries again): {type(e).__name__}: {e}")
             return 0
@@ -386,8 +399,7 @@ class MemorySync:
         moved = int(self._call({"op": "reset"}).get("moved") or 0)
         reset_id = self._send_reset_id()
         mark["passed"] = [*(mark.get("passed") or []), self.copy]
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(mark, f)
+        memory.write_atomic(path, json.dumps(mark))
         _write_baseline(folder, {}, self.sync_file, reset=reset_id)  # (nothing learned is synced now)
         print(f"Memory reset with Aura too: {moved} files kept aside")
         return moved
@@ -412,8 +424,7 @@ class MemorySync:
             mark = None
         mark = mark if isinstance(mark, dict) else {"at": time.time()}
         mark["passed"] = [*(mark.get("passed") or []), self.copy]
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(mark, f)
+        memory.write_atomic(path, json.dumps(mark))
 
     def save(self, folder):
         """Send what changed since Aura's copy and remove what this machine removed. Returns (sent, removed); never
@@ -421,7 +432,9 @@ class MemorySync:
         if not os.path.isdir(folder):
             return 0, 0
         try:
-            return retry.call(lambda: self._save(folder), "saving the memory to Aura", RETRY_SECONDS, sleep=self.sleep)
+            with memory.locked(folder, "saving the memory", wait=self.lock_wait):
+                return retry.call(lambda: self._save(folder), "saving the memory to Aura", RETRY_SECONDS,
+                                  sleep=self.sleep)
         except Exception as e:  # noqa: BLE001 - the local copy stays, and the next run sends it
             print(f"Couldn't save the memory to Aura: {type(e).__name__}: {e}")
             return 0, 0
@@ -507,11 +520,8 @@ def _read_baseline(folder, sync_file=SYNC_FILE):
 
 def _write_baseline(folder, files, sync_file=SYNC_FILE, reset=None):
     """What this folder and the stored copy agree on; `reset`: the MD5 of the RESET_ID it has seen."""
-    os.makedirs(folder, exist_ok=True)
-    tmp = os.path.join(folder, sync_file + ".tmp")
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump({"version": SYNC_VERSION, "files": files, **({"reset": reset} if reset else {})}, f)
-    os.replace(tmp, os.path.join(folder, sync_file))
+    memory.write_atomic(os.path.join(folder, sync_file),
+                        json.dumps({"version": SYNC_VERSION, "files": files, **({"reset": reset} if reset else {})}))
 
 
 def install_memory(project, say=None):
