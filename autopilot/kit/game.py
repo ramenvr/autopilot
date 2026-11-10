@@ -187,8 +187,12 @@ class Game:
         """{"Pitch", "Yaw", "Roll"}"""
         return self.engine.rot(self, actor)
 
-    def bounds(self, actor):
-        """(center, half extent) of the actor's box."""
+    def bounds(self, actor, visual=False):
+        """(center, half extent) of the box square to the world round the actor's collision (what blocks or overlaps:
+        trigger volumes too; its whole drawn box when nothing of it collides). visual=True: the box round everything
+        drawn of it. A box: a big, turned, hollow or ring-shaped thing is far from solid all through it (see trace)."""
+        if visual:
+            return self.engine.bounds(self, actor, visual=True)
         return self.engine.bounds(self, actor)
 
     def velocity(self, actor):

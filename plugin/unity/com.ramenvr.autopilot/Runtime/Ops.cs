@@ -465,8 +465,32 @@ namespace Autopilot.Playtest
             return box;
         }
 
+        /// <summary>The world box round an object's enabled colliders, triggers too (what of it blocks or overlaps:
+        /// Unreal's colliding components), or null when it has none.</summary>
+        public static Bounds? CollisionBoundsOf(GameObject go)
+        {
+            Bounds? box = null;
+#if AUTOPILOT_PHYSICS
+            foreach (var c in go.GetComponentsInChildren<Collider>())
+            {
+                if (!c.enabled) continue;
+                if (box == null) box = c.bounds;
+                else
+                {
+                    var b = box.Value;
+                    b.Encapsulate(c.bounds);
+                    box = b;
+                }
+            }
+#endif
+            return box;
+        }
+
         static Dictionary<string, object> Transforms(Dictionary<string, object> args)
         {
+            // center/extent: the box round the object's colliders (round what is drawn of it when nothing collides);
+            // "visual": the box round what is drawn of it and its colliders
+            var visual = Json.Bool(args, "visual", false);
             var result = new Dictionary<string, object>();
             foreach (var o in Json.List(args, "objects") ?? new List<object>())
             {
@@ -486,7 +510,7 @@ namespace Autopilot.Playtest
                 if (cc != null && cc.enabled) velocity = cc.velocity;
                 else if (rb != null) velocity = rb.linearVelocity;
 #endif
-                var box = BoundsOf(go);
+                var box = (visual ? null : CollisionBoundsOf(go)) ?? BoundsOf(go);
                 result[path] = new Dictionary<string, object>
                 {
                     ["location"] = Frame.Point(t.position),
