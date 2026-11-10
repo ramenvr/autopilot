@@ -605,6 +605,36 @@ def test_findings_reach_the_trace(game, tmp_path):
     assert "no errors logged" not in runtime.summarize(str(tmp_path / "t.jsonl"), error_log=True)
 
 
+def test_summary_groups_a_detectors_many_kinds_and_cuts_none(tmp_path):
+    """One out_of_world per class of actor doesn't push the other detectors out: findings are told by detector, a
+    detector with more than three kinds under one heading, every kind and every detector there, nothing cut; the
+    plugin's own count (its 10th, 100th... time) is the count when it said."""
+    path = tmp_path / "t.jsonl"
+    events = [{"kind": "start", "harness": "h", "goal": "g", "t": 0.0}]
+    for i in range(33):
+        events.append({"kind": "finding", "t": 1.0 + i, "detector": "out_of_world", "severity": "warning",
+                       "signature": f"out_of_world:Prop{i}", "summary": f"Prop{i} is below the world's KillZ (-1000)"})
+    events.append({"kind": "finding", "t": 40.0, "detector": "out_of_world", "severity": "warning",
+                   "signature": "out_of_world:Prop0", "summary": "Prop0 is below the world's KillZ (-1000)",
+                   "count": 10})
+    long = "Skater moved 5000 units in one frame (at most 1000 expected) right after the agent pressed R " + "x" * 300
+    events.append({"kind": "finding", "t": 41.0, "detector": "teleport", "severity": "info",
+                   "signature": "teleport:Skater after R", "summary": long})
+    for i in range(20):
+        events.append({"kind": "finding", "t": 42.0, "detector": f"det{i}", "severity": "warning",
+                       "signature": f"det{i}:x", "summary": f"detector {i} saw something"})
+    events.append({"kind": "game_log", "t": 43.0, "verbosity": "Error", "category": "LogScript",
+                   "message": "Accessed None " + "y" * 400})
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    text = runtime.summarize(str(path))
+    assert "  out_of_world: 33 kinds, x42" in text
+    assert "    x10 t=" in text and "Prop0 is below" in text
+    assert all(f"Prop{i} is below" in text for i in range(33))
+    assert all(f"detector {i} saw something" in text for i in range(20))
+    assert long in text and "y" * 400 in text
+    assert text.index("out_of_world: 33 kinds") < text.index("Prop5 is below")
+
+
 def test_summary_says_when_no_errors_were_logged(game, tmp_path):
     rt = runtime.Runtime(game, CrateHarness(), str(tmp_path / "t.jsonl"), client=FakeJev("open_crate"),
                          max_seconds=20)
