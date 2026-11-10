@@ -2,8 +2,8 @@
 patch tools are off, autopilot/agents/codex.py): read, list and search the game's folder and the kit; write and edit
 only this run's folder, notes.md and lib.py. The same rules as OpenCode's permissions (autopilot/agents/opencode.py).
 
-Paths are relative to the game's folder, with / (absolute ones too, but only inside what may be read). Files named
-*.env or *.env.* are never read.
+Paths are relative to the game's folder, with / (absolute ones too, but only inside what may be read); autopilot/KIT.md
+and autopilot/kit/... are the kit's, unless the game's folder has them. Files named *.env or *.env.* are never read.
 """
 
 import os
@@ -30,15 +30,16 @@ FILE_TOOL_SPECS = (
                                        "limit": {"type": "integer"}, "column": {"type": "integer"}},
       "required": ["path"]}),
     ("list_files",
-     "List the files of this game's folder whose paths match a glob, e.g. `codex/**/*.txt` or `runs/*/report.json` "
-     "(** matches any folders), the newest first. When they are too many for one answer, all of them are written to "
-     "a file of this run, and the answer says where.",
+     "List the files of this game's folder (or of the kit: autopilot/kit/...) whose paths match a glob, e.g. "
+     "`codex/**/*.txt`, `runs/*/report.json` or `codex/**/*.{cpp,h}` (** matches any folders, {a,b} either), the "
+     "newest first. When they are too many for one answer, all of them are written to a file of this run, and the "
+     "answer says where.",
      {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
     ("search",
      "Search this game's folder (or `path`, a folder or file in it) for a regular expression: matching lines, whole, "
-     "as path:line: text. `glob` limits it to some files, e.g. `codex/**/*.txt`. When the matches are too long for "
-     "one answer, all of them are written to a file of this run, and the answer gives how many there are in which "
-     "files, that file, and where they are (path:line).",
+     "as path:line: text. `glob` limits it to some files, e.g. `codex/**/*.txt` or `**/*.{cpp,h}`. When the matches "
+     "are too long for one answer, all of them are written to a file of this run, and the answer gives how many there "
+     "are in which files, that file, and where they are (path:line).",
      {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"},
                                        "glob": {"type": "string"}}, "required": ["pattern"]}),
     ("write_file",
@@ -83,8 +84,22 @@ class FileTools:
         if not isinstance(path, str) or not path.strip():
             raise Refused("No path given.")
         path = path.strip().replace("\\", "/")
-        full = path if os.path.isabs(path) else os.path.join(self.root, *path.split("/"))
-        return os.path.realpath(full)
+        if os.path.isabs(path):
+            return os.path.realpath(path)
+        full = os.path.realpath(os.path.join(self.root, *path.split("/")))
+        kit = self._kit(path)
+        return kit if kit and not os.path.exists(full) else full
+
+    def _kit(self, path):
+        """The kit's own path for a relative autopilot/KIT.md or autopilot/kit[/...] (as the tools' texts name them),
+        else None."""
+        parts = [p for p in path.split("/") if p not in ("", ".")]
+        if len(parts) < 2 or parts[0].lower() != "autopilot":
+            return None
+        if (len(parts) == 2 and parts[1].lower() == "kit.md") or parts[1].lower() == "kit":
+            name = "KIT.md" if parts[1].lower() == "kit.md" else "kit"
+            return os.path.realpath(os.path.join(self.package, name, *parts[2:]))
+        return None
 
     def readable(self, path):
         full = self._path(path)
@@ -110,7 +125,18 @@ class FileTools:
     def rel(self, full):
         if _inside(full, self.root):
             return os.path.relpath(full, self.root).replace(os.sep, "/")
+        if _inside(full, self.package):  # (the kit, named as the tools' texts name it: autopilot/kit/...)
+            return "autopilot/" + os.path.relpath(full, self.package).replace(os.sep, "/")
         return full.replace(os.sep, "/")
+
+    def _existing(self, path):
+        """readable(path), refused when nothing is there (rather than a search of nothing finding no match)."""
+        full = self.readable(path)
+        if not os.path.exists(full):
+            raise Refused(f"{path}: there is no such file or folder in this game's folder"
+                          + (" or the kit." if self._kit(path.strip().replace("\\", "/")) else
+                             " (paths are relative to it; the kit is autopilot/KIT.md and autopilot/kit/)."))
+        return full
 
     # -- the tools ---------------------------------------------------------------------------------------------
 
@@ -129,7 +155,7 @@ class FileTools:
         """Lines offset.. (at most limit), numbered and whole, in at most whole.ANSWER_CHARS characters; the answer
         ends saying where to read on. A line longer than a call holds comes in parts (column: where in the offset
         line to start, from 1)."""
-        full = self.readable(path)
+        full = self._existing(path)
         if os.path.isdir(full):
             return f"{path} is a folder: use list_files."
         offset, limit = max(1, int(offset)), max(1, min(int(limit), MAX_READ_LINES))
@@ -174,7 +200,11 @@ class FileTools:
 
     def list_files(self, pattern):
         rx = _glob_rx(pattern)
-        found = [full for full in self._walk(self.root) if rx.fullmatch(self.rel(full))]
+        files = list(self._walk(self.root))
+        if _bare(pattern).lower().startswith("autopilot/") and not os.path.isdir(os.path.join(self.root, "autopilot")):
+            # (the kit's files, when the pattern names them and the game's folder has no autopilot/ of its own)
+            files += [os.path.join(self.package, "KIT.md"), *self._walk(os.path.join(self.package, "kit"))]
+        found = [full for full in files if rx.fullmatch(self.rel(full))]
         if not found:
             return f"No files match {pattern}."
         found.sort(key=lambda p: os.path.getmtime(p), reverse=True)
@@ -188,7 +218,7 @@ class FileTools:
         """Every matching line, whole. Too long for one answer: all of them go to runs/<id>/whole/search-<k>.txt, and
         the answer gives their count, how many each file has, that file and the locations (path:line) that fit."""
         rx = re.compile(pattern)
-        top = self.readable(path)
+        top = self._existing(path)
         files = [top] if os.path.isfile(top) else self._walk(top)
         only = _glob_rx(glob) if glob else None
         asked_kept = bool(KEPT.match(self.rel(top) + "/"))
@@ -265,12 +295,21 @@ class FileTools:
         return self.write_file(path, text.replace(old, new) if replace_all else text.replace(old, new, 1))
 
 
-def _glob_rx(pattern):
-    """A glob as a regular expression over /-separated relative paths: * within a folder, ** across folders."""
+def _bare(pattern):
+    """A glob with / and without a leading ./"""
     pattern = str(pattern).strip().replace("\\", "/")
     while pattern.startswith("./"):
         pattern = pattern[2:]
-    pattern = pattern or "**"
+    return pattern
+
+
+def _glob_rx(pattern):
+    """A glob as a regular expression over /-separated relative paths: * within a folder, ** across folders, ? one
+    character, {a,b} either (nested too; a { without its } is itself)."""
+    return re.compile(_glob_body(_bare(pattern) or "**"), re.I if os.name == "nt" else 0)
+
+
+def _glob_body(pattern):
     out, i = "", 0
     while i < len(pattern):
         if pattern.startswith("**/", i):
@@ -281,7 +320,26 @@ def _glob_rx(pattern):
             out, i = out + "[^/]*", i + 1
         elif pattern[i] == "?":
             out, i = out + "[^/]", i + 1
+        elif pattern[i] == "{" and (alternatives := _braces(pattern, i)):
+            options, i = alternatives
+            out += "(?:" + "|".join(_glob_body(o) for o in options) + ")"
         else:
             out, i = out + re.escape(pattern[i]), i + 1
-    return re.compile(out, re.I if os.name == "nt" else 0)
+    return out
 
+
+def _braces(pattern, start):
+    """The {a,b,...} at start: (its alternatives, the index after its }), or None when it has no } or no comma."""
+    depth, options, last = 0, [], start + 1
+    for i in range(start, len(pattern)):
+        if pattern[i] == "{":
+            depth += 1
+        elif pattern[i] == "}":
+            depth -= 1
+            if depth == 0:
+                options.append(pattern[last:i])
+                return (options, i + 1) if len(options) > 1 else None
+        elif pattern[i] == "," and depth == 1:
+            options.append(pattern[last:i])
+            last = i + 1
+    return None

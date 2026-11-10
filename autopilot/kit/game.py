@@ -36,7 +36,7 @@ class Game:
         # The game's engine (autopilot.engines, from the plugin's hello): how things are found and read
         self.engine = engine or for_link(link)
         self.codex = codex  # autopilot.codex.Codex or None: resolves class names
-        self.log = log or (lambda kind, **fields: None)  # the runtime's trace
+        self.log = log or (lambda kind, /, **fields: None)  # the runtime's trace
         self._pool = futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="game")
         self._ctx, self._ctx_at = None, 0.0
         self._classes = {}
