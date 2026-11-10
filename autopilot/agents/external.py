@@ -180,7 +180,8 @@ class Desk:
             return text_result("No run has started: call start_run first.", error=True)
         if self.ended is not None:
             if tool == "frames":  # (a describer still looking: the frames the run kept, read only)
-                return self._frames_after(args)
+                refused = unknown_args(tool, args, (FRAMES_SPEC,))
+                return text_result(refused, error=True) if refused else self._frames_after(args)
             if tool == "describe_frames":
                 return text_result(f"This run has ended ({self.ended}): describe_frames, Autopilot's own describer, "
                                    "worked only while it went. Its frames are still there: a describer subagent of "

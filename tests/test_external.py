@@ -155,8 +155,8 @@ def test_an_argument_name_a_tool_doesnt_take_is_refused_never_dropped(started):
     assert refused["isError"] and desk.session.report is None
     assert "unknown argument(s) notes; it takes outcome, summary, evidence, findings, visual" in text_of(refused)
     assert "it takes no arguments" in text_of(front.call("snapshot", {"what": "all"}))
-    restart = front.call("restart_level", {"episode": 2})
-    assert "episode is an argument of describe_frames and frames" in text_of(restart)
+    restarted = text_of(front.call("restart_level", {"episode": 2}))
+    assert "episode is an argument of describe_frames and report and frames" in restarted
     assert "unknown argument(s) file" in text_of(front.call("read_file", {"file": "runs/r1/REQUEST.md"}))
     assert "unknown argument(s) timeout" in text_of(front.call("wait", {"timeout": 5}))
     # And at the agent service, for a front older than the check
@@ -319,6 +319,9 @@ def test_frames_are_handed_over_as_images_and_count_for_a_visual_report(tmp_path
     assert "at t= 1.00, " in text_of(after) and "(run r1-abcd)" in text_of(after) and "has ended" in text_of(after)
     assert "min used]" not in text_of(after)  # (no clock: the run is over)
     assert len(session.events) == events and not said
+    # (an argument frames doesn't take is refused then too, as while the run went)
+    wrong = desk.call("frames", {"episode": 1, "frames": 3})
+    assert wrong["isError"] and "frames: unknown argument(s) frames" in text_of(wrong)
     assert desk.call("snapshot", {})["isError"] and "has ended" in text_of(desk.call("snapshot", {}))
     gone = desk.call("describe_frames", {"questions": ["What moves?"]})
     assert gone["isError"] and "`frames`" in text_of(gone)
