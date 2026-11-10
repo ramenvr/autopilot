@@ -9,7 +9,8 @@ What it removes, in this order:
 2. the Aura sign-in Autopilot kept (aura-session.json), ended on Aura's side too;
 3. the settings folder (Autopilot/ in the user settings folder: autopilot/bridge.py brain_file): the first-run setup's
    choices, the keys, the logs, this machine's upload id, and what Autopilot learned about each game (memory/, unless
-   --keep-memory);
+   --keep-memory). memory/ is this computer's one memory: the Aura app's Autopilot uses it too, so its runs start
+   over as well, and what it has open there while it runs is left and named (in use);
 4. with the memory, what each game's plugin keeps in its project about the runs (the run history, report files,
    recordings and the codex export: autopilot/engines, plugin_data), for every project memory/ says where it is, and
    Claude Code's logs of those runs in its cache folder (agent_logs); and each of those games' memory kept with Aura
@@ -603,7 +604,8 @@ def main(args):
         else:
             print("  What Autopilot learned about your games, for all projects on this computer across all editors, "
                   "here and kept with Aura: memories are shared by your team, so deleting them deletes them for your "
-                  "entire team (keep them: --keep-memory).")
+                  "entire team, and the Aura app's Autopilot on this computer uses the same memory, so it starts over "
+                  "too (keep them: --keep-memory).")
         print("Shared runs not sent yet are sent first; shared run data already sent stays where it is.")
         if not sys.stdin or not sys.stdin.isatty():
             print("Run it with --yes to remove without asking.")
