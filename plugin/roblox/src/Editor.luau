@@ -78,6 +78,7 @@ function Editor.new(plugin: Plugin)
 	self.session = nil -- the brain's session for this connection: the pipe's key
 	self.runActive = false
 	self.brainSteers = false
+	self.brainSteerModes = false -- ("steer_mode": a steer says whether it is a hint or a redirect)
 	self.brainAccount = false
 	self.brainSetup = false
 	self.privacyReady = false
@@ -260,11 +261,22 @@ function Editor:canSteer(): boolean
 	return self:connected() and self.runActive and self.brainSteers
 end
 
-function Editor:steer(text: string)
+-- And whether a steer can be a hint (play goes on) or a redirect (the attempt playing now ends): "steer_mode".
+function Editor:canRedirect(): boolean
+	return self:canSteer() and self.brainSteerModes
+end
+
+-- What the user types to steer the run going now: a hint, or with redirect a redirect. The frame says its "mode" only
+-- to an agent service with "steer_mode" (an older one gets it as before).
+function Editor:steer(text: string, redirect: boolean?)
 	local said = string.gsub(text, "^%s+", "")
 	said = string.gsub(said, "%s+$", "")
 	if self:canSteer() and said ~= "" then
-		self:_send({ type = "steer", text = said })
+		local frame: any = { type = "steer", text = said }
+		if self:canRedirect() then
+			frame.mode = if redirect then "redirect" else "hint"
+		end
+		self:_send(frame)
 	end
 end
 
@@ -347,9 +359,12 @@ function Editor:_onBrainFrame(frame: any)
 		self.link.role = tostring(frame.role or "")
 		self.connection += 1
 		self.brainSteers, self.brainAccount, self.brainSetup = false, false, false
+		self.brainSteerModes = false
 		for _, f in ipairs(frame.features or {}) do
 			if f == "steer" then
 				self.brainSteers = true
+			elseif f == "steer_mode" then
+				self.brainSteerModes = true
 			elseif f == "account" then
 				self.brainAccount = true
 			elseif f == "setup" then

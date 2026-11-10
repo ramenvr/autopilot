@@ -160,9 +160,14 @@ def test_steer_alert_restart_and_report_events(game, tmp_path, monkeypatch):
     harness_file(s.run_dir)
     s.run_harness(15)
     s.steering.add("go to the lantern")
-    s.steer_note()  # (from here play goes on from where the game is: no more restarts)
-    assert frames[-1]["kind"] == "steer" and frames[-1]["text"] == "Steered: go to the lantern"
-    assert "steered: ['go to the lantern']" in log_of(s)
+    s.steer_note()
+    assert frames[-1]["kind"] == "steer" and frames[-1]["text"] == "Hint: go to the lantern"
+    assert "steered (hint): ['go to the lantern']" in log_of(s)
+    s.steering.add("stop and climb the tower", "redirect")
+    s.steer_note()
+    assert frames[-1]["kind"] == "steer" and frames[-1]["text"] == "Redirected: stop and climb the tower"
+    assert "steered (redirect): ['stop and climb the tower']" in log_of(s)
+    assert s.restart_level().startswith("Restarted")  # (a steer doesn't lock restarts: the agent decides)
     s.alert("The recording could not be analyzed.")
     s.alert("The recording could not be analyzed.")  # (once)
     assert [f["kind"] for f in frames].count("alert") == 1 and frames[-1]["text"].startswith("The recording")

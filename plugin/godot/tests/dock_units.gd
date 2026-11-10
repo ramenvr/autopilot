@@ -1655,6 +1655,8 @@ func steer_checks() -> void:
 	box.text_submitted.emit(box.text)
 	check("steer: sent at Rollout (Enter)", fake.sent.size() == 1 and fake.sent[0].get("type") == "steer"
 		and fake.sent[0].get("text") == "go round the rocks to the left first" and box.text == "", fake.sent)
+	check("steer: no mode for an agent service without steer_mode, one Steer button", not fake.sent[0].has("mode")
+		and btn.text == "Steer" and not dock._l_redirect_btn.visible, fake.sent)
 	box.text = "now jump on the hay bale"
 	dock._on_status("Looking at the results")
 	dock._on_steer()
@@ -1676,6 +1678,51 @@ func steer_checks() -> void:
 	bridge.run_active = false
 	dock._on_result({"kind": "goal", "reached": true}, "")
 	check("steer: the run done, not steerable", not r.steerable())
+	box.text = ""
+	dock.active = null
+	steer_mode_checks()
+
+
+## With an agent service that tells hints from redirects ("steer_mode"): the box says play goes on, Send sends a hint
+## (Enter too), Redirect beside it a redirect (the attempt playing now ends), both only at the Rollout.
+func steer_mode_checks() -> void:
+	var fake := FakeLink.new()
+	bridge.link = fake
+	welcome(["steer", "steer_mode", "usage", "account"])
+	_plain_view()
+	var r = dock._new_run("goal", "Reach the gate")
+	bridge.run_active = true
+	dock._render()
+	var box: LineEdit = dock._l_steer
+	var send: Button = dock._l_steer_btn
+	var redirect: Button = dock._l_redirect_btn
+	dock._on_status("Writing the harness")
+	check("steer modes: the box's words, Send and Redirect shown, both off before the game plays",
+		box.placeholder_text == "Add a hint; Autopilot keeps playing" and send.text == "Send" and redirect.visible
+		and send.disabled and redirect.disabled and redirect.tooltip_text == "You can steer once the game is playing",
+		[box.placeholder_text, send.text, redirect.visible, send.disabled, redirect.disabled])
+	box.text = "the gate opens with the lever"
+	redirect.pressed.emit()
+	check("steer modes: nothing sent before Rollout", not "steer" in fake.types() and box.text == "the gate opens with the lever")
+	dock._on_status("Trying the harness (run 1)")
+	check("steer modes: at Rollout both on, with what each does", not send.disabled and not redirect.disabled
+		and send.tooltip_text == "Autopilot reads your hint and keeps playing"
+		and redirect.tooltip_text == "End the current attempt now and play on from your words", [send.tooltip_text, redirect.tooltip_text])
+	box.text_submitted.emit(box.text)
+	check("steer modes: Enter sends a hint", fake.sent.size() == 1 and fake.sent[0].get("mode") == "hint"
+		and fake.sent[0].get("text") == "the gate opens with the lever" and box.text == "" and r.feed[-1].get("text") == "You: the gate opens with the lever",
+		[fake.sent, r.feed[-1]])
+	box.text = "forget the gate, climb the tower"
+	redirect.pressed.emit()
+	check("steer modes: Redirect sends a redirect", fake.sent.size() == 2 and fake.sent[1].get("mode") == "redirect"
+		and fake.sent[1].get("text") == "forget the gate, climb the tower" and box.text == ""
+		and r.feed[-1].get("text") == "You (redirect): forget the gate, climb the tower", [fake.sent, r.feed[-1]])
+	box.text = "look left"
+	send.pressed.emit()
+	check("steer modes: Send sends a hint", fake.sent.size() == 3 and fake.sent[2].get("mode") == "hint", fake.sent)
+	bridge.run_active = false
+	dock._on_result({"kind": "goal", "reached": true}, "")
+	bridge.brain_steer_modes = false
 	box.text = ""
 	dock.active = null
 
@@ -2802,6 +2849,7 @@ func _make_run(live: bool):
 func _run_view(t: String, live: bool) -> void:
 	_plain_view()
 	_online()
+	bridge.brain_steer_modes = false  # (one Steer button, unless the state asks for steer modes)
 	if _lay_run == null or _lay_run.live() != live:
 		_lay_run = _make_run(live)
 	dock.shown = _lay_run
@@ -2884,6 +2932,11 @@ func _layout_states() -> Array:
 			dock._render()],
 		["live: playing again", func():
 			_run_view("main", true)
+			_lay_run.stage = 4
+			dock._render()],
+		["live: playing, a hint or a redirect (steer_mode)", func():
+			_run_view("main", true)
+			bridge.brain_steer_modes = true
 			_lay_run.stage = 4
 			dock._render()],
 		["feed", func(): _run_view("feed", true)],
@@ -3031,7 +3084,7 @@ func _steer_fits() -> Array:
 		return []
 	_steers_checked += 1
 	var bad := []
-	var hint := "Send a steering prompt to Autopilot"
+	var hint := "Add a hint; Autopilot keeps playing" if bridge.can_redirect() else "Send a steering prompt to Autopilot"
 	var room: float = e.size.x - e.get_theme_stylebox("normal").get_minimum_size().x
 	var text_w: float = e.get_theme_font("font").get_string_size(hint, HORIZONTAL_ALIGNMENT_LEFT, -1,
 		e.get_theme_font_size("font_size")).x

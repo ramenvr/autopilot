@@ -1977,7 +1977,7 @@ def test_wait_counts_real_time_while_the_game_clock_stands_still():
     assert game.t - g0 >= 0.95 and time.monotonic() - t0 < 1.6, (game.t - g0, time.monotonic() - t0)
 
 
-def test_steering_ends_the_episode_and_play_goes_on_without_a_restart(game, tmp_path, monkeypatch):
+def _crate_session(game, tmp_path, monkeypatch):
     from autopilot import codex
     from autopilot.agents import session
 
@@ -1987,20 +1987,80 @@ def test_steering_ends_the_episode_and_play_goes_on_without_a_restart(game, tmp_
     (tmp_path / "fake" / "runs" / "r1" / "harness.py").write_text(
         "from autopilot.kit import *\n\n" + src[src.index("class CrateHarness"):src.index("@pytest.fixture")],
         encoding="utf-8")
-    threading.Timer(1.0, lambda: s.steering.add("go and open the crate now")).start()
+    return s
+
+
+def test_a_redirect_ends_the_episode_and_the_agent_still_decides_on_restarts(game, tmp_path, monkeypatch):
+    s = _crate_session(game, tmp_path, monkeypatch)
+    threading.Timer(1.0, lambda: s.steering.add("go and open the crate now", "redirect")).start()
     t0 = time.monotonic()
     out = s.run_harness(30)
-    assert time.monotonic() - t0 < 6, "the episode didn't end when the user steered"
-    assert "the user steered" in out
+    assert time.monotonic() - t0 < 6, "the episode didn't end when the user redirected"
+    assert "the user redirected" in out
     note = s.steer_note()
-    assert "go and open the crate now" in note and s.steered and not s.steering.pending()
+    assert "go and open the crate now" in note and "stopped the episode to redirect" in note
+    assert "prefer run_harness restart=False" in note and s.steered and not s.steering.pending()
     sessions = []
     real = game.link.request
     monkeypatch.setattr(game.link, "request", lambda op, args=None, timeout=None: (
         sessions.append(args) if op == "session" else None) or real(op, args, timeout))
-    out = s.run_harness(5, restart=True)
-    assert "Not restarted" in out and not sessions  # (the game went on from where it was)
-    assert s.restart_level().startswith("Not restarted") and not sessions
+    out = s.run_harness(5, restart=False)  # (on from where the game was, as the note suggests)
+    assert "Not restarted" not in out and not [a for a in sessions if a.get("action") == "restart"]
+    out = s.run_harness(5, restart=True)  # (the agent may still restart: a steer no longer locks it)
+    assert "Not restarted" not in out and [a for a in sessions if a.get("action") == "restart"]
+    assert s.restart_level().startswith("Restarted")
+
+
+def test_a_hint_lets_the_episode_play_on_and_reaches_the_agent_after_it(game, tmp_path, monkeypatch):
+    s = _crate_session(game, tmp_path, monkeypatch)
+    threading.Timer(1.0, lambda: s.steering.add("the crate opens with E")).start()  # (no mode: a hint)
+    t0 = time.monotonic()
+    out = s.run_harness(4)
+    assert time.monotonic() - t0 >= 3.5, "a hint ended the episode"
+    assert "the user redirected" not in out and s.steering.pending()  # (kept for the next tool result)
+    note = s.steer_note()
+    assert '"the crate opens with E"' in note and "adds a hint (play went on)" in note
+    assert "prefer run_harness restart=False" in note and not s.steering.pending()
+
+
+def test_steering_keeps_each_words_mode_and_an_unknown_mode_is_a_hint():
+    from autopilot.agents.session import Steering
+
+    st = Steering()
+    assert not st.add("   ") and not st.pending()
+    st.add("look left", "sideways")  # (an unknown mode: a hint)
+    assert st.pending() and not st.redirecting()
+    st.add("x" * 5000, "redirect")  # (kept whole)
+    assert st.redirecting()
+    assert st.take() == [("look left", "hint"), ("x" * 5000, "redirect")] and not st.pending()
+
+
+def test_a_redirect_with_hints_quotes_each_as_what_it_was(game, tmp_path, monkeypatch):
+    s = _crate_session(game, tmp_path, monkeypatch)
+    s.steering.add("the key is under the mat")
+    s.steering.add("forget the crate, open the door", "redirect")
+    note = s.steer_note()
+    assert '"the key is under the mat" (a hint)' in note and '"forget the crate, open the door"\n' in note
+    assert "stopped the episode to redirect" in note
+
+
+def test_the_sandbox_watch_ends_the_episode_only_for_a_redirect(game, tmp_path, monkeypatch):
+    from autopilot.agents import session
+
+    s = _crate_session(game, tmp_path, monkeypatch)
+    ended = []
+    s.sandbox = types.SimpleNamespace(end_episode=lambda: ended.append(1))
+    done = session.watch_steering(s)
+    try:
+        s.steering.add("try jumping")
+        time.sleep(0.6)
+        assert not ended  # (a hint: the episode plays on)
+        s.steering.add("stop, go back to the start", "redirect")
+        time.sleep(0.6)
+        assert ended
+    finally:
+        done.set()
+        s.sandbox = None
 
 
 def test_an_exploration_plays_only_its_minutes_then_its_run_ends(game, tmp_path, monkeypatch):

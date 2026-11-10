@@ -270,8 +270,12 @@ private:
 	FReply OnStop();
 	/** Stop pressed for the run picked, and the agent service said it is stopping (Stopping…). */
 	bool IsStopping() const;
-	FReply OnSteer();
+	/** Sends the steer box's words: a hint (play goes on), or with bRedirect a redirect (the attempt playing now ends). */
+	FReply OnSteer(bool bRedirect = false);
 	FReply OnSteerKey(const FGeometry& Geometry, const FKeyEvent& Key);
+	/** The agent service tells hints from redirects (FAutopilotSession::CanRedirect; TestSteerModes: the layout test's):
+	 *  the box's hint says play goes on, its button is Send, and Redirect shows beside it. */
+	bool HasSteerModes() const;
 	/** The steer row shows: the run picked is going, connected, and the agent service takes steer (TestSteers: the layout test's). */
 	bool IsSteerShown() const;
 	/** And it can be used now: that run is at its Rollout (FAutopilotSession::SteersAt). Else greyed, its words kept. */
@@ -297,10 +301,13 @@ private:
 	TSharedPtr<SMultiLineEditableTextBox> PromptBox;  // the composer's words: a claim, an exploration or a goal
 	TSharedPtr<SMultiLineEditableTextBox> SteerBox;   // the user's words to the live run
 	TSharedPtr<SWidget> SteerButton;
+	TSharedPtr<SWidget> RedirectButton;  // (beside Send when the agent service tells hints from redirects)
 	TSharedPtr<SMultiLineEditableTextBox> FeedSteerBox;  // (the Feed tab's: the same words)
 	TSharedPtr<SWidget> FeedSteerButton;
+	TSharedPtr<SWidget> FeedRedirectButton;
 	int32 PreviousRunId = INDEX_NONE;  // the run shown before New run (the connect card's Back to the last run)
 	TOptional<bool> TestSteers;  // (the layout test's: whether the agent service takes steer, in place of the connection's)
+	TOptional<bool> TestSteerModes;  // (and whether it tells hints from redirects)
 	TArray<TSharedPtr<STextBlock>> StageLabels;       // the stage bar's names, as last made
 	TArray<TSharedPtr<SWidget>> AttemptSquares;       // the Live page's harness-attempt squares (1..24), as last made
 	TSharedPtr<SWidget> AttemptCount;                  // the attempts' count, after the squares

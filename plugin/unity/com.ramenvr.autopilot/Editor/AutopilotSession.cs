@@ -671,16 +671,29 @@ namespace Autopilot.Playtest.Editor
             }
         }
 
-        /// <summary>The user's words to the live run, sent and shown in its feed; false when it can't be steered now
-        /// (not going, the agent service doesn't take steering, or the run isn't at the Rollout).</summary>
-        public static bool SteerRun(string text)
+        /// <summary>And whether the agent service tells a hint (play goes on) from a redirect (the attempt playing now
+        /// ends): its "steer_mode" feature. Without it the steer row has one Steer button, as before.</summary>
+        public static bool CanRedirect
+        {
+            get
+            {
+                var client = EditorHost.Client;
+                return client != null && client.CanRedirect && Current != null;
+            }
+        }
+
+        /// <summary>The user's words to the live run (a hint, or with redirect a redirect), sent and shown in its feed;
+        /// false when it can't be steered now (not going, the agent service doesn't take steering, or the run isn't at
+        /// the Rollout).</summary>
+        public static bool SteerRun(string text, bool redirect = false)
         {
             var said = (text ?? "").Trim();
             var live = Current;
             var client = EditorHost.Client;
             if (said.Length == 0 || live == null || client == null || !client.CanSteer || !AutopilotRun.SteerableAt(live)) return false;
-            client.SteerRun(said);
-            live.AddLine(new AutopilotFeedLine { At = AutopilotText.UnixNow - live.Started, Text = "You: " + said, Kind = "you" });
+            redirect = redirect && client.CanRedirect;
+            client.SteerRun(said, redirect);
+            live.AddLine(new AutopilotFeedLine { At = AutopilotText.UnixNow - live.Started, Text = (redirect ? "You (redirect): " : "You: ") + said, Kind = "you" });
             if (live.Feed.Count > MaxFeed) live.Feed.RemoveRange(0, live.Feed.Count - MaxFeed);
             Touch(live);
             return true;

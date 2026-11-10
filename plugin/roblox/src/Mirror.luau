@@ -133,9 +133,10 @@ function Mirror.act(editor: any, dock: any, f: any)
 	elseif a == "steer" then
 		local text = tostring(f.text or "")
 		if editor:canSteer() and text ~= "" then
-			editor:steer(text)
+			local redirect = f.redirect == true and editor:canRedirect()
+			editor:steer(text, redirect)
 			if dock.active then
-				dock.active:addFeed("You: " .. text, "status")
+				dock.active:addFeed((if redirect then "You (redirect): " else "You: ") .. text, "status")
 				dock:liveChanged()
 			end
 		end
@@ -171,6 +172,7 @@ function MirrorEditor.new(mirror: any): any
 	self.brainAccount = false
 	self.brainSetup = false
 	self.brainSteers = false
+	self.brainSteerModes = false
 	self.sides = {}
 	return self
 end
@@ -210,6 +212,7 @@ function MirrorEditor:applyState(s: any)
 	self.brainAccount = s.brainAccount == true
 	self.brainSetup = s.brainSetup == true
 	self.brainSteers = s.brainSteers == true
+	self.brainSteerModes = s.brainSteerModes == true
 	if type(s.memory) == "table" then
 		self.memory = { known = s.memory.known == true, runs = tonumber(s.memory.runs) or 0, notes = s.memory.notes == true,
 			lib = s.memory.lib == true }
@@ -256,8 +259,12 @@ function MirrorEditor:canSteer(): boolean
 	return self:connected() and self.runActive and self.brainSteers
 end
 
-function MirrorEditor:steer(text: string)
-	self:_act({ action = "steer", text = text })
+function MirrorEditor:canRedirect(): boolean
+	return self:canSteer() and self.brainSteerModes
+end
+
+function MirrorEditor:steer(text: string, redirect: boolean?)
+	self:_act({ action = "steer", text = text, redirect = redirect == true })
 end
 
 function MirrorEditor:feedback(signature: string, verdict: string)

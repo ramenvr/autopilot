@@ -172,6 +172,48 @@ namespace Autopilot.Playtest.Tests
                 Assert.IsFalse(AutopilotSession.SteerRun("go right"), "Report: refused");
                 Assert.AreEqual(1, Steers(), "nothing sent outside the Rollout");
                 Assert.AreEqual(feed + 1, run.Feed.Count, "(only the status line: no You line)");
+                var steer = Json.ParseObject(sent.Last(s => Json.Str(Json.ParseObject(s), "type") == "steer"));
+                Assert.IsFalse(steer.ContainsKey("mode"), "no mode for an agent service without steer_mode");
+                Assert.IsFalse(AutopilotSession.CanRedirect);
+            }
+            finally
+            {
+                client.Disconnect();
+                client.TestWire = null;
+                EditorHost.TestClient(clientWas);
+                var cur = AutopilotSession.Current;
+                if (cur != null && added.Contains(cur)) cur.Ended = AutopilotText.UnixNow;
+            }
+        }
+
+        [Test]
+        public void ASteerIsAHintOrARedirectWhenTheServiceTellsThemApart()
+        {
+            var clientWas = EditorHost.Client;
+            var sent = new List<string>();
+            var client = new PlaytestClient(EditorHost.Instance) { TestWire = s => sent.Add(s) };
+            try
+            {
+                client.TestConnected(true);
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"modes\", \"features\": [\"steer\", \"steer_mode\"]}");
+                EditorHost.TestClient(client);
+                Assert.IsTrue(AutopilotSession.Start(new Dictionary<string, object> { ["kind"] = "goal", ["goal"] = "Reach the gate" }, "Reach the gate"));
+                var run = AutopilotSession.Current;
+                added.Add(run);
+                Assert.IsTrue(AutopilotSession.CanRedirect);
+                List<Dictionary<string, object>> Steers() => sent.Select(Json.ParseObject).Where(f => Json.Str(f, "type") == "steer").ToList();
+
+                AutopilotSession.TestStatus("Trying the harness (run 1)");
+                Assert.IsTrue(AutopilotSession.SteerRun("the lever opens the gate"), "a hint");
+                Assert.AreEqual("hint", Json.Str(Steers().Last(), "mode"));
+                Assert.AreEqual("You: the lever opens the gate", run.Feed.Last().Text);
+                Assert.IsTrue(AutopilotSession.SteerRun("forget the gate, climb the tower", true), "a redirect");
+                Assert.AreEqual("redirect", Json.Str(Steers().Last(), "mode"));
+                Assert.AreEqual("forget the gate, climb the tower", Json.Str(Steers().Last(), "text"));
+                Assert.AreEqual("You (redirect): forget the gate, climb the tower", run.Feed.Last().Text);
+                AutopilotSession.TestStatus("Looking at the results");
+                Assert.IsFalse(AutopilotSession.SteerRun("go right", true), "Process result: refused");
+                Assert.AreEqual(2, Steers().Count);
             }
             finally
             {

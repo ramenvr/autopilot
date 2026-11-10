@@ -34,7 +34,9 @@ and revise the harness, and report what play showed. Its tools come from the `au
 
 Use Autopilot's own file tools for the game's folder (paths relative to it), never your own, and don't change the
 user's project or the game's files: the game is acted on only through play, with Autopilot's tools. The user can
-watch the run in the Autopilot tab, stop it there, or steer it (what they type there reaches you with your next tool
-result).
+watch the run in the Autopilot tab, stop it there, or steer it; what they type there reaches you with your next tool
+result. A hint leaves the episode playing; a redirect ended the episode there and changes the request from then on.
+After either, they likely want play to go on from where it is: prefer run_harness restart=False unless what they said
+asks for a restart.
 
 <!-- autopilot connect: Autopilot's skill -->

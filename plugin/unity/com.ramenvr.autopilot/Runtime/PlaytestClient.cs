@@ -120,8 +120,12 @@ namespace Autopilot.Playtest
         public bool RunActive { get; private set; }
         // The welcome's features had "steer": the brain takes the user's words to the run going now
         public bool BrainSteers { get; private set; }
+        // And "steer_mode": a steer says whether it is a hint (play goes on) or a redirect (the attempt playing now ends)
+        public bool BrainSteerModes { get; private set; }
         // Whether the user can steer the run going now
         public bool CanSteer => Connected && RunActive && BrainSteers;
+        // And whether a steer can be a hint or a redirect
+        public bool CanRedirect => CanSteer && BrainSteerModes;
         /// <summary>Whether a run is using the game now: one is going, or the brain asked the game something in the
         /// last <see cref="RunUseSeconds"/> (a run this side didn't hear start). Only then do the detectors and the log
         /// events work: when nothing would read what they find, the user's own play sessions don't pay for them.</summary>
@@ -777,12 +781,15 @@ namespace Autopilot.Playtest
             Status("Stopping…");
         }
 
-        // What the user types to steer the run going now: it goes on from where the game is (see docs/protocol.md)
-        public void SteerRun(string text)
+        // What the user types to steer the run going now: a hint (play goes on), or with redirect a redirect that ends the
+        // attempt playing now. The frame says its "mode" only to an agent service with "steer_mode" (see docs/protocol.md)
+        public void SteerRun(string text, bool redirect = false)
         {
             var said = (text ?? "").Trim();
             if (!CanSteer || said.Length == 0) return;
-            Send(new Dictionary<string, object> { ["type"] = "steer", ["text"] = said });
+            var frame = new Dictionary<string, object> { ["type"] = "steer", ["text"] = said };
+            if (CanRedirect) frame["mode"] = redirect ? "redirect" : "hint";
+            Send(frame);
         }
 
         public void SendFeedback(string signature, string verdict, string note = "")
@@ -999,6 +1006,7 @@ namespace Autopilot.Playtest
                         SetConnected(false);
                         BrainRole = null;
                         BrainSteers = false;
+                        BrainSteerModes = false;
                         BrainHasAccount = false;
                         // (a sign-in going on stays: the agent service keeps it, and it's asked again on the next
                         // connection, ResumeSignIn)
@@ -1083,12 +1091,14 @@ namespace Autopilot.Playtest
                 case "welcome":
                     BrainRole = Json.Str(m, "role");
                     BrainSteers = false;
+                    BrainSteerModes = false;
                     BrainHasAccount = false;
                     var features = Json.List(m, "features");
                     if (features != null)
                         foreach (var feature in features)
                         {
                             BrainSteers |= feature is string name && name == "steer";
+                            BrainSteerModes |= feature is string mode && mode == "steer_mode";
                             BrainHasAccount |= feature is string acc && acc == "account";
                         }
                     var session = Json.Str(m, "session");

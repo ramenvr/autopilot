@@ -56,6 +56,8 @@ var inspect := true
 var link = Link.new()
 var run_active := false
 var brain_steers := false  # the welcome's features had "steer": the user can steer a run while it plays
+## And "steer_mode": a steer says whether it is a hint (play goes on) or a redirect (the attempt playing now ends).
+var brain_steer_modes := false
 ## What the agent server remembers about this project (its memory_state on this connection; memory_known false until
 ## one came, and again once the connection closes): the earlier runs it keeps, whether it has notes and code of its own
 ## for the game. Nothing at all: the next run is cold.
@@ -210,12 +212,21 @@ func can_steer() -> bool:
 	return is_connected_to_brain() and run_active and brain_steers
 
 
-## What the user types to steer the run going now: it goes on from where the game is (see docs/protocol.md).
-func steer_run(text: String) -> void:
+## And whether a steer can be a hint or a redirect (the welcome's features had "steer_mode").
+func can_redirect() -> bool:
+	return can_steer() and brain_steer_modes
+
+
+## What the user types to steer the run going now: a hint (play goes on), or with redirect a redirect that ends the
+## attempt playing now. The frame says its "mode" only to an agent server with "steer_mode" (see docs/protocol.md).
+func steer_run(text: String, redirect := false) -> void:
 	var said := text.strip_edges()
 	if not can_steer() or said == "":
 		return
-	link.send({"type": "steer", "text": said})
+	var frame := {"type": "steer", "text": said}
+	if can_redirect():
+		frame["mode"] = "redirect" if redirect else "hint"
+	link.send(frame)
 
 
 func clear_memory() -> void:
@@ -357,6 +368,7 @@ func _on_brain_frame(frame: Dictionary) -> void:
 			link.role = str(frame.get("role", ""))
 			connection_serial += 1
 			brain_steers = false
+			brain_steer_modes = false
 			brain_account = false
 			_record = null
 			var features = frame.get("features", [])
@@ -364,6 +376,8 @@ func _on_brain_frame(frame: Dictionary) -> void:
 				for feature in features:
 					if typeof(feature) == TYPE_STRING and feature == "steer":
 						brain_steers = true
+					elif typeof(feature) == TYPE_STRING and feature == "steer_mode":
+						brain_steer_modes = true
 					elif typeof(feature) == TYPE_STRING and feature == "account":
 						brain_account = true
 			if link.role == "cli":
