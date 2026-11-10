@@ -415,7 +415,7 @@ plays at its normal speed:
 | `long_fall` | a character keeps falling for 8 s |
 | `hitch` | a frame takes longer than 0.75 s |
 | `actor_growth` | the number of actors of one class keeps growing for 2 minutes |
-| `clamp` | a project property is outside its `ClampMin`/`ClampMax` |
+| `clamp` | a project property (declared in the project's C++, Blueprints or AngelScript) is outside its `ClampMin`/`ClampMax` |
 | `over_max` | a project number `X` is above its sibling `MaxX` |
 | `hud_fraction` | on-screen text shows `a/b` with `a > b` (e.g. a bag showing `6/5`) |
 
