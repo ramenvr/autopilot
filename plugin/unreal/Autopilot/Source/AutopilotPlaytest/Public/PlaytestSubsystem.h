@@ -79,6 +79,9 @@ public:
 	bool HasMemoryLib() const { return bMemoryLib; }
 	/** Whether the user can steer the run going now (the agent service takes `steer`: its welcome said so). */
 	bool CanSteer() const { return bConnected && bRunActive && bBrainSteers; }
+	/** And whether a steer can say how it lands (its welcome's features had "steer_mode"): a hint that lets play go on
+	 *  (the default), or a redirect that ends the attempt playing now. Without it a steer goes without a mode. */
+	bool CanRedirect() const { return CanSteer() && bBrainSteerModes; }
 	/**
 	 * Why there is no connection, in words for the user ("" when connected or not trying): the agent service
 	 * refused it (its `error` frame's message), or it can't be reached.
@@ -135,8 +138,9 @@ public:
 	/** Whether the Blueprint export (the AutopilotCodex commandlet, run for the brain's `codex_manifest`) is running,
 	 *  and how far it is: files exported, of all it exports (both 0 until it has counted them). */
 	bool GetExportProgress(int32& OutDone, int32& OutTotal) const;
-	/** What the user types to steer the run going now: it goes on from where the game is (see docs/protocol.md). */
-	void SteerRun(const FString& Text);
+	/** What the user types to steer the run going now: a hint (play goes on), or with bRedirect a redirect that ends the
+	 *  attempt playing now (sent as the frame's "mode" only when CanRedirect; see docs/protocol.md). */
+	void SteerRun(const FString& Text, bool bRedirect = false);
 	/** The run the connection dropped under is still played by the agent service (its events came again once
 	 *  connected): it counts as going again, so Stop and Steer work. */
 	void ResumeRun() { if (bConnected) { bRunActive = true; } }
@@ -297,6 +301,7 @@ private:
 	double LastRequestAt = -1.0;  // when the agent service's last request came (FPlatformTime::Seconds; -1: none on this connection)
 	bool bDetectorsOn = false;  // the detectors worked on the last tick (IsRunUsingGame): they start afresh when on again
 	bool bBrainSteers = false;  // the welcome's features had "steer"
+	bool bBrainSteerModes = false;  // and "steer_mode": a steer says "hint" or "redirect"
 	bool bBrainAccount = false;  // ... "account"
 	bool bWelcomedHere = false;  // a welcome came on this connection
 	FPlaytestAccount Account;

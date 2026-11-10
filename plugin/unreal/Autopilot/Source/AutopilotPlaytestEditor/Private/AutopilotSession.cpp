@@ -1271,7 +1271,13 @@ bool FAutopilotSession::CanSteer() const
 	return B && B->CanSteer() && GetActiveRun().IsValid();
 }
 
-bool FAutopilotSession::SteerRun(const FString& Text)
+bool FAutopilotSession::CanRedirect() const
+{
+	const UPlaytestSubsystem* B = UPlaytestSubsystem::Get();
+	return B && B->CanRedirect() && GetActiveRun().IsValid();
+}
+
+bool FAutopilotSession::SteerRun(const FString& Text, bool bRedirect)
 {
 	const FString Said = Text.TrimStartAndEnd();
 	TSharedPtr<FAutopilotRun> Live = GetActiveRun();
@@ -1280,8 +1286,9 @@ bool FAutopilotSession::SteerRun(const FString& Text)
 	{
 		return false;
 	}
-	B->SteerRun(Said);
-	AddLine(*Live, FString::Printf(TEXT("You: %s"), *Said), EAutopilotFeedKind::Notice);
+	bRedirect = bRedirect && B->CanRedirect();
+	B->SteerRun(Said, bRedirect);
+	AddLine(*Live, FString::Printf(bRedirect ? TEXT("You (redirect): %s") : TEXT("You: %s"), *Said), EAutopilotFeedKind::Notice);
 	Changed(Live.Get());
 	return true;
 }

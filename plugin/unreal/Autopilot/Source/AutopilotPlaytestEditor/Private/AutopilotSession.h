@@ -261,9 +261,12 @@ public:
 	void StopRun();
 	/** The user's words to the live run, sent and shown in its feed; false when the run can't be steered now (not
 	 *  connected, the agent service doesn't take steer, or the run isn't at its Rollout: SteersAt). */
-	bool SteerRun(const FString& Text);
+	bool SteerRun(const FString& Text, bool bRedirect = false);
 	/** A run is going, connected, and the agent service takes steer (whatever its stage: the steer row shows). */
 	bool CanSteer() const;
+	/** And the agent service tells a hint (play goes on) from a redirect (the attempt playing now ends): its
+	 *  "steer_mode" feature. Without it the steer row has one Steer button, as before. */
+	bool CanRedirect() const;
 	/** Whether a run takes the user's words now: only while it plays an episode (its Rollout), never before, after
 	 *  or once done. The one rule for the steer box, its button and SteerRun. */
 	static bool SteersAt(const FAutopilotRun& Run) { return !Run.bDone && Run.Stage == EAutopilotStage::Rollout; }

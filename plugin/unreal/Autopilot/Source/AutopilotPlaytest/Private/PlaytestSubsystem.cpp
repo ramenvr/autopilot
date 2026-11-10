@@ -667,7 +667,7 @@ bool UPlaytestSubsystem::GetExportProgress(int32& OutDone, int32& OutTotal) cons
 	return PlaytestCodex::ExportProgress(OutDone, OutTotal);
 }
 
-void UPlaytestSubsystem::SteerRun(const FString& Text)
+void UPlaytestSubsystem::SteerRun(const FString& Text, bool bRedirect)
 {
 	const FString Said = Text.TrimStartAndEnd();
 	if (!CanSteer() || Said.IsEmpty())
@@ -677,6 +677,10 @@ void UPlaytestSubsystem::SteerRun(const FString& Text)
 	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
 	Message->SetStringField(TEXT("type"), TEXT("steer"));
 	Message->SetStringField(TEXT("text"), Said);
+	if (CanRedirect())  // (an agent service without "steer_mode" gets the frame as before)
+	{
+		Message->SetStringField(TEXT("mode"), bRedirect ? TEXT("redirect") : TEXT("hint"));
+	}
 	Send(Message);
 }
 
@@ -854,6 +858,7 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 		bWelcomed = true;
 		bWelcomedHere = true;
 		bBrainSteers = false;
+		bBrainSteerModes = false;
 		bBrainAccount = false;
 		const TArray<TSharedPtr<FJsonValue>>* BrainFeatures = nullptr;
 		if (Message->TryGetArrayField(TEXT("features"), BrainFeatures) && BrainFeatures)
@@ -862,6 +867,7 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 			{
 				const FString Name = Feature.IsValid() && Feature->Type == EJson::String ? Feature->AsString() : FString();
 				bBrainSteers |= Name == TEXT("steer");
+				bBrainSteerModes |= Name == TEXT("steer_mode");
 				bBrainAccount |= Name == TEXT("account");
 			}
 		}

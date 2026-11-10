@@ -2363,17 +2363,36 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSteerBar(bool bFeed)
 {
 	// Steer: the user's words to the run while it plays (it goes on from where the game is). Shown while the run goes, on
 	// the Live page and under the Feed tab (one box: what is typed in one shows in the other). Words can be typed at any
-	// stage and are kept; Steer only at the Rollout; both locked while it stops
-	TSharedRef<SButton> Steer = AutopilotUI::Button(LOCTEXT("Steer", "Steer"), "Autopilot.Button.Primary", FOnClicked::CreateSP(this, &SPlaytestPanel::OnSteer),
-		TAttribute<bool>::CreateLambda([this]()
+	// stage and are kept; sent only at the Rollout; both locked while it stops. With an agent service that tells hints
+	// from redirects (HasSteerModes) the words go as a hint (Send, Enter: play goes on) or a redirect (Redirect: the
+	// attempt playing now ends); else as one steer (Steer), as before
+	const TAttribute<bool> CanSend = TAttribute<bool>::CreateLambda([this]()
+	{
+		return IsSteerOpen() && !IsStopping() && !SteerText().TrimStartAndEnd().IsEmpty();
+	});
+	TSharedRef<SButton> Steer = AutopilotUI::Button(TAttribute<FText>::CreateLambda([this]()
 		{
-			return IsSteerOpen() && !IsStopping() && !SteerText().TrimStartAndEnd().IsEmpty();
-		}));
+			return HasSteerModes() ? LOCTEXT("SteerSend", "Send") : LOCTEXT("Steer", "Steer");
+		}),
+		"Autopilot.Button.Primary", FOnClicked::CreateSP(this, &SPlaytestPanel::OnSteer, false), CanSend);
 	Steer->SetToolTip(AutopilotUI::Tip(TAttribute<FText>::CreateLambda([this]()
 	{
-		return IsSteerOpen() || IsStopping() ? FText::GetEmpty() : LOCTEXT("SteerLater", "You can steer once the game is playing");
+		return IsStopping() ? FText::GetEmpty()
+			: !IsSteerOpen() ? LOCTEXT("SteerLater", "You can steer once the game is playing")
+			: HasSteerModes() ? LOCTEXT("SteerSendTip", "Autopilot reads your hint and keeps playing")
+			: FText::GetEmpty();
 	})));
 	(bFeed ? FeedSteerButton : SteerButton) = Steer;
+	TSharedRef<SButton> Redirect = AutopilotUI::Button(LOCTEXT("SteerRedirect", "Redirect"), "Autopilot.Button",
+		FOnClicked::CreateSP(this, &SPlaytestPanel::OnSteer, true), CanSend);
+	Redirect->SetToolTip(AutopilotUI::Tip(TAttribute<FText>::CreateLambda([this]()
+	{
+		return IsStopping() ? FText::GetEmpty()
+			: !IsSteerOpen() ? LOCTEXT("SteerLater", "You can steer once the game is playing")
+			: LOCTEXT("SteerRedirectTip", "End the current attempt now and play on from your words");
+	})));
+	Redirect->SetVisibility(TAttribute<EVisibility>::CreateLambda([this]() { return HasSteerModes() ? EVisibility::Visible : EVisibility::Collapsed; }));
+	(bFeed ? FeedRedirectButton : RedirectButton) = Redirect;
 	TSharedPtr<SMultiLineEditableTextBox>& Box = bFeed ? FeedSteerBox : SteerBox;
 	return SNew(SVerticalBox)
 		.Visibility_Lambda([this]() { return IsSteerShown() ? EVisibility::Visible : EVisibility::Collapsed; })
@@ -2395,7 +2414,11 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSteerBar(bool bFeed)
 					[
 						SAssignNew(Box, SMultiLineEditableTextBox)
 						.Style(&FAutopilotStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("Autopilot.TextBox.Bare"))
-						.HintText(LOCTEXT("SteerHint", "Send a steering prompt to Autopilot"))
+						.HintText_Lambda([this]()
+						{
+							return HasSteerModes() ? LOCTEXT("SteerHintModes", "Add a hint; Autopilot keeps playing")
+								: LOCTEXT("SteerHint", "Send a steering prompt to Autopilot");
+						})
 						.IsEnabled_Lambda([this]() { return !IsStopping(); })
 						.AutoWrapText(true)
 						.OnKeyDownHandler(this, &SPlaytestPanel::OnSteerKey)
@@ -2413,6 +2436,10 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSteerBar(bool bFeed)
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 				[
 					Steer
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.f, 0.f, 0.f, 0.f)
+				[
+					Redirect
 				])
 			]
 		];
@@ -2759,10 +2786,15 @@ bool SPlaytestPanel::IsSteerOpen() const
 	return IsSteerShown() && FAutopilotSession::SteersAt(*Selected());
 }
 
-FReply SPlaytestPanel::OnSteer()
+bool SPlaytestPanel::HasSteerModes() const
+{
+	return TestSteerModes.IsSet() ? TestSteerModes.GetValue() : FAutopilotSession::Get().CanRedirect();
+}
+
+FReply SPlaytestPanel::OnSteer(bool bRedirect)
 {
 	// (outside the Rollout nothing is sent and the words stay for the next one: SteerRun refuses too)
-	if (IsSteerOpen() && !IsStopping() && FAutopilotSession::Get().SteerRun(SteerText()))
+	if (IsSteerOpen() && !IsStopping() && FAutopilotSession::Get().SteerRun(SteerText(), bRedirect))
 	{
 		for (const TSharedPtr<SMultiLineEditableTextBox>& Box : { SteerBox, FeedSteerBox })
 		{
