@@ -293,6 +293,30 @@ def test_level(g):
     check("transforms: extent is half the orb's size", abs(e["Z"] - 25) < 0.5 and 24.5 <= e["X"] <= 35.5 and 24.5 <= e["Y"] <= 35.5, e)
     gate = g.req("transforms", {"objects": ["Main:/Gate"]})["objects"]["Main:/Gate"]
     check("transforms: gate box from its children (center)", close_to(gate["center"], {"X": 60, "Y": 600, "Z": 125}, 1), gate["center"])
+    # (the orb's box is its collider's, 25 cm every way however it spins; with visual its mesh's too)
+    vis = g.req("transforms", {"objects": [orbs[0]], "visual": True})["objects"][orbs[0]]["extent"]
+    check("transforms: the collider's box, the drawn one with visual", all(abs(e[k] - 25) < 0.5 for k in "XYZ")
+          and 24.5 <= vis["X"] <= 35.5, f"{e} {vis}")
+
+    # trace: the world's collision from any point (the player's own capsule and the orbs' triggers never hit)
+    check("hello: trace", "trace" in g.link.hello.get("features", []), g.link.hello.get("features"))
+    t = g.req("trace", {"start": {"X": 0, "Y": 0, "Z": 108}, "end": {"X": -3000, "Y": 0, "Z": 108}})
+    hit = t.get("hit") or {}
+    check("trace: a line back meets the wall's face", t.get("channel") == "body" and hit.get("actor") == "Main:/Level/Wall"
+          and close_to(hit["location"], {"X": -775, "Y": 0, "Z": 108}, 1) and close_to(hit["normal"], {"X": 1, "Y": 0, "Z": 0}, 0.01)
+          and abs(hit["distance"] - 775) < 1 and hit["inside"] is False, t)
+    t = g.req("trace", {"start": {"X": 0, "Y": 0, "Z": 108}, "end": {"X": -3000, "Y": 0, "Z": 108}, "radius": 50})
+    hit = t.get("hit") or {}
+    check("trace: a ball stops its radius short, touching the face", hit.get("actor") == "Main:/Level/Wall"
+          and close_to(hit["location"], {"X": -725, "Y": 0, "Z": 108}, 2) and close_to(hit["point"], {"X": -775, "Y": 0, "Z": 108}, 2), t)
+    t = g.req("trace", {"start": {"X": 500, "Y": 0, "Z": 300}, "end": {"X": 500, "Y": 0, "Z": -100}, "channel": "sight"})
+    hit = t.get("hit") or {}
+    check("trace: down through an orb's trigger onto the ground", t.get("channel") == "sight"
+          and hit.get("actor") == "Main:/Level/Ground" and close_to(hit["point"], {"X": 500, "Y": 0, "Z": 0}, 1), t)
+    t = g.req("trace", {"start": {"X": 0, "Y": 0, "Z": 108}, "end": {"X": 3000, "Y": 0, "Z": 108}})
+    check("trace: nothing ahead (the orbs are triggers)", t.get("hit") is None, t)
+    t = g.req("trace", {"start": {"X": -800, "Y": 0, "Z": 150}, "end": {"X": -800, "Y": 300, "Z": 150}, "radius": 10})
+    check("trace: a ball that starts in the wall is inside it", (t.get("hit") or {}).get("inside") is True, t)
 
     # rotation: kit yaw = euler y, kit pitch = -euler x
     g.set("Main:/Level/Block", "eulerAngles", {"x": 20, "y": 30, "z": 0})

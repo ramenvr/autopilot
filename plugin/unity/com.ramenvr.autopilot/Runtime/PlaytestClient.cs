@@ -636,6 +636,17 @@ namespace Autopilot.Playtest
             MainThread.Post(() => SendOrHoldText(text));
         }
 
+        /// <summary>The hello's features: `trace` with 3D physics, `media` when the capture code is compiled in.</summary>
+        static List<object> Features()
+        {
+            var features = new List<object> { "timed_hold", "pointer", "levels" };
+#if AUTOPILOT_PHYSICS
+            features.Add("trace");
+#endif
+            if (Media.Compiled) features.Add("media");
+            return features;
+        }
+
         void SendHello()
         {
             var hello = new Dictionary<string, object>
@@ -649,7 +660,7 @@ namespace Autopilot.Playtest
                 ["host"] = Host.HostName,
                 ["input"] = Hands.Capabilities(),
                 // what this plugin does beyond the protocol's first version: the brain falls back for one without them
-                ["features"] = Media.Compiled ? new List<object> { "timed_hold", "pointer", "levels", "media" } : new List<object> { "timed_hold", "pointer", "levels" },
+                ["features"] = Features(),
                 // whether the user shares runs' data (preferences.json's share_data; -PlaytestShare overrides it)
                 ["share"] = Preferences.Share(),
             };

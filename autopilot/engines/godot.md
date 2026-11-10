@@ -100,3 +100,7 @@
   Engine.time_scale, set every frame from the frame before's wall time, and the frame rate capped at fps); `fixed: False`
   puts both back. `context`'s `net` says how the game is networked (`standalone`, `listen_server`, `dedicated_server`,
   `client`); a client's `pause` pauses only its own copy (its answer says why).
+- **Boxes and traces**: `game.bounds(path)` (3D) is the box round the node's enabled collision shapes (an Area's too),
+  or round what is drawn of it when it has none; `visual=True`: round what is drawn. `game.trace` asks the 3D physics
+  space: what stops the body is the player's `collision_mask`, a line of sight every layer; Areas never stop it. Not in a
+  2D scene.

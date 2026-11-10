@@ -15,11 +15,21 @@ Reads (privileged: any object, any property, protected and Blueprint variables i
 - `game.exists(path)`: whether it is in the level now. An actor the game destroyed (picked up, broken, killed) is gone
   at once, though `game.get` can still read it for a moment: ask `exists`, don't wait for a read to fail.
 - `game.loc(path)` -> Vec; `game.locs(paths)` -> {path: Vec}; `game.bounds(path)` -> (center, half extent); `game.velocity(path)`; `game.rot(path)`.
+  `bounds` is a box square to the world round what of the thing collides (blocks or overlaps, trigger volumes too;
+  round all it draws when nothing of it collides; `bounds(path, visual=True)`: round all it draws). A box, not its
+  shape: a big, turned, hollow or arched thing is solid in only part of it (a prop whose box is 20 m wide may block
+  a few metres of it), so never judge a lane, a gap or clearance by boxes. Ask the collision (`game.trace`, sonar).
 - `game.pose()` -> {"at", "eye", "yaw", "pitch", "velocity"} of the player (one frame).
 - `game.aim_error(point)` -> (right, up) degrees from the view to a point.
 - `game.view(**args)`: what the player sees (visible things with distance/screen position, held items, camera, body:
   on_ground, falling, touching...). `game.view(sonar=True)` adds `body.sonar.ways`: how far the body could walk each way
   (`turn` right of the view, `clear` distance, `by` wall/drop/steep/reach). Costs part of a frame: not every tick.
+- `game.trace(start, end, radius=0, sight=False)`: the first thing in the way from any point to any other, by the
+  game's collision (what stops the player's body; `sight=True`: what stops a line of sight); `radius` sweeps a ball
+  that wide (room for a body: its capsule's radius). -> None when the way is clear, else {"location" (where it stops),
+  "point", "normal", "distance", "actor", "name", "inside"}. The player's own body is never hit. Each is one read: put
+  several in one `game.batch`. Is a lane clear ahead: trace from the body (a little above the feet) to where it is going, at the body's
+  radius; is there floor: trace down. Sonar answers from the player only, at angles from the view; trace from anywhere.
 - `game.sees(paths)` -> {path: {"distance", "screen_x", "screen_y", "crosshair_on" (a bool)}} for those of the actors the player
   can see now (in view, line of sight; screen_x/screen_y -1..1 from the view's center, right/up +): cheap enough for every tick (reflex play: is the enemy visible, is the crosshair on it).
 - `game.screen()` -> {widget key: text} of every text on screen (HUD, menus, prompts; UMG keyed
@@ -38,6 +48,10 @@ Inputs (the player's hands; the only way to act in play):
   Escape, Enter, One..Nine, LeftMouseButton, RightMouseButton, MiddleMouseButton...) or of an Enhanced Input action path
   (`/Game/Input/IA_Jump.IA_Jump`, value optional).
 - `game.hold("W")` ... `game.release("W")`; `game.release_all()`. Holds are leased: the runtime renews them every tick.
+- Analog input: axis keys take a value, `game.hold("Gamepad_LeftY", 0.4)` (a stick: `Gamepad_LeftX` right,
+  `Gamepad_LeftY` forward, -1..1, when the game reads the gamepad's stick), and so do move actions,
+  `game.hold(move_action, Vec(x, y, 0))` (which axis is which: the action's handler in the code). Holding it again
+  with a new value changes it. Use it to move by less than full speed (see "What makes a harness play well").
 - `game.pointer(screen_x, screen_y)` / `game.pointer(world=point)` / `game.pointer(object=path)`: puts the mouse at a place
   on the view without moving across to it (-1..1 from the middle, y up, the numbers `view` gives a thing); the mouse
   buttons pressed after it click there, in the world as on the UI (`game.press("LeftMouseButton")`). A drag (a selection
@@ -264,6 +278,14 @@ class EscortHarness(Harness):
 - Reflex games: higher tempo, short executors that aim/steer in code every tick, urgent options for threats; a hit
   to dodge or block is a reflex in code (see Reacting in time).
 - Every option gets an `effect`, so the trace shows which ones don't work and why.
+- Space by collision, not boxes: whether a lane, a gap or a doorway is open, how close an obstacle really is, comes
+  from `game.trace` (at the body's radius) or sonar. An actor's box (`bounds`) is only roughly where it is: a big or
+  turned mesh's box covers lots of open space, and some actors' boxes are huge.
+- Stopping on a spot: keys are all or nothing, so a controller that toggles them overshoots (the body slides on after
+  release) and then oscillates round the spot. Move with analog input instead (a stick axis or the move action with a
+  value) and scale it by the distance left: full input far off, then down in proportion inside a slow-down radius
+  (about the distance the body slides at full speed), e.g. `value = max(0.15, min(1, left / slow_radius))`, and let go
+  inside the tolerance. Same for turning onto a heading: a turn rate in proportion to the angle left.
 - Using a thing by the crosshair (pick up, open, talk to): walk to inside the game's use range but not on top of it
   (a thing on the floor needs 1-2.5 m: standing over it, a third-person camera can't see it), `look_at` it with the
   default tolerance, check the game's own sign that it is targeted (`game.sees([thing])[thing]["crosshair_on"]`, or

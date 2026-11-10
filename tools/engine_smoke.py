@@ -1,7 +1,8 @@
 """The Unreal plugin on one engine, live: the engine's own third-person template played headless (-nullrhi: nothing
 is drawn) with an Autopilot build in its Plugins/, driven through the bridge the way a brain drives it. Checks the ops
 whose code differs between engine versions: `rc` reads (sets and maps) and its refusal of an unknown argument or
-struct field, `key` (the input path), an Enhanced Input action, `move`, `view` and `screen`.
+struct field, `key` (the input path), an Enhanced Input action, `move`, `view` and `screen`; and boxes
+(`GetActorBounds` of the colliding components), `trace` and a gamepad stick held part way.
 
     python tools/engine_smoke.py --engine "C:/Program Files/Epic Games/UE_5.3" --plugin <an Autopilot build>
         [--port 8790] [--templates <an engine with Templates/, for one installed without them>]
@@ -76,6 +77,52 @@ def location(link, actor):
 def yaw(link, controller):
     r = link.request("rc", {"verb": "call", "body": {"objectPath": controller, "functionName": "GetControlRotation"}})
     return r["ReturnValue"]["Yaw"]
+
+
+def boxes_and_traces(link, character, check):
+    """`game.bounds` (the colliding components' box, the drawn one asked for) and `trace` (the world's collision as the
+    player's body meets it, never the body itself)."""
+    from autopilot.kit.game import Game
+    from autopilot.kit.geom import Vec
+
+    game = Game(link)
+    check("hello: trace", "trace" in game.features, sorted(game.features))
+    (c_solid, e_solid), (c_drawn, e_drawn) = game.bounds(character), game.bounds(character, visual=True)
+    check("bounds: the capsule's box, no wider than the drawn one", 0 < e_solid.x <= e_drawn.x + 1,
+          f"colliding {e_solid.rounded()} at {c_solid.rounded()}, drawn {e_drawn.rounded()} at {c_drawn.rounded()}")
+    at = Vec(*location(link, character))
+    half = e_solid.z
+    # Down through the player's own capsule: the floor under it (a slope, maybe, after the walks), not the capsule's top
+    down = game.trace(at + Vec(0, 0, 300), at - Vec(0, 0, 1000))
+    check("trace: a line down meets the floor, not the player",
+          bool(down) and down["point"].z < at.z - half * 0.5 and down["normal"].z > 0.5 and bool(down.get("actor")),
+          down and f"{down.get('label') or down.get('name')} at z {down['point'].z:.0f} (player at {at.z:.0f}, half "
+          f"height {half:.0f}), normal z {down['normal'].z:.2f}, distance {down['distance']}")
+    ball = game.trace(at, at - Vec(0, 0, 1000), radius=30)
+    check("trace: a ball down stops a radius above the floor",
+          bool(ball) and bool(down) and abs((ball["location"].z - 30) - down["point"].z) < 15,
+          ball and f"center stops at z {ball['location'].z:.0f}, touches at {ball['point'].z:.0f}")
+    sky = game.trace(at + Vec(0, 0, 50000), at + Vec(0, 0, 60000))
+    check("trace: nothing in an empty sky", sky is None, sky)
+    sight = game.trace(at + Vec(0, 0, 300), at - Vec(0, 0, 1000), sight=True)
+    check("trace: a line of sight down meets the floor too",
+          bool(sight) and bool(down) and abs(sight["point"].z - down["point"].z) < 5, sight and sight["point"])
+
+
+def analog_stick(link, character, check):
+    """An axis key held at a value walks the character by that much of its speed (a gamepad stick held part way)."""
+    walked = {}
+    for value in (1.0, 0.4):
+        time.sleep(0.5)
+        before = location(link, character)
+        for _ in range(3):  # (renewed within its lease, as the runtime does)
+            link.request("key", {"key": "Gamepad_LeftY", "mode": "hold", "value": value, "lease": 0.6})
+            time.sleep(0.3)
+        link.request("key", {"key": "Gamepad_LeftY", "mode": "release"})
+        after = location(link, character)
+        walked[value] = ((after[0] - before[0]) ** 2 + (after[1] - before[1]) ** 2) ** 0.5
+    check("key: Gamepad_LeftY held part way walks slower than full",
+          walked[1.0] > 50 and 5 < walked[0.4] < walked[1.0] * 0.8, f"full {walked[1.0]:.0f}, 0.4: {walked[0.4]:.0f}")
 
 
 def main():
@@ -217,6 +264,8 @@ def main():
         check("screen: answers", isinstance(screen.get("texts"), dict))
         start2 = location(link, character)
         check("the character is where moving left it", abs(start2[0] - start[0]) > 10)
+        boxes_and_traces(link, character, check)
+        analog_stick(link, character, check)
     except Exception as e:
         check("smoke", False, f"{type(e).__name__}: {e}")
     finally:

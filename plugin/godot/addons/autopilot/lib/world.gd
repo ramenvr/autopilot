@@ -228,6 +228,24 @@ static func bounds3d(n: Node3D, skip: Node = null) -> AABB:
 	return AABB(n.global_position, Vector3.ZERO)
 
 
+## The world box round a node's collision shapes (enabled, under it: what of it blocks or overlaps, areas' too), or
+## null when it has none.
+static func collision_bounds3d(n: Node3D):
+	var box := AABB()
+	var have := false
+	var stack: Array = [n]
+	while stack.size() > 0:
+		var c: Node = stack.pop_back()
+		if c is CollisionShape3D and c.shape != null and not c.disabled:
+			var m: Mesh = c.shape.get_debug_mesh()
+			if m:
+				var b: AABB = c.global_transform * m.get_aabb()
+				box = b if not have else box.merge(b)
+				have = true
+		stack.append_array(c.get_children())
+	return box if have else null
+
+
 static func bounds2d(n: Node) -> Rect2:
 	var rect := Rect2()
 	var have := false
@@ -290,17 +308,20 @@ static func active_of(n: Node) -> bool:
 
 ## A node's transform in the kit frame ({"location", "rotation", "velocity", "center", "extent", "active"}); a node
 ## that has none (a plain Node: a manager, a timer) answers the same keys null but `active`, so it isn't taken for gone.
-static func transform_of(n: Node):
-	var t = _transform_of(n)
+## center/extent in 3D: the box round its collision shapes, or round what is drawn of it when it has none; visual: the
+## box round what is drawn of it.
+static func transform_of(n: Node, visual := false):
+	var t = _transform_of(n, visual)
 	if t == null:
 		t = {"location": null, "rotation": null, "velocity": null, "center": null, "extent": null}
 	t.active = active_of(n)
 	return t
 
 
-static func _transform_of(n: Node):
+static func _transform_of(n: Node, visual := false):
 	if n is Node3D:
-		var b := bounds3d(n)
+		var solid = null if visual else collision_bounds3d(n)
+		var b: AABB = solid if solid != null else bounds3d(n)
 		return {"location": Frame.kit(n.global_position), "rotation": Frame.kit_rot(n.global_basis),
 			"velocity": Frame.kit(velocity_of(n)), "center": Frame.kit(b.get_center()), "extent": Frame.kit_extent(b.size)}
 	if n is Node2D or n is Control:
@@ -314,9 +335,10 @@ static func _transform_of(n: Node):
 
 func transforms(args: Dictionary, resolve: Callable) -> Dictionary:
 	var out := {}
+	var visual: bool = args.get("visual", false) == true
 	for p in args.get("objects", []):
 		var n = resolve.call(str(p))
-		out[str(p)] = transform_of(n) if n is Node else null
+		out[str(p)] = transform_of(n, visual) if n is Node else null
 	return {"objects": out}
 
 

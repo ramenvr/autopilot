@@ -221,6 +221,31 @@ def run(c, brain, link):
     c.check("transforms gate extent (half size, kit axes)", _near(gate["extent"], (15, 150, 150), 0.6) and _near(gate["center"], (1600, 0, 150)),
             f"{gate['extent']} {gate['center']}")
     c.check("transforms missing -> null", tr["/root/Nope"] is None)
+    # An apple's box is its collision (the Area's reach sphere, 0.5 m), its drawn box when asked (the 0.25 m mesh)
+    vis = req("transforms", {"objects": ["/root/Level/Apple1"], "visual": True})["objects"]["/root/Level/Apple1"]
+    c.check("transforms: the collision box, the drawn one with visual", _near(a1["extent"], (50, 50, 50))
+            and abs(vis["extent"]["Z"] - 25) <= 1 and vis["extent"]["X"] < 40, f"{a1['extent']} {vis['extent']}")
+
+    # --- trace -----------------------------------------------------------------------------------------
+    c.check("hello features: trace", "trace" in h.get("features", []), str(h.get("features")))
+    # Ahead from the player's middle (its own capsule left out, the apples' Areas never hit): the gate's near face
+    t = req("trace", {"start": {"X": 0, "Y": 0, "Z": 90}, "end": {"X": 3000, "Y": 0, "Z": 90}})
+    hit = t.get("hit") or {}
+    c.check("trace: a line meets the gate's face", t.get("channel") == "body" and hit.get("actor") == "/root/Level/Gate"
+            and _near(hit["location"], (1585, 0, 90)) and _near(hit["normal"], (-1, 0, 0), 0.01)
+            and abs(hit["distance"] - 1585) < 1 and hit["inside"] is False, str(t))
+    t = req("trace", {"start": {"X": 0, "Y": 0, "Z": 90}, "end": {"X": 3000, "Y": 0, "Z": 90}, "radius": 50})
+    hit = t.get("hit") or {}
+    c.check("trace: a ball stops its radius short, touching the face", hit.get("actor") == "/root/Level/Gate"
+            and _near(hit["location"], (1535, 0, 90), 2) and _near(hit["point"], (1585, 0, 90), 2), str(t))
+    t = req("trace", {"start": {"X": 400, "Y": 0, "Z": 200}, "end": {"X": 400, "Y": 0, "Z": -100}, "channel": "sight"})
+    hit = t.get("hit") or {}
+    c.check("trace: down through an apple's Area onto the floor", t.get("channel") == "sight"
+            and hit.get("actor") == "/root/Level/Floor" and _near(hit["point"], (400, 0, 0)), str(t))
+    t = req("trace", {"start": {"X": 0, "Y": 0, "Z": 90}, "end": {"X": -3000, "Y": 0, "Z": 90}})
+    c.check("trace: nothing behind", t.get("hit") is None, str(t))
+    t = req("trace", {"start": {"X": 1600, "Y": 0, "Z": 150}, "end": {"X": 1600, "Y": 500, "Z": 150}, "radius": 10})
+    c.check("trace: a ball that starts in the gate is inside it", (t.get("hit") or {}).get("inside") is True, str(t))
     pose = req("pose")
     c.check("pose at = body middle", _near(pose["at"], (0, 0, 90), 2) and _near(pose["feet"], (0, 0, 0), 2) and _near(pose["eye"], (0, 0, 160), 2),
             f"at {pose['at']} feet {pose['feet']} eye {pose['eye']}")
