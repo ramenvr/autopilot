@@ -8,27 +8,36 @@ Paths are relative to the game's folder, with / (absolute ones too, but only ins
 
 import os
 import re
+from collections import Counter
+
+from . import whole
 
 MAX_READ_LINES = 2000
-MAX_LINE = 2000  # characters of one line shown
-MAX_LISTED = 500
-MAX_MATCHES = 200
 MAX_WRITE_BYTES = 2 * 1024 * 1024
 SKIP_DIRS = {".git", "__pycache__", ".agent", "node_modules"}
+# What a run kept whole for being too long for a tool result (runs/<id>/whole/: earlier searches' matches among them):
+# a search of the game's folder doesn't look in it, unless it is asked to
+KEPT = re.compile(rf"runs/[^/]+/{whole.FOLDER}(/|$)")
 
 FILE_TOOL_SPECS = (
     ("read_file",
-     "Read a text file of this game's folder, or of the kit (autopilot/KIT.md, autopilot/kit/). Lines come numbered; "
-     "`offset` (the first line, from 1) and `limit` (at most 2000) read a long file in parts.",
+     "Read a text file of this game's folder, or of the kit (autopilot/KIT.md, autopilot/kit/). Lines come numbered "
+     "and whole; `offset` (the first line, from 1) and `limit` (at most 2000 lines) read a long file in parts, and "
+     f"one call gives at most {whole.ANSWER_CHARS:,} characters: the answer says where to read on. A line longer "
+     "than that comes in parts: `column` (from 1) is where in the `offset` line to start.",
      {"type": "object", "properties": {"path": {"type": "string"}, "offset": {"type": "integer"},
-                                       "limit": {"type": "integer"}}, "required": ["path"]}),
+                                       "limit": {"type": "integer"}, "column": {"type": "integer"}},
+      "required": ["path"]}),
     ("list_files",
      "List the files of this game's folder whose paths match a glob, e.g. `codex/**/*.txt` or `runs/*/report.json` "
-     "(** matches any folders). At most 500, the newest first.",
+     "(** matches any folders), the newest first. When they are too many for one answer, all of them are written to "
+     "a file of this run, and the answer says where.",
      {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
     ("search",
-     "Search this game's folder (or `path`, a folder or file in it) for a regular expression: matching lines as "
-     "path:line: text. `glob` limits it to some files, e.g. `codex/**/*.txt`. At most 200 matches.",
+     "Search this game's folder (or `path`, a folder or file in it) for a regular expression: matching lines, whole, "
+     "as path:line: text. `glob` limits it to some files, e.g. `codex/**/*.txt`. When the matches are too long for "
+     "one answer, all of them are written to a file of this run, and the answer gives how many there are in which "
+     "files, that file, and where they are (path:line).",
      {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"},
                                        "glob": {"type": "string"}}, "required": ["pattern"]}),
     ("write_file",
@@ -115,17 +124,42 @@ class FileTools:
         except (OSError, ValueError, re.error) as e:
             return f"{tool} failed: {type(e).__name__}: {e}"
 
-    def read_file(self, path, offset=1, limit=MAX_READ_LINES):
+    def read_file(self, path, offset=1, limit=MAX_READ_LINES, column=1):
+        """Lines offset.. (at most limit), numbered and whole, in at most whole.ANSWER_CHARS characters; the answer
+        ends saying where to read on. A line longer than a call holds comes in parts (column: where in the offset
+        line to start, from 1)."""
         full = self.readable(path)
         if os.path.isdir(full):
             return f"{path} is a folder: use list_files."
         offset, limit = max(1, int(offset)), max(1, min(int(limit), MAX_READ_LINES))
+        column = max(1, int(column))
         with open(full, encoding="utf-8", errors="replace") as f:
             lines = f.read().splitlines()
-        shown = [f"{n:6}\t{line[:MAX_LINE]}" for n, line in enumerate(lines[offset - 1:offset - 1 + limit], offset)]
-        more = len(lines) - (offset - 1 + len(shown))
-        tail = f"\n({more} more lines: read on from line {offset + len(shown)})" if more > 0 else ""
-        return ("\n".join(shown) or "(empty)") + tail
+        room = whole.ANSWER_CHARS - 200  # (for the line saying where to read on)
+        shown, size, n = [], 0, offset
+        while n <= len(lines) and len(shown) < limit:
+            start = column - 1 if n == offset else 0
+            row = f"{n:6}\t{lines[n - 1][start:]}"
+            if size + len(row) + 1 <= room:
+                shown.append(row)
+                size += len(row) + 1
+                n += 1
+                continue
+            if shown:
+                return "\n".join(shown) + (f"\n(one call gives at most {whole.ANSWER_CHARS:,} characters: read on "
+                                           f"from line {n})")
+            # A line longer than one call holds: this call gives the part that fits, and says where it goes on
+            line = lines[n - 1]
+            part = line[start:start + room - 8]
+            return (f"{n:6}\t{part}\n(line {n} is {len(line):,} characters: this is characters {start + 1:,}-"
+                    f"{start + len(part):,} of it; read on with offset={n}, column={start + len(part) + 1})")
+        more = len(lines) - (n - 1)
+        if not shown:
+            return "(empty)" if not lines else f"(the file has {len(lines)} lines: none from line {offset})"
+        tail = f"\n({more} more lines: read on from line {n})" if more > 0 else ""
+        if column > 1:  # (the first line shown is the rest of a long one)
+            shown[0] = shown[0].replace("\t", f"\t(from character {column:,}) ", 1)
+        return "\n".join(shown) + tail
 
     def _walk(self, top):
         for folder, dirs, names in os.walk(top):
@@ -133,35 +167,82 @@ class FileTools:
             for name in names:
                 yield os.path.join(folder, name)
 
+    def _kept(self, stem, text):
+        """text written whole to this run's folder (runs/<id>/whole/<stem>-<k>.txt): its path in the game's folder."""
+        return whole.kept(self.run_dir, self.rel(self.run_dir), stem, text)[1]
+
     def list_files(self, pattern):
         rx = _glob_rx(pattern)
         found = [full for full in self._walk(self.root) if rx.fullmatch(self.rel(full))]
+        if not found:
+            return f"No files match {pattern}."
         found.sort(key=lambda p: os.path.getmtime(p), reverse=True)
-        shown = [self.rel(p) for p in found[:MAX_LISTED]]
-        more = f"\n({len(found) - MAX_LISTED} more: narrow the pattern)" if len(found) > MAX_LISTED else ""
-        return ("\n".join(shown) or f"No files match {pattern}.") + more
+        text = "\n".join(self.rel(p) for p in found)
+        if len(text) <= whole.ANSWER_CHARS:
+            return text
+        return whole.deliver(text, whole.ANSWER_CHARS, self._kept("list", text + "\n"),
+                             what=f"The list of the {len(found)} files that match {pattern}")
 
     def search(self, pattern, path=".", glob=None):
+        """Every matching line, whole. Too long for one answer: all of them go to runs/<id>/whole/search-<k>.txt, and
+        the answer gives their count, how many each file has, that file and the locations (path:line) that fit."""
         rx = re.compile(pattern)
         top = self.readable(path)
         files = [top] if os.path.isfile(top) else self._walk(top)
         only = _glob_rx(glob) if glob else None
-        hits = []
-        for full in files:
-            rel = self.rel(full)
-            name = os.path.basename(full).lower()
-            if (only and not only.fullmatch(rel)) or name.endswith(".env") or ".env." in name:
-                continue
-            try:
-                with open(full, encoding="utf-8", errors="strict") as f:
-                    for n, line in enumerate(f, 1):
-                        if rx.search(line):
-                            hits.append(f"{rel}:{n}: {line.rstrip()[:MAX_LINE]}")
-                            if len(hits) >= MAX_MATCHES:
-                                return "\n".join(hits) + f"\n(stopped at {MAX_MATCHES} matches: narrow the search)"
-            except (UnicodeDecodeError, OSError):
-                continue  # (not text)
-        return "\n".join(hits) or f"No match for {pattern}."
+        asked_kept = bool(KEPT.match(self.rel(top) + "/"))
+        out = None  # (the file all matches go to, once they are more than an answer holds)
+        shown, size, places = [], 0, []
+        folder = os.path.join(self.run_dir, whole.FOLDER)
+        name = None
+        try:
+            for full in files:
+                rel = self.rel(full)
+                base = os.path.basename(full).lower()
+                if (only and not only.fullmatch(rel)) or base.endswith(".env") or ".env." in base:
+                    continue
+                if not asked_kept and KEPT.match(rel):
+                    continue
+                try:
+                    with open(full, encoding="utf-8", errors="strict") as f:
+                        for n, line in enumerate(f, 1):
+                            if not rx.search(line):
+                                continue
+                            hit = f"{rel}:{n}: {line.rstrip(chr(13) + chr(10))}"
+                            places.append((rel, n))
+                            size += len(hit) + 1
+                            if out is None and size <= whole.ANSWER_CHARS:
+                                shown.append(hit)
+                                continue
+                            if out is None:  # (from here they go to a file: the ones so far first)
+                                os.makedirs(folder, exist_ok=True)
+                                name = whole.next_name(folder, "search")
+                                out = open(os.path.join(folder, name), "w", encoding="utf-8", newline="\n")
+                                out.write("".join(h + "\n" for h in shown))
+                                shown = None
+                            out.write(hit + "\n")
+                except (UnicodeDecodeError, OSError):
+                    continue  # (not text)
+            if out is None:
+                return "\n".join(shown) or f"No match for {pattern}."
+            counts = Counter(rel for rel, _ in places)
+            out.write("\nMatches per file:\n" + "".join(f"{rel}: {k}\n" for rel, k in counts.items()))
+        finally:
+            if out is not None:
+                out.close()
+        where = f"{self.rel(self.run_dir)}/{whole.FOLDER}/{name}"
+        text = (f"{len(places)} matches for {pattern} in {len(counts)} files: more than one answer holds, so all of "
+                f"them, whole lines as path:line: text, are in {where} (one a line; how many each file has at its "
+                "end). Read it there, read the lines below in their files, or narrow the search.")
+        per = [f"{rel}: {k}" for rel, k in counts.items()]
+        k = whole.listed(per, (whole.ANSWER_CHARS - len(text)) // 3)
+        text += "\nMatches per file" + (f" (the first {k} of {len(per)} files; all at the end of {where})"
+                                        if k < len(per) else "") + ":\n" + "\n".join(per[:k])
+        locations = [f"{rel}:{n}" for rel, n in places]
+        k = whole.listed(locations, whole.ANSWER_CHARS - len(text) - 120)
+        text += ("\nWhere they are (path:line)" + (f", the first {k} of {len(locations)} (the rest in {where})"
+                                                     if k < len(locations) else "") + ":\n" + "\n".join(locations[:k]))
+        return text
 
     def write_file(self, path, content):
         full = self.writable(path)

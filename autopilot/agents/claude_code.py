@@ -21,6 +21,7 @@ import time
 import traceback
 
 from .. import engines
+from . import whole
 from .session import (
     PACKAGE,
     PROBING,
@@ -85,8 +86,7 @@ def _tools(session):
             except Exception:
                 text = "Tool failed:\n" + traceback.format_exc(limit=5)
             session.tool_seconds += time.time() - t0
-            return {"content": [{"type": "text",
-                                 "text": text + session.steer_note() + session.news() + "\n" + session.clock()}]}
+            return {"content": [{"type": "text", "text": session.result(text)}]}
         return inner
 
     bodies = {
@@ -247,7 +247,7 @@ def _guard(session):
         # who uses them
         if data.get("agent_id") or data.get("agent_type") or str(data.get("tool_name")).startswith("mcp__game__"):
             return {}
-        news = session.news().strip()
+        news = session.news_within(session.news(), whole.ANSWER_CHARS).strip()  # (longer: whole in a file)
         if not news:
             return {}
         return {"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": news}}

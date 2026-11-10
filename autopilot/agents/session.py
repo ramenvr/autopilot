@@ -25,7 +25,7 @@ from .. import levels as levelsmod
 from ..kit import control
 from ..telemetry import episode_spans
 from ..words import plain_words
-from . import feed
+from . import feed, whole
 
 # Settings shared by every agent (environment variables override them)
 # The agent's language model when AUTOPILOT_MODEL names none: its provider's (model() reads them before each run: the
@@ -62,10 +62,14 @@ RESULTS = "Looking at the results"  # an episode ended: the implementer works on
 # the harness (run N)" and "report" the accepted report. The one place that maps them: stage_of()
 STAGES = {READING: "analyze", PROBING: "probe", WRITING: "build", RESULTS: "results"}
 PLAYING = "Trying the harness"  # (how the progress line of an episode starts)
-PROBE_RESULT = 30000  # the most characters an activity event's detail carries (a probe's output, a file's head)
-# The most characters of news (Session.news) one tool result carries: what a tool result holds in the agent's context.
-# Past it the news is written whole to a file of the run, and the result says where
-NEWS_INLINE = PROBE_RESULT
+# The most characters an activity event's detail carries (a probe's output, an episode's summary): what the plugins'
+# tabs show of one (Unity's and Roblox's text boxes stop at 16,000). A longer one is written whole to a file of the run
+# (whole.FOLDER), and the detail says where and gives the lines that fit
+DETAIL_CHARS = 16000
+# The most characters of one part of the news (Session.news) a tool result carries: what a tool's answer may. Past it
+# that part is written whole to a file of the run, and the result says where (Session.result keeps the whole result
+# within whole.RESULT_CHARS)
+NEWS_INLINE = whole.ANSWER_CHARS
 # The kinds of activity event whose call the agent makes and whose result the tool's body sends later, with `ends`
 # naming the call's id (Session.activity)
 CALL_KINDS = ("probe", "episode", "look")
@@ -288,10 +292,10 @@ The game: {project}. This run's folder: {run}/. Write {run}/harness.py, run it, 
 {briefing}"""
 
 # What the request message carries, so the first turns go to this request rather than to reading what every run reads
-BRIEF_FILE = 12000  # characters of notes.md, lib.py or the codex README
-BRIEF_RUNS = 8  # earlier runs listed (the latest)
-BRIEF_HITS = 24  # codex files listed for the request's words
-BRIEF_CHANGES = 30  # codex files listed as changed since the last run
+#  Nothing in it is cut: a part longer than its budget is quoted as far as it fits, in whole lines or items, and the
+#  briefing says where all of it is (the file itself, or a file of the run it was written to whole)
+BRIEF_PART = 12000  # characters of one file it quotes: notes.md, lib.py, the codex README, what the live game shows
+BRIEF_LIST = 6000  # characters of one list: earlier runs, codex changes, where the request's words are, the levels
 STOP_WORDS = set("""verify that this those these there their they them then than when what where which while with
 without from into onto over under after before about does doesn't should would could must will have has been being
 player player's players game games level levels make makes made keep keeps goes going still stays same each every
@@ -680,6 +684,36 @@ class Session:
             f.write(text)
         return f"{self.run_rel}/news/{name}"
 
+    def deliver(self, text, stem, what="This", budget=None):
+        """text as a tool's answer: whole when it fits budget (default whole.ANSWER_CHARS); else written whole to
+        runs/<id>/whole/<stem>-<k>.txt, and the answer says where, with the lines from the start that fit."""
+        budget = whole.ANSWER_CHARS if budget is None else budget
+        if len(text) <= budget:
+            return text
+        return whole.deliver(text, budget, whole.kept(self.run_dir, self.run_rel, stem, text)[1], what=what)
+
+    def result(self, text, clock=True, steer=True):
+        """A tool result as every agent gets it: the tool's answer (its body delivered it within whole.ANSWER_CHARS),
+        what the user typed since (steer), the news and (clock) the clock, in at most whole.RESULT_CHARS. News that
+        doesn't fit beside the answer is written whole to a file of the run, and the result says where, with what
+        fits. (The file tools' results take no clock and leave what the user typed to the game tools'.)"""
+        steer = self.steer_note() if steer else ""
+        news = self.news()
+        tail = ("\n" + self.clock()) if clock else ""
+        out = text + steer + self.news_within(news, whole.RESULT_CHARS - len(text + steer + tail)) + tail
+        if len(out) > whole.RESULT_CHARS:  # (what the user typed is that long)
+            return self.deliver(out, "result", "This result", whole.RESULT_CHARS)
+        return out
+
+    def news_within(self, news, room):
+        """news (Session.news) in at most room characters: as it is when it fits, else written whole to
+        runs/<id>/news/news-<k>.txt, with the lines that fit and where all of it is."""
+        if len(news) <= room:
+            return news
+        body = news.strip()
+        path = self._kept(whole.next_name(os.path.join(self.run_dir, "news"), "news"), body + "\n")
+        return "\n\n" + whole.deliver(body, max(room - 2, 0), path, what="The news with this result")
+
     def _arrivals_text(self, batches, status):
         files = [f for b in batches for f in b["files"]]
         scored = []
@@ -807,25 +841,34 @@ class Session:
                       "the harness")
         return True
 
-    def activity(self, kind, text, detail=None, ends=None, stage=None, log=None):
+    def activity(self, kind, text, detail=None, ends=None, stage=None, log=None, whole_at=None):
         """One event of the run's activity feed (docs/protocol.md, `activity`): the next id (from 1), `t` seconds
         since the run started, the feed's stage now (or `stage`), kind, text (one line in plain words for the user)
-        and detail (what opens under it: code, a path, an output; at most PROBE_RESULT characters). ends: the id of
-        the call this is the result of, or its kind (one of CALL_KINDS: the latest call of that kind still open).
-        Writes the implementer.log line `log` (default "<kind>: <text>") as note() does, appends the event to
-        runs/<id>/activity.jsonl and sends the frame. Returns the event's id."""
+        and detail (what opens under it: code, a path, an output). A detail longer than DETAIL_CHARS is written whole
+        to runs/<id>/whole/activity-<id>.txt (or is already whole, line for line, at whole_at: a full path), and the
+        event's detail says where and gives the lines that fit. ends: the id of the call this is the result of, or
+        its kind (one of CALL_KINDS: the latest call of that kind still open). Writes the implementer.log line `log`
+        (default "<kind>: <text>") as note() does, appends the event to runs/<id>/activity.jsonl and sends the frame.
+        Returns the event's id."""
         if log is None:
             log = f"{kind}: {text}"
         if self.forward is not None:
-            self.forward({"kind": kind, "text": text, "detail": detail, "ends": ends, "stage": stage, "log": log})
+            self.forward({"kind": kind, "text": text, "detail": detail, "ends": ends, "stage": stage, "log": log,
+                          **({"whole_at": whole_at} if whole_at else {})})
             return None
         text = plain_words(scrub(str(text)))
         if detail is not None:
-            detail = _cut_lines(plain_words(scrub(str(detail))), PROBE_RESULT)
+            detail = plain_words(scrub(str(detail)))
         with self.event_lock:
             if isinstance(ends, str):
                 ends = self.calls.pop(ends, None)
-            event = {"id": len(self.events) + 1, "t": round(time.time() - self.started, 1),
+            n = len(self.events) + 1
+            if detail is not None and len(detail) > DETAIL_CHARS:
+                if whole_at is None:
+                    whole_at = os.path.join(self.run_dir, whole.FOLDER, f"activity-{n}.txt")
+                    whole.write(whole_at, detail)
+                detail = whole.deliver(detail, DETAIL_CHARS, whole_at, ui=True)
+            event = {"id": n, "t": round(time.time() - self.started, 1),
                      "stage": stage or self.stage, "kind": kind, "text": text, "detail": detail, "ends": ends}
             if ends is None and kind in CALL_KINDS:
                 self.calls[kind] = event["id"]
@@ -854,10 +897,10 @@ class Session:
         """What the agent said (a text block): a `text` event whose text is its first line and whose detail is the
         whole when there is more than one."""
         if SPENT.search(str(text)):  # (Aura's relay stopped the agent's model calls: logged, never shown)
-            return self.note(f"says: {str(text)[:1500]}")
+            return self.note(f"says: {text}")
         lines = [line for line in str(text).splitlines() if line.strip()]
         first = lines[0].strip() if lines else str(text).strip()
-        return self.activity("text", first, detail=text if len(lines) > 1 else None, log=f"says: {text[:1500]}")
+        return self.activity("text", first, detail=text if len(lines) > 1 else None, log=f"says: {text}")
 
     def steer_note(self):
         """What the user typed since the last tool result, as the implementer is told it ("" when nothing)."""
@@ -1098,17 +1141,23 @@ class Session:
         text = out.getvalue()
         if value[0] is not None:
             text += ("" if text.endswith("\n") or not text else "\n") + _show(value[0])
-        text += late
         dt = time.time() - t0
         lines = len(text.splitlines())
         what = (f"Cut off after {seconds:.0f} s" if late else
                 f"Failed after {dt:.1f} s" if "Traceback (most recent call last)" in text else
                 f"Got {lines} line{'s' if lines != 1 else ''} back in {dt:.1f} s")
-        self.activity("probe", what, detail=text or "(no output)", ends="probe",
-                      log=f"probe ({dt:.1f}s):\n{code}\n-> {text[:2000]}")
+        text = text or ("" if late else "(no output)")
+        # Longer than an answer holds: whole in a file of the run (the feed's detail points to it too); the note on
+        # a probe cut off by the time stays in sight, after what fits
+        where = (whole.kept(self.run_dir, self.run_rel, "probe", text) if len(text) > whole.ANSWER_CHARS - len(late)
+                 else None)
+        self.activity("probe", what, detail=text + late, ends="probe", whole_at=None if late or not where
+                      else where[0], log=f"probe ({dt:.1f}s):\n{code}\n-> {text}{late}")
         over = self.started_over()  # (a probe's game.restart or check_harness)
         self.touched = True
-        return _cut(text or "(no output)", 12000) + ("\n" + over if over else "")
+        if where:
+            text = whole.deliver(text, whole.ANSWER_CHARS - len(late), where[1], what="This probe's output")
+        return text + late + ("\n" + over if over else "")
 
     def started_over(self):
         """STARTED_OVER when the level has started over since the agent was last told, "" when it hasn't or when
@@ -1275,7 +1324,7 @@ class Session:
         if played_for is None:
             played_for = time.time() - wall0
         self.activity("episode", f"Episode {n}: {played_for:.0f} s of play ({result.get('reason') or 'ended'})",
-                      detail=summary, ends="episode",
+                      detail=summary, ends="episode", whole_at=os.path.join(self.run_dir, f"trace{n}_summary.txt"),
                       log=f"run_harness {n} ({seconds:.0f}s): {result.get('reason')}, {result.get('decisions')} Jev "
                           "decisions" + (" (continued from episode %s)" % progress.get("episode") if progress else ""))
         if self.most_decisions < MIN_JEV_DECISIONS:
@@ -1283,8 +1332,11 @@ class Session:
                      f"{MIN_JEV_DECISIONS} (decisions among 2+ options), so this one can't settle the request.\n")
         over = self.started_over()  # (first: it says how to read all below it)
         self.touched = True
-        return (over + note + f"Episode {n} ({self.run_rel}/trace{n}.jsonl; harness saved as harness{n}.py)\n"
-                + _cut(summary, 14000))
+        head = (over + note + f"Episode {n} ({self.run_rel}/trace{n}.jsonl; harness saved as harness{n}.py; this "
+                f"summary also in trace{n}_summary.txt)\n")
+        # The whole summary is in trace{n}_summary.txt: one longer than an answer holds points there
+        return head + whole.deliver(summary, whole.ANSWER_CHARS - len(head), f"{self.run_rel}/trace{n}_summary.txt",
+                                    what=f"Episode {n}'s summary")
 
     def _no_episode(self, text):
         """run_harness played nothing (text says why): the feed's episode row ends on it; the agent reads text."""
@@ -1329,7 +1381,7 @@ class Session:
                 g.pause(True)
             except Exception:
                 pass
-        return _cut(json.dumps(out, indent=1, default=str), 10000)
+        return self.deliver(json.dumps(out, indent=1, default=str), "snapshot", "The snapshot")
 
     def opening(self):
         """What the live game shows as the run starts, for the request message: the level, the player (or none: a
@@ -1373,9 +1425,9 @@ class Session:
                             "body": {k: v.get("body", {}).get(k) for k in ("on_ground", "falling", "crouched")}}
                 part("pose", player)
                 part("sees", seen)
-            part("screen_texts", lambda: dict(list(g.screen().items())[:60]))
+            part("screen_texts", g.screen)
             part("ui", lambda: [{k: e.get(k) for k in ("id", "kind", "label", "enabled") if e.get(k) not in (None, "")}
-                                for e in g.ui()[:40]])
+                                for e in g.ui()])
         except Exception as e:
             out["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -1387,7 +1439,8 @@ class Session:
         if net.get("mode") in ("client", "listen_server"):
             out["network"] = network_note(net, paused)
         out = runtime.jsonable(out)
-        return _cut("\n".join(f"{k}: {json.dumps(v, default=str)}" for k, v in out.items()), 10000)
+        # (whole: the briefing quotes what fits of it and keeps all of it in a file of the run)
+        return "\n".join(f"{k}: {json.dumps(v, default=str)}" for k, v in out.items())
 
     def alert(self, text):
         """Tell the user text with the result (once)."""
@@ -1677,13 +1730,31 @@ def _whole(path):
         return ""
 
 
-def _read(path, n=BRIEF_FILE):
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            text = f.read().strip()
-    except OSError:
+def _quoted(session, rel, title, fence=None, why=""):
+    """A file of the game's folder (rel: its path there) as a part of the briefing under title: whole when it fits
+    BRIEF_PART, else its first lines, with how long it is and from where to read on (why: what reading the rest is
+    for). fence: a code block's language, or None. None when the file is missing or empty."""
+    text = _whole(os.path.join(session.root, *rel.split("/"))).rstrip()
+    if not text.strip():
         return None
-    return text if len(text) <= n else text[:n] + f"\n... ({len(text) - n} more characters: Read the file for them)"
+    note, shown = whole.split(text, BRIEF_PART, rel, what=rel, holds="the briefing quotes")
+    if fence is not None and shown:
+        shown = f"```{fence}\n{shown}\n```"
+    return "\n".join(filter(None, [title, note + (f" {why}" if note and why else ""), shown]))
+
+
+def _listing(session, title, items, stem, what, latest=False):
+    """(a list of the briefing under title, the items it shows): items one a line when they fit BRIEF_LIST, else all
+    of them written whole to a file of the run (stem) and those that fit (the first, or the latest), saying where
+    the rest are."""
+    k = whole.listed(items, BRIEF_LIST, latest)
+    if k == len(items):
+        return "\n".join([title, *items]), items
+    rel = whole.kept(session.run_dir, session.run_rel, stem, "\n".join(items) + "\n")[1]
+    shown = items[len(items) - k:] if latest else items[:k]
+    said = (f"({len(items)} {what}, one a line, whole in {rel}"
+            + (f"; the {'latest' if latest else 'first'} {k} follow)" if k else ": read them there)"))
+    return "\n".join([title, said, *shown]), shown
 
 
 def _stem(word):
@@ -1696,9 +1767,10 @@ def _stem(word):
     return word
 
 
-def word_hits(codex_root, prompt, limit=BRIEF_HITS):
+def word_hits(codex_root, prompt, limit=None):
     """Where the request's words appear in the codex: its files (not the top-level lists) ranked by how many of the
-    words they have, rarer words counting more and a word in the file's name most. Lines, or None."""
+    words they have, rarer words counting more and a word in the file's name most (all of them, or the first
+    limit). Lines, or None."""
     words = []
     for w in re.findall(r"[A-Za-z][A-Za-z']+", prompt):
         w = w.lower().removesuffix("'s").strip("'")
@@ -1735,7 +1807,7 @@ def word_hits(codex_root, prompt, limit=BRIEF_HITS):
     lines = [f"- codex/{rel} ({', '.join(f'{w}: {n[w]}' for w in rare if n[w])})" for *_, rel, n in scored[:limit]]
     if common:
         lines.append(f"(in most files, so not ranked: {', '.join(common)})")
-    if len(scored) > limit:
+    if limit is not None and len(scored) > limit:
         lines.append(f"({len(scored) - limit} more files have some of them: grep for the rest)")
     missing = [w for w in rare if not any(n[w] for _, n, _ in files)]
     if missing:
@@ -1747,14 +1819,14 @@ def briefing(session, opening=None):
     """The request message's second half: what every run used to read in its first turns."""
     root = session.root
     out = []
-    level = levelsmod.briefing(getattr(session.game, "level_info", None))
+    level = levelsmod.briefing(getattr(session.game, "level_info", None), budget=BRIEF_LIST,
+                               keep=lambda stem, text: whole.kept(session.run_dir, session.run_rel, stem, text)[1])
     if level:  # (first: which level to play is the first decision)
         out.append(level)
-    notes, lib = _read(os.path.join(root, "notes.md")), _read(os.path.join(root, "lib.py"))
-    if notes:
-        out.append(f"## notes.md (what earlier requests on this game verified)\n{notes}")
-    if lib:
-        out.append(f"## lib.py (importable as `import lib`)\n```python\n{lib}\n```")
+    read_whole = "Read the rest of it before you rely on what it says."
+    notes = _quoted(session, "notes.md", "## notes.md (what earlier requests on this game verified)", why=read_whole)
+    lib = _quoted(session, "lib.py", "## lib.py (importable as `import lib`)", fence="python", why=read_whole)
+    out += [part for part in (notes, lib) if part]
     if not notes and not lib:
         out.append("## notes.md, lib.py\nNone yet: the first request on this game.")
     runs = []
@@ -1762,18 +1834,17 @@ def briefing(session, opening=None):
     for rid in sorted(os.listdir(runs_dir)) if os.path.isdir(runs_dir) else []:
         if rid == session.run_id:
             continue
-        prompt = _read(os.path.join(runs_dir, rid, "prompt.txt"), 300)
+        prompt = _whole(os.path.join(runs_dir, rid, "prompt.txt")).strip()
         try:
             with open(os.path.join(runs_dir, rid, "report.json"), encoding="utf-8") as f:
                 rep = json.load(f)
         except (OSError, ValueError):
             rep = {}
         if prompt:
-            runs.append(f"- runs/{rid}: {prompt} -> {rep.get('outcome', 'no report')}: "
-                        f"{str(rep.get('summary', ''))[:300]}")
+            runs.append(f"- runs/{rid}: {prompt} -> {rep.get('outcome', 'no report')}: {rep.get('summary', '')}")
     if runs:
-        out.append("## Earlier runs (each folder keeps its harness versions, traces and report)\n"
-                   + "\n".join(runs[-BRIEF_RUNS:]))
+        out.append(_listing(session, "## Earlier runs (each folder keeps its harness versions, traces and report)",
+                            runs, "earlier_runs", "earlier runs", latest=True)[0])
     codex_root = os.path.join(root, "codex")
     try:
         since = codex_since(session, codex_root)
@@ -1800,17 +1871,25 @@ def briefing(session, opening=None):
                 f"one (all of them also in {codexmod.INDEXING}/batch-N.txt), and says when the export is in. A search "
                 "that finds nothing has looked at what is indexed so far: what you need may still come. Work with "
                 "what is there; you never need to read a file again unless it changed and you rely on it.")
-    readme = _read(os.path.join(codex_root, "README.md"))
+    readme = _quoted(session, "codex/README.md", "## codex/README.md")
     if readme:
-        out.append(f"## codex/README.md\n{readme}")
+        out.append(readme)
     try:
         hits = word_hits(codex_root, session.prompt) if os.path.isdir(codex_root) else None
     except Exception:
         hits = None
     if hits:
-        out.append("## Where the request's words appear in the codex (files, with how often)\n" + "\n".join(hits))
+        ranked = [line for line in hits if line.startswith("- ")]
+        text, _ = _listing(session, "## Where the request's words appear in the codex (files, with how often)",
+                           ranked, "request_words", "files have some of the request's words, the most first")
+        out.append("\n".join([text, *(line for line in hits if not line.startswith("- "))]))
     if opening:
-        out.append(f"## The live game now (looked at just before you started; it is paused)\n{opening}")
+        title = "## The live game now (looked at just before you started; it is paused)"
+        if len(opening) > BRIEF_PART:  # (whole in a file of the run)
+            rel = whole.kept(session.run_dir, session.run_rel, "opening", opening)[1]
+            opening = whole.deliver(opening, BRIEF_PART, rel, what="What the live game shows",
+                                    holds="the briefing quotes")
+        out.append(f"{title}\n{opening}")
     return "\n\n".join(out)
 
 
@@ -1897,7 +1976,11 @@ def codex_since(session, codex_root):
             entries.append((1 if earlier else 0, path, f"- {kind}: codex/{path} (named in {names}"
                             + (f"; changed before runs/{entry['since']}, not checked since)" if earlier else ")")))
     entries.sort(key=lambda e: e[0])
-    shown = entries[:BRIEF_CHANGES]
+    # All of them; when they are more than the briefing lists, whole in a file of the run, and those that fit here
+    # (the ones named in notes.md or lib.py first). Only those listed here count as told
+    listed, shown_lines = _listing(session, "", [line for *_, line in entries], "codex_changes",
+                                   "changes to the codex since that run")
+    shown = entries[:len(shown_lines)]
     session.codex_told = {path: passages(path, texts) for _, path, _ in shown if path in pending}
     earlier = sum(1 for e in pending.values() if e["since"] != last.get("run"))
     counts = ", ".join(f"{len(diff[k])} {k}" for k in ("changed", "removed", "added") if diff[k])
@@ -1907,30 +1990,15 @@ def codex_since(session, codex_root):
     text = [head, f"{summary}. What notes.md, lib.py and earlier harnesses say about these may be out of date: check "
             "it before you rely on it. A file notes.md or lib.py names stays listed until the note or helper naming "
             f"it is edited: fix it, or, if it still holds, say so there (\"checked in runs/{session.run_id}\")."]
-    text += [line for *_, line in shown]
-    if len(entries) > BRIEF_CHANGES:
-        text.append(f"... {len(entries) - BRIEF_CHANGES} more")
-    return "\n".join(text)
+    return "\n".join(text) + listed  # (listed: the title "" and its lines, each after a newline)
 
 
 def _show(v):
+    """A probe's last value, whole (the probe's answer is delivered as every tool's)."""
     try:
-        return json.dumps(runtime.jsonable(v), indent=1)[:8000]
+        return json.dumps(runtime.jsonable(v), indent=1)
     except Exception:
-        return repr(v)[:8000]
-
-
-def _cut(text, n):
-    return text if len(text) <= n else text[: n // 2] + f"\n... ({len(text) - n} characters cut) ...\n" + text[-n // 2:]
-
-
-def _cut_lines(text, n):
-    """text's head of at most n characters, cut on a line boundary where one is near, saying what was cut."""
-    if len(text) <= n:
-        return text
-    at = text.rfind("\n", n // 2, n)
-    at = at if at > 0 else n
-    return text[:at] + f"\n... ({len(text) - at} more characters)"
+        return repr(v)
 
 
 def stage_of(text):
@@ -2026,7 +2094,7 @@ def first_message(session):
     opening = None
     try:
         opening = session.opening()
-        session.note(f"opening: {opening[:1500]}")
+        session.note(f"opening: {opening}")
     except Exception as e:
         session.note(f"opening failed: {e}")
     with open(os.path.join(session.run_dir, "prompt.txt"), "w", encoding="utf-8") as f:
@@ -2064,7 +2132,7 @@ def finish(session, started, stopped, last_text, **facts):
     report = dict(session.report or {
         "outcome": ("explored" if session.out_of_time() else
                     "INCONCLUSIVE" if re.match(r"(?i)\s*verify", session.prompt) else "not_achieved"),
-        "summary": f"{NO_REPORT} ({stopped or 'the agent ended without one'}). Last words: {last_text[:500]}",
+        "summary": f"{NO_REPORT} ({stopped or 'the agent ended without one'}). Last words: {last_text}",
         "evidence": []})
     writes = runtime.jsonable(getattr(session, "sandbox_writes", None) or session.game.writes) or []
     report.update({

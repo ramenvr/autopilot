@@ -505,7 +505,7 @@ def test_cli_prompt_and_result_frames():
     assert f["changes"][2]["text"] == ('Called /Script/Engine.Default__GameplayStatics.SetGlobalTimeDilation with '
                                        '{"TimeDilation": 0.5}')  # (no name: the path)
     assert writes[0]["why"] == "the wolf blocks Jev's path"  # (the report itself is left as it was)
-    assert len(cli.change_text({"name": "A", "property": "P", "value": "x" * 500})) == 200
+    assert cli.change_text({"name": "A", "property": "P", "value": "x" * 500}) == f'Set A.P to "{"x" * 500}"'  # (whole)
 
 
 def test_a_prompts_kind_is_read_from_its_first_words_when_jev_cant_be_asked():
@@ -1558,9 +1558,12 @@ def test_a_codex_change_named_in_lib_py_stays_listed_until_its_helper_is_edited(
     (root / "codex" / "blueprints" / "BP_Door.txt").write_text("var Locked\nvar NeedsKey", encoding="utf-8")
     assert "- changed: codex/blueprints/BP_Door.txt (named in lib.py)" in run("r2", lib.replace("return 2", "return 3"))
     assert "(named in lib.py; changed before runs/r1, not checked since)" in run("r3")  # (another helper was edited)
-    monkeypatch.setattr(session, "BRIEF_CHANGES", 0)  # (a briefing that can't list it: that run wasn't told)
-    run("r4", lib.replace("E within 150", "E with the key"))
-    monkeypatch.setattr(session, "BRIEF_CHANGES", 30)
+    monkeypatch.setattr(session, "BRIEF_LIST", 0)  # (a briefing that can't list it here: that run wasn't told)
+    told = run("r4", lib.replace("E within 150", "E with the key"))
+    assert "(1 changes to the codex since that run, one a line, whole in runs/r4/whole/codex_changes-1.txt: read " \
+           "them there)" in told
+    monkeypatch.undo()
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
     assert "not checked since" in run("r5", lib.replace("E within 150", "E with the key (checked in runs/r5)"))
     assert "Unchanged" in run("r6")
 
