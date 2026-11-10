@@ -603,9 +603,25 @@ def test_world(g, orbs):
     f = g.wait_for("log_error finding", lambda: [x for x in g.link.findings if x.get("detector") == "log_error" and "smoke test error" in x.get("summary", "")], 5)
     check("detector log_error (and a log event)", f and "smoke test error" in f[0]["summary"] and any("smoke test error" in l.get("message", "") for l in g.link.logs),
           f[0]["summary"] if f else None)
+    # What the project muted isn't reported (mute: detector names and signatures), until it is no longer in the list
+    g.req("detectors", {"mute": ["log_error"]})
+    g.call("type:UnityEngine.Debug", "LogError", message="smoke test muted error")
+    time.sleep(1.0)
+    check("detectors mute: a muted detector's finding isn't sent",
+          not [x for x in g.link.findings if "smoke test muted" in x.get("summary", "")])
+    g.req("detectors", {"mute": []})
+    g.call("type:UnityEngine.Debug", "LogError", message="smoke test unmuted error")
+    f = g.wait_for("unmuted log_error", lambda: [x for x in g.link.findings if "smoke test unmuted" in x.get("summary", "")], 5)
+    check("detectors mute: an emptied list reports it again", bool(f))
+    # Beyond the world bounds: past max_distance from the origin, when set (the player stands on the course, 1.08 m up)
+    g.req("detectors", {"max_distance": 0.5})
+    f = g.wait_for("out_of_world past max_distance", lambda: [x for x in g.link.findings if x.get("detector") == "out_of_world" and "beyond the world bounds" in x.get("summary", "")], 5)
+    check("detector out_of_world past max_distance (0.5 m)", bool(f) and "bounds_max" in f[0].get("details", {}), f[0] if f else None)
+    g.req("detectors", {"max_distance": 0})
     # Falling out of the world
+    before = len(g.link.findings)
     teleport(g, player, {"x": 30, "y": 1.08, "z": 30})
-    f = g.wait_for("long_fall/out_of_world", lambda: [x for x in g.link.findings if x.get("detector") in ("out_of_world", "long_fall")], 15)
+    f = g.wait_for("long_fall/out_of_world", lambda: [x for x in g.link.findings[before:] if x.get("detector") in ("out_of_world", "long_fall")], 15)
     check("detector out_of_world / long_fall when the player falls off the level", bool(f), [x["summary"] for x in (f or [])])
 
 

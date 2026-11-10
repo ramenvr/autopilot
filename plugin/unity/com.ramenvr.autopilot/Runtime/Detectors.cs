@@ -88,7 +88,10 @@ namespace Autopilot.Playtest
         double hudEvery = 1.0;
         double bodyEvery = 0.5;
         double? killY;  // native metres; else worked out from the level
-        double farAway = 10000.0;
+        double maxDistance;  // native metres from the origin (max_distance); 0: the level's own extent (BeyondWorld)
+        // Within this a body is never beyond the world bounds; past it, the level's extent with its margin decides
+        const double FarAway = 10000.0;
+        readonly HashSet<string> muted = new HashSet<string>();  // detector names and signatures never reported (mute)
         double teleportFactor = 3.0;  // a frame's move may be this many times what its speed covers in it
         double teleportMin = 1000.0;  // kit units (cm): a move this short is never a teleport
         double growthSeconds = 120.0;
@@ -113,6 +116,7 @@ namespace Autopilot.Playtest
         double nextHud, nextBodies;
         double fallingSince = -1;
         double levelBottom = double.NaN;
+        Bounds? levelExtent;  // what the level's solid things span (Measure; null: none)
 
         static readonly Regex Fraction = new Regex(@"(?<![\d.])(\d{1,9})\s*/\s*(\d{1,9})(?![\d.])", RegexOptions.Compiled);
 
@@ -137,6 +141,14 @@ namespace Autopilot.Playtest
             teleportMin = Json.Num(args, "teleport_min", teleportMin);
             growthSeconds = Json.Num(args, "growth_seconds", growthSeconds);
             propertyEvery = Json.Num(args, "property_every", propertyEvery);
+            maxDistance = Json.Num(args, "max_distance", maxDistance);
+            if (args != null && args.TryGetValue("mute", out var mute) && mute is IEnumerable<object> names)
+            {
+                // (the whole list each time: what is no longer in it is reported again)
+                muted.Clear();
+                foreach (var name in names)
+                    if (name is string s && s.Trim().Length > 0) muted.Add(s.Trim());
+            }
         }
 
         public void Reset()
@@ -154,6 +166,7 @@ namespace Autopilot.Playtest
         void Report(string detector, string severity, string summary, string signature, GameObject actor = null,
             Dictionary<string, object> details = null)
         {
+            if (muted.Contains(detector) || muted.Contains(signature)) return;  // the project said it isn't a bug
             counts.TryGetValue(signature, out var count);
             counts[signature] = ++count;
             if (count != 1 && count != 10 && count != 100 && count != 1000) return;
@@ -465,20 +478,54 @@ namespace Autopilot.Playtest
         double Bottom()
         {
             if (killY.HasValue) return killY.Value;
-            if (double.IsNaN(levelBottom))
-            {
-                // The lowest solid thing of the level, and 100 m below it
-                var lowest = double.PositiveInfinity;
-#if AUTOPILOT_PHYSICS
-                foreach (var c in Loaded.All<Collider>(FindObjectsInactive.Exclude))
-                {
-                    if (c == null || c.isTrigger || c.attachedRigidbody != null && !c.attachedRigidbody.isKinematic) continue;
-                    lowest = Math.Min(lowest, c.bounds.min.y);
-                }
-#endif
-                levelBottom = double.IsInfinity(lowest) ? -1000.0 : lowest - 100.0;
-            }
+            Measure();
             return levelBottom;
+        }
+
+        /// <summary>The level's solid things (colliders that don't move with physics), measured once: 100 m below the
+        /// lowest is its bottom, and what they span is its extent.</summary>
+        void Measure()
+        {
+            if (!double.IsNaN(levelBottom)) return;
+            var lowest = double.PositiveInfinity;
+            var extent = new Bounds();
+            var any = false;
+#if AUTOPILOT_PHYSICS
+            foreach (var c in Loaded.All<Collider>(FindObjectsInactive.Exclude))
+            {
+                if (c == null || c.isTrigger || c.attachedRigidbody != null && !c.attachedRigidbody.isKinematic) continue;
+                var b = c.bounds;
+                if (!Frame.Finite(b.min) || !Frame.Finite(b.max)) continue;
+                lowest = Math.Min(lowest, b.min.y);
+                if (any) extent.Encapsulate(b);
+                else extent = b;
+                any = true;
+            }
+#endif
+            levelBottom = double.IsInfinity(lowest) ? -1000.0 : lowest - 100.0;
+            levelExtent = any ? extent : (Bounds?)null;
+        }
+
+        /// <summary>Whether p is beyond the world bounds: past max_distance from the origin when set; else past 10 km
+        /// and outside the level's extent with a margin of half its size (a large world's things belong far out).
+        /// box: what it is outside of.</summary>
+        bool BeyondWorld(Vector3 p, out Bounds box)
+        {
+            var far = Math.Max(Math.Abs(p.x), Math.Max(Math.Abs(p.y), Math.Abs(p.z)));
+            if (maxDistance > 0)
+            {
+                box = new Bounds(Vector3.zero, Vector3.one * (float)(2 * maxDistance));
+                return far > maxDistance;
+            }
+            box = new Bounds(Vector3.zero, Vector3.one * (float)(2 * FarAway));
+            if (far <= FarAway) return false;
+            Measure();
+            if (!levelExtent.HasValue) return true;
+            var level = levelExtent.Value;
+            var margin = Math.Max(Math.Max(level.size.x, Math.Max(level.size.y, level.size.z)) * 0.5, FarAway * 0.5);
+            box = level;
+            box.Expand((float)(2 * margin));  // (Expand grows the size: the margin on each side)
+            return !box.Contains(p);
         }
 
         void CheckBodies(double now)
@@ -505,8 +552,9 @@ namespace Autopilot.Playtest
                 if (p.y < bottom)
                     Report("out_of_world", "warning", $"{label} is {bottom - p.y:0} m below the level (y {p.y:0.0})", "out_of_world:" + label, go,
                         new Dictionary<string, object> { ["y"] = Json.Round(p.y, 2), ["bottom"] = Json.Round(bottom, 2) });
-                else if (Math.Abs(p.x) > farAway || Math.Abs(p.y) > farAway || Math.Abs(p.z) > farAway)
-                    Report("out_of_world", "warning", $"{label} is beyond the world bounds ({p.magnitude:0} m)", "out_of_world:" + label, go);
+                else if (BeyondWorld(p, out var box))
+                    Report("out_of_world", "warning", $"{label} is beyond the world bounds ({Math.Sqrt(box.SqrDistance(p)):0} m past them)", "out_of_world:" + label, go,
+                        new Dictionary<string, object> { ["bounds_min"] = Frame.Point(box.min), ["bounds_max"] = Frame.Point(box.max) });
             }
             // long_fall: the player falling for a long time (fell through the floor or off the level)
             if (player != null)
