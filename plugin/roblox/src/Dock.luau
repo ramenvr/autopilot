@@ -1004,9 +1004,12 @@ function Dock:_listen()
 		local fresh = r:onFinding(f)
 		local count = tonumber(f.count) or 1
 		local engine = M.isEngine(f)
-		r:addFeed(M.scrub(tostring(f.summary or f.detector or "")) .. (if count > 1 then string.format(" (×%d)", count)
-			else ""), if engine then "engine" else "agent")
-		r.feed[#r.feed].tone = if engine then T.severityKind(tostring(f.severity or "")) else "bad"
+		-- (a detector's many kinds aren't a line each: Run:findingLine)
+		local line = r:findingLine(f, fresh)
+		if line then
+			r:addFeed(line, if engine then "engine" else "agent")
+			r.feed[#r.feed].tone = if engine then T.severityKind(tostring(f.severity or "")) else "bad"
+		end
 		if fresh or count > 1 then
 			self:liveChanged()
 		end

@@ -102,6 +102,11 @@ function Server.start(plugin: Plugin)
 			detectors:configure(frame.detectors)
 		end
 	end
+	host.onActed = function(frame)
+		if detectors then
+			detectors:noteActed(frame)
+		end
+	end
 	host.onDetach = function()
 		Modules.remove()
 		if detectors then

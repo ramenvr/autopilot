@@ -158,6 +158,10 @@ function Host:_onFrame(frame: any)
 	if kind == "request" then
 		self.lastRequestAt = os.clock()
 		self:_handle(frame)
+	elseif kind == "acted" then
+		if self.onActed then
+			self.onActed(frame) -- (the agent pressed or moved something: the server's teleport detector)
+		end
 	elseif kind == "run" then
 		self.runActive = frame.active == true -- (the editor's run started or ended)
 	elseif kind == "attach" then

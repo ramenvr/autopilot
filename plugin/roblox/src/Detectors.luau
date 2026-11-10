@@ -27,6 +27,7 @@ local S = Frame.SCALE
 local GROWTH_EVERY = 10 -- s of game time between actor_growth's counts
 local SWEEP_EVERY = 10 -- s between over_max's walks for number pairs (new instances are looked at as they come)
 local SWEEP_BUDGET = 500 -- instances over_max looks at a frame
+local MOVE_GRACE = 0.5 -- s after the agent's rc write or call a teleport is its own (the move comes over the network)
 local QUEUE_MAX = 200000
 
 -- Where over_max looks: the game's instances that hold its numbers (players' leaderstats and attributes too)
@@ -52,7 +53,7 @@ function Detectors.new(emit: (any) -> (), now: () -> number, screen: (() -> { [s
 	self.muted = {} -- detector names and signatures never reported (configure's mute): name -> true
 	self.config = { long_fall_seconds = 8.0, hitch_seconds = 0.75, hud_every = 0.25, scan_every = 0.5,
 		out_of_world_margin = 50.0, teleport_factor = 3.0, teleport_min = 1000.0, growth_seconds = 120.0,
-		property_every = 0.5 }
+		property_every = 0.5, teleport_after_input_seconds = 1.0 }
 	self.server = RunService:IsServer() -- (teleport, actor_growth and over_max: the server's)
 	self.started = os.clock()
 	self.falling = 0
@@ -62,6 +63,9 @@ function Detectors.new(emit: (any) -> (), now: () -> number, screen: (() -> { [s
 	self.flagged = setmetatable({}, { __mode = "k" })
 	self.humanoids = setmetatable({}, { __mode = "k" }) -- the Workspace's Humanoids (teleport)
 	self.bodies = setmetatable({}, { __mode = "k" }) -- character model -> {root, at, frames, speed}
+	self.lastInput = nil -- the agent's last key, action or UI press: {key, at (os.clock())} (the editor's notes)
+	self.lastMoveAt = nil -- os.clock() of the agent's last rc write or call
+	self.heldKeys = {} -- the keys the agent holds, by the notes (a hold renewed isn't a press)
 	self.growth = {} -- things counted by kind, one sample every 10 s of game time
 	self.growthAt = 0
 	self.propertyAt = 0
@@ -100,6 +104,9 @@ function Detectors:setActive(on: boolean)
 		self.scanAt = 0
 		self.flagged = setmetatable({}, { __mode = "k" })
 		self.bodies = setmetatable({}, { __mode = "k" })
+		self.lastInput = nil
+		self.lastMoveAt = nil
+		self.heldKeys = {}
 		self.growth = {}
 		self.growthAt = self.now()
 		self.propertyAt = 0
@@ -135,6 +142,44 @@ function Detectors:configure(args: any)
 			end
 		end
 	end
+end
+
+-- A key's axis (the mouse turning, a stick, a trigger): moving it isn't a press
+local function isAxis(key: string): boolean
+	return key == "MouseX" or key == "MouseY" or string.sub(key, -4) == "Axis"
+		or string.match(key, "^Gamepad_%a+[XY]$") ~= nil
+end
+
+-- What the agent did to the game, as the editor tells the server when it passes a request on (Editor.luau, "acted"):
+-- what = "input" (a key, an action or a UI element pressed: key its name, mode the request's) or "move" (an rc write
+-- or call). A teleport right after a move is the agent's own (not told); right after a press, it is told as info,
+-- with the key (a reset key may be meant to teleport).
+function Detectors:noteActed(note: any)
+	if type(note) ~= "table" then
+		return
+	end
+	local now = os.clock()
+	if note.what == "move" then
+		self.lastMoveAt = now
+		return
+	end
+	local key = tostring(note.key or "")
+	local mode = tostring(note.mode or "")
+	if mode == "release_all" then
+		self.heldKeys = {}
+		return
+	elseif mode == "release" then
+		self.heldKeys[key] = nil
+		return
+	elseif key == "" or isAxis(key) then
+		return
+	elseif mode == "hold" then
+		if self.heldKeys[key] then
+			return -- (held already: the hold renewed)
+		end
+		self.heldKeys[key] = true
+	end
+	self.lastInput = { key = key, at = now }
 end
 
 local function noise(message: string): boolean
@@ -379,7 +424,9 @@ end
 
 -- teleport: a character (a Model with a Humanoid and a HumanoidRootPart: the players' and NPCs') moved farther in one
 -- frame than teleport_factor times its speed allows (at least teleport_min kit units), after 5 frames of following it:
--- a respawn, a bad snap, a body pushed out of a wall, or a move by the brain (as Godot's, told too). A suspicion.
+-- a respawn, a bad snap, a body pushed out of a wall. A suspicion. Not within MOVE_GRACE of the agent's own rc write
+-- or call (it moved it: a verification's setup); within teleport_after_input_seconds of the agent's key, action or UI
+-- press, info, with details.after_input {key, seconds} (as the other engines').
 function Detectors:_teleports(dt: number)
 	local factor, least = self.config.teleport_factor, self.config.teleport_min
 	for h in pairs(self.humanoids) do
@@ -410,14 +457,27 @@ function Detectors:_teleports(dt: number)
 		if track.frames > 5 then
 			local allowed = math.max(least, factor * math.max(speed, track.speed) * dt)
 			local moved = (pos - track.at).Magnitude * S
-			if moved > allowed then
+			-- (the agent's own move, an rc write or call, reaches the server over the network: not the game's)
+			local agentMoved = self.lastMoveAt ~= nil and clock - self.lastMoveAt <= MOVE_GRACE
+			if moved > allowed and not agentMoved then
 				local kind = Detectors.kindOf(model)
-				self:_finding({ detector = "teleport", severity = "suspicion",
-					summary = string.format("%s moved %.0f units in one frame (at most %.0f expected)", kind, moved,
-						allowed),
-					signature = "teleport:" .. kind, actor = model.Name, where = kit1(pos),
-					details = { from = kit1(track.at), to = kit1(pos), moved = math.round(moved),
-						allowed = math.round(allowed) } })
+				local summary = string.format("%s moved %.0f units in one frame (at most %.0f expected)", kind, moved,
+					allowed)
+				local details: any = { from = kit1(track.at), to = kit1(pos), moved = math.round(moved),
+					allowed = math.round(allowed) }
+				local input = self.lastInput
+				local since = if input then clock - input.at else math.huge
+				if input and since <= self.config.teleport_after_input_seconds then
+					-- (right after the agent pressed something: maybe what that key does, a reset; told, as info)
+					details.after_input = { key = input.key, seconds = Frame.r2(since) }
+					self:_finding({ detector = "teleport", severity = "info",
+						summary = summary .. " right after the agent pressed " .. input.key,
+						signature = "teleport:" .. kind .. " after " .. input.key, actor = model.Name,
+						where = kit1(pos), details = details })
+				else
+					self:_finding({ detector = "teleport", severity = "suspicion", summary = summary,
+						signature = "teleport:" .. kind, actor = model.Name, where = kit1(pos), details = details })
+				end
 			end
 		end
 		track.at = pos
