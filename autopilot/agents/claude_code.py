@@ -33,6 +33,7 @@ from .session import (
     first_message,
     open_session,
     system_prompt,
+    unknown_args,
     watch_steering,
 )
 from .session import effort as effort_for
@@ -73,8 +74,11 @@ def prompt_option(system, windows=os.name == "nt"):
 def _tools(session):
     from claude_agent_sdk import create_sdk_mcp_server, tool
 
-    def wrap(fn):
+    def wrap(name, fn):
         async def inner(args):
+            refused = unknown_args(name, args)
+            if refused:
+                return {"content": [{"type": "text", "text": refused}], "isError": True}
             t0 = time.time()
             try:
                 text = await asyncio.to_thread(fn, args)
@@ -95,7 +99,7 @@ def _tools(session):
         "restart_level": lambda a: session.restart_level(a.get("level")),
         "report": lambda a: session.do_report(a),
     }
-    tools = [tool(name, description, schema)(wrap(bodies[name])) for name, description, schema in TOOL_SPECS]
+    tools = [tool(name, description, schema)(wrap(name, bodies[name])) for name, description, schema in TOOL_SPECS]
     server = create_sdk_mcp_server("game", tools=tools)
     names = [f"mcp__game__{name}" for name, _, _ in TOOL_SPECS]
     return server, names

@@ -192,6 +192,11 @@ class Server:
 
     def call(self, name, args):
         """The call's result, or "still going" once it has taken WAIT_SECONDS (wait gives it then)."""
+        from .agents.session import unknown_args
+
+        refused = unknown_args(name, args, [(t["name"], t["description"], t["inputSchema"]) for t in tools()])
+        if refused:
+            return text(refused, error=True)
         if name in FILE_TOOLS:
             return self.forward(name, args)
         with self.lock:

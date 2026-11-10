@@ -33,17 +33,19 @@ import time
 import traceback
 
 from .. import engines, transcripts
-from .files import FILE_TOOLS, FileTools
+from .files import FILE_TOOL_SPECS, FILE_TOOLS, FileTools
 from .session import (
     PACKAGE,
     PROBING,
     READING,
     REPORT_FIELDS,
+    TOOL_SPECS,
     WRITING,
     finish,
     first_message,
     open_session,
     system_prompt,
+    unknown_args,
     watch_steering,
 )
 
@@ -172,16 +174,20 @@ class Desk:
             return text_result(f"This run has ended ({self.ended}). Tell the user its outcome; start_run starts "
                                "another.", error=True)
         s = self.session
+        refused = unknown_args(tool, args, TOOL_SPECS + (FRAMES_SPEC,) + FILE_TOOL_SPECS)
+        if refused:
+            self.last_call = time.time()
+            return text_result(refused, error=True)
         if tool in FILE_TOOLS:
             self.last_call = time.time()
-            s.tool_call(tool, args, log=f"{tool}: {json.dumps(args)[:600]}")
+            s.tool_call(tool, args, log=f"{tool}: {json.dumps(args)}")
             s.say(WRITING if tool in ("write_file", "edit_file") else READING)
             return text_result(self.files.call(tool, args))  # (no clock: file tools take no game time)
         if tool not in GAME_TOOLS:
             return text_result(f"No tool {tool!r} here.", error=True)
         with self.lock:
             self.busy, self.last_call = True, time.time()
-            s.tool_call(tool, args, log=f"tool {tool}: {json.dumps(args)[:600]}")
+            s.tool_call(tool, args, log=f"tool {tool}: {json.dumps(args)}")
             if tool in ("probe", "describe_frames"):
                 s.say(PROBING)
             t0 = time.time()

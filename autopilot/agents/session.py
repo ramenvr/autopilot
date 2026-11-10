@@ -351,6 +351,26 @@ TOOL_SPECS = (
 REPORT_FIELDS = ("outcome", "summary", "evidence", "findings", "visual")
 
 
+def unknown_args(tool, args, specs=TOOL_SPECS):
+    """Why a call of `tool` is refused for argument names its schema (in specs: (name, description, schema)) doesn't
+    take, else None: a name it doesn't know would go unread, and the agent believe it was passed. Worded as the engine
+    plugins refuse a game function's ("unknown argument(s) X; it takes A, B"); an argument another tool in specs takes
+    is named with that tool (start_run's frames_fps is run_harness's)."""
+    schemas = {name: schema or {} for name, _, schema in specs}
+    if tool not in schemas or not isinstance(args, dict):
+        return None
+    takes = list(schemas[tool].get("properties") or {})
+    unknown = [k for k in args if k not in takes]
+    if not unknown:
+        return None
+    why = f"{tool}: unknown argument(s) {', '.join(unknown)}; it takes {', '.join(takes) or 'no arguments'}."
+    for k in unknown:
+        owners = [name for name, schema in schemas.items() if name != tool and k in (schema.get("properties") or {})]
+        if owners:
+            why += f" {k} is an argument of {' and '.join(owners)}."
+    return why + " Nothing was done: call it again with only the arguments it takes."
+
+
 def model(provider="anthropic"):
     """The agent's language model for this run: AUTOPILOT_MODEL, else the provider's (MODELS; Anthropic's for
     another)."""
