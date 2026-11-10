@@ -149,7 +149,8 @@ def test_an_argument_name_a_tool_doesnt_take_is_refused_never_dropped(started):
     assert refused["isError"] and desk.session.report is None
     assert "unknown argument(s) notes; it takes outcome, summary, evidence, findings, visual" in text_of(refused)
     assert "it takes no arguments" in text_of(front.call("snapshot", {"what": "all"}))
-    assert "episode is an argument of describe_frames and frames" in text_of(front.call("restart_level", {"episode": 2}))
+    restart = front.call("restart_level", {"episode": 2})
+    assert "episode is an argument of describe_frames and frames" in text_of(restart)
     assert "unknown argument(s) file" in text_of(front.call("read_file", {"file": "runs/r1/REQUEST.md"}))
     assert "unknown argument(s) timeout" in text_of(front.call("wait", {"timeout": 5}))
     # And at the agent service, for a front older than the check

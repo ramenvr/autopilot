@@ -1,7 +1,7 @@
 """The Unreal plugin on one engine, live: the engine's own third-person template played headless (-nullrhi: nothing
 is drawn) with an Autopilot build in its Plugins/, driven through the bridge the way a brain drives it. Checks the ops
-whose code differs between engine versions: `rc` reads (sets and maps) and its refusal of an unknown argument or struct field, `key` (the input path), an Enhanced Input
-action, `move`, `view` and `screen`.
+whose code differs between engine versions: `rc` reads (sets and maps) and its refusal of an unknown argument or
+struct field, `key` (the input path), an Enhanced Input action, `move`, `view` and `screen`.
 
     python tools/engine_smoke.py --engine "C:/Program Files/Epic Games/UE_5.3" --plugin <an Autopilot build>
         [--port 8790] [--templates <an engine with Templates/, for one installed without them>]
