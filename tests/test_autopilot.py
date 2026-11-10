@@ -2301,3 +2301,16 @@ def test_another_players_requests_say_whose_they_are():
     game.press("E")
     sent = [(op, a.get("player")) for op, a in link.sent]
     assert ("key", 2) in sent and ("view", 2) in sent and ("screen", 2) in sent and ("key", None) in sent
+
+
+def test_a_harness_may_log_its_own_kind_and_wall_fields(tmp_path):
+    from autopilot.runtime import Trace
+
+    trace = Trace(str(tmp_path / "trace1.jsonl"))
+    trace("swing_result", kind="heavy", wall=3, t=1.5, hit=True)
+    trace("plain", t=2)
+    trace.close()
+    first, second = [json.loads(line) for line in (tmp_path / "trace1.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert first["kind"] == "swing_result" and first["kind_"] == "heavy" and first["wall_"] == 3
+    assert first["t"] == 1.5 and first["hit"] is True and isinstance(first["wall"], float)
+    assert second == {"kind": "plain", "wall": second["wall"], "t": 2}

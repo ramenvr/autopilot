@@ -128,6 +128,10 @@ def jsonable(x, depth=0):
     return str(x)
 
 
+# The keys every trace event has: a logged field of the same name is kept as <name>_
+RESERVED = ("kind", "wall")
+
+
 class Trace:
     def __init__(self, path):
         self.path = path
@@ -136,8 +140,12 @@ class Trace:
         self.events = []
         self.lock = threading.Lock()  # (observe runs in its own thread, beside the executor)
 
-    def __call__(self, kind, **fields):
-        e = {"kind": kind, "wall": round(time.time(), 3), **jsonable(fields)}
+    def __call__(self, kind, /, **fields):
+        # kind is positional only, so a harness's game.log("swing", kind="heavy") keeps its own field "kind"; a field
+        # named like an event key (kind, wall) is kept beside it with a _ after its name
+        fields = jsonable(fields)
+        e = {"kind": kind, "wall": round(time.time(), 3)}
+        e.update({(k + "_" if k in RESERVED else k): v for k, v in fields.items()})
         with self.lock:
             self.events.append(e)
             if not self.f.closed:
