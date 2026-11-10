@@ -68,6 +68,7 @@ var shown = null  # the run shown
 var composing := false
 var tab := "main"  # main (live or result) | feed | policy
 var wide := false
+var _groups_open := {}  # "<run id>|<detector>" -> true: a grouped detector whose own cards are shown (Show each)
 
 var _conn := ""
 var _tick := 0.0
@@ -2238,8 +2239,16 @@ func _render_result() -> void:
 			fv.add_child(_agent_card(Model.scrub(a)))
 		if not engine.is_empty():
 			fv.add_child(_caps("Engine findings · %d" % engine.size()))
-			for f in engine:
-				fv.add_child(_engine_card(r, f))
+			for g in Model.finding_groups(engine):
+				if not g.has("detector"):
+					fv.add_child(_engine_card(r, g.finding))
+					continue
+				# (a detector with many kinds: one card naming them all; Show each opens their own cards under it)
+				var key := "%s|%s" % [r.id, g.detector]
+				fv.add_child(_group_card(r, g.detector, g.findings, key))
+				if _groups_open.has(key):
+					for f in g.findings:
+						fv.add_child(_engine_card(r, f))
 
 
 ## A code box (evidence, what was changed): the well plate, mono (11.5; 11 when narrow) in TEXT2, lines 4 apart; the
@@ -2413,6 +2422,41 @@ func _agent_card(text: String) -> PanelContainer:
 		DisplayServer.clipboard_set(text)
 		_set_status("Copied")
 	b.add_child(_button("Copy", "AutopilotQuiet", copy, true))
+	v.add_child(b)
+	return pv[0]
+
+
+## One card for a detector's many kinds (Model.finding_groups): its highest severity, the detector, how many kinds, the
+## first one's words, every kind (mono, wrapped: Cone ×12 · Rail), and Show each / Hide for their own cards.
+func _group_card(r, detector: String, findings: Array, key: String) -> PanelContainer:
+	var pv := _finding_plate()
+	var v: VBoxContainer = pv[1]
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", HT.px(8))
+	var sev := Model.group_severity(findings)
+	h.add_child(HT.tag(sev if sev != "" else "info", severity_kind(sev)))
+	var det := _label(detector, "AutopilotMonoDim", false)
+	det.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	det.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	det.clip_text = true
+	h.add_child(det)
+	var kl := _label("%d kinds" % findings.size(), "AutopilotMono", false)
+	kl.add_theme_font_override("font", HT.font("mono_bold"))
+	kl.add_theme_font_size_override("font_size", HT.px(12))
+	kl.add_theme_color_override("font_color", HT.TEXT)
+	kl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	h.add_child(kl)
+	v.add_child(h)
+	v.add_child(_label(Model.scrub(str(findings[0].get("summary", ""))), "AutopilotStrong"))
+	v.add_child(_label(Model.group_kinds(r, findings, " ×%d", " · ", " (not a bug)"), "AutopilotMonoDim"))
+	var b := _flow(6)
+	var toggle := func() -> void:
+		if _groups_open.has(key):
+			_groups_open.erase(key)
+		else:
+			_groups_open[key] = true
+		_render_run()
+	b.add_child(_button("Hide" if _groups_open.has(key) else "Show each", "AutopilotQuiet", toggle, true))
 	v.add_child(b)
 	return pv[0]
 
@@ -2900,9 +2944,14 @@ func _on_finding(f: Dictionary) -> void:
 	var count := int(f.get("count", 1))
 	# (the engine's findings after ENGINE in their severity's colors; the agent's after AGENT, always red)
 	var engine := Model.Run.is_engine(f)
-	active.add_feed("%s%s" % [Model.scrub(str(f.get("summary", f.get("detector", "")))), (" (×%d)" % count) if count > 1 else ""],
-		"engine" if engine else "agent")
-	active.feed[-1]["tone"] = severity_kind(str(f.get("severity", ""))) if engine else "bad"
+	var text := "%s%s" % [Model.scrub(str(f.get("summary", f.get("detector", "")))), (" (×%d)" % count) if count > 1 else ""]
+	# (a detector's first GROUP_AT kinds each have their lines; the next once, saying there are more; then none)
+	var index: int = active.detector_index(f)
+	if index == Model.GROUP_AT and fresh:
+		text = "%s (and more %s findings: all of them are in the result)" % [Model.scrub(str(f.get("summary", ""))), str(f.get("detector", ""))]
+	if index < Model.GROUP_AT or (index == Model.GROUP_AT and fresh):
+		active.add_feed(text, "engine" if engine else "agent")
+		active.feed[-1]["tone"] = severity_kind(str(f.get("severity", ""))) if engine else "bad"
 	if fresh or count > 1:
 		_live_changed()
 

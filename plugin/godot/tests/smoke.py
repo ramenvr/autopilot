@@ -83,7 +83,7 @@ def run(c, brain, link):
             ctx and ctx.get("project_dir"))
     controls = {x["name"]: x for x in ctx["controls"]}
     c.check("context controls: the game's actions (no built-in ui_*)", sorted(controls) == ["interact", "jump", "move_back", "move_forward",
-            "move_left", "move_right", "pause_menu", "sprint"], str(sorted(controls)))
+            "move_left", "move_right", "pause_menu", "reset", "sprint"], str(sorted(controls)))
     c.check("context controls (Unreal key names)", controls.get("move_forward", {}).get("keys") == ["W", "Up"]
             and controls.get("jump", {}).get("keys") == ["SpaceBar"], str(controls.get("move_forward")))
 
@@ -526,11 +526,27 @@ def run(c, brain, link):
             and om[0]["details"] == {"property": "health", "value": 130, "max_property": "max_health", "max": 100}
             and om[0]["summary"] == "game_state health is 130, above max_health 100", str(om and om[0]))
     rc("property", objectPath="/root/GameState", propertyName="health", propertyValue={"health": 50}, access="WRITE_ACCESS")
-    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": 0, "y": 0, "z": 0}}, access="WRITE_ACCESS")
-    tp = until(lambda: [f for f in link.findings if f.get("detector") == "teleport"], 3)
-    c.check("detector teleport (a body moved too far in one frame)", tp and tp[0]["signature"] == "teleport:player"
+    # teleport: not what the agent moved itself (an rc write); right after the agent's key (R: the game's reset, back
+    # to the start) info, naming the key; the game's own (a fall below -20 m respawns the player) a suspicion
+    def teleports():
+        return [f for f in link.findings if f.get("detector") == "teleport"]
+
+    before = len(teleports())
+    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": 0, "y": 0.1, "z": -15}}, access="WRITE_ACCESS")
+    time.sleep(1.5)
+    c.check("no teleport for the agent's own move (an rc write of the player's position)", len(teleports()) == before, str(teleports()[before:]))
+    req("key", {"key": "R", "mode": "press"})
+    tp = until(lambda: teleports()[before:], 3)
+    c.check("detector teleport right after the agent's key: info, the key named, details.after_input", tp and tp[0]["signature"] == "teleport:player after R"
+            and tp[0]["severity"] == "info" and tp[0]["summary"].endswith(" right after the agent pressed R")
+            and tp[0]["details"]["after_input"]["key"] == "R" and 0 <= tp[0]["details"]["after_input"]["seconds"] <= 1
+            and tp[0]["details"]["moved"] > 1000 and _near(tp[0]["details"]["to"], (0, 0, 0), 2), str(tp and tp[0]))
+    before = len(teleports())
+    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": 50, "y": 0, "z": 0}}, access="WRITE_ACCESS")
+    tp = until(lambda: teleports()[before:], 6)
+    c.check("detector teleport (the game's own: a fall respawns the player): a suspicion", tp and tp[0]["signature"] == "teleport:player"
             and tp[0]["severity"] == "suspicion" and tp[0]["details"]["moved"] > 1000 and tp[0]["details"]["allowed"] >= 1000
-            and _near(tp[0]["details"]["to"], (0, 0, 0), 2), str(tp and tp[0]))
+            and "after_input" not in tp[0]["details"] and _near(tp[0]["details"]["to"], (0, 0, 0), 2), str(tp and tp[0]))
     walk_to(req, "/root/Level/Lever", stop_short=150)
     result = {}
     th = threading.Thread(target=lambda: result.update(req("watch", {"objects": ["/root/Level/Gate"], "seconds": 0.6})))
@@ -583,10 +599,14 @@ def run(c, brain, link):
     c.check("detectors op", req("detectors", {"enabled": True, "hitch_seconds": 1.0}) == {})
     # actor_growth: 60 nodes of one kind more within growth_seconds (10 here)
     req("detectors", {"growth_seconds": 10})
+    # (and a part of the level streamed in at the same time: 60 bodies saved inside its scene, not a leak)
+    rc("call", objectPath="/root/GameState", functionName="stream_chunk", parameters={"n": 60})
     rc("call", objectPath="/root/GameState", functionName="leak", parameters={"n": 60})
     ag = until(lambda: [f for f in link.findings if f.get("detector") == "actor_growth"], 25, 0.2)
     c.check("detector actor_growth (a leak)", ag and ag[0]["signature"] == "actor_growth:Area3D" and ag[0]["details"]["to"] >= 60
             and ag[0]["details"]["seconds"] == 10, str(ag and ag[0]))
+    c.check("actor_growth: not what a streamed level part brought (its saved bodies)",
+            not [f for f in link.findings if f.get("signature") == "actor_growth:StaticBody3D"], str(ag))
     req("detectors", {"growth_seconds": 120})
     c.check("timestep op", "note" in req("timestep", {"fixed": True, "fps": 30}) and req("timestep", {"fixed": False}) == {})
 

@@ -661,6 +661,22 @@ class Run:
 			return
 		add_feed(tr.text, "status")
 
+	## Where an engine finding's signature stands among its detector's in this run (first seen first, from 0; -1: not
+	## the engine's): the feed tells a detector's first GROUP_AT, then once that there are more, then nothing.
+	func detector_index(f: Dictionary) -> int:
+		if not is_engine(f):
+			return -1
+		var d := str(f.get("detector", ""))
+		var sig := str(f.get("signature", f.get("summary", "")))
+		var i := 0
+		for g in findings:
+			if not is_engine(g) or str(g.get("detector", "")) != d:
+				continue
+			if str(g.get("signature", g.get("summary", ""))) == sig:
+				return i
+			i += 1
+		return i
+
 	func on_finding(f: Dictionary) -> bool:
 		var sig := str(f.get("signature", f.get("summary", "")))
 		for i in findings.size():
@@ -761,10 +777,76 @@ static func report_markdown(r) -> String:
 		lines += ["", "## Findings", ""]
 		for a in ag:
 			lines.append("- [agent] " + a)
-		for f in r.engine_findings():
+		for g in finding_groups(r.engine_findings()):
+			if g.has("detector"):
+				# (a detector with many kinds: one line naming every kind)
+				lines.append("- [engine · %s · %s] %d kinds: %s — e.g. %s" % [group_severity(g.findings), g.detector,
+					g.findings.size(), group_kinds(r, g.findings, " (×%d)", ", ", " (not a bug)"), scrub(str(g.findings[0].get("summary", "")))])
+				continue
+			var f: Dictionary = g.finding
 			var loc := where_text(f.get("where"))
 			var count := int(f.get("count", 1))
 			lines.append("- [engine · %s · %s] %s%s%s%s" % [str(f.get("severity", "")), str(f.get("detector", "")),
 				scrub(str(f.get("summary", ""))), (" (×%d)" % count) if count > 1 else "", (" at %s cm" % loc) if loc != "" else "",
 				" (not a bug)" if r.not_a_bug.has(str(f.get("signature", ""))) else ""])
 	return "\n".join(lines) + "\n"
+
+
+## A detector with more kinds than this among a run's engine findings is grouped: one report line, one card, few feed
+## lines (the same in every engine).
+const GROUP_AT := 3
+
+
+## What a finding is of: its signature without its detector's "<detector>:" (out_of_world:Cone: Cone), else the summary.
+static func finding_kind(f: Dictionary) -> String:
+	var sig := str(f.get("signature", ""))
+	var prefix := str(f.get("detector", "")) + ":"
+	if prefix != ":" and sig.begins_with(prefix):
+		sig = sig.substr(prefix.length())
+	return sig if sig != "" else str(f.get("summary", ""))
+
+
+## The engine findings in order, a detector with more than GROUP_AT signatures as one group where its first one was:
+## [{"finding": f} | {"detector": d, "findings": [f, ...]}].
+static func finding_groups(engine: Array) -> Array:
+	var by := {}
+	for f in engine:
+		var d := str(f.get("detector", ""))
+		if not by.has(d):
+			by[d] = []
+		by[d].append(f)
+	var out := []
+	var placed := {}
+	for f in engine:
+		var d := str(f.get("detector", ""))
+		if by[d].size() <= GROUP_AT:
+			out.append({"finding": f})
+		elif not placed.has(d):
+			placed[d] = true
+			out.append({"detector": d, "findings": by[d]})
+	return out
+
+
+## The highest severity of some findings: error, warning, suspicion, info (another ranks as warning).
+static func group_severity(findings: Array) -> String:
+	var rank := {"info": 0, "suspicion": 1, "warning": 2, "error": 3}
+	var best := ""
+	var best_rank := -1
+	for f in findings:
+		var s := str(f.get("severity", "")).strip_edges()
+		var n: int = rank.get(s, 2)
+		if n > best_rank:
+			best_rank = n
+			best = s
+	return best
+
+
+## Every kind of a group, in order of first seen: count_fmt after a kind seen more than once, dismissed after one marked
+## not a bug.
+static func group_kinds(r, findings: Array, count_fmt: String, sep: String, dismissed: String) -> String:
+	var parts := []
+	for f in findings:
+		var count := int(f.get("count", 1))
+		parts.append(scrub(finding_kind(f)) + ((count_fmt % count) if count > 1 else "")
+			+ (dismissed if r.not_a_bug.has(str(f.get("signature", ""))) else ""))
+	return sep.join(parts)

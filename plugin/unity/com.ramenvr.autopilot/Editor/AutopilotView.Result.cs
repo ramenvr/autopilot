@@ -84,7 +84,12 @@ namespace Autopilot.Playtest.Editor
             {
                 var section = Box("col stack-8");
                 section.Add(Lbl($"Engine findings · {engine.Count}"));
-                foreach (var f in engine) section.Add(EngineCard(run, f, client));
+                // (a detector with many kinds, one per actor class: one card, its own cards under "Show each")
+                foreach (var group in FindingGroups.Of(engine))
+                {
+                    if (group.Count == 1) section.Add(EngineCard(run, group[0], client));
+                    else section.Add(EngineGroupCard(run, group, client));
+                }
                 section.style.marginBottom = Wide ? 6 : 4;
                 box.Add(section);
             }
@@ -289,6 +294,53 @@ namespace Autopilot.Playtest.Editor
             return card;
         }
 
+        /// <summary>The detectors' groups shown with their own cards ("Show each"): run id + "/" + detector, while the
+        /// window lives (a rebuild keeps them).</summary>
+        readonly HashSet<string> shownGroups = new HashSet<string>();
+
+        /// <summary>One card for a detector with many kinds (FindingGroups): its highest severity, "N kinds", the first
+        /// finding's words, every kind with its count, and Show each / Hide for the findings' own cards.</summary>
+        VisualElement EngineGroupCard(AutopilotRun run, List<Dictionary<string, object>> group, PlaytestClient client)
+        {
+            var wrap = Box("col stack-8");
+            var card = Card("plate tight stack-6");
+            var head = Row();
+            var severity = FindingGroups.Highest(group);
+            head.Add(Tag(severity, SeverityTone(severity)));
+            var detector = Json.Str(group[0], "detector");
+            var det = L(detector, "mono tiny t-muted grow nowrap");
+            det.style.marginLeft = 8;
+            head.Add(det);
+            head.Add(L($"{group.Count} kinds", "mono-700 small"));
+            card.Add(head);
+            card.Add(L(AutopilotText.Scrub(Json.Str(group[0], "summary")), "finding-title"));
+            card.Add(L(string.Join(" · ", group.Select(f =>
+            {
+                var count = (int)Json.Num(f, "count", 1);
+                return FindingGroups.KindOf(f) + (count > 1 ? " ×" + count : "");
+            })), "mono tiny t-muted"));
+            var each = Box("col stack-8");
+            foreach (var f in group) each.Add(EngineCard(run, f, client));
+            var key = run.Id + "/" + detector;
+            void Show(bool on) => each.style.display = on ? DisplayStyle.Flex : DisplayStyle.None;
+            Show(shownGroups.Contains(key));
+            var actions = Box("buttons");
+            VisualElement toggle = null;
+            toggle = Btn(shownGroups.Contains(key) ? "Hide" : "Show each", () =>
+            {
+                var on = !shownGroups.Contains(key);
+                if (on) shownGroups.Add(key);
+                else shownGroups.Remove(key);
+                Show(on);
+                toggle.Q<Label>().text = on ? "Hide" : "Show each";
+            }, "quiet small");
+            actions.Add(toggle);
+            card.Add(actions);
+            wrap.Add(card);
+            wrap.Add(each);
+            return wrap;
+        }
+
         VisualElement EngineCard(AutopilotRun run, Dictionary<string, object> f, PlaytestClient client)
         {
             var card = Card("plate tight stack-6");
@@ -411,8 +463,15 @@ namespace Autopilot.Playtest.Editor
                 sb.AppendLine("## Findings");
                 sb.AppendLine();
                 foreach (var n in notes) sb.AppendLine("- [agent] " + n);
-                foreach (var f in engine)
+                // (a detector with many kinds, one per actor class: one line naming every kind)
+                foreach (var group in FindingGroups.Of(engine))
                 {
+                    if (group.Count > 1)
+                    {
+                        sb.AppendLine(FindingGroups.ReportLine(group, run.NotABug));
+                        continue;
+                    }
+                    var f = group[0];
                     var where = Json.Obj(f, "where");
                     var at = where != null ? $" at {Json.Num(where, "X", 0):0}, {Json.Num(where, "Y", 0):0}, {Json.Num(where, "Z", 0):0} cm" : "";
                     var count = (int)Json.Num(f, "count", 1);

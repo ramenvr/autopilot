@@ -172,10 +172,17 @@ public:
 	void Reset();
 	void Tick(UWorld* World, double RealDelta);
 	void OnLogLines(const TArray<FPlaytestLogCapture::FLine>& Lines, double GameTime);
+	/** The agent service pressed something in the game: a key or an input action going down, a UI element (Key: its
+	 *  name). A teleport soon after is still told, as info, saying so: a key that moves the player (a reset) may be meant. */
+	void NoteAgentInput(const FString& Key);
+	/** The agent service moved or changed something directly (rc: a property written, a function called): a teleport in
+	 *  the next frames is its own, not the game's, and isn't told. */
+	void NoteAgentMove();
 
 	bool bEnabled = true;
 	double TeleportFactor = 3.0;
 	double TeleportMin = 1000.0;
+	double TeleportAfterInputSeconds = 1.0;
 	double LongFallSeconds = 8.0;
 	double HitchSeconds = 0.75;
 	double GrowthSeconds = 120.0;
@@ -235,6 +242,9 @@ private:
 	double NextGrowthSample = 0;
 	double NextPropertyCheck = 0;
 	double NextHudCheck = 0;
+	FString AgentInputKey;  // the agent's last key, action or UI element pressed (NoteAgentInput)
+	double AgentInputTime = -1;  // its game time (-1: none in this world)
+	int32 AgentMoveFrames = 0;  // frames that advance game time left in which a teleport is the agent's own move
 
 	struct FPawnTrack
 	{

@@ -430,6 +430,54 @@ def test_the_detectors_as_godots_teleport_actor_growth_over_max():
     assert "teleports" in guide and "actor growth" in guide and "No `clamp`" in guide
 
 
+def test_a_teleport_the_agent_made_is_not_the_games():
+    """The edit side tells the server what the agent did as it passes a request on (the server sees the characters,
+    the client gets the keys): a teleport right after the agent's own rc write or call is not told; right after its key,
+    action or UI press it is info, saying the key (a reset key may be meant to teleport), with details.after_input."""
+    sources = _sources()
+    detectors, editor = sources["Detectors"], sources["Editor"]
+    assert "teleport_after_input_seconds = 1.0" in detectors and "MOVE_GRACE = 0.5" in detectors
+    assert "function Detectors:noteActed(note: any)" in detectors
+    assert 'if moved > allowed and not agentMoved then' in detectors
+    assert 'detector = "teleport", severity = "info"' in detectors
+    assert 'summary .. " right after the agent pressed " .. input.key' in detectors
+    assert '"teleport:" .. kind .. " after " .. input.key' in detectors
+    assert "details.after_input = { key = input.key, seconds = Frame.r2(since) }" in detectors
+    assert "self.heldKeys[key] then" in detectors  # (a hold renewed isn't a press)
+    assert "function Editor.acted(op: string, args: any): any" in editor
+    assert 'acted.to = "server"' in editor and 'acted.type = "acted"' in editor
+    request = editor[editor.index("function Editor:_onRequest("):]
+    # the agent's act is noted before the request goes on
+    assert request.index("local acted = Editor.acted(op, args)") < request.index('if op == "rc" then')
+    assert 'kind == "acted"' in sources["Host"] and "detectors:noteActed(frame)" in sources["Server"]
+    readme = open(os.path.join(ROOT, "plugin", "roblox", "README.md"), encoding="utf-8").read()
+    row = next(line for line in readme.splitlines() if line.startswith("| `detectors` |"))
+    for word in ("`teleport_after_input_seconds`", "`details.after_input`", "right after the agent pressed"):
+        assert word in row, word
+    assert "counts too" not in row
+    guide = open(os.path.join(ROOT, "autopilot", "engines", "roblox.md"), encoding="utf-8").read()
+    assert "after_input" in guide and "is one too" not in guide
+
+
+def test_a_detectors_many_kinds_are_told_once():
+    """A detector with more than 3 kinds of finding in a run (an out_of_world for each of 33 classes) is one report
+    line listing every kind, one result card (its own cards on Show each), and a feed line for its first 3 kinds and
+    one saying there are more, as the other engines' docks."""
+    sources = _sources()
+    model, page, dock = sources["RunModel"], sources["RunPage"], sources["Dock"]
+    assert "M.GROUP_AT = 3" in model and "#list <= M.GROUP_AT" in model
+    assert '"- [engine · %s · %s] %d kinds: %s — e.g. %s"' in model
+    assert '" (not a bug)"' in model and 'string.format(" (×%d)", count)' in model
+    assert "error = 3, warning = 2, suspicion = 1, info = 0" in model
+    assert '" (and more " .. det .. " findings: all of them are in the result)"' in model
+    assert "index < M.GROUP_AT" in model and "index == M.GROUP_AT and fresh" in model
+    assert "local line = r:findingLine(f, fresh)" in dock
+    assert "function RunPage:_groupCard(" in page and '"Show each"' in page and '"Hide"' in page
+    assert "M.findingGroups(engine)" in page and '"%d kinds"' in page
+    for text in (model, page):
+        assert "more)" not in text.replace("(and more", "")  # (no "+N more" that hides kinds)
+
+
 class PlacelessLink(ThingsLink):
     """transforms as the plugin answers an instance with no place in the world (a script, a value, a GUI object):
     its fields null, `active` still there."""

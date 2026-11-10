@@ -25,6 +25,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		_want_jump = true
 	elif event.is_action_pressed("interact"):
 		interact()
+	elif event.is_action_pressed("reset"):
+		respawn()  # (back to the start at once: a teleport the game means)
 
 
 func _physics_process(delta: float) -> void:

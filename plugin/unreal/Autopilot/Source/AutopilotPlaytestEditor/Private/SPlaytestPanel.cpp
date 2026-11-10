@@ -3156,12 +3156,102 @@ void SPlaytestPanel::RebuildResult(TSharedPtr<FAutopilotRun> Shown)
 		[
 			AutopilotUI::Label(FText::Format(LOCTEXT("EngineFindings", "Engine findings · {0}"), EngineFindings.Num()))
 		];
+		// (a detector with many kinds, as one out_of_world per class of actor: one card naming every kind, its own cards
+		// under it when asked)
+		const TArray<TArray<TSharedPtr<FAutopilotFinding>>> Groups = Run->EngineFindingGroups();
+		TSet<FString> GroupShown;
 		for (const TSharedPtr<FAutopilotFinding>& F : EngineFindings)
 		{
-			ResultBox->AddSlot().AutoHeight().Padding(0.f, 8.f, 0.f, 0.f)[MakeEngineCard(Run, F)];
+			const TArray<TSharedPtr<FAutopilotFinding>>* Group = Groups.FindByPredicate([&F](const TArray<TSharedPtr<FAutopilotFinding>>& G) { return G[0]->Detector == F->Detector; });
+			if (!Group || Group->Num() <= FAutopilotRun::FindingGroupAt)
+			{
+				ResultBox->AddSlot().AutoHeight().Padding(0.f, 8.f, 0.f, 0.f)[MakeEngineCard(Run, F)];
+				continue;
+			}
+			if (GroupShown.Contains(F->Detector))
+			{
+				continue;
+			}
+			GroupShown.Add(F->Detector);
+			ResultBox->AddSlot().AutoHeight().Padding(0.f, 8.f, 0.f, 0.f)[MakeEngineGroupCard(Run, *Group)];
+			if (OpenGroups.Contains(GroupKey(*Run, F->Detector)))
+			{
+				for (const TSharedPtr<FAutopilotFinding>& Each : *Group)
+				{
+					ResultBox->AddSlot().AutoHeight().Padding(16.f, 8.f, 0.f, 0.f)[MakeEngineCard(Run, Each)];
+				}
+			}
 		}
 	}
 }
+
+FString SPlaytestPanel::GroupKey(const FAutopilotRun& Run, const FString& Detector)
+{
+	return FString::Printf(TEXT("%d/%s"), Run.Id, *Detector);
+}
+
+TSharedRef<SWidget> SPlaytestPanel::MakeEngineGroupCard(const TSharedPtr<FAutopilotRun>& Run, const TArray<TSharedPtr<FAutopilotFinding>>& Group)
+{
+	// A detector's many kinds on one card: its highest severity, the detector, how many kinds, the first's words, every
+	// kind (mono, wrapped) and Show each / Hide (its own cards under it)
+	const FString Detector = Group[0]->Detector;
+	const FString Severity = FAutopilotRun::TopSeverity(Group);
+	const FString Key = GroupKey(*Run, Detector);
+	const bool bOpen = OpenGroups.Contains(Key);
+	TSharedRef<SVerticalBox> Body = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 8.f, 0.f)
+			[
+				AutopilotUI::Tag(Str(SeverityWord(Severity)), AutopilotUI::SeverityTone(Severity))
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+			[
+				AutopilotUI::Mono(Str(Detector), 10.f, FSlateColor(AutopilotColor::Muted()))
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.f, 0.f, 0.f, 0.f)
+			[
+				AutopilotUI::Mono(FText::Format(LOCTEXT("GroupKinds", "{0} kinds"), Group.Num()), 12.f, FSlateColor(AutopilotColor::Text()), true)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)
+		[
+			SNew(STextBlock)
+			.Text(Str(Group[0]->Summary))
+			.Font(FAutopilotStyle::Font(EAutopilotFont::BodyMedium, 13.f))
+			.LineHeightPercentage(AutopilotUI::BodyLineHeight)
+			.AutoWrapText(true)
+			.ColorAndOpacity(FSlateColor(AutopilotColor::Text()))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)
+		[
+			SNew(STextBlock)
+			.Text(Str(FAutopilotRun::KindsLine(Group, false)))
+			.Font(FAutopilotStyle::Font(EAutopilotFont::Mono, 10.f))
+			.ColorAndOpacity(FSlateColor(AutopilotColor::Muted()))
+			.AutoWrapText(true)
+		];
+	TSharedRef<SWrapBox> Row = ButtonRow();
+	TWeakPtr<FAutopilotRun> WeakRun = Run;
+	AddTo(Row, SmallButton(bOpen ? LOCTEXT("GroupHide", "Hide") : LOCTEXT("GroupShowEach", "Show each"), "Autopilot.Button.Quiet",
+		FOnClicked::CreateLambda([this, WeakRun, Key]()
+		{
+			if (OpenGroups.Contains(Key))
+			{
+				OpenGroups.Remove(Key);
+			}
+			else
+			{
+				OpenGroups.Add(Key);
+			}
+			RebuildResult(WeakRun.Pin());
+			return FReply::Handled();
+		})));
+	Body->AddSlot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)[Row];
+	return AutopilotUI::Plate(FMargin(12.f, 11.f), Body);
+}
+
 FReply SPlaytestPanel::OnRunAgain(TSharedPtr<FAutopilotRun> Run)
 {
 	if (!Run.IsValid() || !Run->Frame.IsValid())

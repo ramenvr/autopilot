@@ -2141,6 +2141,20 @@ func fixes_checks() -> void:
 		["error", "critical", "fatal", "bug"].all(func(x): return dock.severity_kind(x) == "bad")
 		and dock.severity_kind("Warning") == "warn" and dock.severity_kind("warn") == "warn" and dock.severity_kind("") == "info"
 		and dock.severity_kind("note") == "info")
+	# a detector's many kinds: lines for the first three, one saying there are more, then none (repeats of those neither)
+	var before: int = r.feed.size()
+	for k in ["Cone", "Rail", "Bench", "Sign", "Lamp"]:
+		dock._on_finding({"detector": "out_of_world", "severity": "warning", "summary": "%s is below the world's KillZ (-1000)" % k,
+			"signature": "out_of_world:" + k})
+	dock._on_finding({"detector": "out_of_world", "severity": "warning", "summary": "Lamp is below the world's KillZ (-1000)",
+		"signature": "out_of_world:Lamp", "count": 10})
+	dock._on_finding({"detector": "out_of_world", "severity": "warning", "summary": "Cone is below the world's KillZ (-1000)",
+		"signature": "out_of_world:Cone", "count": 10})
+	var said: Array = r.feed.slice(before).map(func(e): return e.text)
+	check("feed: a detector's first 3 kinds, then one line saying there are more, then none; repeats of the first 3 still",
+		said == ["Cone is below the world's KillZ (-1000)", "Rail is below the world's KillZ (-1000)", "Bench is below the world's KillZ (-1000)",
+			"Sign is below the world's KillZ (-1000) (and more out_of_world findings: all of them are in the result)",
+			"Cone is below the world's KillZ (-1000) (×10)"], said)
 	var card = dock._engine_card(r, {"detector": "slow", "summary": "slow frame", "signature": "s1"})
 	check("engine card: no severity: an INFO tag (blue)", "INFO" in _texts(card) and not "WARNING" in _texts(card) and not "ALERT" in _texts(card),
 		_texts(card))
@@ -2201,6 +2215,37 @@ func fixes_checks() -> void:
 		and "**Alerts:** 1" in md and "## Reason" in md and "## Findings" in md and "- [agent] The fruit floats" in md
 		and "- [agent] The fruit can be picked up" in md and "- [engine · error · script_error_detector_with_a_long_name] " in md
 		and " (×3) at 1200.5, -30.25, 455 cm (not a bug)" in md and not "## Agent findings" in md and not "## Engine findings" in md, md)
+	# a detector with more than 3 kinds: one line naming every kind, where its first was; 3 kinds stay lines of their own
+	var gr = _make_run(false)
+	for k in ["Cone", "Rail", "Bench", "Sign"]:
+		gr.findings.append({"source": "engine", "detector": "out_of_world", "severity": "suspicion" if k == "Rail" else "warning",
+			"summary": "%s is below the world's KillZ (-1000)" % k, "signature": "out_of_world:" + k, "count": 12 if k == "Cone" else (3 if k == "Bench" else 1)})
+	for k in ["A", "B", "C"]:
+		gr.findings.append({"source": "engine", "detector": "teleport", "severity": "suspicion", "summary": "%s moved" % k, "signature": "teleport:" + k})
+	gr.not_a_bug["out_of_world:Sign"] = true
+	var gmd: String = Model.report_markdown(gr)
+	check("report: a detector with 4 kinds is one line listing every kind (count, not a bug), its highest severity, e.g. the first",
+		"- [engine · warning · out_of_world] 4 kinds: Cone (×12), Rail, Bench (×3), Sign (not a bug) — e.g. Cone is below the world's KillZ (-1000)\n" in gmd
+		and gmd.count("out_of_world") == 1 and "- [engine · suspicion · teleport] A moved\n" in gmd and "- [engine · suspicion · teleport] C moved\n" in gmd
+		and gmd.find("script_error_detector_with_a_long_name") < gmd.find("out_of_world") and gmd.find("out_of_world") < gmd.find("A moved"), gmd)
+	check("finding_kind: the signature without its detector, else the summary",
+		Model.finding_kind({"detector": "nan", "signature": "nan:Crate"}) == "Crate" and Model.finding_kind({"detector": "x", "signature": "other"}) == "other"
+		and Model.finding_kind({"detector": "x", "summary": "words"}) == "words")
+	check("group severity: error > warning > suspicion > info", Model.group_severity([{"severity": "info"}, {"severity": "suspicion"}]) == "suspicion"
+		and Model.group_severity([{"severity": "warning"}, {"severity": "error"}, {"severity": "info"}]) == "error")
+	# the result's cards: one group card (every kind, Show each), the detector's own cards only when opened
+	dock.shown = gr
+	dock.tab = "main"
+	dock._render()
+	var page: String = _texts(dock)
+	check("result: a group card (4 kinds, every kind, Show each), not the kinds' own cards",
+		"4 kinds" in page and "Cone ×12 · Rail · Bench ×3 · Sign (not a bug)" in page and "Show each" in page
+		and not "Rail is below the world's KillZ" in page, page)
+	dock._groups_open["%s|out_of_world" % gr.id] = true
+	dock._render()
+	page = _texts(dock)
+	check("result: Show each opens the kinds' own cards under it (Hide)", "Rail is below the world's KillZ" in page and "Hide" in page, page)
+	dock._groups_open.clear()
 	# the times and numbers
 	check("times: mm:ss, h:mm:ss; feed and player position m:ss, h:mm:ss", Model.clock(83) == "01:23" and Model.clock(3725) == "1:02:05"
 		and Model.short_clock(48) == "0:48" and Model.short_clock(3725) == "1:02:05")

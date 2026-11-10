@@ -734,9 +734,44 @@ function RunPage:_renderResult()
 		end
 		if #engine > 0 then
 			T.label(fv, string.format("Engine findings · %d", #engine), "caps", { wrap = false })
-			for _, f in ipairs(engine) do
-				self:_engineCard(fv, r, f)
+			for _, g in ipairs(M.findingGroups(engine)) do
+				if g.finding then
+					self:_engineCard(fv, r, g.finding)
+				else
+					self:_groupCard(fv, r, g)
+				end
 			end
+		end
+	end
+end
+
+-- A detector with many kinds of finding (M.findingGroups): one card, every kind listed, its own cards under it on
+-- Show each (kept open per run and detector while the dock lives).
+function RunPage:_groupCard(parent: Instance, r: any, g: any)
+	self.openGroups = self.openGroups or {}
+	local key = tostring(r.id) .. "\0" .. g.detector
+	local v = T.plate(parent, { pad = { 12, 11, 12, 11 }, gap = 6, name = "EngineFindingGroup" })
+	local h = T.row(v, 8)
+	local sev = M.trim(g.severity)
+	T.tag(h, if sev ~= "" then sev else "info", T.severityKind(sev))
+	T.label(h, g.detector, "monoDim", { wrap = false, fill = true })
+	T.label(h, string.format("%d kinds", #g.findings), "mono", { wrap = false, font = T.F.monoMedium, color = C.text })
+	T.label(v, M.scrub(tostring(g.findings[1].summary or "")), "strong")
+	local kinds = {}
+	for _, f in ipairs(g.findings) do
+		local count = tonumber(f.count) or 1
+		table.insert(kinds, M.scrub(M.kindOf(f)) .. (if count > 1 then string.format(" ×%d", count) else ""))
+	end
+	T.label(v, table.concat(kinds, " · "), "monoDim")
+	local open = self.openGroups[key] == true
+	local b = T.row(v, 6, true)
+	T.button(b, if open then "Hide" else "Show each", "quiet", function()
+		self.openGroups[key] = not open or nil
+		self:render()
+	end, true)
+	if open then
+		for _, f in ipairs(g.findings) do
+			self:_engineCard(parent, r, f)
 		end
 	end
 end

@@ -481,6 +481,33 @@ function Editor:_forward(frame: any, side: string, fallback: boolean)
 		fallback = fallback or nil })
 end
 
+-- What a request does to the game, as the server's teleport detector takes it (Detectors:noteActed): {what = "input",
+-- key, mode} for a key, an action or a UI element pressed, {what = "move"} for an rc write or call; nil for the rest
+-- (reads, looks, the pointer put somewhere). The editor tells the server as it passes the request on: the server sees
+-- the characters, the client gets the keys, and the note comes before what the key makes the game do.
+function Editor.acted(op: string, args: any): any
+	if op == "key" then
+		return { what = "input", key = tostring(args.key or ""), mode = tostring(args.mode or "press") }
+	elseif op == "input" then
+		return { what = "input", key = tostring(args.action or ""), mode = tostring(args.mode or "press") }
+	elseif op == "ui_act" then
+		local id = tostring(args.id or "")
+		return { what = "input", key = string.match(id, "([^/%.]+)$") or id, mode = "press" }
+	elseif op == "rc" then
+		local verb = tostring(args.verb or "")
+		local body = if type(args.body) == "table" then args.body else {}
+		-- (a call that reads, GetChildren, FindFirstChild, IsA..., moves nothing: the kit makes them every step)
+		local fn = tostring(body.functionName or "")
+		local read = string.match(fn, "^Get") or string.match(fn, "^Find") or string.match(fn, "^Is")
+			or string.match(fn, "^Has") or string.match(fn, "^Can")
+		if (verb == "call" and not read) or (verb == "property" and (type(body.propertyValue) == "table"
+			or string.sub(tostring(body.access or ""), 1, 5) == "WRITE")) then
+			return { what = "move" }
+		end
+	end
+	return nil
+end
+
 function Editor:_onRequest(frame: any)
 	local id = frame.id
 	local op = tostring(frame.op or "")
@@ -576,6 +603,12 @@ function Editor:_onRequest(frame: any)
 	if n > 1 and self.sides[client] == nil then
 		self:_respondError(id, "No player " .. tostring(n) .. " in the game: " .. self:_playersSaid(), 404)
 		return
+	end
+	local acted = Editor.acted(op, args)
+	if acted then
+		acted.to = "server"
+		acted.type = "acted"
+		self:_pipeSend(acted)
 	end
 	if op == "rc" then
 		local body = if type(args.body) == "table" then args.body else {}

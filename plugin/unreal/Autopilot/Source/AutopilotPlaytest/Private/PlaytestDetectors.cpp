@@ -178,6 +178,7 @@ void FPlaytestDetectors::Configure(const TSharedPtr<FJsonObject>& Args)
 	Args->TryGetBoolField(TEXT("enabled"), bEnabled);
 	Args->TryGetNumberField(TEXT("teleport_factor"), TeleportFactor);
 	Args->TryGetNumberField(TEXT("teleport_min"), TeleportMin);
+	Args->TryGetNumberField(TEXT("teleport_after_input_seconds"), TeleportAfterInputSeconds);
 	Args->TryGetNumberField(TEXT("long_fall_seconds"), LongFallSeconds);
 	Args->TryGetNumberField(TEXT("hitch_seconds"), HitchSeconds);
 	Args->TryGetNumberField(TEXT("growth_seconds"), GrowthSeconds);
@@ -221,6 +222,21 @@ void FPlaytestDetectors::Reset()
 	SessionStartReal = FPlatformTime::Seconds();
 	LastGameTime = -1;
 	NextActorCheck = NextGrowthSample = NextPropertyCheck = NextHudCheck = 0;
+	AgentInputKey.Reset();
+	AgentInputTime = -1;
+	AgentMoveFrames = 0;
+}
+
+void FPlaytestDetectors::NoteAgentInput(const FString& Key)
+{
+	const UWorld* W = World.Get();
+	AgentInputKey = Key;
+	AgentInputTime = W ? W->GetTimeSeconds() : -1;
+}
+
+void FPlaytestDetectors::NoteAgentMove()
+{
+	AgentMoveFrames = 3;
 }
 
 bool FPlaytestDetectors::IsProjectClass(const UClass* Class) const
@@ -239,6 +255,13 @@ void FPlaytestDetectors::Report(const FString& Detector, const FString& Severity
 	if (Muted.Contains(Detector) || Muted.Contains(Signature))
 	{
 		return;  // the project said it isn't a bug (Not a bug, or its detectors.json)
+	}
+	// A teleport right after the agent's input ("teleport:<kind> after <key>") is muted with that kind's teleports too
+	const int32 After = Detector == TEXT("teleport")
+		? Signature.Find(TEXT(" after "), ESearchCase::CaseSensitive, ESearchDir::FromEnd) : INDEX_NONE;
+	if (After != INDEX_NONE && Muted.Contains(Signature.Left(After)))
+	{
+		return;
 	}
 	int32& Count = Seen.FindOrAdd(Signature);
 	++Count;
@@ -361,6 +384,12 @@ void FPlaytestDetectors::Tick(UWorld* InWorld, double RealDelta)
 
 void FPlaytestDetectors::CheckPawns(UWorld* InWorld, double GameTime, double WorldDelta)
 {
+	// (what the agent moved itself in the last frames isn't the game teleporting it; right after a key the agent pressed,
+	// a teleport is told as that key's, an info: a reset key moves the player as it should)
+	const bool bAgentMoved = AgentMoveFrames > 0;
+	AgentMoveFrames = FMath::Max(0, AgentMoveFrames - 1);
+	const double SinceInput = AgentInputTime >= 0 ? GameTime - AgentInputTime : -1.0;
+	const bool bAfterInput = SinceInput >= 0 && SinceInput <= TeleportAfterInputSeconds;
 	TSet<TWeakObjectPtr<AActor>> Alive;
 	for (TActorIterator<APawn> It(InWorld); It; ++It)
 	{
@@ -381,16 +410,25 @@ void FPlaytestDetectors::CheckPawns(UWorld* InWorld, double GameTime, double Wor
 			}
 			const double Allowed = FMath::Max(TeleportMin, TeleportFactor * Speed * WorldDelta);
 			const double Moved = FVector::Dist(Location, Track.Location);
-			if (Moved > Allowed)
+			if (Moved > Allowed && !bAgentMoved)
 			{
 				TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
 				Details->SetObjectField(TEXT("from"), Vec(Track.Location));
 				Details->SetObjectField(TEXT("to"), Vec(Location));
 				Details->SetField(TEXT("moved"), PlaytestJson::Number(FMath::RoundToDouble(Moved)));
 				Details->SetField(TEXT("allowed"), PlaytestJson::Number(FMath::RoundToDouble(Allowed)));
-				Report(TEXT("teleport"), TEXT("suspicion"),
-					FString::Printf(TEXT("%s moved %.0f units in one frame (at most %.0f expected)"), *ClassLabel(Pawn), Moved, Allowed),
-					FString::Printf(TEXT("teleport:%s"), *ClassLabel(Pawn)), GameTime, Pawn, Details);
+				FString Summary = FString::Printf(TEXT("%s moved %.0f units in one frame (at most %.0f expected)"), *ClassLabel(Pawn), Moved, Allowed);
+				FString Signature = FString::Printf(TEXT("teleport:%s"), *ClassLabel(Pawn));
+				if (bAfterInput)
+				{
+					TSharedRef<FJsonObject> After = MakeShared<FJsonObject>();
+					After->SetStringField(TEXT("key"), AgentInputKey);
+					After->SetField(TEXT("seconds"), PlaytestJson::Number(FMath::RoundToDouble(SinceInput * 100) / 100));
+					Details->SetObjectField(TEXT("after_input"), After);
+					Summary += FString::Printf(TEXT(" right after the agent pressed %s"), *AgentInputKey);
+					Signature += FString::Printf(TEXT(" after %s"), *AgentInputKey);
+				}
+				Report(TEXT("teleport"), bAfterInput ? TEXT("info") : TEXT("suspicion"), Summary, Signature, GameTime, Pawn, Details);
 			}
 		}
 		if (const ACharacter* Character = Cast<ACharacter>(Pawn))
@@ -546,11 +584,26 @@ void FPlaytestDetectors::MeasureLevels(UWorld* InWorld)
 
 void FPlaytestDetectors::CheckGrowth(UWorld* InWorld, double GameTime)
 {
-	// (counted by class, then named once per class: an open world has tens of thousands of actors)
+	// Only what the game spawned while playing: an actor placed in a level came with it (the persistent level, a streamed
+	// sublevel, a World Partition cell: loaded from its package, or a level's startup actor), and a level streaming in
+	// isn't a leak. A child actor counts as its parent does. (Counted by class, then named once per class: an open world
+	// has tens of thousands of actors)
+	auto PlacedInLevel = [](const AActor* Actor)
+	{
+		for (int32 Depth = 0; Actor && Depth < 16; ++Depth)
+		{
+			if (Actor->HasAnyFlags(RF_WasLoaded) || Actor->IsNetStartupActor())
+			{
+				return true;
+			}
+			Actor = Actor->IsChildActor() ? Actor->GetParentActor() : nullptr;
+		}
+		return false;
+	};
 	TMap<const UClass*, int32> ByClass;
 	for (TActorIterator<AActor> It(InWorld); It; ++It)
 	{
-		if (IsValid(*It))
+		if (IsValid(*It) && !PlacedInLevel(*It))
 		{
 			++ByClass.FindOrAdd(It->GetClass());
 		}

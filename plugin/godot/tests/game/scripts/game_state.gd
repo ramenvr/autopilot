@@ -44,3 +44,19 @@ func leak(n: int) -> void:
 		var litter := Area3D.new()
 		litter.name = "Litter%d" % i
 		get_tree().current_scene.add_child(litter)
+
+
+## Stream in a part of the level: a scene of n bodies saved inside it (their owner its root), instanced while playing,
+## as a level streamer does (actor_growth counts what the game spawns, not what a level part brings).
+func stream_chunk(n: int) -> void:
+	var root := Node3D.new()
+	root.name = "Chunk"
+	for i in n:
+		var rock := StaticBody3D.new()
+		rock.name = "Rock%d" % i
+		root.add_child(rock)
+		rock.owner = root
+	var scene := PackedScene.new()
+	scene.pack(root)
+	root.free()
+	get_tree().current_scene.add_child(scene.instantiate())
