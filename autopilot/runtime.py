@@ -38,7 +38,7 @@ WARM_EVERY = 15.0  # seconds Jev may be idle before a keep-warm call
 WARM_POLL = 1.0
 WARM_TIMEOUT = 5.0  # (a server waking takes over a second: longer than a decision may wait)
 MAX_CONSECUTIVE_ERRORS = 25
-OBS_TRACE_EVERY = 1.0  # seconds of game time between observations written to the trace
+TRACE_EVERY = 1.0  # seconds of game time between observations written to the trace (a harness's trace_every)
 STEP_SAMPLES = 4000  # executor step times kept per option (for the summary's median and p90)
 SLOW_WAITS = 3.0  # an option whose steps wait on the game this many times on average is flagged in the summary
 # seconds after the first observation by which a game held paused runs again, an option started or not
@@ -147,6 +147,16 @@ class Trace:
     def close(self):
         with self.lock:
             self.f.close()
+
+
+def trace_every_of(harness):
+    """The harness's trace_every: seconds of game time between the observations written to the trace (0: every
+    observation, each tick's), TRACE_EVERY when it isn't a number of 0 or more."""
+    try:
+        every = float(getattr(harness, "trace_every", TRACE_EVERY))
+    except (TypeError, ValueError):
+        return TRACE_EVERY
+    return every if every >= 0 and every != float("inf") else TRACE_EVERY
 
 
 class Running:
@@ -629,8 +639,9 @@ class Runtime:
 
     def _run(self):
         g, h = self.game, self.h
+        trace_every = trace_every_of(h)
         self.trace("start", harness=type(h).__name__, goal=h.goal, tempo=h.tempo, tick_hz=h.tick_hz,
-                   max_seconds=self.max_seconds)
+                   trace_every=trace_every, max_seconds=self.max_seconds)
         self.still("episode_start")
         end = {"reason": "", "status": None}
         try:
@@ -715,7 +726,7 @@ class Runtime:
                     names = [o.name for o in opts]
                     if g.t - self.response["t"] >= RESPONSE_EVERY:
                         self.watch_response()
-                    if g.t - last_obs_trace >= OBS_TRACE_EVERY:
+                    if not trace_every or g.t - last_obs_trace >= trace_every:
                         last_obs_trace = g.t
                         step = self.current_step()
                         self.trace("obs", t=g.t, facts=h.facts(obs), status=status.state, note=status.note,

@@ -197,6 +197,57 @@ def test_runtime_plays_harness_to_done(game, tmp_path):
     assert "open_crate" in text and "status=done" in text
 
 
+def test_the_harness_says_how_often_the_trace_keeps_its_observation(game, tmp_path):
+    def observations(harness, name):
+        path = tmp_path / name
+        runtime.Runtime(game, harness, str(path), client=FakeJev("wait"), max_seconds=2).run()
+        events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        start = next(e for e in events if e["kind"] == "start")
+        return start["trace_every"], [e for e in events if e["kind"] == "obs"]
+
+    every, sparse = observations(CrateHarness(), "sparse.jsonl")  # (the default: one a second)
+    dense_harness = CrateHarness()
+    dense_harness.trace_every = 0  # (every observation: each tick's, 30 a second)
+    dense_every, dense = observations(dense_harness, "dense.jsonl")
+    assert every == 1.0 and len(sparse) <= 3
+    assert dense_every == 0 and len(dense) >= 10 and len(dense) > 3 * len(sparse)
+    assert all(b["t"] >= a["t"] for a, b in zip(dense, dense[1:]))
+    for odd, kept in ((None, 1.0), ("x", 1.0), (-1, 1.0), (float("nan"), 1.0), (float("inf"), 1.0), (0.1, 0.1)):
+        assert runtime.trace_every_of(types.SimpleNamespace(trace_every=odd)) == kept
+    assert runtime.trace_every_of(object()) == runtime.TRACE_EVERY
+
+
+def test_a_dense_trace_is_summarized_quickly(tmp_path):
+    # A 10-minute episode with every observation kept at 15 Hz (trace_every = 0): 9000 of them, with its decisions,
+    # options and inputs
+    path = tmp_path / "trace1.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        def put(**e):
+            f.write(json.dumps({"wall": 1000.0 + (e.get("t") or 50.0) - 50.0, **e}) + "\n")
+
+        put(kind="start", harness="RaceHarness", goal="Finish the lap", tempo=4.0, tick_hz=15.0, trace_every=0,
+            max_seconds=600)
+        for i in range(9000):
+            t = 50.0 + i / 15
+            put(kind="obs", t=t, facts={"speed": 2000 + i % 7, "gate": {"distance": 300 - i % 300}},
+                status="running", note="", options=["push", "ollie", "grind"], running="push", step=None)
+            if i % 4 == 0:
+                put(kind="input", t=t, key="W", mode="hold", value=None)
+            if i % 8 == 0:
+                put(kind="decision", t=t, latency=0.2, action="push", state={"speed": 2000}, probs={"push": 0.7})
+            if i % 30 == 0:
+                put(kind="option_start", t=t, option="push", p=0.7)
+                put(kind="option_end", t=t + 1.9, option="push", ok=True, effect=True, why="pushed", seconds=1.9)
+        put(kind="end", t=650.0, reason="time", status={"state": "running"}, decisions=1125, options={})
+    started = time.perf_counter()
+    text = runtime.summarize(str(path))
+    took = time.perf_counter() - started
+    assert "Ended: time at t=600.0s" in text and "Jev: 1125 answers" in text
+    situation = text.split("Situation over time")[1].splitlines()
+    assert 115 <= len([line for line in situation if line.strip().startswith("t=")]) <= 125  # (every ~5 s, not each)
+    assert took < 5.0, f"summarize took {took:.1f} s"
+
+
 def test_runtime_reports_harness_errors(game, tmp_path):
     class Broken(CrateHarness):
         def observe(self, game):

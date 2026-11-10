@@ -11,7 +11,8 @@ The plugin captures the game's view (docs/protocol.md, "Recording, stills and us
                JPEGs are kept as they came, media/frames-<n>/<k>.jpg. For a plugin that can't play an MP4 (Godot),
                also media/flipbook-<n>/: small JPEGs at a fixed rate of the video's time. The latest frames, in an
                episode or not, are kept in memory too, for describe_frames (autopilot/vision.py). The run's report
-               shows the last episode's video: the one whose play settled the result.
+               shows the video of the episode the agent's report names as the one that shows the result best (its
+               `episode`), else the last episode's.
     still()    one still: media/stills/<seq>-<reason>.jpg, with a line in media/stills.jsonl.
 
 Both only when the plugin says it can capture (hello `features` has "media"). Nothing here may slow the game or the
@@ -481,23 +482,33 @@ class Recorder:
                   f"received ({self.outside} outside the episodes, {self.dropped} dropped)")
 
     def last_clip(self):
-        """The last episode with a video: the one whose play settled the run's result (None: none has one)."""
+        """The last episode with a video (None: none has one)."""
         return next((c for c in reversed(self.clips) if c.encoder is not None and c.encoder.frames), None)
+
+    def clip_of(self, episode):
+        """Episode n's video, when it has one (None: no such episode, or it got no frames)."""
+        return next((c for c in self.clips if c.n == episode and c.encoder is not None and c.encoder.frames), None)
 
     def summary(self):
         """What run.json says of the recording: its counts and each episode's video."""
         return {"frames": self.kept, "received": self.received, "dropped": self.dropped, "outside": self.outside,
                 "episodes": [c.summary() for c in self.clips if c.kept]}
 
-    def shown(self):
-        """The recording as the plugin's report shows it (the result's `recording`, docs/protocol.md), once stopped: the
-        last episode's video, {"video": its path, "seconds", "episode": its number, and with a flipbook "frames": its
-        folder, "frames_fps"}; None when there is no video."""
-        clip = self.last_clip()
+    def shown(self, episode=None):
+        """The recording as the plugin's report shows it (the result's `recording`, docs/protocol.md), once stopped:
+        the video of the episode the report named (`episode`: the one that shows the result best), else the last
+        episode's; {"video": its path, "seconds", "episode": its number, and with a flipbook "frames": its folder,
+        "frames_fps"; "instead_of": the episode named, when that one has no video and the last one's is shown}; None
+        when there is no video."""
+        clip = self.clip_of(episode) if episode is not None else None
+        instead = episode is not None and clip is None
+        clip = clip or self.last_clip()
         if clip is None:
             return None
         encoder = clip.encoder
         shown = {"video": os.path.abspath(clip.video), "seconds": clip.seconds(), "episode": clip.n}
+        if instead:
+            shown["instead_of"] = episode
         if encoder.flipbook is not None and encoder.flipbook.next:
             shown.update(frames=os.path.abspath(encoder.flipbook.folder), frames_fps=encoder.flipbook.fps)
         return shown

@@ -103,14 +103,20 @@ def test_a_run_is_worked_on_through_the_mcp_front(started, tmp_path):
 
     # The report ends the run: its report says whose agent it was; later calls are told it is over
     session.episodes, session.most_decisions = 1, sessionmod.MIN_JEV_DECISIONS
+    # (the episode whose recording is the run's: one that was played, else the report is refused)
+    assert "1 to 1" in text_of(front.call("report", {"outcome": "CONFIRMED", "summary": "It opens.",
+                                                     "evidence": ["trace1: opened at 4.2 s"], "episode": 3}))
     assert "Reported" in text_of(front.call("report", {"outcome": "CONFIRMED", "summary": "It opens.",
-                                                       "evidence": ["trace1: opened at 4.2 s"]}))
+                                                       "evidence": ["trace1: opened at 4.2 s"], "episode": 1}))
     box["thread"].join(30)
     report = box["report"]
     assert report["outcome"] == "CONFIRMED" and report["agent"] == "external" and report["client"] == "claude-code"
-    assert report["stopped"] is None
+    assert report["stopped"] is None and report["episode"] == 1
     over = front.call("snapshot", {})
     assert over["isError"] and "has ended" in text_of(over)
+    # (frames still answers: a describer may still be looking; this game isn't filmed)
+    looked = front.call("frames", {"episode": 1})
+    assert not looked["isError"] and "isn't filmed" in text_of(looked)
 
 
 def test_file_calls_are_never_held_up_by_a_call_still_going(started):
@@ -149,8 +155,8 @@ def test_an_argument_name_a_tool_doesnt_take_is_refused_never_dropped(started):
     assert refused["isError"] and desk.session.report is None
     assert "unknown argument(s) notes; it takes outcome, summary, evidence, findings, visual" in text_of(refused)
     assert "it takes no arguments" in text_of(front.call("snapshot", {"what": "all"}))
-    restart = front.call("restart_level", {"episode": 2})
-    assert "episode is an argument of describe_frames and frames" in text_of(restart)
+    restarted = text_of(front.call("restart_level", {"episode": 2}))
+    assert "episode is an argument of describe_frames and report and frames" in restarted
     assert "unknown argument(s) file" in text_of(front.call("read_file", {"file": "runs/r1/REQUEST.md"}))
     assert "unknown argument(s) timeout" in text_of(front.call("wait", {"timeout": 5}))
     # And at the agent service, for a front older than the check
@@ -277,12 +283,17 @@ def test_frames_are_handed_over_as_images_and_count_for_a_visual_report(tmp_path
     assert "No episode has been played" in session.frames()[0]
     with open(os.path.join(session.run_dir, "trace1.jsonl"), "w", encoding="utf-8") as f:
         f.write(json.dumps({"kind": "start", "wall": t0}) + "\n")
-        f.write(json.dumps({"kind": "end", "wall": t0 + 5, "t": 4.75}) + "\n")
+        f.write(json.dumps({"kind": "obs", "wall": t0, "t": 30.0}) + "\n")  # (the game's clock: 30 s at its start)
+        f.write(json.dumps({"kind": "end", "wall": t0 + 5, "t": 34.75}) + "\n")
+    for frame in kept.items:
+        frame["t"] += 30.0
     session.episodes, session.most_decisions = 1, sessionmod.MIN_JEV_DECISIONS
     refused = session.do_report({"outcome": "CONFIRMED", "summary": "s", "evidence": [], "visual": True})
     assert "describer subagent" in refused
+    # Times are seconds from the episode's start, as its summary's t= gives them (not the game's clock)
     text, jpegs = session.frames(1, start=1.0, end=3.0, count=4)
-    assert len(jpegs) == 4 and jpegs[0] == b"jpeg4" and "(run r1-abcd)" in text and "game times 1.00" in text
+    assert len(jpegs) == 4 and jpegs[0] == b"jpeg4" and "(run r1-abcd)" in text and "at t= 1.00, " in text
+    assert "31.00" not in text
     assert session.do_report({"outcome": "CONFIRMED", "summary": "s", "evidence": [], "visual": True}).startswith(
         "Reported")
 
@@ -297,6 +308,29 @@ def test_frames_are_handed_over_as_images_and_count_for_a_visual_report(tmp_path
     missed = desk.call("frames", {"episode": 1, "start": 50, "end": 60})
     assert "No frames of episode 1" in text_of(missed) and "(run r1-abcd)" in text_of(missed)
     assert not [c for c in missed["content"] if c["type"] == "image"]
+
+    # Once the run has ended (reported), a describer still looking gets the frames the run kept, and nothing else
+    # happens: no feed line, no status for the tab; other game tools are refused
+    desk.end("reported")
+    events, said = len(session.events), []
+    session.say = said.append
+    after = desk.call("frames", {"episode": 1, "start": 1.0, "end": 3.0, "count": 3})
+    assert not after["isError"] and len([c for c in after["content"] if c["type"] == "image"]) == 3
+    assert "at t= 1.00, " in text_of(after) and "(run r1-abcd)" in text_of(after) and "has ended" in text_of(after)
+    assert "min used]" not in text_of(after)  # (no clock: the run is over)
+    assert len(session.events) == events and not said
+    # (an argument frames doesn't take is refused then too, as while the run went)
+    wrong = desk.call("frames", {"episode": 1, "frames": 3})
+    assert wrong["isError"] and "frames: unknown argument(s) frames" in text_of(wrong)
+    assert desk.call("snapshot", {})["isError"] and "has ended" in text_of(desk.call("snapshot", {}))
+    gone = desk.call("describe_frames", {"questions": ["What moves?"]})
+    assert gone["isError"] and "`frames`" in text_of(gone)
+    # Only once the run's files are gone does it refuse
+    import shutil
+
+    shutil.rmtree(session.run_dir)
+    lost = desk.call("frames", {"episode": 1})
+    assert "files are gone" in text_of(lost) and not [c for c in lost["content"] if c["type"] == "image"]
 
 
 def test_the_mcp_front_lists_its_tools_and_finds_the_service(tmp_path, monkeypatch):
@@ -314,6 +348,11 @@ def test_the_mcp_front_lists_its_tools_and_finds_the_service(tmp_path, monkeypat
             "write_file"} <= set(tools)
     assert tools["snapshot"]["annotations"]["readOnlyHint"] and not tools["probe"]["annotations"]["readOnlyHint"]
     assert tools["describe_frames"]["description"].startswith("Fallback only")
+    # (times as the summaries give them; the report names the episode whose recording is the run's)
+    for name in ("frames", "describe_frames"):
+        assert "seconds from its start" in tools[name]["description"] and "game times" not in tools[name]["description"]
+    assert tools["report"]["inputSchema"]["properties"]["episode"] == {"type": "integer"}
+    assert "recording" in tools["report"]["description"]
     assert tools["start_run"]["inputSchema"]["required"] == ["request", "kind"]  # (a claim isn't taken for a goal)
 
     monkeypatch.setattr(bridge, "brain_file", lambda name=bridge.BRAIN_FILE: str(tmp_path / name))

@@ -31,11 +31,12 @@ MARK = "autopilot connect"  # in every file this writes (a comment), and before 
 NAME = "autopilot"  # the MCP server's name
 CLAUDE_DESCRIBER, CODEX_DESCRIBER = "frame-describer", "frame_describer"
 DESCRIBER_ABOUT = ("Describes frames of an Autopilot episode (the autopilot `frames` tool) for an agent checking how "
-                   "something in a game looks. Give it only the episode, the game times and open questions: never the "
-                   "claim, the request or what you expect to see.")
-DESCRIBER_HOW = ("You are given an episode, game times and open questions. Call the autopilot `frames` tool with that "
-                 "episode, start, end and count, then describe the frames you get, answering each question by its "
-                 "number from the frames alone. If `frames` gives no pictures, say what it said instead and stop.")
+                   "something in a game looks. Give it only the episode, the times in it (seconds from its start, as "
+                   "its summary's t=) and open questions: never the claim, the request or what you expect to see.")
+DESCRIBER_HOW = ("You are given an episode, times in it (seconds from its start) and open questions. Call the "
+                 "autopilot `frames` tool with that episode, start, end and count, then describe the frames you get, "
+                 "answering each question by its number from the frames alone. If `frames` gives no pictures, say "
+                 "what it said instead and stop.")
 PLUGIN_SERVER = f"mcp__plugin_{NAME}_{NAME}__frames"  # (a plugin's server's tools are named for the plugin too)
 TABLE = re.compile(r"^\s*\[\s*mcp_servers\s*\.\s*(\"autopilot\"|autopilot)\s*(\.[^\]]*)?\]\s*(#.*)?$")
 HEADER = re.compile(r"^\s*\[")

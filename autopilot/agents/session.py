@@ -173,6 +173,8 @@ How to work:
    change to the play in the report.
 5. When the request is settled (the goal reached; a claim shown true or false; the exploration done) or more tries
    won't help, call `report` right away: an episode that settles it is enough (don't polish the harness after it).
+   Name that episode in the report's `episode` (the one in which the goal was reached, the claim shown, the bug
+   seen): its recording is the one the developer watches with the report, not the last episode's.
    You aren't told the run's time, because it isn't yours to manage: when it is up, the run closes play and probes and
    asks you for the report, and an episode still playing ends there. So time is never a reason to stop or to hurry, and
    never the reason a report gives. Go on until one of those two holds, and a report that stops before the request is
@@ -221,7 +223,7 @@ Rules:
   wrote. Such a request is CONFIRMED or DENIED only on a description (report it with visual: true). A description in
   which the thing isn't seen (off screen, covered, too small, too dark) is not a contradiction: get it in view
   (look_at it, come closer) and play it again. Film a fast motion closely (run_harness frames_fps, up to 20) and
-  narrow start and end to it.
+  narrow start and end to it (seconds from the episode's start, as its summary's t= gives them).
 - Keep the first run_harness short (20-60 s) unless check_harness showed every option working; then make an episode
   long enough for the plan to reach the goal: a stalled or failed one ends by itself. A one-step request's first
   episode is as long as its step takes to show.
@@ -322,10 +324,10 @@ TOOL_SPECS = (
      f"How the game looked in an episode, in words: up to {vision.MAX_FRAMES} of its frames (spread over start-end) "
      "go with your questions to a vision model that sees only the frames and the questions, never the request. For "
      "what only the picture shows: an animation's motion, an effect, a material or light, the UI's layout. episode: "
-     "its number (default: the latest); start, end: game times in it, in seconds (default: all of it; narrow them to "
-     f"the moment); questions: 1-{vision.MAX_QUESTIONS} open questions (what moves and how, what is at a spot, what "
-     "the text says), never yes/no and never what you hope to see; frames: how many (default "
-     f"{vision.DEFAULT_FRAMES}).",
+     "its number (default: the latest); start, end: times in it, in seconds from its start, as its summary's t= "
+     "gives them (default: all of it; narrow them to the moment); questions: "
+     f"1-{vision.MAX_QUESTIONS} open questions (what moves and how, what is at a spot, what the text says), never "
+     f"yes/no and never what you hope to see; frames: how many (default {vision.DEFAULT_FRAMES}).",
      {"type": "object", "properties": {
          "episode": {"type": "integer"}, "start": {"type": "number"}, "end": {"type": "number"},
          "questions": {"type": "array", "items": {"type": "string"}}, "frames": {"type": "integer"}},
@@ -338,17 +340,20 @@ TOOL_SPECS = (
     ("report",
      "The final answer to the request. outcome: for a goal 'achieved' or 'not_achieved'; for a claim 'CONFIRMED', "
      "'DENIED' or 'INCONCLUSIVE'; for an exploration 'explored'. summary: what happened, in a few sentences. "
-     "evidence: the observations from play it rests on (with trace file and game times; a description with its "
-     "episode and times). findings: for an exploration, each suspected bug with its observation. visual: true when "
-     "the outcome rests on how something looks (an animation, an effect, a material or light, the UI). The game's "
-     "developer reads it: call the player \"the agent\" (never Jev).",
+     "evidence: the observations from play it rests on (with trace file and times, as its summary's t= gives them; "
+     "a description with its episode and times). findings: for an exploration, each suspected bug with its "
+     "observation. visual: true when the outcome rests on how something looks (an animation, an effect, a material "
+     "or light, the UI). episode: the number of the episode that shows the result best; its recording is the run's "
+     "recording, the one the developer watches (default: the last one played). The game's developer reads it: call "
+     "the player \"the agent\" (never Jev).",
      {"type": "object", "properties": {
          "outcome": {"type": "string"}, "summary": {"type": "string"},
          "evidence": {"type": "array", "items": {"type": "string"}},
-         "findings": {"type": "array", "items": {"type": "string"}}, "visual": {"type": "boolean"}},
+         "findings": {"type": "array", "items": {"type": "string"}}, "visual": {"type": "boolean"},
+         "episode": {"type": "integer"}},
       "required": ["outcome", "summary", "evidence"]}),
 )
-REPORT_FIELDS = ("outcome", "summary", "evidence", "findings", "visual")
+REPORT_FIELDS = ("outcome", "summary", "evidence", "findings", "visual", "episode")
 
 
 def unknown_args(tool, args, specs=TOOL_SPECS):
@@ -1407,7 +1412,8 @@ class Session:
                 "an episode's frames.")
 
     def describe_frames(self, questions, episode=None, start=None, end=None, frames=None):
-        """describe_frames: an episode's frames (between game times start and end), described with questions."""
+        """describe_frames: an episode's frames (between times start and end of it: seconds from its start, as its
+        summary's t=), described with questions."""
         if self.describer is None:
             return "describe_frames isn't available in this run."
         if self.looks_itself and self.describer.route is None:
@@ -1430,7 +1436,8 @@ class Session:
         label = f"episode {n}"
         self.say(RESULTS)
         text, ok = self.describer.describe(span["wall_start"] - 0.5, wall1 + 0.5, questions, frames or
-                                           vision.DEFAULT_FRAMES, t0=start, t1=end, label=label)
+                                           vision.DEFAULT_FRAMES, t0=start, t1=end, label=label,
+                                           base=span.get("t_start") or 0.0)
         if ok:
             self.described += 1
             self.look_failed = None
@@ -1440,52 +1447,65 @@ class Session:
                 self.alert(self.describer.alert("no picture came from the game while it played (its window was "
                                                 "minimized or hidden)"))
         self.activity("look", f"Looked at {label}'s frames" if ok else f"Couldn't look at {label}'s frames",
-                      detail=text, ends="look", log=f"describe_frames ({label}): {questions} -> {text[:3000]}")
+                      detail=text, ends="look", log=f"describe_frames ({label}): {questions} -> {text}")
         return text
 
     def _episode_span(self, episode=None):
         """(its number, the span episode_spans() has of it) for an episode (default: the latest), or (why there is
-        none, None)."""
+        none, None). The span's t_start is the episode's first game time: its summary's t=0."""
         n = int(episode or self.episodes or 0)
+        if not os.path.isdir(self.run_dir):
+            return (f"This run's files are gone ({self.run_rel} is no longer there): its episodes can't be looked at "
+                    "any more."), None
         span = next((s for s in episode_spans(self.run_dir) if s["episode"] == f"trace{n}"), None)
         if span is None or span.get("wall_start") is None:
             return (f"No episode {n} has been played in this run." if n else
                     "No episode has been played yet: run_harness first (its frames are what can be looked at)."), None
         return n, span
 
-    def frames(self, episode=None, start=None, end=None, count=None):
+    def frames(self, episode=None, start=None, end=None, count=None, live=True):
         """frames, for the user's own agent (autopilot/agents/external.py), whose describer subagent looks at them
-        itself: (text, [JPEG bytes]) of up to vision.MAX_FRAMES of an episode's frames (between game times start and
-        end), or (why there are none, []). Frames had count as a description for report's visual rule."""
+        itself: (text, [JPEG bytes]) of up to vision.MAX_FRAMES of an episode's frames (between times start and end of
+        it: seconds from its start, as its summary's t=), or (why there are none, []). Frames had count as a
+        description for report's visual rule. live False: the run has ended (reported, stopped): the frames it kept
+        are read and nothing else happens (no feed line, no alert, no status for the tab)."""
         if self.describer is None:
             return "The game isn't filmed in this run.", []
         why = self.describer.unfilmed()
         if why:
             self.look_failed = why
-            self.alert(self.describer.alert(why, filming=True))
+            if live:
+                self.alert(self.describer.alert(why, filming=True))
             return (f"Can't look at the game's picture in this run: {why}. A request about how something looks is "
-                    "INCONCLUSIVE here (report visual: true); the user is told why."), []
+                    "INCONCLUSIVE here (report visual: true)" + ("; the user is told why." if live else ".")), []
         n, span = self._episode_span(episode)
         if span is None:
             return n, []
         label = f"episode {n}"
-        self.say(RESULTS)
+        base = span.get("t_start") or 0.0
+        if live:
+            self.say(RESULTS)
         chosen, frames, why = self.describer.frames_of(span["wall_start"] - 0.5, (span.get("wall_end") or time.time())
-                                                       + 0.5, count or vision.DEFAULT_FRAMES, start, end, label)
+                                                       + 0.5, count or vision.DEFAULT_FRAMES, start, end, label,
+                                                       base, live)
         if why:
             self.look_failed = why
-            if self.describer.no_picture:
+            if live and self.describer.no_picture:
                 self.alert(self.describer.alert("no picture came from the game while it played (its window was "
                                                 "minimized or hidden)", filming=True))
-            self.activity("look", f"No frames of {label}", detail=why, ends="look", log=f"frames ({label}): {why}")
+            if live:
+                self.activity("look", f"No frames of {label}", detail=why, ends="look", log=f"frames ({label}): {why}")
             return why, []
         self.described += 1
         self.look_failed = None
-        times = ", ".join(f"{f['t']:.2f}" if f["t"] is not None else "?" for f in chosen)
-        self.activity("look", f"Took {len(chosen)} frames of {label}", detail=f"At game times {times} s",
-                      ends="look", log=f"frames ({label}): {len(chosen)} of {len(frames)}, at game times {times}")
-        return (f"{len(chosen)} frames of {len(frames)} ({label}), in order, at game times {times} s "
-                f"(run {self.marker or self.run_id}):"), [f["jpeg"] for f in chosen]
+        times = vision.times_of(chosen, base)
+        if live:
+            self.activity("look", f"Took {len(chosen)} frames of {label}", detail=f"At t= {times} s of it",
+                          ends="look", log=f"frames ({label}): {len(chosen)} of {len(frames)}, at t= {times} "
+                                           f"(game time - {base})")
+        return (f"{len(chosen)} frames of {len(frames)} ({label}), in order, at t= {times} s (seconds from the "
+                f"episode's start, as its summary's t=) (run {self.marker or self.run_id}):"), \
+            [f["jpeg"] for f in chosen]
 
     def restart_level(self, level=None):
         if self.time_up():
@@ -1559,6 +1579,14 @@ class Session:
                            + " backs it" + (f" (the last one failed: {self.look_failed})" if self.look_failed else "")
                            + ". Describe the episode's moment (open questions), hold the description against what "
                            "true and false would look like, then report.")
+        if not refused and args.get("episode") is not None:
+            n = self._report_episode(args["episode"])
+            if isinstance(n, str):
+                refused = n
+            else:
+                args = {**args, "episode": n}
+        elif "episode" in args:  # (none named: the last episode's recording is shown)
+            args = {k: v for k, v in args.items() if k != "episode"}
         if refused:
             self.note(refused)  # (the log shows why the run went on after a report)
             return refused
@@ -1574,6 +1602,25 @@ class Session:
         with open(os.path.join(self.run_dir, "report.json"), "w", encoding="utf-8") as f:
             json.dump(args, f, indent=1)
         return "Reported. You can stop now."
+
+    def _report_episode(self, episode):
+        """The report's `episode` (the one whose recording is the run's) as a number 1..episodes played, or why it
+        can't be taken (the report is refused: the agent reports again with one that was played, or none)."""
+        n = None
+        if not isinstance(episode, bool):
+            try:
+                n = int(episode) if float(episode) == int(float(episode)) else None
+            except (TypeError, ValueError, OverflowError):
+                n = None
+        if not self.episodes:
+            return (f"Not reported: episode {episode!r} names an episode, and none has been played in this run. "
+                    "Report without episode.")
+        if n is None or not 1 <= n <= self.episodes:
+            return (f"Not reported: episode must be the number of an episode played in this run, 1 to "
+                    f"{self.episodes} (you gave {episode!r}): the one that shows the result best, whose recording "
+                    "becomes the run's. Report again with one of them, or without episode (the last one's recording "
+                    "is shown).")
+        return n
 
 
 def network_note(net, paused=None):
