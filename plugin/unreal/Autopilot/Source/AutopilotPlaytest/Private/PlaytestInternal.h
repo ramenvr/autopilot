@@ -112,11 +112,12 @@ public:
 private:
 	struct FJobs;
 
-	/** "" and the game viewport's rectangle in its window's back buffer, or why there is no picture ("no picture: ..."). */
-	FString FindPicture(FIntRect& OutRect, const SWindow*& OutWindow);
+	/** "" and the game viewport's rectangle in its window's back buffer, or why there is no picture ("no picture: ...").
+	 *  World: whose picture (a player's world; a recording is always player 1's). */
+	FString FindPicture(UWorld* World, FIntRect& OutRect, const SWindow*& OutWindow);
 	/** Hooks the render thread's side to Slate's presents (once). */
 	bool Hook();
-	bool Start(bool bStill, int64 Number, int32 MaxDim, int32 Quality, FString& OutError);
+	bool Start(UWorld* World, bool bStill, int64 Number, int32 MaxDim, int32 Quality, FString& OutError);
 	void StopRecording();
 
 	UPlaytestSubsystem& Bridge;

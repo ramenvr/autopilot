@@ -1699,10 +1699,12 @@ class Session:
 def network_note(net, paused=None):
     """The opening's line on a multiplayer game (the plugin's context `net`): whose player the run plays, where the
     truth is kept, and whether the game pauses. A single-player game has none; a Roblox game (`rc_side` "server": a
-    client of the game's server, its reads made on the server) has its own, one player or several."""
+    client of the game's server, its reads made on the server) has its own, one player or several. Several players in
+    one editor (Unreal's `players`: its Play settings' Number of Players) get a line on driving them."""
     if net.get("mode") == "listen_server":
-        return ("Multiplayer: the game is hosted by the player you play (a listen server), so this world has "
-                "authority: what you read is the game's truth and a change from a probe sticks.")
+        return " ".join(n for n in ["Multiplayer: the game is hosted by the player you play (a listen server), so this "
+                                    "world has authority: what you read is the game's truth and a change from a probe "
+                                    "sticks.", players_note(net)] if n)
     if net.get("rc_side") == "server":
         # (Roblox: every play session is a client of the game's server, and the plugin's reads go to the server)
         clients = int(net.get("clients") or 1)
@@ -1733,9 +1735,27 @@ def network_note(net, paused=None):
                     "client.")
     if isinstance(paused, dict) and paused.get("why"):
         note.append(f"The game can't be paused ({paused['why']}): it runs on while you read or think.")
+    if players_note(net):
+        note.append(players_note(net))
     note.append("Play the game as the editor is set up to play it: don't change the editor's Play settings (the net "
                 "mode is the user's).")
     return " ".join(note)
+
+
+def players_note(net):
+    """The opening's line on the other players an editor plays (the plugin's context `net` with `players` above 1:
+    Unreal's multiplayer Play In Editor, every player in one process): how to drive them; "" for one player."""
+    players = int(net.get("players") or 1)
+    if players <= 1:
+        return ""
+    return (f"The editor plays {players} players, as its Play settings start them: you are player 1 (game), "
+            "and game.player(n) is player n as a game of its own: its pawn, pose, view, screen, keys, ui_act and every "
+            "controller (walk_to(game.player(2), ...)); game.players() lists them. A player nobody drives stands idle "
+            "where it is. Drive the others when the request is about players together (co-op, handing things over, one "
+            "seeing another) or when the game needs every player to go on (a door for two, a revive); otherwise play "
+            "player 1 and leave them be. The pointer (a click at a place on the view) is player 1's only: another "
+            "player's UI takes game.player(n).ui_act. The number of players is the user's: game.restart(players=N) "
+            "can't change it.")
 
 
 def _whole(path):

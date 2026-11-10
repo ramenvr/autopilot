@@ -153,10 +153,26 @@ public:
 	 *  has no local player, no viewport, and its player controllers only stand in for remote players. */
 	UWorld* GetGameWorld() const;
 
+	/** The worlds of the players being played, player 1's first (GetGameWorld's): in Play In Editor each world with a
+	 *  local player that runs in this process (never a dedicated server's), by PIE instance, so the listen server's host
+	 *  or the first client is player 1 and the editor's further clients ("Number of Players" in its Play settings, run
+	 *  under one process) are players 2, 3...; outside it the game's own world. Empty when nothing is played. */
+	TArray<UWorld*> GetPlayerWorlds() const;
+
+	/** Player N's world (1-based, as GetPlayerWorlds lists them); nullptr when there is no such player. */
+	UWorld* GetPlayerWorld(int32 Player) const;
+
 	/** The world with authority over the game being played: GetGameWorld's own unless that is a client, then the
 	 *  server's when it runs in this process (the editor's dedicated server, or a listen server); nullptr when the server
 	 *  is in another process. */
 	UWorld* GetServerWorld() const;
+
+	/** The same for the world a player plays (Played, one of GetPlayerWorlds). */
+	UWorld* GetServerWorld(const UWorld* Played) const;
+
+	/** Set by the editor module: how many players the editor's Play settings start in this process (Number of Players
+	 *  when run under one process, else 1). Unset (a game build): 1. */
+	TFunction<int32()> PlaySettingsPlayers;
 
 	/** Why no game world is being played although the editor is in Play In Editor (the client hasn't joined its
 	 *  dedicated server yet, or never will), "" otherwise. */

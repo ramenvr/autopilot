@@ -519,13 +519,12 @@ bool FPlaytestMedia::Hook()
 	return true;
 }
 
-FString FPlaytestMedia::FindPicture(FIntRect& OutRect, const SWindow*& OutWindow)
+FString FPlaytestMedia::FindPicture(UWorld* World, FIntRect& OutRect, const SWindow*& OutWindow)
 {
 	if (!CanCapture())
 	{
 		return TEXT("no picture: the game runs without rendering (-nullrhi)");
 	}
-	UWorld* World = Bridge.GetGameWorld();
 	if (!World)
 	{
 		return TEXT("no picture: no game is running");
@@ -569,11 +568,11 @@ FString FPlaytestMedia::FindPicture(FIntRect& OutRect, const SWindow*& OutWindow
 	return FString();
 }
 
-bool FPlaytestMedia::Start(bool bStill, int64 Number, int32 MaxDim, int32 Quality, FString& OutError)
+bool FPlaytestMedia::Start(UWorld* World, bool bStill, int64 Number, int32 MaxDim, int32 Quality, FString& OutError)
 {
 	FIntRect Rect;
 	const SWindow* Window = nullptr;
-	OutError = FindPicture(Rect, Window);
+	OutError = FindPicture(World, Rect, Window);
 	if (!OutError.IsEmpty())
 	{
 		return false;
@@ -623,7 +622,7 @@ void FPlaytestMedia::Record(int64 Id, const TSharedPtr<FJsonObject>& Args)
 	Args->TryGetNumberField(TEXT("quality"), QualityArg);
 	FIntRect Rect;
 	const SWindow* Window = nullptr;
-	const FString Problem = FindPicture(Rect, Window);
+	const FString Problem = FindPicture(Bridge.GetGameWorld(), Rect, Window);  // (a recording is player 1's view)
 	if (!Problem.IsEmpty())
 	{
 		Bridge.RespondError(Id, Problem, 409);
@@ -663,8 +662,11 @@ void FPlaytestMedia::Capture(int64 Id, const TSharedPtr<FJsonObject>& Args)
 	double MaxDimArg = 1920.0, QualityArg = 90.0;
 	Args->TryGetNumberField(TEXT("max_dim"), MaxDimArg);
 	Args->TryGetNumberField(TEXT("quality"), QualityArg);
+	// A still of the request's player's view ("player" n: the kit's game.player(n)), player 1's when it says none
+	double Player = 1.0;
+	Args->TryGetNumberField(TEXT("player"), Player);
 	FString Problem;
-	if (!Start(true, Id, FMath::Clamp((int32)MaxDimArg, 16, 8192), FMath::Clamp((int32)QualityArg, 1, 100), Problem))
+	if (!Start(Bridge.GetPlayerWorld(FMath::FloorToInt32(Player)), true, Id, FMath::Clamp((int32)MaxDimArg, 16, 8192), FMath::Clamp((int32)QualityArg, 1, 100), Problem))
 	{
 		Bridge.RespondError(Id, Problem, 409);
 	}
@@ -762,5 +764,5 @@ void FPlaytestMedia::Tick()
 		return;  // the one before is still being read or encoded: this one is skipped (a gap in n)
 	}
 	FString Problem;
-	Start(false, N, RecordMaxDim, RecordQuality, Problem);  // (no picture now: skipped)
+	Start(World, false, N, RecordMaxDim, RecordQuality, Problem);  // (no picture now: skipped)
 }

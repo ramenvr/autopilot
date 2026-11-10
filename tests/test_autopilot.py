@@ -2234,3 +2234,70 @@ def test_a_roblox_games_network_note_says_the_reads_go_to_the_server(tmp_path, m
     # (the other engines' wording is unchanged)
     assert "another process" in session.network_note({"mode": "client", "server_world": ""})
     assert "listen server" in session.network_note({"mode": "listen_server", "rc_side": "server"})
+
+
+def test_an_unreal_editors_players_are_told_how_to_drive_them():
+    """Unreal's multiplayer Play In Editor (context `net` with `players` above 1): the note says how many players the
+    editor plays, that game.player(n) drives player n, that the others stand idle, and that their number is the
+    user's; one player gets no such line."""
+    from autopilot.agents import session
+
+    host = session.network_note({"mode": "listen_server", "players": 2, "player": 1})
+    assert "listen server" in host and "plays 2 players" in host and "game.player(n)" in host
+    assert "stands idle" in host and "restart(players=N) can't change it" in host and "player 1's only" in host
+    client = session.network_note({"mode": "client", "server_world": "/Game/UEDPIE_0_Map.Map", "clients": 2,
+                                   "players": 2})
+    assert "dedicated server" in client and "plays 2 players" in client and "Play settings" in client
+    for net in ({"mode": "listen_server"}, {"mode": "listen_server", "players": 1},
+                {"mode": "client", "server_world": ""}):
+        assert "game.player(n)" not in session.network_note(net)
+
+
+class PlayersFeatureLink:
+    """A game whose plugin's hello says (or doesn't say) "players"."""
+
+    def __init__(self, features):
+        self.hello = {"project": "fake", "engine": "unreal", "features": list(features)}
+        self.sent = []
+        self.game_time = 1.0
+
+    def request(self, op, args=None, timeout=None):
+        self.sent.append((op, dict(args or {})))
+        if op == "context":
+            n = (args or {}).get("player", 1)
+            return {"character": f"/Game/UEDPIE_{n - 1}_Map.Map:PersistentLevel.Hero_C_{n}", "you": n,
+                    "players": [{"player": 1, "you": n == 1}, {"player": 2, "you": n == 2}]}
+        return {}
+
+    def post(self, op, args=None):
+        self.sent.append((op, dict(args or {})))
+
+
+def test_another_player_needs_a_plugin_that_plays_several():
+    """game.player(n > 1), game.players() and restart(players=N > 1) on a game whose plugin doesn't say "players"
+    (Unity's, Godot's, an older Unreal plugin): a GameError, not player 1 played for player 2 (the plugin would never
+    read the request's "player"). Player 1 is the game itself either way."""
+    link = PlayersFeatureLink(["timed_hold", "levels", "pointer"])
+    game = Game(link)
+    assert game.player(1) is game
+    for call in (lambda: game.player(2), game.players, lambda: game.restart(players=2)):
+        with pytest.raises(GameError, match="one player only"):
+            call()
+    assert not [op for op, _ in link.sent if op == "session"]  # (refused before anything changed)
+
+
+def test_another_players_requests_say_whose_they_are():
+    """With "players" (Unreal's multiplayer Play In Editor): every request and post of game.player(2) carries
+    "player": 2, game's own none, and its context is player 2's."""
+    link = PlayersFeatureLink(["timed_hold", "levels", "pointer", "players"])
+    game = Game(link)
+    two = game.player(2)
+    assert two.pawn.endswith("Hero_C_2") and game.pawn.endswith("Hero_C_1")
+    assert [p["player"] for p in game.players()] == [1, 2]
+    link.sent.clear()
+    two.press("W")
+    two.view()
+    two.screen()
+    game.press("E")
+    sent = [(op, a.get("player")) for op, a in link.sent]
+    assert ("key", 2) in sent and ("view", 2) in sent and ("screen", 2) in sent and ("key", None) in sent
