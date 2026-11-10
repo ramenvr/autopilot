@@ -21,6 +21,10 @@ local FEED_TAIL = 10 -- the Live page's feed: its latest lines (the Feed tab sho
 local FEED_ROWS = 600 -- the Feed tab's rows drawn at most (the latest)
 local STEER_HINT = "Send a steering prompt to Autopilot"
 local STEER_WAIT = "You can steer once the game is playing"
+-- With an agent service that tells hints from redirects ("steer_mode"): the box's placeholder, Send (a hint: play goes
+-- on) and Redirect beside it (the attempt playing now ends), with what each does once there are words to send
+local STEER_HINT_MODES = "Add a hint; Autopilot keeps playing"
+local STEER_MODES_NOTE = "Send: Autopilot reads your hint and keeps playing. Redirect: end the current attempt now and play on from your words."
 local HANDS_OFF = "Hands off the game view while Autopilot plays: your clicks and keys there reach the game too."
 
 function RunPage.new(d: any, frame: Frame): any
@@ -180,6 +184,10 @@ function RunPage:_buildSteer()
 	self.steerBtn = T.button(well, "Steer", "primary", function()
 		self:_onSteer()
 	end)
+	self.redirectBtn = T.button(well, "Redirect", "default", function()
+		self:_onSteer(true)
+	end)
+	self.redirectBtn.Visible = false
 	self.steerNote = T.label(inner, "", "small", { color = C.muted })
 	self.steerRow = row
 	row.Visible = false
@@ -202,18 +210,30 @@ function RunPage:_updateSteer()
 	self.steerBox.TextEditable = editable
 	self.steerRow.BackgroundTransparency = 0
 	local now = self:_canSteerNow() and not stopping
-	T.disable(self.steerBtn, not now or M.trim(self.steerBox.Text) == "")
-	self.steerNote.Text = if not now and not stopping and M.trim(self.steerBox.Text) ~= "" then STEER_WAIT else ""
+	local typed = M.trim(self.steerBox.Text) ~= ""
+	local modes = self:_canSteerShown() and self.d.editor:canRedirect()
+	self.steerBox.PlaceholderText = if modes then STEER_HINT_MODES else STEER_HINT
+	self.steerBtn.Text = T.text(if modes then "Send" else "Steer", self.steerBtn.FontFace)
+	self.redirectBtn.Visible = modes
+	T.disable(self.steerBtn, not now or not typed)
+	T.disable(self.redirectBtn, not now or not typed)
+	-- (Roblox draws no tooltips: what the buttons do is the note under the box)
+	self.steerNote.Text = if not now and not stopping and typed then STEER_WAIT
+		elseif now and modes and typed then STEER_MODES_NOTE
+		else ""
 	self.steerNote.Visible = self.steerNote.Text ~= ""
 end
 
-function RunPage:_onSteer()
+-- Sends the box's words: a hint (Send, Steer, Enter), or with redirect a redirect (Redirect: the attempt playing now ends).
+function RunPage:_onSteer(redirect: boolean?)
 	local said = M.trim(self.steerBox.Text)
 	if said == "" or not self:_canSteerNow() then
 		return
 	end
-	self.d.editor:steer(said)
-	self.d.active:addFeed("You: " .. said, "status")
+	local ed = self.d.editor
+	local redirecting = redirect == true and ed:canRedirect()
+	ed:steer(said, redirecting)
+	self.d.active:addFeed((if redirecting then "You (redirect): " else "You: ") .. said, "status")
 	self.steerBox.Text = ""
 	self:_updateSteer()
 	self:liveChanged()

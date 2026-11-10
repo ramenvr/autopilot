@@ -71,7 +71,10 @@ and is never saved.
 5. **Follow the run** on the run page's tabs. **Live**: the request, **Elapsed** and **Stop**; the stage track
    (Launch, Analyze, Probe env, Build harness, Rollout, Process result, Report, each with its time), what the agent
    does **Now** (*Waiting for the game to start* while the run's play session comes up), the harness attempts (a
-   square each), the feed's latest lines, and the steer box (a hint for the agent while the game plays). **Feed**:
+   square each), the feed's latest lines, and the steer box ("Add a hint; Autopilot keeps playing": **Send** gives
+   the agent a hint while the attempt playing now goes on, **Redirect** ends that attempt now and takes your words as
+   the new direction; either way the agent goes on from where the game is unless your words ask for a restart; both
+   only while the game plays). **Feed**:
    what the agent did and said, by stage; **+ inspect …** opens a line's code, output or text. **Policy log · N**
    (unless **Show Policy Log** is off): the agent's policy steps in the game, filtered by harness attempt, tag (START,
    KEEP, SWITCH, HELD, DROPPED) and action, following the newest until you pick one; the attempt's replay (which
