@@ -1202,4 +1202,47 @@ function Sight.watchFinish(st: any): any
 	return out
 end
 
+-- `trace` (as Unreal's PlaytestOpsTrace.cpp): the first thing a line, or a ball swept along it, meets between two points
+-- of the played world, by Roblox's collision. What a thing's box can't tell: a big model's box is many times what is
+-- solid of it, a ring or an arch is open through the middle of its box. {"start", "end": kit {"X","Y","Z"}, "radius"?:
+-- cm (0: a line), "channel"?: "body" (the default: what stops the character, CanCollide and its CollisionGroup) |
+-- "sight" (whatever a query meets: CanQuery)} -> {"channel", "hit": null | {"location" (where the line stops: the
+-- ball's center when it touches), "point" (where it touches), "normal", "distance" (cm, start to location), "actor"
+-- (the part's path), "name", "component" (its class), "inside": false (Roblox's casts never meet what they start in)}}.
+-- The player's character, what it holds and the camera are never hit.
+function Sight.trace(args: any): (boolean, any, number?)
+	if type(args.start) ~= "table" or type(args["end"]) ~= "table" then
+		return false, 'trace needs a start and an end ({"X", "Y", "Z"})', 400
+	end
+	local start = Frame.fromKit(args.start)
+	local d = Frame.fromKit(args["end"]) - start
+	local radius = math.clamp((tonumber(args.radius) or 0) / S, 0, 256) -- (Spherecast's largest radius: 256 studs)
+	local sight = tostring(args.channel or "") == "sight"
+	local params = Sight.params(not sight)
+	local channel = if sight then "sight" else "body"
+	if d.Magnitude < 1e-6 then
+		return true, { channel = channel, hit = Json.null }
+	end
+	local r: RaycastResult?
+	if radius > 0 then
+		r = workspace:Spherecast(start, radius, d, params)
+	else
+		r = workspace:Raycast(start, d, params)
+	end
+	if r == nil then
+		return true, { channel = channel, hit = Json.null }
+	end
+	local location = if radius > 0 then start + d.Unit * r.Distance else r.Position
+	local hit: any = { location = Frame.kit(location), point = Frame.kit(r.Position),
+		normal = { X = math.round(-r.Normal.Z * 1000) / 1000, Y = math.round(r.Normal.X * 1000) / 1000,
+			Z = math.round(r.Normal.Y * 1000) / 1000 },
+		distance = math.round(r.Distance * S * 10) / 10, inside = false }
+	if r.Instance then
+		hit.actor = Paths.of(r.Instance)
+		hit.name = r.Instance.Name
+		hit.component = r.Instance.ClassName
+	end
+	return true, { channel = channel, hit = hit }
+end
+
 return Sight

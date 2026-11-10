@@ -172,7 +172,14 @@ class Unreal(Engine):
     def rot(self, game, actor):
         return game.ret(actor, "K2_GetActorRotation")
 
-    def bounds(self, game, actor):
+    def bounds(self, game, actor, visual=False):
+        # Its colliding components' box: a big mesh's drawn box (or an effect's, a sky's) can be many times what is
+        # solid of it. An actor with nothing colliding answers an empty box (zero extent): then the drawn one
+        if not visual:
+            r = game.call(actor, "GetActorBounds", bOnlyCollidingComponents=True)
+            ext = Vec.of(r.get("BoxExtent"))
+            if ext is not None and (ext.x or ext.y or ext.z):
+                return Vec.of(r.get("Origin")), ext
         r = game.call(actor, "GetActorBounds", bOnlyCollidingComponents=False)
         return Vec.of(r.get("Origin")), Vec.of(r.get("BoxExtent"))
 

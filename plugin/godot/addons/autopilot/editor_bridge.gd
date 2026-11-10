@@ -160,8 +160,8 @@ func _send_hello() -> void:
 		"host": "editor", "inspect": inspect,
 		# the games it starts can be captured (a headless one answers record and capture with 409); `levels`, and
 		# `session` playing the `map` asked for; and what the game's own autoload does, relayed to it: a key hold with
-		# "seconds" let go in the game (timed_hold), `pointer`
-		"features": ["media", "levels", "timed_hold", "pointer"],
+		# "seconds" let go in the game (timed_hold), `pointer`, `trace`
+		"features": ["media", "levels", "timed_hold", "pointer", "trace"],
 		# whether the user shares runs' data (Autopilot/preferences.json; read again at every connection)
 		"share": Prefs.share_data(prefs),
 		# how input reaches the games it starts (as the game's own hello says; the game's context says it for the game
