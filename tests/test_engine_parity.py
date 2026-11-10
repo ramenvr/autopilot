@@ -130,3 +130,26 @@ def test_every_engine_runs_a_built_game_headless():
     exported = gd.launch_command("C:/G", url, log, exe="C:/Build/Orchard.exe")
     assert "--path" not in exported and exported[:2] == ["C:/Build/Orchard.exe", "--headless"]
     assert f"-PlaytestUrl={url}" in exported
+
+
+def test_every_engines_plugin_refuses_an_argument_name_its_function_doesnt_take():
+    # game.call(obj, "Fn", WrongName=1) was made without WrongName on Unreal, Godot and Roblox while the agent believed
+    # it passed it: every plugin now refuses the call in Unity's words (a source check: the plugins are built, and
+    # Roblox's run only in Studio). The live checks: tools/engine_smoke.py (Unreal), plugin/godot/tests/smoke.py,
+    # plugin/roblox/tests/smoke.py
+    import os
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    sources = {
+        "unreal": "plugin/unreal/Autopilot/Source/AutopilotPlaytest/Private/PlaytestOpsRc.cpp",
+        "unity": "plugin/unity/com.ramenvr.autopilot/Runtime/Reflect.cs",
+        "godot": "plugin/godot/addons/autopilot/lib/rc.gd",
+        "roblox": "plugin/roblox/src/Rc.luau",
+    }
+    for name, rel in sources.items():
+        source = open(os.path.join(root, rel), encoding="utf-8").read()
+        assert "unknown argument(s) " in source and "; it takes " in source and "no arguments" in source, name
+    # (and a struct's unknown field in Unreal, as Unity refuses one: "X has no Y")
+    json_cpp = open(os.path.join(root, "plugin/unreal/Autopilot/Source/AutopilotPlaytest/Private/PlaytestJson.cpp"),
+                    encoding="utf-8").read()
+    assert "unknown field(s) %s for %s; it has %s" in json_cpp and "unknown fields are ignored" not in json_cpp

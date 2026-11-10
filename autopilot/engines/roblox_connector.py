@@ -818,8 +818,16 @@ class StudioBackend:
         if verb == "call":
             params = dict(body.get("parameters") or {})
             given = params.pop("args", None)
-            positional = list(given) if isinstance(given, (list, tuple)) else list(params.values())
-            return self.luau("call", {"path": path, "fn": body.get("functionName"), "args": positional},
+            fn = body.get("functionName")
+            if params:
+                # (no parameter names to match them by here: a named value went in by its place among the others, a
+                # misnamed one unnoticed. Refused, as the plugin refuses a name its function doesn't take)
+                raise OpFailed(400, f"{fn} on {path}: unknown argument(s) {', '.join(params)}; here a function takes "
+                                    "its arguments in order: args=[...]")
+            if given is not None and not isinstance(given, (list, tuple)):
+                raise OpFailed(400, f"{fn} on {path}: args is a list of the arguments, in order: args=[...]")
+            positional = list(given or [])
+            return self.luau("call", {"path": path, "fn": fn, "args": positional},
                              model or self.datamodel(write=True))
         raise OpFailed(400, f"rc: unknown verb {verb}")
 

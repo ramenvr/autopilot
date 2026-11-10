@@ -227,6 +227,16 @@ def test_reads_writes_and_calls(playing):
     assert game.get("Workspace/Door", "Open") is True and game.writes[-1]["why"] == "test"
     r = game.call("ServerScriptService/Debug", "GiveCoin", args=[2])
     assert r["ReturnValue"] == 2 and game.get("Players/Hero/leaderstats", "Coins") == 2
+    # A named argument has no parameter name to match here: refused (the call not made), never passed by its place
+    sent = len(place.luau_calls())
+    with pytest.raises(GameError, match=r"GiveCoin on ServerScriptService/Debug: unknown argument\(s\) amount; here a "
+                                        r"function takes its arguments in order: args=\[\.\.\.\]"):
+        game.call("ServerScriptService/Debug", "GiveCoin", amount=2)
+    with pytest.raises(GameError, match=r"unknown argument\(s\) times"):
+        game.call("ServerScriptService/Debug", "GiveCoin", args=[2], times=3)
+    with pytest.raises(GameError, match="args is a list"):
+        game.call("ServerScriptService/Debug", "GiveCoin", args=2)
+    assert len(place.luau_calls()) == sent and game.get("Players/Hero/leaderstats", "Coins") == 2
     assert game.screen() == {"Hud.Coins": "Coins: 2"}
     with pytest.raises(GameError, match="does not exist"):
         game.loc("Workspace/Gone")
