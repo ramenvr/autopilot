@@ -127,6 +127,7 @@ def test_a_game_tool_refuses_an_argument_name_it_doesnt_take(monkeypatch):
     monkeypatch.setattr(claude_agent_sdk, "create_sdk_mcp_server", lambda name, tools: made.update(tools=tools) or {})
     calls = []
     session = types.SimpleNamespace(tool_seconds=0.0, steer_note=lambda: "", news=lambda: "", clock=lambda: "[clock]",
+                                    result=lambda text: text + "\n[clock]",
                                     run_harness=lambda *a, **k: calls.append((a, k)) or "episode 1")
     cc._tools(session)
     run_harness = next(t for t in made["tools"] if t.name == "run_harness")
