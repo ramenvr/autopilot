@@ -55,7 +55,7 @@ from . import (
 from . import codex as codexmod
 from . import detectors as detectorsmod
 from . import levels as levelsmod
-from .agents.session import Steering, cut_off, default_timeout, go_on, scrub
+from .agents.session import HINT, REDIRECT, STEER_MODES, Steering, cut_off, default_timeout, go_on, scrub
 from .agents.session import model as agent_model
 from .kit.game import Game
 from .words import change_text, plain_words  # noqa: F401 (what the user reads; also cli.plain_words)
@@ -1185,8 +1185,10 @@ def cmd_serve(link, args):
             going[1].set()
             link.status("Stopping")
         elif kind == "steer" and going is not None:
-            if going[2].add(msg.get("text")):
-                link.status("Steering: " + str(msg.get("text")).strip()[:120])
+            # (mode: "hint", the default, or "redirect", which ends the episode playing now; see bridge.BRAIN_FEATURES)
+            mode = msg.get("mode") if msg.get("mode") in STEER_MODES else HINT
+            if going[2].add(msg.get("text"), mode):
+                link.status(("Redirecting: " if mode == REDIRECT else "Hint: ") + str(msg.get("text")).strip())
         elif kind == "feedback":
             take_feedback(link, msg)
         elif kind == "clear_memory":

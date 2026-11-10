@@ -661,6 +661,38 @@ def test_the_serve_loop_takes_the_trace_from_the_start_frames_run(monkeypatch):
     assert asked and asked[0]["trace"] == trace and asked[0]["kind"] == "goal"
 
 
+def test_the_serve_loop_passes_a_steers_mode_on_and_a_frame_without_one_is_a_hint(monkeypatch):
+    steerings = []
+    monkeypatch.setattr(cli, "run_prompt", lambda *a, **k: steerings.append(k["steering"]) or time.sleep(2))
+    link = Plugin()
+    link.hello = {"project": "Farm", "run": {"kind": "goal", "goal": "Open the gate"}}
+    link.current = link
+    frames = [{"type": "steer", "text": "the gate's lever is behind the barn"},  # (an older plugin: no mode)
+              {"type": "steer", "text": "stop, try the barn door", "mode": "redirect"},
+              {"type": "steer", "text": "look up", "mode": "nonsense"}]
+
+    def next_message(timeout=None):
+        for _ in range(100):  # (the run goes in its own thread)
+            if steerings:
+                break
+            time.sleep(0.02)
+        if frames:
+            return frames.pop(0)
+        raise KeyboardInterrupt
+
+    link.next_message = next_message
+    monkeypatch.setattr(cli, "send_memory_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "send_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "SignIn", lambda link: None)
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_serve(link, types.SimpleNamespace(path=None, model=None))
+    assert steerings[0].take() == [("the gate's lever is behind the barn", "hint"),
+                                   ("stop, try the barn door", "redirect"), ("look up", "hint")]
+    said = [f["text"] for f in link.sent if f.get("type") == "status"]
+    assert "Hint: the gate's lever is behind the barn" in said and "Redirecting: stop, try the barn door" in said
+    assert "steer_mode" in bridge.BRAIN_FEATURES
+
+
 def picked_model_aura(agent):
     """Aura answering a run that asked for a model with the agent that plays it (`agent`), and an OpenRouter and an
     OpenAI relay beside its own two."""

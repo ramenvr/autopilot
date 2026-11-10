@@ -237,9 +237,10 @@ Rules:
 - Errors in the game's log: each run_harness summary lists the errors the game logged during its episode, or says
   none were. That is the log to report from (it can't be read once play has stopped). A summary that says nothing
   about the game's error log means this game's log isn't captured: say so in the report.
-- The user watches and may steer while you work: a tool result then says what they typed. It changes the request
-  from then on; the game goes on from where it is (the level is never restarted after that, so harness code must
-  work from the state play is in).
+- The user watches and may write to you while you work: a tool result then says what they typed. A hint leaves the
+  episode playing (use it where it bears on the request); a redirect ended the episode there and changes the request
+  from then on. After either the user likely wants play to go on from where it is: prefer run_harness restart=False
+  (harness code must work from the state play is in) unless what they said asks for a restart or nothing else works.
 - The game keeps running during run_harness and probe: enemies attack, timers run. `restart_level` starts over.
 
 {kit}
@@ -464,24 +465,35 @@ def system_prompt(engine, run_rel, agents=""):
             .replace("{contract}", _contract()).replace("{min_decisions}", str(MIN_JEV_DECISIONS)))
 
 
+# A steer's mode (the `steer` frame's "mode"): a hint is a note the agent reads with its next tool result while play
+# goes on; a redirect also ends the episode playing now. A frame without one (an older plugin) is a hint.
+HINT, REDIRECT = "hint", "redirect"
+STEER_MODES = (HINT, REDIRECT)
+
+
 class Steering:
-    """What the user types while a run plays, to steer it (the plugin's `steer` frames): taken in order by the
-    implementer (with its next tool result, or as a message of its own once it has stopped). Thread-safe: the
-    frames arrive on another thread."""
+    """What the user types while a run plays, to steer it (the plugin's `steer` frames): (text, mode) pairs taken in
+    order by the implementer (with its next tool result, or as a message of its own once it has stopped). Thread-safe:
+    the frames arrive on another thread."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._items = []
 
-    def add(self, text):
-        text = str(text or "").strip()[:2000]
+    def add(self, text, mode=HINT):
+        text = str(text or "").strip()
         if text:
             with self._lock:
-                self._items.append(text)
+                self._items.append((text, mode if mode in STEER_MODES else HINT))
         return bool(text)
 
     def pending(self):
         return bool(self._items)
+
+    def redirecting(self):
+        """Whether a redirect waits to be read: the episode playing now ends for it (a hint lets it play on)."""
+        with self._lock:
+            return any(mode == REDIRECT for _, mode in self._items)
 
     def take(self):
         with self._lock:
@@ -493,10 +505,18 @@ class Steering:
 TIME_UP = ("Time is up: play and probes are closed. Call report now with what the episodes so far show (INCONCLUSIVE "
            "if the request isn't settled).")
 
-STEER_NOTE = """The user, watching the game, steers: {said}
-Take it as a change to the request from now on (what to do next, how, what to stop doing). Revise the harness for it
-and go on from the game as it is now: the level is not restarted any more in this run (run_harness continues where
-play is; setup() must work from wherever things are now). Then report on the request as steered."""
+# What the agent is told the user typed (Session.steer_note): a hint while play went on, or a redirect that ended the
+# episode. {after} is the same for both: where play goes on from.
+HINT_NOTE = """The user, watching the game, adds a hint (play went on): {said}
+Use it from now on where it bears on the request: something about the game, what to try, what to look at. It doesn't
+end the episode or change what the request is unless it says so."""
+
+REDIRECT_NOTE = """The user, watching the game, stopped the episode to redirect the run: {said}
+Take it as a change to the request from now on (what to do next, how, what to stop doing). Revise the harness for it,
+then report on the request as steered."""
+
+STEER_AFTER = """The user likely wants play to go on from where it is now: prefer run_harness restart=False (setup()
+must work from wherever things are now) unless what they said asks for a restart, or nothing else gets play going."""
 
 
 class Session:
@@ -561,8 +581,8 @@ class Session:
         self.steering = Steering()
         self.play_seconds = None  # an exploration's minutes of play, in seconds (None: only the budget bounds play)
         self.play_started = None  # time.time() when the run first played (its minutes of play count from there)
-        self.steered = False  # the user has steered this run: the level isn't restarted any more
-        self.end_episode = threading.Event()  # (set to end the episode running now: the user steered)
+        self.steered = False  # the user has steered this run (a hint or a redirect)
+        self.end_episode = threading.Event()  # (set to end the episode running now: the user redirected)
         self.describer = None  # autopilot.vision.Describer: describe_frames (None: not in this run)
         # each episode's video (media.Recorder's begin/end): the describer's recorder, or in the sandbox the parent's
         # (autopilot.sandbox.RemoteRecorder)
@@ -908,11 +928,16 @@ class Session:
         if not said:
             return ""
         self.steered = True
-        self.activity("steer", "Steered: " + " | ".join(s.strip() for s in said), detail="\n".join(said),
-                      log=f"steered: {said}")
-        self.say("Revising the play for what you said")
-        quoted = "\n".join(f'"{s}"' for s in said)
-        return "\n\n" + STEER_NOTE.format(said=quoted)
+        texts = [text for text, _ in said]
+        redirect = any(mode == REDIRECT for _, mode in said)
+        self.activity("steer", ("Redirected: " if redirect else "Hint: ") + " | ".join(texts), detail="\n".join(texts),
+                      log=f"steered ({REDIRECT if redirect else HINT}): {texts}")
+        self.say("Revising the play for what you said" if redirect else "Taking in your hint")
+        if redirect and len(said) > 1:  # (hints sent with it are quoted as such)
+            quoted = "\n".join(f'"{text}"' + ("" if mode == REDIRECT else " (a hint)") for text, mode in said)
+        else:
+            quoted = "\n".join(f'"{text}"' for text in texts)
+        return "\n\n" + (REDIRECT_NOTE if redirect else HINT_NOTE).format(said=quoted) + "\n" + STEER_AFTER
 
     def next_message(self):
         """What the agent is sent once it has stopped: what the user typed, or, once the run's time is up and it hasn't
@@ -1173,11 +1198,6 @@ class Session:
             # (the recording is the run's, here: the episode, in the sandbox or not, is filmed closer)
             with self.describer.filming(frames_fps):
                 return self.run_harness(seconds, restart, file, until)
-        kept = ""
-        if restart and (self.steered or self.steering.pending()):
-            # (the user is steering live play: it goes on from where it is, never from a restarted level or game)
-            restart = False
-            kept = "(Not restarted: the user is steering live play, so the episode went on from where the game was.)\n"
         played = self.played
         t0 = time.time()
         left = self.play_left()
@@ -1209,12 +1229,12 @@ class Session:
             if self.researcher is not None:  # (what the episode raised, answered from the code for the next harness)
                 summary = _whole(os.path.join(self.run_dir, f"trace{self.episodes}_summary.txt"))
                 self.researcher.episode(self.episodes, summary)
-        return kept + text
+        return text
 
     def _episode_over(self, until=None):
-        """Whether the episode running now must end: the run stops, the user steered, or (until: a time.time()) the
-        run's time for play is up."""
-        return (bool(self.stop()) or self.end_episode.is_set() or self.steering.pending()
+        """Whether the episode running now must end: the run stops, the user redirected (a hint lets it play on), or
+        (until: a time.time()) the run's time for play is up."""
+        return (bool(self.stop()) or self.end_episode.is_set() or self.steering.redirecting()
                 or (until is not None and time.time() >= until))
 
     def _run_harness(self, seconds, restart, file, until=None):
@@ -1292,8 +1312,8 @@ class Session:
             if result.get("reason") == "stopped" and until is not None and time.time() >= until:
                 note += "Note: the run's minutes of play are up: the episode ended there.\n"
             elif result.get("reason") == "stopped" and not self.stop():
-                note += ("Note: the user steered while Jev played: the episode ended there, and the game is paused "
-                         "where it was.\n")
+                note += ("Note: the user redirected the run while Jev played: the episode ended there, and the game "
+                         "is paused where it was.\n")
         except Exception:
             return self._no_episode("The runtime failed:\n" + traceback.format_exc(limit=8))
         finally:
@@ -1566,9 +1586,6 @@ class Session:
     def restart_level(self, level=None):
         if self.time_up():
             return f"Not restarted. {TIME_UP}"
-        if self.steered or self.steering.pending():
-            return ("Not restarted: the user is steering live play. Go on from where the game is (run_harness "
-                    "continues it).")
         info = getattr(self.game, "level_info", None)
         target = levelsmod.resolve(level, info.levels if info else None) if level else None
         if level and not target:
@@ -2105,13 +2122,13 @@ def first_message(session):
 
 
 def watch_steering(session):
-    """While the user's words wait to be read, end the episode running in the sandbox (the sandbox can't see them).
-    Returns an Event: set it once the agent has finished."""
+    """While a redirect waits to be read, end the episode running in the sandbox (the sandbox can't see it; a hint lets
+    the episode play on). Returns an Event: set it once the agent has finished."""
     done = threading.Event()
 
     def watch():
         while not done.is_set():
-            if session.sandbox and session.steering.pending():
+            if session.sandbox and session.steering.redirecting():
                 try:
                     session.sandbox.end_episode()
                 except Exception:
