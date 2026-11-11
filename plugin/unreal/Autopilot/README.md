@@ -294,9 +294,10 @@ nothing. Older runs leave the history but keep their usage and bill for the Sett
 a bill (**Time**, **Prompt**, **Billed**; **No usage yet.** when there are none; plain rows, nothing to pick): what Autopilot was billed for each through Aura (the agent service says it when the run is
 finished; two decimals, **< $0.01** below a cent, **—** for a BYOK run), and **Billed by Aura $X.XX**, their sum. The
 tokens the models used are still counted and saved with each run, for the agent service's reports, but the page no
-longer shows them. It also holds the [Data sharing](#data-sharing) choice, then the card **Autopilot in Claude Code &
+longer shows them. It also holds the [Data sharing](#data-sharing) choice, the **Research agent**, **Bug detectors**
+(see [Turning the detectors off](#turning-the-detectors-off)), then the card **Autopilot in Claude Code &
 Codex** (see [Runs from Claude Code or Codex](#runs-from-claude-code-or-codex)) and, last, **Uninstall Autopilot**. Those
-two settings are laid out alike: the setting's name, what it does, then the switch (with **Data sharing on** or **Data
+settings are laid out alike: the setting's name, what it does, then the switch (with e.g. **Data sharing on** or **Data
 sharing off** beside it) or the commands. A run's time limit is the prompt box's own (**Time limit**, beside **Run**).
 
 ### Runs from Claude Code or Codex
@@ -459,6 +460,14 @@ its findings); a muted `teleport:<kind>` mutes that kind's teleports right after
 (`teleport:<kind> after <key>`) too. The other keys are the detectors' settings (`max_distance`, `teleport_min`,
 `teleport_after_input_seconds`, `hitch_seconds`, `long_fall_seconds`...). Each run sends the file to the game as it starts. Reset memory keeps it: it is your setting,
 not something runs learned.
+
+### Turning the detectors off
+
+The Settings page's **Bug detectors** ("While Autopilot plays this game, it watches for falls out of the world,
+teleports, freezes and errors, and reports them as bugs. This setting is for this project only.") turns them all off
+for the project, or on again: the agent service keeps it as `"enabled": false` in the same `detectors.json`, and tells
+the game at once, a run going on included. The switch shows what the agent service says (on when it doesn't say); it
+can't be changed while the tab isn't connected (greyed, showing what it last knew).
 
 ## Headless and CI runs (command line)
 

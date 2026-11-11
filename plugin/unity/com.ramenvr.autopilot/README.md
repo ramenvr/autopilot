@@ -218,14 +218,20 @@ play) is turned on or off with the same switch, *Research agent on* or *Research
 research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.*). Until
 you flip it, it shows what runs do by default: until you choose, runs through the Aura app (Use with Aura) go without
 it; runs on this plugin's own agent service have it, signed in to Aura or on your own keys. Once flipped, your choice
-is saved and wins either way; a change applies from the next connection). Then **Design brief**: how the game is meant to work (the design, the rules players are told, e.g. *the
+is saved and wins either way; a change applies from the next connection). Then **Bug detectors**, a switch (*Bug
+detectors on* / *Bug detectors off*; *While Autopilot plays this game, it watches for falls out of the world,
+teleports, freezes and errors, and reports them as bugs. This setting is for this project only.*): whether the game's
+detectors run for this project. The agent service keeps it (the project's `detectors.json`) and says it in every
+`memory_state` (`"detectors"`; none, from an older agent service, means on); flipped, the plugin sends
+`{"type": "detectors", "enabled": true|false}`, shows the new value at once, and the agent service's next
+`memory_state` confirms it (a run going on included). Not connected, it is greyed, showing the last value said. Then **Design brief**: how the game is meant to work (the design, the rules players are told, e.g. *the
 player has three lives; each coin is worth 10 points*), a box saved as you type, sent with every run (the composer's
 `start` as `design_brief`, an Explore run's as `brief`, as Unreal's Design Brief): explorations report behavior that
 differs from it as a bug. Then **Policy log**, a switch (*Policy log shown* / *Policy log hidden*): whether the hello
 asks the agent service for every policy step (`inspect`) for the Policy log tab (on by default; a change connects
 again when no run is going). Then **Autopilot in Claude Code & Codex**: how to run Autopilot through your own Claude Code or Codex, on
 your Claude or ChatGPT subscription: the commands that set each up, run once in a terminal (`autopilot connect claude`,
-`autopilot connect codex`, each with **Copy**). Each of these five cards is its title, a line on what it is for, then its control. Last,
+`autopilot connect codex`, each with **Copy**). Each of these six cards is its title, a line on what it is for, then its control. Last,
 **Uninstall Autopilot** (its **Uninstall** button), which removes Autopilot from this computer (see [Removing
 Autopilot](#removing-autopilot)).
 

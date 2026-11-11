@@ -5,8 +5,10 @@
 
 - ``mute``: detector names (``out_of_world``: all of that detector's findings) or signatures (``out_of_world:BP_Tree``:
   one of them) the plugin never reports. The editor's "Not a bug" button on a finding adds its signature here.
+- ``enabled``: false turns the game's detectors off for the project. The editor's Bug detectors switch (the Autopilot
+  tab's Settings) sets it: a `detectors` message from the plugin, and memory_state's ``detectors`` says how it is.
 - any other key the plugins' ``detectors`` op takes, as a number or true/false (``max_distance``, ``kill_y``,
-  ``teleport_min``, ``hitch_seconds``, ``enabled``...): sent as written; a key a plugin doesn't know is ignored by it.
+  ``teleport_min``, ``hitch_seconds``...): sent as written; a key a plugin doesn't know is ignored by it.
 
 The file is the user's, not something runs learned: Reset memory leaves it (memory.LEARNED doesn't name it). Every run
 sends it to the game once the game is up (cli.prepare), and again whenever the plugin comes back from a reload.
@@ -84,6 +86,19 @@ def mute(folder, signature):
     # reads half of it nor shares the temporary file; memory.write_atomic)
     memory.write_atomic(path(folder), json.dumps(data, indent=2) + "\n")
     return True
+
+
+def enabled(folder):
+    """Whether the game's detectors run for the project (detectors.json's "enabled"; on unless it says false): what the
+    editor's Bug detectors switch shows."""
+    return load(folder).get("enabled") is not False
+
+
+def set_enabled(folder, on):
+    """The editor's Bug detectors switch: detectors.json's "enabled" set to `on`, its other keys kept as they are."""
+    data = load(folder)
+    data["enabled"] = bool(on)
+    memory.write_atomic(path(folder), json.dumps(data, indent=2) + "\n")
 
 
 def send(link, folder, wait=True):

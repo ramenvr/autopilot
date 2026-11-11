@@ -2,8 +2,9 @@
 -- The dock's Settings page (as Godot's ui/settings_page.gd): its header (Settings, Back to runs), then at most 640 px
 -- wide: the Account plate (how runs go: Aura, BYOK, signed out or not set up, from the agent service's account frame;
 -- with Aura, what Autopilot billed this period and Aura's words when the team is out of credits; the agent service's
--- line; Rerun setup, Sign out, Sign in again), this place's runs and their bills, Share runs to improve Autopilot, the
--- Research agent, the Design brief, Show Policy Log, and Autopilot in Claude Code & Codex (the commands that set it up).
+-- line; Rerun setup, Sign out, Sign in again), this place's runs and their bills, Share runs to improve Autopilot, Bug
+-- detectors, the Research agent, the Design brief, Show Policy Log, and Autopilot in Claude Code & Codex (the commands
+-- that set it up).
 -- Uninstall isn't here: a Roblox plugin can't run programs, and the agent service takes no such request.
 local M = require(script.Parent.RunModel)
 local Settings = require(script.Parent.Settings)
@@ -16,6 +17,8 @@ local SettingsPage = {}
 local MAX_WIDTH = 640
 local SHARING = "Enabling this sends recordings, screenshots, and agent traces and memories to the developers of "
 	.. "Autopilot. For runs from your own Claude Code or Codex, the agent traces are its conversation during the run."
+local DETECTORS = "While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and "
+	.. "errors, and reports them as bugs. This setting is for this project only."
 local ASSISTANTS_TITLE = "Autopilot in Claude Code & Codex"
 local ASSISTANTS_INTRO = "One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or "
 	.. "ChatGPT subscriptions, respectively."
@@ -331,6 +334,14 @@ function SettingsPage.render(d: any, frame: Frame)
 		d.editor:helloChanged()
 		research = not research
 	end, { disabled = d.mirror })
+	-- Bug detectors: this project's (memory_state's "detectors", sent as {"type": "detectors"}); as last told, and not
+	-- changed, while not connected. (After Research agent, as in the other plugins.)
+	local dc = settingCard(v, "Bug detectors", DETECTORS)
+	T.switch(dc, d.editor.detectors ~= false, "Bug detectors on", "Bug detectors off", function(on)
+		if not d.editor:setDetectors(on) then
+			SettingsPage.render(d, frame) -- (not sent: the switch shows the setting as it is)
+		end
+	end, { disabled = d.mirror or not d.editor:connected() })
 	-- Design brief: sent with every run the dock starts (the start's `design_brief`)
 	local bc = settingCard(v, "Design brief", BRIEF_TEXT)
 	local brief = T.input(bc, { multiline = true, height = 84, name = "DesignBrief", placeholder = "Optional",

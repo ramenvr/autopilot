@@ -56,6 +56,7 @@ class SPlaytestPanel : public SCompoundWidget
 	friend class FAutopilotRunStartedTest;   // (a run the user's coding agent started; the Claude Code and Codex card: AutopilotPanelTests.cpp)
 	friend class FAutopilotSettingCardsTest; // (the Settings page's Time limit, sharing and Claude Code & Codex plates: AutopilotPanelTests.cpp)
 	friend class FAutopilotActivityTest;     // (the activity feed: the Feed tab's stage groups, folds; the Live page's lines: AutopilotPanelTests.cpp)
+	friend class FAutopilotDetectorsSwitchTest;  // (the Settings page's Bug detectors switch and what it sends: AutopilotPanelTests.cpp)
 public:
 	SLATE_BEGIN_ARGS(SPlaytestPanel) {}
 		/** The folder of autopilot.env, which the setup's keys go to ("": the user settings folder; the layout test's own). */
@@ -146,6 +147,12 @@ private:
 	/** What the research agent's switch shows: the user's choice, else what the agent service does without one (off in
 	 *  the Aura app's, which Use with Aura reaches; on in the user's own, signed in to Aura or on their own keys). */
 	bool ResearchShown() const;
+	/** The card "Bug detectors": whether the game's detectors run for this project (the agent service keeps it, in the
+	 *  project's detectors.json; its memory_state says it, the `detectors` message changes it). Not connected: greyed,
+	 *  showing what it last said. */
+	TSharedRef<SWidget> MakeBugDetectors();
+	/** The subsystem the Bug detectors switch reads and flips: the tests' (TestBridge), else the engine's. */
+	UPlaytestSubsystem* DetectorsBridge() const;
 	/** The card "Autopilot in Claude Code & Codex": running Autopilot from the user's own coding agent (autopilot
 	 *  connect), each command with Copy. */
 	TSharedRef<SWidget> MakeCodingAgents();
@@ -380,6 +387,7 @@ private:
 	TOptional<FPlaytestAccount> TestAccount;  // (the layout test's account, in place of the agent service's)
 	TOptional<bool> TestRunning;              // (the tests' run going, in place of the session's)
 	TOptional<bool> TestConnected;            // (the tests' connection, in place of the subsystem's)
+	TWeakObjectPtr<UPlaytestSubsystem> TestBridge;  // (the tests' subsystem for the Bug detectors switch, in place of the engine's)
 	TOptional<EMemoryView> TestMemory;        // (the tests' memory_state, in place of the subsystem's)
 	TOptional<FString> TestMemoryLine;        // (the tests' words after Memory, in place of the subsystem's)
 	TOptional<bool> TestAuraApp;              // (the tests': the Aura app installed or not)

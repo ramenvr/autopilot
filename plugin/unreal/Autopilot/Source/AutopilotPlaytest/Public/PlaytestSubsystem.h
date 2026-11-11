@@ -77,6 +77,14 @@ public:
 	int32 GetMemoryRuns() const { return MemoryRuns; }
 	bool HasMemoryNotes() const { return bMemoryNotes; }
 	bool HasMemoryLib() const { return bMemoryLib; }
+	/** Whether the game's detectors run for this project (the Settings page's Bug detectors switch): the last memory_state's
+	 *  "detectors" (one without it, from an older agent service: on), or what the switch was flipped to since. Kept when
+	 *  the connection closes: the switch shows what it last knew. */
+	bool AreDetectorsEnabled() const { return bDetectorsEnabled; }
+	/** The Bug detectors switch flipped: `{"type": "detectors", "enabled"}` to the agent service (docs/protocol.md), shown
+	 *  at once; the memory_state it answers with says what the project's setting is now. Not connected: nothing changes,
+	 *  and the status line says why. */
+	void SetDetectorsEnabled(bool bOn);
 	/** Whether the user can steer the run going now (the agent service takes `steer`: its welcome said so). */
 	bool CanSteer() const { return bConnected && bRunActive && bBrainSteers; }
 	/** And whether a steer can say how it lands (its welcome's features had "steer_mode"): a hint that lets play go on
@@ -332,9 +340,13 @@ private:
 	int32 MemoryRuns = 0;
 	bool bMemoryNotes = false;
 	bool bMemoryLib = false;
+	bool bDetectorsEnabled = true;  // see AreDetectorsEnabled (not bDetectorsOn: whether they worked on the last tick)
 	/** The connection closed: its memory_state isn't true any more (the agent service removed from this computer,
-	 *  say). The next connection's says again. */
+	 *  say). The next connection's says again. (The Bug detectors switch keeps what it showed.) */
 	void ForgetMemoryState();
+	/** The tests' socket: what Send would send, written out, instead (AutopilotPanelTests.cpp). */
+	TFunction<void(const FString&)> TestSent;
+	friend class FAutopilotDetectorsSwitchTest;  // (feeds a subsystem of its own memory_state, flips the switch: AutopilotPanelTests.cpp)
 	double NextReconnect = 0;
 	double Backoff = 1.0;
 	double LastHeartbeat = 0;

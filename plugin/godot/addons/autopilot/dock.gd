@@ -9,9 +9,9 @@
 ## and Show Policy Log: all shown in Godot's Editor Settings too, under Autopilot (SETTINGS), and kept in step both ways.
 ## The ⋮ menu beside the gear: Connect or Disconnect, Settings, Rerun setup, Reset memory….
 ## Also the Settings page (ui/settings_page.gd: the account and Rerun setup, the tokens the agent's models used, per run
-## and for the project, and the Data sharing choice) and, until Autopilot/preferences.json says the user went through it,
-## the first-run setup (ui/setup_page.gd) in place of everything else, ending with a first Explore run offered when the
-## game's memory is empty.
+## and for the project, the Data sharing choice and the project's Bug detectors switch) and, until
+## Autopilot/preferences.json says the user went through it, the first-run setup (ui/setup_page.gd) in place of
+## everything else, ending with a first Explore run offered when the game's memory is empty.
 ## The agent service on this computer is started by the dock (lib/service.gd) when it connects to the default address
 ## (never in a headless editor), and installed from the installer the addon carries; the Aura sign-in is asked of it
 ## (begin_sign_in: the agent service opens the browser). Set up before but with the agent service gone (not installed,
@@ -387,6 +387,7 @@ func _ready() -> void:
 	bridge.run_changed.connect(_on_run_changed)
 	bridge.policy_step.connect(_on_policy_step)
 	bridge.memory_changed.connect(_render_footer)
+	bridge.memory_changed.connect(_show_detectors)
 	bridge.memory_cleared.connect(_on_memory_cleared)
 	bridge.usage_received.connect(_on_usage)
 	bridge.bill_received.connect(_on_bill)
@@ -729,6 +730,7 @@ func _build() -> void:
 		_render())
 	_settings_page.share_toggled.connect(_on_share_toggled)
 	_settings_page.research_toggled.connect(_on_research_toggled)
+	_settings_page.detectors_toggled.connect(_on_detectors_toggled)
 	_settings_page.account_action.connect(_on_account_action)
 	_settings_page.remove_asked.connect(remove_from_computer)
 	_settings_page.brief_changed.connect(set_design_brief)
@@ -3231,7 +3233,8 @@ func _render_usage() -> void:
 	# (the Research agent switch: the user's choice, else off through the Aura app (Use with Aura), on otherwise)
 	var research := SettingsPage.research_shown(Prefs.research_agent(prefs), _with_aura())
 	_settings_page.show_data(_usage_runs, Prefs.share_data(prefs), _usage_note, account_view(prefs),
-		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()}, research)
+		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()}, research,
+		bridge.detectors_on, bridge.is_connected_to_brain())
 
 
 ## The composer's Time limit as last set (a run's minutes in all), kept per user and project (project metadata
@@ -3254,6 +3257,22 @@ func _on_share_toggled(on: bool) -> void:
 ## here: until then the agent service decides). The hello carries it once chosen, so it applies as the sharing box does.
 func _on_research_toggled(on: bool) -> void:
 	_save_setting({"research_agent": on})
+
+
+## The Settings page's Bug detectors switch: told to the agent service, which keeps it for the project (a `detectors`
+## frame; the switch shows the new value at once, and the memory_state it answers with confirms it or puts it back). Not
+## connected the switch is disabled; flipped anyway, it goes back to the last known value and the status line says why.
+func _on_detectors_toggled(on: bool) -> void:
+	if not bridge.set_detectors(on):
+		_set_status("Not connected: connect first to turn the bug detectors on or off")
+		_settings_page.show_detectors(bridge.detectors_on, false)
+
+
+## The Bug detectors switch as the agent service last said (a memory_state came, or the connection closed): set in place
+## on the Settings page while it shows, so nothing there is built again (the Design brief keeps its caret).
+func _show_detectors() -> void:
+	if _settings_page and _settings_page.visible:
+		_settings_page.show_detectors(bridge.detectors_on, bridge.is_connected_to_brain())
 
 
 ## A Settings page switch's choice merged into preferences.json; with no run going an open connection is made again at

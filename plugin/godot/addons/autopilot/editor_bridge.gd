@@ -36,7 +36,7 @@ signal run_started_elsewhere(run: Dictionary)
 ## "One prompt box"), before the run plays; tested: an exploration asked for as a test of the game.
 signal run_kind_received(kind: String, tested: bool)
 signal policy_step(frame: Dictionary)  # a "jev" frame: one of the agent's policy steps (only from an agent server on this machine)
-signal memory_changed  # a memory_state came: memory_known / memory_runs / memory_notes / memory_lib changed
+signal memory_changed  # a memory_state came: memory_known / memory_runs / memory_notes / memory_lib / detectors_on changed
 signal memory_cleared(ok: bool, message: String)  # a memory_cleared frame: Reset memory done, or not and why
 signal usage_received(models: Array, final: bool)  # a usage frame: the run's token counts so far, per model
 signal bill_received(frame: Dictionary)  # a bill frame: what Autopilot was billed for the run through Aura that just finished
@@ -66,6 +66,11 @@ var memory_runs := 0
 var memory_notes := false
 var memory_lib := false
 var memory_serial := -1  # the connection (connection_serial) the last memory_state came on
+## Whether the game's detectors run for this project (the Settings page's Bug detectors switch): the agent service keeps
+## it (the project's detectors.json) and says it in every memory_state ("detectors"; one without it, from an older agent
+## service, means on), or as the user flipped it since (shown at once: the memory_state the agent service answers with
+## confirms it, or puts it back). Kept once the connection closes: the switch shows it, not to be changed, until the next.
+var detectors_on := true
 ## The account (docs/protocol.md "Account"): brain_account, the welcome's features had "account" (it can sign in to
 ## Aura); account, its last account frame ({} until one came; kept after the connection closes).
 var brain_account := false
@@ -297,6 +302,17 @@ func feedback(signature: String, verdict: String) -> void:
 	link.send({"type": "feedback", "signature": signature, "verdict": verdict})
 
 
+## The Settings page's Bug detectors switch flipped: `{"type": "detectors", "enabled": on}` to the agent service (the
+## project's detectors.json says so from now on, and the game's detectors are told at once, a run going on included),
+## shown at once in detectors_on; the memory_state it answers with says how it is. Whether it was sent (not without a
+## connection: the setting is the agent service's).
+func set_detectors(on: bool) -> bool:
+	if not is_connected_to_brain() or not link.send({"type": "detectors", "enabled": on}):
+		return false
+	detectors_on = on
+	return true
+
+
 # --- the editor kept awake during a run ---------------------------------------------------------------
 
 ## How long the editor's loop may sleep between frames while a run goes (µs). The editor relays every request and
@@ -431,6 +447,8 @@ func _on_brain_frame(frame: Dictionary) -> void:
 			var lib = frame.get("lib", false)
 			memory_notes = typeof(notes) == TYPE_BOOL and notes
 			memory_lib = typeof(lib) == TYPE_BOOL and lib
+			var detectors = frame.get("detectors", true)
+			detectors_on = detectors if typeof(detectors) == TYPE_BOOL else true  # (not said: on)
 			memory_known = true
 			memory_serial = connection_serial
 			memory_changed.emit()

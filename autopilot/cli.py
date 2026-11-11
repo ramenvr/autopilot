@@ -805,12 +805,32 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
 
 
 def send_memory_state(link, hello=None):
-    """Tell the plugin what is remembered about its project (memory_state, docs/protocol.md)."""
+    """Tell the plugin what is remembered about its project (memory_state, docs/protocol.md), and whether the game's
+    detectors run for it ("detectors": the Bug detectors switch, detectors.json's "enabled")."""
     project = codexmod.project_of(hello or link.hello)
+    folder = codexmod.project_dir(project)
     try:
-        link.send({"type": "memory_state", **memory.state(codexmod.project_dir(project))})
+        link.send({"type": "memory_state", **memory.state(folder), "detectors": detectorsmod.enabled(folder)})
     except Exception:
         pass
+
+
+def set_detectors(link, msg):
+    """The editor's Bug detectors switch ({"type": "detectors", "enabled": true/false}): the project's detectors.json
+    says so from now on, and the game's detectors are told at once, a run's going on included. Whether it was set
+    (False: no true/false given, or the file couldn't be written)."""
+    on = msg.get("enabled")
+    if not isinstance(on, bool):
+        return False
+    folder = codexmod.project_dir(codexmod.project_of(link.hello))
+    try:
+        detectorsmod.set_enabled(folder, on)
+    except OSError as e:
+        print(f"note: couldn't turn the detectors {'on' if on else 'off'}: {e}")
+        return False
+    print(f"Bug detectors {'on' if on else 'off'} for this project ({detectorsmod.path(folder)})")
+    detectorsmod.send(link, folder, wait=False)
+    return True
 
 
 def reset_memory(link, sleep=time.sleep):
@@ -1194,6 +1214,9 @@ def cmd_serve(link, args):
                 link.status(("Redirecting: " if mode == REDIRECT else "Hint: ") + str(msg.get("text")).strip())
         elif kind == "feedback":
             take_feedback(link, msg)
+        elif kind == "detectors":
+            set_detectors(link, msg)
+            send_memory_state(link)  # (the switch shows what the file says now)
         elif kind == "clear_memory":
             with lock:  # (a start call of the user's own agent waits while the memory moves)
                 if going is not None and going[0].is_alive():

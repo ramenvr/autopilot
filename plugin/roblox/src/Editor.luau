@@ -21,7 +21,8 @@
 --  - `record` and `capture` go to the client when Studio gives the plugin pictures (StudioCaptureService: Media.luau,
 --    the hello then says "media"; a recording asked for between play sessions starts with the next one); else they get
 --    409, and the agent service answers them itself from Studio's MCP server (autopilot/studio_mcp.py).
--- The dock (Dock.luau) drives runs through it (start, stop, steer, clear_memory, the account) and shows what comes.
+-- The dock (Dock.luau) drives runs through it (start, stop, steer, clear_memory, detectors, the account) and shows what
+-- comes.
 local RunService = game:GetService("RunService")
 local StudioTestService = game:GetService("StudioTestService")
 
@@ -83,6 +84,9 @@ function Editor.new(plugin: Plugin)
 	self.brainSetup = false
 	self.privacyReady = false
 	self.memory = { known = false, runs = 0, notes = false, lib = false }
+	-- the game's bug detectors for this project (memory_state's "detectors": the Settings' Bug detectors switch), on
+	-- until an agent service says otherwise; kept as last told while not connected
+	self.detectors = true
 	self.account = {}
 	self.sides = {} -- side -> {ready = bool, seen = os.clock()}
 	self.playing = false -- a play session runs (its client is attached)
@@ -341,6 +345,17 @@ function Editor:setSharing(share: boolean): boolean
 	return self.link:send({ type = "save_preferences", share = share })
 end
 
+-- The Settings' Bug detectors switch: the agent service saves it for this project (its detectors.json) and tells the
+-- game's detectors at once, then answers with a memory_state, which says it as saved. Shown as flipped meanwhile.
+function Editor:setDetectors(on: boolean): boolean
+	if not self:connected() then
+		self:status("Not connected: connect first")
+		return false
+	end
+	self.detectors = on
+	return self.link:send({ type = "detectors", enabled = on })
+end
+
 -- A dock setting the hello carries changed (Show Policy Log's `inspect`, Research agent's `research`): the hello again,
 -- as on a privacy change, without interrupting a run (`inspect` applies at once, `research` from the next run).
 function Editor:helloChanged()
@@ -415,6 +430,7 @@ function Editor:_onBrainFrame(frame: any)
 		self:_restoreDevice()
 	elseif kind == "memory_state" then
 		self.memory = { known = true, runs = tonumber(frame.runs) or 0, notes = frame.notes == true, lib = frame.lib == true }
+		self.detectors = frame.detectors ~= false -- (an older agent service says nothing: on)
 		self:_fire("memory")
 	elseif kind == "memory_cleared" then
 		if frame.ok == true then

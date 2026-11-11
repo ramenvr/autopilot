@@ -4,9 +4,10 @@
 ## line; Add credits, Rerun setup, Sign out, Sign in again), the
 ## project's runs ("This project · N runs", what Aura billed for them, and each run: its time, prompt and bill), the
 ## Data sharing choice (preferences.json share_data), the Research agent choice (preferences.json research_agent),
-## the runs' Design brief and Show Policy Log (the dock's settings, also in the Editor Settings), Claude Code and Codex
-## (running Autopilot from the user's own coding agent: the commands that set it up, to copy) and, last, Remove
-## Autopilot (from this computer, confirmed in place). The data comes from the dock (show_data()); the numbers from
+## the Bug detectors switch (the project's, kept by the agent service: its memory_state says it), the runs' Design
+## brief and Show Policy Log (the dock's settings, also in the Editor Settings), Claude Code and Codex (running
+## Autopilot from the user's own coding agent: the commands that set it up, to copy) and, last, Remove Autopilot (from
+## this computer, confirmed in place). The data comes from the dock (show_data()); the numbers from
 ## ui/usage.gd.
 @tool
 extends VBoxContainer
@@ -14,6 +15,8 @@ extends VBoxContainer
 signal back
 signal share_toggled(on: bool)
 signal research_toggled(on: bool)
+## The Bug detectors switch flipped (the dock tells the agent service; it shows the new value at once)
+signal detectors_toggled(on: bool)
 ## The Account plate's buttons: "setup" (Rerun setup: the first-run setup from its first step), "sign_out" (confirmed),
 ## "sign_in", "cancel_sign_in", and on the agent service's line "install", "open_log"
 signal account_action(action: String)
@@ -56,8 +59,16 @@ const RESEARCH := ("Enabling the research agent allows Autopilot to achieve more
 	+ "but at a higher cost.")
 const RESEARCH_ON := "Research agent on"  # (the switch's words, as it stands)
 const RESEARCH_OFF := "Research agent off"
-## The setting plates' spacing (Sharing, Research agent, Claude Code & Codex): title to subtitle, subtitle to its control,
-## between the command rows
+## The Bug detectors plate: the game's detectors during this project's runs (kept by the agent service, in the project's
+## detectors.json; its memory_state's "detectors" says how it is)
+const DETECTORS_TITLE := "Bug detectors"
+const DETECTORS := ("While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and "
+	+ "errors, and reports them as bugs. This setting is for this project only.")
+const DETECTORS_ON := "Bug detectors on"  # (the switch's words, as it stands)
+const DETECTORS_OFF := "Bug detectors off"
+const DETECTORS_AWAY := "Connect to the agent service to turn the bug detectors on or off"  # (its tooltip, not connected)
+## The setting plates' spacing (Sharing, Research agent, Bug detectors, Claude Code & Codex): title to subtitle,
+## subtitle to its control, between the command rows
 const TITLE_GAP := 6.0
 const CONTROL_GAP := 10.0
 const ROW_GAP := 6.0
@@ -75,6 +86,7 @@ var _busy := false  # a run is going: the buttons that change the account are di
 var _last := []  # show_data's arguments (built again when Sign out asks to confirm)
 var brief_box: TextEdit = null  # the Design brief's box (for the checks)
 var policy_switch: CheckBox = null  # Show Policy Log's switch
+var detectors_switch: CheckBox = null  # the Bug detectors switch
 ## What Copy does with a command (the clipboard; checks put a stand-in here: a headless Godot has no clipboard)
 var copy_text := func(text: String) -> void: DisplayServer.clipboard_set(text)
 
@@ -138,9 +150,12 @@ func _plate(row := false, sep := 10.0, border := HT.RULE, margins := Vector4(14,
 ## The page's plates, built again. entries: the runs with usage or a bill ({"id", "started_unix", "kind", "prompt",
 ## "verdict", "usage", "bill"}, oldest first, listed newest first); share:
 ## preferences.json's share_data; note: a line under the sharing choice ("" for none); account: the Account plate
-## (account_view()); research: what the Research agent switch shows (research_shown()).
-func show_data(entries: Array, share: bool, note := "", account := {}, runs := {}, research := true) -> void:
-	_last = [entries, share, note, account, runs, research]
+## (account_view()); research: what the Research agent switch shows (research_shown()); detectors: what the Bug
+## detectors switch shows (the agent service's last memory_state, or the user's flip since), detectors_live: whether it
+## can be flipped (connected to the agent service: it keeps the setting).
+func show_data(entries: Array, share: bool, note := "", account := {}, runs := {}, research := true, detectors := true,
+		detectors_live := false) -> void:
+	_last = [entries, share, note, account, runs, research, detectors, detectors_live]
 	_busy = account.get("busy", false) == true
 	for c in _scroll.get_children():
 		_scroll.remove_child(c)
@@ -155,6 +170,7 @@ func show_data(entries: Array, share: bool, note := "", account := {}, runs := {
 	_v.add_child(_runs_list(entries))
 	_v.add_child(_sharing_card(share, note))
 	_v.add_child(_research_card(research))
+	_v.add_child(_detectors_card(detectors, detectors_live))
 	if not runs.is_empty():
 		_v.add_child(_brief_card(str(runs.get("design_brief", ""))))
 		_v.add_child(_policy_card(runs.get("show_policy_log", true) == true))
@@ -195,8 +211,41 @@ func _research_card(research: bool) -> PanelContainer:
 	return _setting_card(RESEARCH_TITLE, RESEARCH, box)
 
 
+## Bug detectors: the switch (the agent service's memory_state "detectors", on when it doesn't say) with "Bug detectors
+## on/off" to its right, as the sharing switch is; flipping it tells the agent service (it keeps the setting for the
+## project), so not connected it is disabled, showing the last known value, and its tooltip says why.
+func _detectors_card(on: bool, live: bool) -> PanelContainer:
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", HT.px(ROW_GAP))
+	detectors_switch = _switch(on, DETECTORS_TITLE, DETECTORS_ON, DETECTORS_OFF, detectors_toggled)
+	_detectors_live(live)
+	box.add_child(detectors_switch)
+	return _setting_card(DETECTORS_TITLE, DETECTORS, box)
+
+
+## The Bug detectors switch as the agent service says now (a memory_state came, or the connection changed), set in place:
+## nothing on the page is built again (the Design brief keeps its caret) and nothing is emitted.
+func show_detectors(on: bool, live: bool) -> void:
+	if _last.size() == 8:
+		_last[6] = on
+		_last[7] = live
+	if detectors_switch == null or not is_instance_valid(detectors_switch):
+		return
+	detectors_switch.set_pressed_no_signal(on)
+	detectors_switch.text = DETECTORS_ON if on else DETECTORS_OFF
+	_detectors_live(live)
+
+
+## The Bug detectors switch enabled (connected) or not: disabled, its tooltip saying why (still showing it, as Sign out).
+func _detectors_live(live: bool) -> void:
+	detectors_switch.disabled = not live
+	detectors_switch.tooltip_text = DETECTORS_TITLE if live else DETECTORS_AWAY
+	detectors_switch.mouse_filter = Control.MOUSE_FILTER_STOP if live else Control.MOUSE_FILTER_PASS
+
+
 ## A setting's switch: its words to its right, 8 px away (on_words or off_words as it stands: pressing them flips it
-## too), its tooltip the plate's title; flipping it emits the signal given (share_toggled, research_toggled).
+## too), its tooltip the plate's title; flipping it emits the signal given (share_toggled, research_toggled,
+## detectors_toggled).
 func _switch(on: bool, title: String, on_words: String, off_words: String, emits: Signal) -> CheckBox:
 	var b := CheckBox.new()
 	b.theme_type_variation = "AutopilotSwitch"
@@ -695,5 +744,5 @@ func _dim(text: String) -> Label:
 
 
 func _rebuild() -> void:
-	if _last.size() == 6:
-		show_data(_last[0], _last[1], _last[2], _last[3], _last[4], _last[5])
+	if _last.size() == 8:
+		show_data(_last[0], _last[1], _last[2], _last[3], _last[4], _last[5], _last[6], _last[7])
