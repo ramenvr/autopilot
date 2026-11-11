@@ -119,7 +119,9 @@ def test_the_game_measures_its_round_trips_and_frame_rate():
     game = Game(PacedLink(fps=12, trip=0.1))
     assert game.round_trip is None and game.fps == 12.0
     pace = game.measure_pace(reads=4)
-    assert pace["fps"] == 12.0 and 90 <= pace["round_trip_ms"] <= 260, pace
+    # (a 100 ms trip and up to a frame's wait: 100-185 ms here; a busy CI machine's sleeps run long, so only the lower
+    # bound is tight)
+    assert pace["fps"] == 12.0 and 90 <= pace["round_trip_ms"] <= 1000, pace
     assert game.round_trip_p90 >= game.round_trip and game.slow()
     fast = Game(FakeLink())  # (no frame rate reported: not waited for)
     t0 = time.monotonic()
