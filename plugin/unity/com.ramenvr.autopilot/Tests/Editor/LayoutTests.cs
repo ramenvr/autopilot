@@ -639,6 +639,12 @@ namespace Autopilot.Playtest.Tests
             EditorHost.TestClient(null);
             view.OpenSetup();
             Layout();
+            // (Setup… opens with the BYOK card folded, as on a first run: its Show opens it)
+            Assert.IsFalse((bool)KeysShown.GetValue(view), "Setup… opens with the keys folded");
+            Assert.IsEmpty(host.Query<DropdownField>().ToList(), "no pickers while the keys are folded");
+            KeysShown.SetValue(view, true);
+            view.Refresh(true);
+            Layout();
             Assert.AreEqual("Codex", Agent().value);
             Assert.AreEqual("OpenAI", Provider().value);
             Agent().value = "OpenCode";
