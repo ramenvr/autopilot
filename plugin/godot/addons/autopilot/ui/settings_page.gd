@@ -62,8 +62,8 @@ const RESEARCH_OFF := "Research agent off"
 ## The Bug detectors plate: the game's detectors during this project's runs (kept by the agent service, in the project's
 ## detectors.json; its memory_state's "detectors" says how it is)
 const DETECTORS_TITLE := "Bug detectors"
-const DETECTORS := ("While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and "
-	+ "errors, and reports them as bugs. This setting is for this project only.")
+const DETECTORS := ("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "
+	+ "per-project.")
 const DETECTORS_ON := "Bug detectors on"  # (the switch's words, as it stands)
 const DETECTORS_OFF := "Bug detectors off"
 const DETECTORS_AWAY := "Connect to the agent service to turn the bug detectors on or off"  # (its tooltip, not connected)

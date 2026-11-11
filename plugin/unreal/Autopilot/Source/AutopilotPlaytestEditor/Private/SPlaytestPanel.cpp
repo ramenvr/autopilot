@@ -3500,7 +3500,7 @@ TSharedRef<SWidget> SPlaytestPanel::MakeBugDetectors()
 		}), 13.f, AutopilotColor::Text(), false, EAutopilotFont::BodyMedium), 8.f);
 	Toggle->SetToolTipText(Name);
 	return SettingCard(Name,
-		LOCTEXT("BugDetectorsWhat", "While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and errors, and reports them as bugs. This setting is for this project only."),
+		LOCTEXT("BugDetectorsWhat", "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project."),
 		SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth()
 		[
 			AutopilotUI::Greyed(TAttribute<bool>::CreateLambda([this]()

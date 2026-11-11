@@ -219,8 +219,7 @@ research agent allows Autopilot to achieve more difficult goals with fewer attem
 you flip it, it shows what runs do by default: until you choose, runs through the Aura app (Use with Aura) go without
 it; runs on this plugin's own agent service have it, signed in to Aura or on your own keys. Once flipped, your choice
 is saved and wins either way; a change applies from the next connection). Then **Bug detectors**, a switch (*Bug
-detectors on* / *Bug detectors off*; *While Autopilot plays this game, it watches for falls out of the world,
-teleports, freezes and errors, and reports them as bugs. This setting is for this project only.*): whether the game's
+detectors on* / *Bug detectors off*; *During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.*): whether the game's
 detectors run for this project. The agent service keeps it (the project's `detectors.json`) and says it in every
 `memory_state` (`"detectors"`; none, from an older agent service, means on); flipped, the plugin sends
 `{"type": "detectors", "enabled": true|false}`, shows the new value at once, and the agent service's next

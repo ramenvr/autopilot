@@ -373,9 +373,7 @@ Each of these settings is a plate laid out the same way: its name (mono caps), a
   go without it, and runs on this plugin's own agent service have it, signed in to Aura or on your own keys. The
   switch shows that default: off with Use with Aura on, on otherwise. Flipping it saves your choice, which always
   wins; the agent service learns it when the dock connects, as with data sharing.
-- **Bug detectors** (a switch under the text, "Bug detectors on" or "off" beside it, on by default): "While Autopilot
-  plays this game, it watches for falls out of the world, teleports, freezes and errors, and reports them as bugs. This
-  setting is for this project only." The agent service keeps it for the project and says it in every `memory_state`
+- **Bug detectors** (a switch under the text, "Bug detectors on" or "off" beside it, on by default): "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project." The agent service keeps it for the project and says it in every `memory_state`
   (`"detectors": true|false`; one without it, from an older agent service, means on). Flipping it sends
   `{"type": "detectors", "enabled": <bool>}` and shows the new value at once; the agent service answers with a
   `memory_state` that confirms it (or puts it back), and tells the game's detectors at once, a run going on included.

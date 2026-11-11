@@ -895,7 +895,7 @@ namespace Autopilot.Playtest.Tests
         const string ShareLine = "Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot." +
                                  " For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.";
         const string ResearchLine = "Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.";
-        const string DetectorsLine = "While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and errors, and reports them as bugs. This setting is for this project only.";
+        const string DetectorsLine = "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.";
 
         static void Settings(AutopilotView v) => v.Page = "settings";
 

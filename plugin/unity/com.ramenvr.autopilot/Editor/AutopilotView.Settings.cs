@@ -197,7 +197,7 @@ namespace Autopilot.Playtest.Editor
         }
 
         public const string DetectorsTitle = "Bug detectors";
-        public const string DetectorsLine = "While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and errors, and reports them as bugs. This setting is for this project only.";
+        public const string DetectorsLine = "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.";
 
         /// <summary>The words beside the bug detectors switch, as it is now: "Bug detectors on" / "Bug detectors
         /// off".</summary>

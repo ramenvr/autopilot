@@ -17,8 +17,8 @@ local SettingsPage = {}
 local MAX_WIDTH = 640
 local SHARING = "Enabling this sends recordings, screenshots, and agent traces and memories to the developers of "
 	.. "Autopilot. For runs from your own Claude Code or Codex, the agent traces are its conversation during the run."
-local DETECTORS = "While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and "
-	.. "errors, and reports them as bugs. This setting is for this project only."
+local DETECTORS = "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "
+	.. "per-project."
 local ASSISTANTS_TITLE = "Autopilot in Claude Code & Codex"
 local ASSISTANTS_INTRO = "One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or "
 	.. "ChatGPT subscriptions, respectively."

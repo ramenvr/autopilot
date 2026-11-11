@@ -2538,7 +2538,7 @@ bool FAutopilotRunStartedTest::RunTest(const FString& Parameters)
 	const int32 Detectors = Words.Find(TEXT("Bug detectors"), ESearchCase::CaseSensitive);
 	TestTrue(TEXT("settings: Bug detectors, after the Research agent"), Detectors != INDEX_NONE && Detectors > Research);
 	TestTrue(TEXT("settings: the card, after Bug detectors and before Uninstall"), Title > Detectors && Uninstall > Title);
-	TestTrue(TEXT("settings: what the bug detectors do, for this project"), Words.Contains(TEXT("While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and errors, and reports them as bugs. This setting is for this project only.")));
+	TestTrue(TEXT("settings: what the bug detectors do, for this project"), Words.Contains(TEXT("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.")));
 	TestTrue(TEXT("settings: what the research agent does, and its cost"), Words.Contains(TEXT("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.")));
 	TestTrue(TEXT("settings: what sharing sends, and for these runs"), Words.Contains(TEXT("Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot. For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.")));
 	const TCHAR* CardWords[] = {
@@ -2635,7 +2635,7 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 			TEXT("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost."),
 			TEXT("Research agent off") },
 		{ TEXT("bug detectors"), Panel->MakeBugDetectors(), TEXT("Bug detectors"),
-			TEXT("While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and errors, and reports them as bugs. This setting is for this project only."),
+			TEXT("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project."),
 			TEXT("Bug detectors on") },
 		{ TEXT("Claude Code & Codex"), Panel->MakeCodingAgents(), TEXT("Autopilot in Claude Code & Codex"),
 			TEXT("One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or ChatGPT subscriptions, respectively."),

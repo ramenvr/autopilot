@@ -747,8 +747,8 @@ def test_the_settings_have_a_bug_detectors_switch():
     sources = _sources()
     page, editor, mirror, dock = (sources[m] for m in ("SettingsPage", "Editor", "Mirror", "Dock"))
     assert 'settingCard(v, "Bug detectors", DETECTORS)' in page
-    assert ('"While Autopilot plays this game, it watches for falls out of the world, teleports, freezes and "\n'
-            '\t.. "errors, and reports them as bugs. This setting is for this project only."') in page
+    assert ('"During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "\n'
+            '\t.. "per-project."') in page
     assert 'T.switch(dc, d.editor.detectors ~= false, "Bug detectors on", "Bug detectors off"' in page
     assert "if not d.editor:setDetectors(on) then" in page
     assert "{ disabled = d.mirror or not d.editor:connected() }" in page
@@ -834,8 +834,8 @@ local d = { editor = ed, plugin = plugin, runs = {}, mirror = false, SERVE_COMMA
 local s = card(d)
 assert(s.on == false and s.offWords == "Bug detectors off" and not s.opts.disabled, "shows off, can be flipped")
 assert(table.find(labels, "Bug detectors"), "its title")
-assert(table.find(labels, "While Autopilot plays this game, it watches for falls out of the world, teleports, freezes "
-	.. "and errors, and reports them as bugs. This setting is for this project only."), "its words")
+assert(table.find(labels, "During gameplay, Autopilot watches for potential bugs and reports them. "
+	.. "You can enable/disable this per-project."), "its words")
 -- flipped: sent at once over the link, shown flipped until the next memory_state
 s.onToggle(true)
 local f = sent[#sent]

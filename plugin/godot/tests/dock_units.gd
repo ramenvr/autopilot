@@ -2121,8 +2121,8 @@ func detectors_checks() -> void:
 	var page = dock._settings_page
 	var t := _texts(page)
 	check("Bug detectors plate: its title in mono caps, its words", "BUG DETECTORS" in t
-		and SettingsPage.DETECTORS == ("While Autopilot plays this game, it watches for falls out of the world, teleports, "
-			+ "freezes and errors, and reports them as bugs. This setting is for this project only.")
+		and SettingsPage.DETECTORS == ("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "
+			+ "per-project.")
 		and SettingsPage.DETECTORS in t, t)
 	check("Bug detectors plate: title, subtitle, then the control", _setting_plate(page, "Bug detectors", SettingsPage.DETECTORS, "CheckBox"))
 	var sw: CheckBox = page.detectors_switch

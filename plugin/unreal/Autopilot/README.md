@@ -463,8 +463,7 @@ not something runs learned.
 
 ### Turning the detectors off
 
-The Settings page's **Bug detectors** ("While Autopilot plays this game, it watches for falls out of the world,
-teleports, freezes and errors, and reports them as bugs. This setting is for this project only.") turns them all off
+The Settings page's **Bug detectors** ("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.") turns them all off
 for the project, or on again: the agent service keeps it as `"enabled": false` in the same `detectors.json`, and tells
 the game at once, a run going on included. The switch shows what the agent service says (on when it doesn't say); it
 can't be changed while the tab isn't connected (greyed, showing what it last knew).
