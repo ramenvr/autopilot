@@ -264,6 +264,34 @@ namespace Autopilot.Playtest.Tests
         }
 
         [Test]
+        public void APackageSwappedInGetsATryOfItsOwn()
+        {
+            // The editor opened with an older package, which tried (installed its own, or replaced the one running) and
+            // kept its key; then the newer tarball went in (Package Manager's Remove, then Add from tarball)
+            const string older = "{\"sha256\": \"cd34\", \"commit\": \"1111111\"}";
+            var olderTried = AgentService.TryKey(older);
+            Assert.IsTrue(AgentService.TriedFor(olderTried, older), "the older package tried: not again this session");
+            Assert.IsFalse(AgentService.TriedFor(olderTried, ShippedStamp), "the newer package hasn't tried yet");
+            Assert.IsFalse(AgentService.TriedFor("", ShippedStamp));
+            Assert.IsFalse(AgentService.TriedFor(null, ShippedStamp));
+            Assert.IsTrue(AgentService.TriedFor(AgentService.TryKey(ShippedStamp), ShippedStamp));
+            Assert.AreEqual("", AgentService.TryKey(null), "a repository checkout carries none");
+            Assert.IsFalse(AgentService.TriedFor(AgentService.TryKey(null), null));
+
+            // So the newer package installs its own over the older one's, and replaces the older one running
+            var s = Download(Ours, OnPath);
+            s.Installed = older;
+            s.UpdateTried = AgentService.TriedFor(olderTried, s.Shipped);
+            Assert.AreEqual(AgentService.Next.Update, AgentService.Decide(s, out _, out _));
+            s.Installed = ShippedStamp;
+            s.Announcement = Announcing("1111111");
+            s.Alive = pid => pid == OlderPid;
+            s.ReplaceTried = AgentService.TriedFor(olderTried, s.Shipped);
+            Assert.AreEqual(AgentService.Next.Replace, AgentService.Decide(s, out _, out var pid));
+            Assert.AreEqual(OlderPid, pid);
+        }
+
+        [Test]
         public void CarriedAndTheSameInstalledItStarts()
         {
             var s = Download(Ours, OnPath);
