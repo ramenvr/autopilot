@@ -41,13 +41,16 @@ Reads (privileged: any object, any property, protected and Blueprint variables i
   Open menus with their key first (from the input mappings), then list and click.
 - `game.batch([lambda: ..., lambda: ...])`: many reads at once, resolved in one game frame; failed ones come back as
   GameError values. `game.map(fn, items)`: fn(item) for each, at once. Use these in observe(): every read is a round trip.
-- `game.t`: game time of the latest answer.
+- `game.t`: game time of the latest answer. The game's pace: `game.fps` (its frame rate, None when not reported),
+  `game.round_trip` / `game.round_trip_p90` (seconds a read takes, median / 9 in 10 of the latest).
 
 Inputs (the player's hands; the only way to act in play):
 - `game.press("E")`: a quick press of a key (FKey names: W, A, S, D, E, F, R, Q, SpaceBar, LeftShift, LeftControl, Tab,
   Escape, Enter, One..Nine, LeftMouseButton, RightMouseButton, MiddleMouseButton...) or of an Enhanced Input action path
   (`/Game/Input/IA_Jump.IA_Jump`, value optional).
-- `game.hold("W")` ... `game.release("W")`; `game.release_all()`. Holds are leased: the runtime renews them every tick.
+- `game.hold("W")` ... `game.release("W")`; `game.release_all()`. Holds are leased (longer on a slow game): in an
+  episode and under `run()` they are renewed until released; a bare hold in a probe is let go after its lease (under a
+  second): drive it with `run()` or use `hold_for`.
 - Analog input: axis keys take a value, `game.hold("Gamepad_LeftY", 0.4)` (a stick: `Gamepad_LeftX` right,
   `Gamepad_LeftY` forward, -1..1, when the game reads the gamepad's stick), and so do move actions,
   `game.hold(move_action, Vec(x, y, 0))` (which axis is which: the action's handler in the code). Holding it again
@@ -318,3 +321,12 @@ fraction of a second after it shows. Reactions like that go in executor code, wh
 - Record each hit taken with the threat's tell at that moment, so the trace shows which hits still land and whether
   the lead is early or late.
 - tick_hz up to the game's frame rate for reflex executors (no gain above it: every read waits for a frame).
+
+## A slow game
+
+The briefing says the game's frame rate and how long a read takes; each episode's summary says them again. At a few
+frames a second or with reads of 100 ms and more (a slow machine, a remote or editor-hosted game), every step is late:
+- Batch each step's and observe()'s reads (`game.batch`): one round trip a step, not one per read.
+- tick_hz no higher than the game answers (about 1000 / a step's ms in the summary's "Executor steps").
+- Lead what you time by a step: act where the target will be then, let go before the spot (the kit's controllers do).
+- Let the game time presses and holds (`hold_for`), and wait in game time (`wait`), not with `time.sleep`.

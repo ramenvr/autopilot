@@ -28,12 +28,30 @@ local Client = {}
 
 local KEY_TAP_SECONDS = 0.05
 local KEY_TAP_FRAMES = 2
+-- A held key's lease (the brain's `lease` with its key requests; it sends longer ones on a slow game): taken within
+-- LEASE_MIN..LEASE_MAX seconds; a hold not renewed within it is let go.
+Client.LEASE_MIN = 0.2
+Client.LEASE_MAX = 10
+Client.LEASE_DEFAULT = 1.0
+
+function Client.leaseOf(asked: any, current: number): number
+	local n = tonumber(asked)
+	if n and n > 0 then
+		return math.clamp(n, Client.LEASE_MIN, Client.LEASE_MAX)
+	end
+	return current
+end
+
+-- How long after its last renewal a hold is let go: its lease, and the last frame's time on top (at most a second).
+function Client.lapse(lease: number, dt: number): number
+	return lease + math.clamp(dt, 0, 1)
+end
 
 function Client.start(plugin: Plugin)
 	Device.init(plugin)
 	local held: { [string]: any } = {}
 	local unreachedAt = -1e9 -- when a key last didn't reach the game (told at most every 15 s)
-	local lease = 1.0
+	local lease = Client.LEASE_DEFAULT
 	local host: any = nil
 	local detectors: any = nil
 
@@ -180,9 +198,7 @@ function Client.start(plugin: Plugin)
 
 	local function keyOp(args: any, _id: any): (boolean, any, number?)
 		local mode = tostring(args.mode or "press")
-		if tonumber(args.lease) and tonumber(args.lease) > 0 then
-			lease = math.clamp(tonumber(args.lease) :: number, 0.2, 10)
-		end
+		lease = Client.leaseOf(args.lease, lease)
 		if mode == "release_all" then
 			releaseAll()
 			return true, Json.object()
@@ -285,9 +301,12 @@ function Client.start(plugin: Plugin)
 		Keys.tick()
 		local now = os.clock()
 		local t = World.gameTime()
+		-- (a lease lapses in real time, and a frame's worth later: a renewal that came while a slow frame ran is
+		-- taken after it; up to a second, so a hold still lets go soon after the renewals stop)
+		local lapse = Client.lapse(lease, dt)
 		for name, h in pairs(held) do
 			local releaseAt = h["until"] or 0
-			local expired = if releaseAt > 0 then t >= releaseAt else (now - h.renewed > lease)
+			local expired = if releaseAt > 0 then t >= releaseAt else (now - h.renewed > lapse)
 			if expired then
 				if Keys.isPad(h.spec) then
 					Pad.set(h.spec, 0)
