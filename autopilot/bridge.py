@@ -10,6 +10,7 @@ connection, or a request the game doesn't answer in time, raises ``requests.Conn
 """
 
 import atexit
+import collections
 import ipaddress
 import itertools
 import json
@@ -77,6 +78,26 @@ def required_ops(hello):
     return REQUIRED_OPS if engine == "unreal" else {**REQUIRED_OPS, **ENGINE_OPS}
 
 
+# The frame rates kept from the game's heartbeats (one a second): the kit's game.fps is their median. Each plugin sends
+# its own kind of number: Unreal, Unity and Roblox's play client the rate of the one frame before the heartbeat (1 /
+# its delta time), Godot the frames of the last second; a median of the latest few is right for either, and a hitch's
+# frame doesn't move it
+FPS_REPORTS = 10
+
+
+def new_fps_reports():
+    return collections.deque(maxlen=FPS_REPORTS)
+
+
+def note_fps(reports, event):
+    """Keep a heartbeat's frame rate, when it is a playing game's (a heartbeat while no game plays has no game time:
+    the editor's own, e.g. Roblox's editor plugin says 60 whatever the game does)."""
+    fps = event.get("fps")
+    if event.get("t") is None or isinstance(fps, bool) or not isinstance(fps, (int, float)) or not 0 < fps < 1e4:
+        return
+    reports.append(float(fps))
+
+
 class Response:
     """Enough of requests.Response for a BridgeError's response."""
 
@@ -120,6 +141,7 @@ class Link:
         self.game_time = None  # the latest game time the plugin reported
         self.game_time_at = None  # ... and the wall time (time.time()) it came in
         self.last_heartbeat = None  # wall time of the latest heartbeat
+        self.fps_reports = new_fps_reports()  # the frame rates the game's heartbeats reported, the latest last
         self.findings = []  # finding dicts from in-engine detectors, in arrival order
         # Detector names and signatures the project muted (autopilot/detectors.py): their findings are dropped here too,
         # for a plugin that doesn't drop them itself
@@ -336,6 +358,7 @@ class Link:
         kind = event.get("kind")
         if kind == "heartbeat":
             self.last_heartbeat = time.time()
+            note_fps(self.fps_reports, event)
         elif kind == "finding":
             finding = dict(event.get("finding", {}))
             if self.muted and is_muted(finding, self.muted):

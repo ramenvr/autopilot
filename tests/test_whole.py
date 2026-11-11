@@ -124,7 +124,8 @@ def test_list_files_lists_all(tmp_path):
 
 def test_a_long_probe_output_is_kept_whole(game, tmp_path, monkeypatch):
     s, frames, said = open_run(game, tmp_path, monkeypatch)
-    assert s.probe("print('short')").strip() == "short"
+    short = s.probe("print('short')").splitlines()
+    assert short[0] == "short" and short[1].startswith("(the probe took ") and len(short) == 2
     out = s.probe("for i in range(3000): print('row', i, 'x' * 40)")
     assert len(out) <= whole.ANSWER_CHARS and out.startswith("[This probe's output is ")
     kept = kept_path(out)

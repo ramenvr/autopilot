@@ -306,6 +306,9 @@ class ProxyLink:
         self.game_time = None
         self.closed = None
         self.pending = {}
+        from .bridge import new_fps_reports
+
+        self.fps_reports = new_fps_reports()  # (from the heartbeats the parent passes on, as bridge.Link keeps them)
         self.ids = itertools.count(1)
 
     def _ask(self, msg, timeout=None):
@@ -494,6 +497,10 @@ def child_main():
         if kind == "res":
             link.answer(msg)
         elif kind == "event":
+            if isinstance(msg.get("event"), dict) and msg["event"].get("kind") == "heartbeat":
+                from .bridge import note_fps
+
+                note_fps(link.fps_reports, msg["event"])  # (the game's frame rate: game.fps)
             for listener in list(link.listeners):
                 try:
                     listener(msg["event"])

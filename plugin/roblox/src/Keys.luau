@@ -328,34 +328,68 @@ end
 
 -- Move the mouse by delta pixels. With the mouse locked (first person, shift lock, a game's own camera) it moves alone;
 -- with it free (Roblox's default camera turns only while the right button is held, locking the mouse meanwhile) the
--- right button is held for the turn and let go a second after the last one (Keys.tick), as a player drags. Yields a
--- frame or two when it presses the button. Returns whether the move went in.
-local turning = { held = false, releaseAt = 0, releasedAt = -math.huge }
+-- right button is held for the turn and let go a while after the last one (Keys.turnHold, Keys.tick), as a player
+-- drags. Yields a frame or two when it presses the button, and a move that comes meanwhile (the other axis of the same
+-- flick: MouseX and MouseY come as two requests) waits until it is down. Returns whether the move went in.
+local turning = { held = false, pressing = false, releaseAt = 0, releasedAt = -math.huge, releasedFrame = -math.huge,
+	lastAt = -math.huge }
 local settle: () -> ()
--- (how long the button stays down after the last turn: a second, so turns that come one after another, as the kit's
--- calibrate_look and look_at send them, find it down and turn at once, not a few frames late while it is pressed again)
+-- How long the button stays down after the last turn, so turns that come one after another (the kit's calibrate_look,
+-- look_at, walk_to's steps) find it down and turn at once, not a few frames late while it is pressed again: a second,
+-- or twice the time between the last two turns when they come slower (a slow game's loop), at most TURN_HOLD_MAX. A turn
+-- after a longer pause starts afresh: the button isn't held on long after turning stopped (a game may read the right
+-- button too: aiming, blocking).
 local TURN_HOLD = 1.0
+local TURN_HOLD_MAX = 4.0
+local SAME_FLICK = 0.1 -- (turns closer together than this are one flick's axes: they don't set the pace)
+local frame = 0 -- frames ticked (Keys.tick)
+
+function Keys.turnHold(gap: number): number
+	if gap > TURN_HOLD_MAX then
+		return TURN_HOLD
+	end
+	return math.clamp(2 * gap, TURN_HOLD, TURN_HOLD_MAX)
+end
 
 function Keys.moveMouse(delta: Vector2): boolean
 	local v = vi()
+	local now = os.clock()
+	local gap = now - turning.lastAt -- (the caller's pace: measured as the move comes)
+	local hold = Keys.turnHold(gap)
+	if gap >= SAME_FLICK then
+		turning.lastAt = now
+	end
 	if not turning.held then
 		settle() -- (a turn just let go of, e.g. by release_all: the camera frees the mouse before it is taken again)
 	end
-	turning.releaseAt = os.clock() + TURN_HOLD -- (first: the button pressed below isn't let go while it locks the mouse)
+	-- (first: the button pressed below isn't let go while it locks the mouse; never shortened by the flick's other axis)
+	turning.releaseAt = math.max(turning.releaseAt, os.clock() + hold)
 	if UserInputService.MouseBehavior == Enum.MouseBehavior.Default and not rightHeld and not turning.held then
-		turning.held = true -- (first: a caller meanwhile mustn't press the button again)
-		local at = Keys.toVirtual(Keys.mouseAt())
-		v:SendMousePosition(at) -- (the cursor over the game first, as in send)
-		RunService.Heartbeat:Wait()
-		v:SendMouseButton(at, Enum.UserInputType.MouseButton2, true, 1)
-		for _ = 1, 6 do
-			if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
-				break
-			end
+		turning.held = true -- (first: a caller meanwhile mustn't press the button again, and waits until it is down)
+		turning.pressing = true
+		pcall(function()
+			local at = Keys.toVirtual(Keys.mouseAt())
+			v:SendMousePosition(at) -- (the cursor over the game first, as in send)
 			RunService.Heartbeat:Wait()
+			v:SendMouseButton(at, Enum.UserInputType.MouseButton2, true, 1)
+			for _ = 1, 6 do
+				if UserInputService.MouseBehavior ~= Enum.MouseBehavior.Default then
+					break
+				end
+				RunService.Heartbeat:Wait()
+			end
+		end)
+		turning.pressing = false
+	else
+		-- (another caller is pressing the button now: this move goes in once it is down, not into a free mouse, where it
+		-- would move the cursor and leave the view as it was)
+		local waited = 0
+		while turning.pressing and waited < 20 do
+			RunService.Heartbeat:Wait()
+			waited += 1
 		end
 	end
-	turning.releaseAt = os.clock() + TURN_HOLD
+	turning.releaseAt = math.max(turning.releaseAt, os.clock() + hold)
 	local ok = pcall(function()
 		v:SendMouseDelta(delta)
 	end)
@@ -363,9 +397,10 @@ function Keys.moveMouse(delta: Vector2): boolean
 end
 
 -- Wait (a few frames at most) while the camera still holds the mouse after the turning button was let go of just now:
--- a click or a new turn meanwhile would be lost.
+-- a click or a new turn meanwhile would be lost. (Just now: half a second and a few frames, so a slow game's frames,
+-- each longer than that, still count.)
 settle = function()
-	if rightHeld or os.clock() - turning.releasedAt > 0.5 then
+	if rightHeld or (os.clock() - turning.releasedAt > 0.5 and frame - turning.releasedFrame >= 3) then
 		return
 	end
 	-- (a few frames since the button went up, whatever MouseBehavior says at once: the camera puts the mouse back where
@@ -392,6 +427,7 @@ function Keys.releaseTurn(): boolean
 				vi():SendMouseButton(Keys.toVirtual(Keys.mouseAt()), Enum.UserInputType.MouseButton2, false, 1)
 			end)
 			turning.releasedAt = os.clock()
+			turning.releasedFrame = frame
 			return true
 		end
 	end
@@ -408,6 +444,7 @@ end
 
 -- Once a frame: let go of the right button held for turning once the turns have stopped.
 function Keys.tick()
+	frame += 1
 	if turning.held and os.clock() > turning.releaseAt then
 		Keys.releaseTurn()
 	end

@@ -5,11 +5,19 @@ kit's frame (Unreal's) whatever the engine.
 
 Reads are synchronous; `game.batch([...])` sends several at once so they resolve in one game frame. Inputs are
 fire-and-forget. Held keys are leased: the plugin lets go of a key that isn't renewed, so a crashed harness never
-leaves the player running forever (the runtime renews holds every tick, see renew()).
+leaves the player running forever (renewed about three times a lease: from the runtime's ticks, and from a thread of
+the game's between them while an episode or kit.control.run drives, see renew_due() and keeping_held()).
+
+The game's pace is measured as it is played: each read's round trip (game.round_trip, round_trip_p90) and the frame
+rate the plugin reports (game.fps). A slow game (a low frame rate, a slow link) gets longer key leases and waits as
+long as it needs when it calibrates the mouse.
 """
 
+import collections
 import concurrent.futures as futures
+import contextlib
 import re
+import statistics
 import threading
 import time
 
@@ -17,7 +25,21 @@ from .geom import Vec, aim_error
 
 GAMEPLAY = "/Script/Engine.Default__GameplayStatics"
 KISMET_SYSTEM = "/Script/Engine.Default__KismetSystemLibrary"
-KEY_LEASE = 0.6  # seconds a held key stays down without renewal
+KEY_LEASE = 0.6  # seconds a held key stays down without renewal, at the least (key_lease: longer on a slow game)
+# ... and at the most: a key of a brain that is gone (crashed, disconnected) goes up within this. Every plugin clamps a
+# lease to 0.2-10 s
+KEY_LEASE_MAX = 5.0
+# Seconds a held key is renewed (inside Game.keeping_held) for code that has neither read the game nor sent it an input
+# meanwhile: a harness hung on something (a loop that never yields) doesn't leave the player running
+KEY_ALONE = 10.0
+PACE_SAMPLES = 60  # the latest reads' round trips kept (game.round_trip)
+# Requests whose round trip says nothing of the game's pace (they take as long as what they do: start a session, a
+# picture, a timed move); posts aren't timed at all (nothing waits for them)
+UNTIMED_OPS = frozenset(("session", "pause", "capture", "record", "levels", "detectors", "move", "watch", "touch"))
+# A game slower than this (fewer frames a second, or longer reads) is a slow game: the agent is told so
+SLOW_FPS = 25.0
+SLOW_READ = 0.1
+_renewing = threading.local()  # (set in the thread that renews held keys: its posts aren't the code's doing)
 # Function calls that change the game rather than read it: reported as direct changes (see Game.call)
 CHANGES_STATE = re.compile(r"^(K2_)?(Destroy|Set|Spawn|Apply|Add|Remove|Teleport|Launch|Kill|Damage|Give|Grant|"
                            r"Equip|Unequip|Use|Fire|Open|Close|Start|Stop|Reset|Respawn|Possess|Attach|Detach)", re.I)
@@ -37,11 +59,20 @@ class Game:
         self.engine = engine or for_link(link)
         self.codex = codex  # autopilot.codex.Codex or None: resolves class names
         self.log = log or (lambda *kind, **fields: None)  # the runtime's trace (runtime.Trace)
-        self._pool = futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="game")
+        # (32: an executor step's batch and observe()'s, each with batches inside, run at once; a batch's reads wait in
+        # the pool's threads for the reads inside them)
+        self._pool = futures.ThreadPoolExecutor(max_workers=32, thread_name_prefix="game")
         self._ctx, self._ctx_at = None, 0.0
         self._classes = {}
         self._held = {}  # key -> value held
         self._lock = threading.Lock()
+        self._trips = collections.deque(maxlen=PACE_SAMPLES)  # seconds each of the latest reads took to answer
+        # The thread that renews held keys between the runtime's ticks (None while nothing is held), when each key's
+        # hold was last sent, and when the code last read the game or sent it an input
+        self._renewer, self._renewer_lock = None, threading.Lock()
+        self._sent = {}  # key -> when its hold was last sent (renew_due())
+        self._acted_at = time.monotonic()
+        self._keepers = 0  # how many drivers (an episode, a run()) have the thread keep keys held (keeping_held)
         self.look = {"x": None, "y": None}  # degrees of view per mouse count (calibrate_look); y signed: + looks up
         self.turn_asked = 0.0  # degrees of yaw the mouse was moved to turn the view, all told
         self.keys = dict(self.engine.keys)
@@ -62,12 +93,22 @@ class Game:
         from ..bridge import BridgeError
 
         self._waited.n = getattr(self._waited, "n", 0) + 1
+        began = self._primary._acted_at = time.monotonic()
         try:
-            return self.link.request(op, args or {}, timeout=timeout)
+            out = self.link.request(op, args or {}, timeout=timeout)
         except BridgeError as e:
+            self._timed(op, began)  # (a refusal is an answer too: it came back as fast as any)
             raise GameError(f"{op}: {e.error}") from None
+        self._timed(op, began)
+        return out
+
+    def _timed(self, op, began):
+        if op not in UNTIMED_OPS:
+            self._trips.append(time.monotonic() - began)
 
     def post(self, op, args=None):
+        if not getattr(_renewing, "on", False):
+            self._primary._acted_at = time.monotonic()
         self.link.post(op, args or {})
 
     def waits(self):
@@ -79,6 +120,58 @@ class Game:
     def t(self):
         """The game time (seconds) of the latest answer from the game."""
         return self.link.game_time or 0.0
+
+    # -- the game's pace -----------------------------------------------------------------------------------
+
+    @property
+    def round_trip(self):
+        """Seconds a read takes to come back, the median of the latest ones (None before any): the time from asking
+        to the answer, a frame of the game or more (a slow frame rate, a slow link)."""
+        trips = sorted(self._trips)
+        return trips[len(trips) // 2] if trips else None
+
+    @property
+    def round_trip_p90(self):
+        """Seconds within which 9 of 10 of the latest reads came back (None before any)."""
+        trips = sorted(self._trips)
+        return trips[min(len(trips) - 1, int(0.9 * len(trips)))] if trips else None
+
+    @property
+    def fps(self):
+        """The game's frame rate: the median of the latest the plugin reported (a heartbeat a second while the game
+        plays), None when none has been."""
+        reports = list(getattr(self.link, "fps_reports", None) or [])
+        return round(statistics.median(reports), 1) if reports else None
+
+    def pace(self):
+        """{"fps", "round_trip_ms", "round_trip_p90_ms"} of the game now (None for what isn't known)."""
+        ms = lambda s: None if s is None else round(1000 * s)
+        return {"fps": self.fps, "round_trip_ms": ms(self.round_trip), "round_trip_p90_ms": ms(self.round_trip_p90)}
+
+    def slow(self):
+        """Whether the game is slow: fewer than SLOW_FPS frames a second, or reads that take over SLOW_READ s."""
+        fps, trip = self.fps, self.round_trip
+        return (fps is not None and fps < SLOW_FPS) or (trip is not None and trip > SLOW_READ)
+
+    def measure_pace(self, reads=5, wait=1.5):
+        """Measure the game's pace (while it runs): a few reads one after another for the round trip, and up to `wait`
+        seconds for the plugin's first frame rate when none has come yet (a plugin that reports none isn't waited
+        for). -> pace()"""
+        for _ in range(reads):
+            try:
+                self.view_rotation()
+            except GameError:
+                break
+        if getattr(self.link, "fps_reports", None) is not None:
+            end = time.monotonic() + wait
+            while self.fps is None and time.monotonic() < end and not getattr(self.link, "closed", None):
+                time.sleep(0.1)
+        return self.pace()
+
+    def _frame(self):
+        """About a frame of the game, in seconds (its frame rate's; else its reads' time, a frame or more)."""
+        fps = self.fps
+        return 1.0 / fps if fps else (self.round_trip or 0.0)
 
     def batch(self, thunks):
         """Run several reads at once (they resolve in the same game frame): a list of zero-argument callables, e.g.
@@ -328,19 +421,35 @@ class Game:
         self.log("input", key=key, mode="press", value=value)
 
     def hold(self, key, value=None):
-        """Hold a key (or Enhanced Input action) down until release(); renewed by the runtime every tick."""
+        """Hold a key (or Enhanced Input action) down until release(). A new or changed hold is sent at once; holding it
+        again, as a controller does every step, sends nothing until a renewal is due (see renew_due())."""
+        lease = self.key_lease
         with self._lock:
             new = key not in self._held or self._held[key] != value
             self._held[key] = value
+            if new or time.monotonic() - self._sent.get(key, -1e9) >= lease / 3:
+                self._send_hold(key, value, lease)
+        if new:
+            self.log("input", key=key, mode="hold", value=value)
+        self._primary._keep_renewing()
+
+    def _send_hold(self, key, value, lease):
+        """(with self._lock held)"""
+        self._sent[key] = time.monotonic()
         if key.startswith("/"):
             self.post("input", {"action": key, "value": _axis(value), "mode": "hold"})
         else:
-            args = {"key": key, "mode": "hold", "lease": KEY_LEASE}
+            args = {"key": key, "mode": "hold", "lease": lease}
             if value is not None:
                 args["value"] = value
             self.post("key", args)
-        if new:
-            self.log("input", key=key, mode="hold", value=value)
+
+    @property
+    def key_lease(self):
+        """Seconds a held key stays down without renewal: KEY_LEASE, longer on a slow game (4 of its slow reads, or 4
+        of its frames: a renewal comes a read or a frame late there), never over KEY_LEASE_MAX."""
+        frame = 1.0 / self.fps if self.fps else 0.0
+        return round(min(KEY_LEASE_MAX, max(KEY_LEASE, 4 * (self.round_trip_p90 or 0.0), 4 * frame)), 2)
 
     @property
     def features(self):
@@ -352,7 +461,7 @@ class Game:
         the plugin can (False: it can't, or the key is an input action; then hold() and release() it)."""
         if key.startswith("/") or "timed_hold" not in self.features:
             return False
-        args = {"key": key, "mode": "hold", "seconds": float(seconds), "lease": KEY_LEASE}
+        args = {"key": key, "mode": "hold", "seconds": float(seconds), "lease": self.key_lease}
         if value is not None:
             args["value"] = value
         self.post("key", args)
@@ -392,18 +501,71 @@ class Game:
             return dict(self._held)
 
     def renew(self):
-        """Renew every held key's lease (the runtime calls this every tick), the other players' too."""
-        self._renew_own()
+        """Renew every held key's lease now, the other players' too."""
+        self._renew_own(due=False)
         for body in list(self._bodies.values()):
-            body._renew_own()
+            body._renew_own(due=False)
 
-    def _renew_own(self):
-        for key, value in self.held().items():
-            if not key.startswith("/"):
-                args = {"key": key, "mode": "hold", "lease": KEY_LEASE}
-                if value is not None:
-                    args["value"] = value
-                self.post("key", args)
+    def renew_due(self):
+        """Renew the held keys whose hold was sent a third of a lease ago or more, the other players' too: a renewal is
+        needed only before the lease runs out, and each costs the game a request (Roblox's are counted against a
+        limit). The runtime calls it every tick (and kit.control.run), and a thread of the game's between ticks (see
+        keeping_held): however fast the ticks, a key is renewed about three times a lease."""
+        self._renew_own(due=True)
+        for body in list(self._bodies.values()):
+            body._renew_own(due=True)
+
+    def _renew_own(self, due=False):
+        lease = self.key_lease
+        now = time.monotonic()
+        # (sent while the keys can't change: a renewal another thread sends after a release would press the key again)
+        with self._lock:
+            for key, value in self._held.items():
+                if not key.startswith("/") and (not due or now - self._sent.get(key, -1e9) >= lease / 3):
+                    self._send_hold(key, value, lease)
+
+    def _holding(self):
+        return bool(self._held) or any(body._held for body in list(self._bodies.values()))
+
+    @contextlib.contextmanager
+    def keeping_held(self):
+        """Inside the block a thread of the game's renews the held keys between ticks (renew_due): the runtime's episode
+        and kit.control.run drive inside one, so a step that takes longer than a lease (a slow game) doesn't let go of
+        them. Outside, a key nobody renews is let go when its lease runs out (a probe's bare hold())."""
+        g = self._primary
+        with g._renewer_lock:
+            g._keepers += 1
+        try:
+            g._keep_renewing()
+            yield
+        finally:
+            with g._renewer_lock:
+                g._keepers -= 1
+
+    def _keep_renewing(self):
+        """Renew the held keys from a thread of their own while any is held inside keeping_held(): between the ticks
+        (a step that takes longer than a lease on a slow game would let go of them)."""
+        with self._renewer_lock:
+            if self._renewer is None and self._keepers > 0 and self._holding():
+                self._renewer = threading.Thread(target=self._renew_between, name="renew-keys", daemon=True)
+                self._renewer.start()
+
+    def _renew_between(self):
+        _renewing.on = True
+        while True:
+            lease = self.key_lease
+            time.sleep(max(0.05, lease / 4))
+            with self._renewer_lock:
+                if not self._holding() or self._keepers <= 0 or getattr(self.link, "closed", None):
+                    self._renewer = None
+                    return
+            # (the code has done nothing for KEY_ALONE: hung on something, its keys are let go)
+            if time.monotonic() - self._acted_at > KEY_ALONE:
+                continue
+            try:
+                self.renew_due()
+            except Exception:  # (the game gone: the keys go up with it)
+                pass
 
     def mouse(self, right=0.0, up=0.0):
         """Flick the mouse by counts (the game's sensitivity applies). Prefer turn()/look_at in kit.control."""
@@ -422,46 +584,78 @@ class Game:
         self.mouse(right_deg / rx if rx else 0.0, up_deg / ry if ry else 0.0)
 
     def calibrate_look(self, counts=60.0):
-        """Measure how many degrees one mouse count turns the view (once; kept on the game)."""
+        """Measure how many degrees one mouse count turns the view (once; kept on the game). Each turn is read until the
+        view has come to rest, for as long as this game's pace needs (a slow frame rate, a slow link, a camera that
+        turns only a few frames after the move: Roblox's waits for the right button it presses to lock the mouse), and
+        a result is kept only when a second turn agrees with it."""
         if self.look["x"] and self.look["y"]:
             return self.look
         # (not every tick while the mouse does nothing, e.g. during an intro before the controls are active)
-        if time.monotonic() - getattr(self, "_calibrated_at", -1e9) < 0.5:
+        if time.monotonic() - getattr(self, "_calibrated_at", -1e9) < getattr(self, "_calibrate_every", 0.5):
             return self.look
-        self._calibrated_at = time.monotonic()
-        for axis in ("x", "y"):
-            if self.look[axis]:
-                continue
-            y0, p0 = self.view_rotation()
-            self.mouse(counts if axis == "x" else 0.0, counts if axis == "y" else 0.0)
-            time.sleep(0.15)
-            y1, p1 = self.view_rotation()
-            from .geom import wrap
-
-            moved = wrap(y1 - y0) if axis == "x" else (p1 - p0)
-            if abs(moved) <= 0.05:
-                # (a turn can come in late: e.g. Roblox's camera turns only once the right button it presses has locked
-                # the mouse, a few frames after the move was sent)
-                time.sleep(0.25)
-                y1, p1 = self.view_rotation()
-                moved = wrap(y1 - y0) if axis == "x" else (p1 - p0)
-            if abs(moved) > 0.05:
-                self.look[axis] = moved / counts
-                # turn back
-                self.mouse(-counts if axis == "x" else 0.0, -counts if axis == "y" else 0.0)
-                time.sleep(0.1)
-            else:
-                # pitch may sit at a limit: try the other way
-                self.mouse(0.0, -counts if axis == "y" else 0.0)
-                time.sleep(0.15)
-                y2, p2 = self.view_rotation()
-                moved = (p2 - p1) if axis == "y" else 0.0
-                if abs(moved) > 0.05:
-                    self.look[axis] = -moved / counts
-                    self.mouse(0.0, counts)
-                    time.sleep(0.1)
+        try:
+            for axis in ("x", "y"):
+                if not self.look[axis]:
+                    self.look[axis] = self._measure_turn(axis, counts)
+        finally:
+            self._calibrated_at = time.monotonic()
+            self._calibrate_every = max(0.5, self._turn_wait())
         self.log("calibrated", look=self.look)
         return self.look
+
+    def _turn_wait(self):
+        """The longest a turn is waited for to show and come to rest: 0.4 s on a fast game, more on a slow one (its
+        reads and frames), at most 4 s."""
+        frame = 1.0 / self.fps if self.fps else 0.0
+        return min(4.0, max(0.4, 0.25 + 6 * (self.round_trip_p90 or 0.0) + 4 * frame))
+
+    def _turned(self, axis, counts, start, limit):
+        """Move the mouse by `counts` on one axis ("x": right, "y": up) and read the view until it has come to rest (two
+        reads a frame or more apart that agree, once it has moved) or `limit` seconds pass: (degrees it turned, the
+        view (yaw, pitch) then). 0 degrees when it didn't turn."""
+        from .geom import wrap
+
+        self.mouse(counts if axis == "x" else 0.0, counts if axis == "y" else 0.0)
+        end = time.monotonic() + limit
+        gap = min(0.25, max(0.03, self._frame()))  # (a frame apart: a turn the game spreads over frames shows on each)
+        prev, view = None, start
+        while True:
+            time.sleep(gap)
+            view = self.view_rotation()
+            moved = wrap(view[0] - start[0]) if axis == "x" else view[1] - start[1]
+            if prev is not None and abs(moved) > 0.05 and abs(moved - prev) <= 0.02 + 0.01 * abs(moved):
+                return moved, view
+            prev = moved
+            if time.monotonic() >= end:
+                return (moved if abs(moved) > 0.05 else 0.0), view
+
+    def _measure_turn(self, axis, counts):
+        """Degrees one count turns the view on an axis (y signed: + looks up), or None when it can't be told now. A turn
+        and its turn back must agree; when they don't (the pitch stopped at the camera's limit one way, or part of a
+        turn landed late), the way that turned more is checked again. The view ends about where it began."""
+        view = self.view_rotation()
+        limit = self._turn_wait()  # (after that read: a measure of the pace too)
+        agree = lambda a, b: a * b > 0 and abs(a - b) <= 0.25 * max(abs(a), abs(b))
+        first, view = self._turned(axis, counts, view, limit)
+        if not first:
+            if axis == "x":
+                return None  # (the mouse doesn't turn the view now: controls not active yet)
+            # The pitch may sit at a limit: the other way, twice (a late first turn would show in the first as less)
+            second, view = self._turned(axis, -counts, view, limit)
+            if not second:
+                return None
+            check, view = self._turned(axis, -counts, view, limit)
+            self._turned(axis, 2 * counts, view, limit)
+            return (-second - check) / 2 / counts if agree(second, check) else None
+        back, view = self._turned(axis, -counts, view, limit)
+        if agree(first, -back):
+            return (first - back) / 2 / counts
+        # Disagreeing: the way that turned more again (the other may have stopped at the camera's limit)
+        sign = 1.0 if abs(first) >= abs(back) else -1.0
+        big = first if sign > 0 else -back
+        check, view = self._turned(axis, sign * counts, view, limit)
+        self._turned(axis, -sign * counts, view, limit)
+        return (big + sign * check) / 2 / counts if agree(big, sign * check) else None
 
     # -- the session -----------------------------------------------------------------------------------
 
@@ -542,6 +736,7 @@ class Body(Game):
         self.index = n
         self._ctx, self._ctx_at = None, 0.0
         self._held = {}
+        self._sent = {}
         self._lock = threading.Lock()
         self.look = {"x": None, "y": None}
         self.turn_asked = 0.0
@@ -554,6 +749,9 @@ class Body(Game):
 
     def renew(self):
         self._renew_own()
+
+    def renew_due(self):
+        self._renew_own(due=True)
 
     def release_all(self):
         self._release_own()
