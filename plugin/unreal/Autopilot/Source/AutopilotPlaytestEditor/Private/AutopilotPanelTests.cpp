@@ -1424,6 +1424,8 @@ bool FAutopilotCodingAgentTest::RunTest(const FString& Parameters)
 		Panel->SetupStep = SPlaytestPanel::StepAccount;
 		Panel->SlatePrepass(1.f);
 		Panel->SlatePrepass(1.f);  // (twice: the page shown is picked on the first)
+		// (a bound IsEnabled is read again only in Slate's attribute update, which a prepass doesn't run: run it here)
+		FSlateAttributeMetaData::UpdateAllAttributes(*Panel->LlmProviderCombo, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
 		return !Panel->LlmProviderCombo->IsEnabled();
 	};
 	auto Item = [](const TArray<TSharedPtr<FString>>& Items, const TCHAR* Id)
@@ -2339,13 +2341,20 @@ bool FAutopilotStatusLineTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("both steer boxes"), Panel->SteerBox.IsValid() && Panel->FeedSteerBox.IsValid());
 	if (Panel->SteerBox.IsValid() && Panel->FeedSteerBox.IsValid())
 	{
+		Panel->TestSteerModes = false;  // (an agent service without steer_mode: the test's own, not this editor's)
 		Panel->FeedSteerBox->SetText(FText::FromString(TEXT("go left")));
 		TestEqual(TEXT("the words, whichever box"), Panel->SteerText(), FString(TEXT("go left")));
 		TestEqual(TEXT("the steer hint, at any stage"), Panel->FeedSteerBox->GetHintText().ToString(), FString(TEXT("Send a steering prompt to Autopilot")));
-		TestFalse(TEXT("no Redirect without the agent service's steer_mode"), Panel->FeedRedirectButton->GetVisibility() == EVisibility::Visible);
+		// (the Redirect's visibility is bound: read again in Slate's attribute update, run here after each change)
+		auto RedirectShown = [&Panel]()
+		{
+			FSlateAttributeMetaData::UpdateAllAttributes(*Panel->FeedRedirectButton, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
+			return Panel->FeedRedirectButton->GetVisibility() == EVisibility::Visible;
+		};
+		TestFalse(TEXT("no Redirect without the agent service's steer_mode"), RedirectShown());
 		Panel->TestSteerModes = true;  // (an agent service that tells hints from redirects)
 		TestEqual(TEXT("the hint's words, with steer modes"), Panel->FeedSteerBox->GetHintText().ToString(), FString(TEXT("Add a hint; Autopilot keeps playing")));
-		TestTrue(TEXT("Redirect, with steer modes"), Panel->FeedRedirectButton->GetVisibility() == EVisibility::Visible);
+		TestTrue(TEXT("Redirect, with steer modes"), RedirectShown());
 		Panel->TestSteerModes.Reset();
 	}
 

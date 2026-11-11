@@ -655,11 +655,14 @@ def serve_http(host, port, handler, state):
             self._answer(200, "[" + ",".join(texts) + "]")
 
         def do_POST(self):
+            # The body is read first, whatever the answer: a refusal that left it unread would leave it in a connection
+            # kept open (read as the next request) or close one with data still in it (Windows answers that with a
+            # reset the plugin can see before the refusal)
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n) if n > 0 else b""
             if self.headers.get("Origin") is not None:
                 return self._answer(403, '{"error": "native plugins only"}')
             path, q = self._parts()
-            n = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(n) if n else b""
             if path == HTTP_PATH + "open":
                 peer = HttpPeer(q.get("path") or "/v1/bridge", self.headers, self.client_address)
                 peers[peer.id] = peer

@@ -77,6 +77,45 @@ def test_http_rejects_browser_requests_before_creating_or_using_peers(local_brid
         requests.post(base + 'close?peer=' + peer, timeout=3)
 
 
+def test_a_refused_request_is_read_whole_before_its_answer(local_bridge):
+    # A refusal that left the body unread closed the connection with data still in it, which the operating system
+    # answers with a reset the client can see before the refusal (Windows: ConnectionAbortedError 10053, now and then
+    # in CI; every time with a big body), and on the agent service's kept-open connections the body was read as the next
+    # request. So a big body is refused cleanly, and the connection's next request is read as itself.
+    import http.client
+
+    from tools.roblox_dev import handler_for
+
+    big = b'{"x": "' + b'y' * (1 << 20) + b'"}'
+    _, base, _ = local_bridge
+    host, port = base.split('/')[2].split(':')
+    conn = http.client.HTTPConnection(host, int(port), timeout=5)
+    try:
+        conn.request('POST', '/v1/http/send?peer=missing', body=big,
+                     headers={'Origin': 'https://untrusted.invalid', 'Content-Type': 'application/json'})
+        refused = conn.getresponse()
+        assert refused.status == 403 and b'native plugins only' in refused.read()
+        conn.request('GET', '/v1/http/poll?peer=missing')  # (the same connection, kept open)
+        nothing = conn.getresponse()
+        assert nothing.status == 410 and b'no such connection' in nothing.read()
+    finally:
+        conn.close()
+
+    dev = types.SimpleNamespace(eval=lambda *args: {'ok': True})
+    server = ThreadingHTTPServer(('127.0.0.1', 0), handler_for(dev))
+    thread = threading.Thread(target=server.serve_forever)
+    thread.start()
+    try:
+        url = f'http://127.0.0.1:{server.server_port}/ctl'
+        web = {'Origin': 'https://untrusted.invalid'}
+        assert requests.post(url, data=big, headers=web, timeout=5).status_code == 403
+        assert requests.post(url, data=big, headers={'Content-Type': 'text/plain'}, timeout=5).status_code == 415
+    finally:
+        server.shutdown()
+        thread.join(3)
+        server.server_close()
+
+
 def test_dev_control_rejects_origins_and_simple_forms_without_evaluating():
     from tools.roblox_dev import handler_for
 

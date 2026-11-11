@@ -166,9 +166,12 @@ def handler_for(dev):
             url = urlparse(self.path)
             return url.path, {k: v[0] for k, v in parse_qs(url.query).items()}
 
-        def _body(self):
+        def _read(self):
+            """The request's body, read whatever the answer will be: a refusal that left it unread would close the
+            connection with data still in it, which Windows answers with a reset the client can see before the
+            refusal."""
             n = int(self.headers.get("Content-Length") or 0)
-            return json.loads(self.rfile.read(n) or b"null")
+            return self.rfile.read(n) if n > 0 else b""
 
         def do_GET(self):
             if self.headers.get("Origin") is not None:
@@ -183,16 +186,17 @@ def handler_for(dev):
                 self._answer({"error": "not found"}, 404)
 
         def do_POST(self):
+            raw = self._read()  # (first: see _read)
             if self.headers.get("Origin") is not None:
                 return self._answer({"error": "native clients only"}, 403)
             path, q = self._query()
             if path == "/up":
-                dev.up(q.get("dm", "?"), self._body() or [])
+                dev.up(q.get("dm", "?"), json.loads(raw or b"null") or [])
                 self._answer({})
             elif path == "/ctl":
                 if self.headers.get_content_type() != "application/json":
                     return self._answer({"error": "expected application/json"}, 415)
-                req = self._body() or {}
+                req = json.loads(raw or b"null") or {}
                 self._answer(dev.eval(req.get("dm") or "edit", req.get("code", ""), float(req.get("timeout", 30))))
             else:
                 self._answer({"error": "not found"}, 404)
