@@ -339,6 +339,51 @@ namespace Autopilot.Playtest.Tests
         }
 
         [Test]
+        public void TheBugDetectorsFollowEachMemoryStateAndAFlipIsSent()
+        {
+            // Each memory_state says whether the game's detectors run for the project ("detectors"; none, an older agent
+            // service's, means on); flipping the switch sends {"type": "detectors", "enabled"} and holds the new value
+            // until the answer. Unlike the memory, the last value said is kept when the connection closes (the switch
+            // shows it, greyed), and nothing is sent then
+            var sent = new List<string>();
+            var client = new PlaytestClient(EditorHost.Instance) { TestWire = sent.Add };
+            try
+            {
+                Assert.IsTrue(client.BugDetectors, "on until an agent service says otherwise");
+                client.TestConnected(true);
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
+                Assert.IsFalse(client.BugDetectors);
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false}");
+                Assert.IsTrue(client.BugDetectors, "no \"detectors\": on");
+
+                sent.Clear();
+                client.SetBugDetectors(false);
+                Assert.AreEqual(1, sent.Count);
+                var frame = Json.ParseObject(sent[0]);
+                Assert.AreEqual("detectors", Json.Str(frame, "type"));
+                Assert.IsTrue(frame.ContainsKey("enabled"));
+                Assert.IsFalse(Json.Bool(frame, "enabled", true));
+                Assert.IsFalse(client.BugDetectors, "the new value at once");
+                client.SetBugDetectors(true);
+                Assert.IsTrue(Json.Bool(Json.ParseObject(sent[sent.Count - 1]), "enabled", false));
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
+                Assert.IsFalse(client.BugDetectors, "the answer corrects it");
+
+                client.TestConnected(false);
+                Assert.IsFalse(client.BugDetectors, "kept when the connection closes");
+                sent.Clear();
+                client.SetBugDetectors(true);
+                Assert.IsEmpty(sent, "not connected: nothing sent");
+                Assert.IsFalse(client.BugDetectors, "and nothing changed");
+            }
+            finally
+            {
+                client.Disconnect();
+                client.TestWire = null;
+            }
+        }
+
+        [Test]
         public void ASignInGoesOnAfterTheConnectionComesBack()
         {
             // The agent service keeps a sign-in going when the connection to it closes: the account frame after the next

@@ -153,6 +153,36 @@ def test_not_a_bug_mutes_the_finding_for_the_project_and_tells_the_game(mem, mon
     assert link.muted == {"out_of_world:BP_Tree"}
 
 
+def test_the_bug_detectors_switch_turns_them_off_for_the_project_and_says_how_they_are(mem, monkeypatch):
+    # The Autopilot tab's Settings switch: a `detectors` message; detectors.json keeps it (what was muted stays), the
+    # game is told at once, and memory_state's "detectors" says how it is now
+    monkeypatch.setattr(cli.account, "send_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "SignIn", lambda link: None)
+    assert detectors.enabled(str(mem))  # (on, with no file)
+    detectors.mute(str(mem), "hitch")
+    link = Plugin([{"type": "detectors", "enabled": False},
+                   {"type": "detectors", "enabled": "no"},  # (not true/false: nothing changes)
+                   {"type": "detectors"}])
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_serve(link, types.SimpleNamespace(path=None, model=None))
+    assert json.loads((mem / "detectors.json").read_text()) == {"mute": ["hitch"], "enabled": False}
+    assert not detectors.enabled(str(mem))
+    assert link.sent_detectors() == [{"mute": ["hitch"], "enabled": False}]
+    # (the one sent when the plugin connected, then one after each message)
+    assert [f["detectors"] for f in link.sent if f["type"] == "memory_state"] == [True, False, False, False]
+    # ... and back on
+    link = Plugin([{"type": "detectors", "enabled": True}])
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_serve(link, types.SimpleNamespace(path=None, model=None))
+    assert detectors.enabled(str(mem)) and link.sent_detectors() == [{"mute": ["hitch"], "enabled": True}]
+    assert [f["detectors"] for f in link.sent if f["type"] == "memory_state"] == [False, True]
+    # every run sends it with the rest (cli.prepare)
+    detectors.set_enabled(str(mem), False)
+    plugin = Plugin()
+    cli.prepare(plugin, None)
+    assert plugin.sent_detectors() == [{"mute": ["hitch"], "enabled": False}]
+
+
 def test_the_service_drops_muted_findings_a_plugin_still_sends():
     link = bridge.Link(lambda frame: None)
     seen = []

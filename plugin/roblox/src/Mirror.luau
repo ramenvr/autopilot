@@ -166,6 +166,7 @@ function MirrorEditor.new(mirror: any): any
 	self.link = { url = "", problem = "", want = true, refused = false, connected = false, role = "" }
 	self.account = {}
 	self.memory = { known = false, runs = 0, notes = false, lib = false }
+	self.detectors = true
 	self.runActive = false
 	self.starting = false
 	self.playing = true
@@ -217,6 +218,7 @@ function MirrorEditor:applyState(s: any)
 		self.memory = { known = s.memory.known == true, runs = tonumber(s.memory.runs) or 0, notes = s.memory.notes == true,
 			lib = s.memory.lib == true }
 	end
+	self.detectors = s.detectors ~= false
 end
 
 function MirrorEditor:connected(): boolean
@@ -286,6 +288,9 @@ function MirrorEditor:saveSetup(): boolean
 	return false
 end
 function MirrorEditor:setSharing(): boolean
+	return false
+end
+function MirrorEditor:setDetectors(_on: boolean): boolean
 	return false
 end
 

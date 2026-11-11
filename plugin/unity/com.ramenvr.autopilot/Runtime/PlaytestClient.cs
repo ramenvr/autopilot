@@ -153,6 +153,10 @@ namespace Autopilot.Playtest
         public int MemoryRuns { get; private set; }
         public bool MemoryNotes { get; private set; }
         public bool MemoryLib { get; private set; }
+        // Whether the game's detectors run for this project (the Settings page's Bug detectors switch): what the agent
+        // service's last memory_state said ("detectors"; one without it, an older agent service's, means on). Kept when
+        // the connection closes (the switch shows the last one said, greyed), and set at once when the switch is flipped
+        public bool BugDetectors { get; private set; } = true;
         public string Problem { get; private set; } = "";
         public int ProblemCode { get; private set; }
         public string LastStatus { get; private set; } = "";
@@ -815,6 +819,16 @@ namespace Autopilot.Playtest
             Status("Resetting memory…");
         }
 
+        // The Bug detectors switch flipped: the agent service keeps it for the project (detectors.json), tells the game's
+        // detectors at once (a run going on included) and answers with a memory_state, which the switch then shows; the
+        // new value is shown meanwhile. Not connected: nothing (the switch is greyed then)
+        public void SetBugDetectors(bool on)
+        {
+            if (!Connected) return;
+            BugDetectors = on;
+            Send(new Dictionary<string, object> { ["type"] = "detectors", ["enabled"] = on });
+        }
+
         // -- the account (docs/protocol.md, Account) ------------------------------------------------------------
 
         void AccountChanged()
@@ -1148,10 +1162,12 @@ namespace Autopilot.Playtest
                     OnRunKind?.Invoke(Json.Str(m, "kind"), Json.Bool(m, "tested", false));
                     break;
                 case "memory_state":
-                    // What the brain remembers about this project (docs/protocol.md): the save data the window shows
+                    // What the brain remembers about this project (docs/protocol.md): the save data the window shows, and
+                    // whether the game's detectors run for it (the Bug detectors switch)
                     MemoryRuns = Math.Max(0, (int)Json.Num(m, "runs", 0));
                     MemoryNotes = Json.Bool(m, "notes", false);
                     MemoryLib = Json.Bool(m, "lib", false);
+                    BugDetectors = Json.Bool(m, "detectors", true);
                     MemoryKnown = true;
                     OnMemoryState?.Invoke();
                     break;

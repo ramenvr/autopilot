@@ -738,3 +738,148 @@ def test_the_edit_dock_always_comes_back_after_play():
     assert 'Settings.set(self.plugin, "dock_hidden", { was = w.Enabled })' in hide
     assert 'Settings.set(self.plugin, "dock_hidden", nil)' in hide and "w.Enabled = was" in hide
     assert "require(script.Parent.Mirror).edit(plugin, editor, dock)" in main  # (stopped with the plugin)
+
+
+def test_the_settings_have_a_bug_detectors_switch():
+    """As the other plugins' Settings: Bug detectors, this project's, shown as memory_state's "detectors" says (on when
+    an older agent service says nothing), flipped through the editor's link as Reset memory and Not a bug go (so over
+    the WebSocket or HTTP alike), not changed while not connected or mid-play; the mirror's dock shows it too."""
+    sources = _sources()
+    page, editor, mirror, dock = (sources[m] for m in ("SettingsPage", "Editor", "Mirror", "Dock"))
+    assert 'settingCard(v, "Bug detectors", DETECTORS)' in page
+    assert ('"During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "\n'
+            '\t.. "per-project."') in page
+    assert 'T.switch(dc, d.editor.detectors ~= false, "Bug detectors on", "Bug detectors off"' in page
+    assert "if not d.editor:setDetectors(on) then" in page
+    assert "{ disabled = d.mirror or not d.editor:connected() }" in page
+    # (after the Research agent, before the Design brief, as in the other plugins)
+    assert page.index('"Research agent", RESEARCH') < page.index('"Bug detectors", DETECTORS') < \
+        page.index('"Design brief", BRIEF_TEXT')
+    assert "\tself.detectors = true\n" in editor
+    assert "self.detectors = frame.detectors ~= false" in editor
+    flip = _function_body(editor, "function Editor:setDetectors(on: boolean): boolean")
+    assert "if not self:connected() then" in flip and "self.detectors = on" in flip
+    assert 'return self.link:send({ type = "detectors", enabled = on })' in flip
+    # (the same way as the other control messages: the link's send, which takes the WebSocket or HTTP)
+    assert 'self:_send({ type = "clear_memory" })' in editor
+    assert "function Editor:_send(frame: any)\n\tself.link:send(" in editor
+    # every memory_state redraws the Settings page
+    memory = dock[dock.index('on("memory", function()'):]
+    assert "self:renderPages()" in memory[:memory.index("end)")]
+    # the mirror's dock: shown as the edit side's, never flipped
+    assert "detectors = ed.detectors }" in dock and "self.detectors = s.detectors ~= false" in mirror
+    body = mirror[mirror.index("function MirrorEditor:setDetectors("):]
+    assert "_act(" not in body[:body.index("end")]
+    readme = open(os.path.join(ROOT, "plugin", "roblox", "README.md"), encoding="utf-8").read()
+    row = next(line for line in readme.splitlines() if line.startswith("| **Bug detectors** |"))
+    for word in ("`memory_state`", '`{"type": "detectors", "enabled": ...}`', "`detectors.json`",
+                 "only while connected"):
+        assert word in row, word
+
+
+# Enough of Roblox for the Editor's and the Settings page's modules to load and draw in Luau's own CLI: every service,
+# instance and other module a stand-in that takes anything, the Theme's switch and labels written down, the plugin's
+# settings empty.
+_LUAU_PRELUDE = r"""
+local function any(): any
+	return setmetatable({}, { __index = function() return any() end, __call = function() return any() end,
+		__newindex = function() end })
+end
+local game = any()
+local script = { Parent = setmetatable({}, { __index = function(_, k) return k end }) }
+local Instance, UDim2, Color3, Vector2, Enum, DateTime = any(), any(), any(), any(), any(), any()
+local task = { defer = function() end, spawn = function() end, delay = function() end }
+local function warn(...) end
+local switches, labels = {}, {}
+local Theme = setmetatable({ focused = false, C = any(),
+	switch = function(parent, on, onWords, offWords, onToggle, opts)
+		table.insert(switches, { on = on, onWords = onWords, offWords = offWords, onToggle = onToggle,
+			opts = opts or {} })
+		return any()
+	end,
+	label = function(parent, text) table.insert(labels, text) return any() end },
+	{ __index = function() return any() end })
+local modules = { Theme = Theme }
+local function require(name: any): any
+	return modules[name] or any()
+end
+"""
+
+_LUAU_CHECKS = r"""
+local plugin = { GetSetting = function() return nil end, SetSetting = function() end }
+local sent = {}
+local link = { connected = true, role = "editor", url = "ws://127.0.0.1:8765/v1/bridge", problem = "",
+	send = function(_, frame) table.insert(sent, frame) return true end }
+local ed = setmetatable({ plugin = plugin, link = link, listeners = {}, memory = {}, detectors = true,
+	runActive = false, account = {} }, Editor)
+local memoryEvents = 0
+ed:on("memory", function() memoryEvents += 1 end)
+-- an older agent service's memory_state: on
+ed:_onBrainFrame({ type = "memory_state", runs = 2 })
+assert(ed.detectors == true and memoryEvents == 1, "no detectors field: on")
+ed:_onBrainFrame({ type = "memory_state", runs = 2, detectors = false })
+assert(ed.detectors == false and memoryEvents == 2, "memory_state's detectors false: off")
+local function card(d)
+	table.clear(switches)
+	table.clear(labels)
+	SettingsPage.render(d, any())
+	for _, s in ipairs(switches) do
+		if s.onWords == "Bug detectors on" then
+			return s
+		end
+	end
+	error("no Bug detectors switch")
+end
+local d = { editor = ed, plugin = plugin, runs = {}, mirror = false, SERVE_COMMAND = "autopilot serve" }
+local s = card(d)
+assert(s.on == false and s.offWords == "Bug detectors off" and not s.opts.disabled, "shows off, can be flipped")
+assert(table.find(labels, "Bug detectors"), "its title")
+assert(table.find(labels, "During gameplay, Autopilot watches for potential bugs and reports them. "
+	.. "You can enable/disable this per-project."), "its words")
+-- flipped: sent at once over the link, shown flipped until the next memory_state
+s.onToggle(true)
+local f = sent[#sent]
+assert(f.type == "detectors" and f.enabled == true and ed.detectors == true, "flipping sends detectors")
+-- (the same link as Reset memory's and Not a bug's)
+ed:clearMemory()
+assert(sent[#sent].type == "clear_memory", "clear_memory over the same link")
+ed:feedback("teleport:Player", "not_a_bug")
+assert(sent[#sent].type == "feedback", "feedback over the same link")
+-- the agent service says it as saved: the memory_state sets it
+ed:_onBrainFrame({ type = "memory_state", runs = 2, detectors = false })
+assert(ed.detectors == false and card(d).on == false, "the memory_state corrects it")
+ed:_onBrainFrame({ type = "memory_state", runs = 2, detectors = true })
+assert(card(d).on == true, "and every memory_state sets it")
+-- not connected: the last value, and it can't be changed
+link.connected = false
+local n = #sent
+s = card(d)
+assert(s.on == true and s.opts.disabled == true, "not connected: disabled, the last value")
+assert(ed:setDetectors(false) == false and #sent == n and ed.detectors == true, "not connected: nothing sent")
+-- mid-play (the mirror's dock): disabled
+link.connected = true
+d.mirror = true
+assert(card(d).opts.disabled == true, "the mirror: disabled")
+print("ok")
+"""
+
+
+def _wrapped(name, source):
+    return f"local {name} = (function()\n{source}\nend)()\nmodules.{name} = {name}\n"
+
+
+def test_the_bug_detectors_switch_in_luau(tmp_path):
+    """The Editor and the Settings page themselves, run in Luau's CLI (when `luau` is on PATH, as in CI's Luau step):
+    memory_state's "detectors" sets the switch (on without it), flipping it sends {"type": "detectors"} over the link
+    as clear_memory and feedback go, the next memory_state corrects it, and it is disabled while not connected or
+    mid-play."""
+    exe = shutil.which("luau")
+    if not exe:
+        pytest.skip("no luau on PATH")
+    sources = _sources()
+    chunk = _LUAU_PRELUDE + _wrapped("Settings", sources["Settings"]) + _wrapped("Editor", sources["Editor"]) \
+        + _wrapped("SettingsPage", sources["SettingsPage"]) + _LUAU_CHECKS
+    path = tmp_path / "detectors_switch.luau"
+    path.write_text(chunk, encoding="utf-8")
+    r = subprocess.run([exe, str(path)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.strip().endswith("ok"), f"{r.stdout[-2000:]}{r.stderr[-2000:]}"

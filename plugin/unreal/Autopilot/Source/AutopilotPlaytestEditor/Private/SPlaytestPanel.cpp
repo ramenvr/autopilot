@@ -3475,6 +3475,47 @@ bool SPlaytestPanel::ResearchShown() const
 	return !GetDefault<UPlaytestSettings>()->bUseWithAura;
 }
 
+TSharedRef<SWidget> SPlaytestPanel::MakeBugDetectors()
+{
+	// (as the sharing card: the switch under its name, and beside it "Bug detectors on" / "Bug detectors off". The agent
+	// service keeps it for the project: flipped, it shows the new value at once and the memory_state it answers with
+	// confirms it. Not connected: greyed, showing what it last said, and flipped the status line says why)
+	const FText Name = LOCTEXT("BugDetectors", "Bug detectors");
+	TSharedRef<SCheckBox> Toggle = AutopilotUI::Switch([this]()
+		{
+			const UPlaytestSubsystem* B = DetectorsBridge();
+			return !B || B->AreDetectorsEnabled();
+		},
+		[this](bool bOn)
+		{
+			if (UPlaytestSubsystem* B = DetectorsBridge())
+			{
+				B->SetDetectorsEnabled(bOn);
+			}
+		},
+		AutopilotUI::Body(TAttribute<FText>::CreateLambda([this]()
+		{
+			const UPlaytestSubsystem* B = DetectorsBridge();
+			return !B || B->AreDetectorsEnabled() ? LOCTEXT("DetectorsOn", "Bug detectors on") : LOCTEXT("DetectorsOff", "Bug detectors off");
+		}), 13.f, AutopilotColor::Text(), false, EAutopilotFont::BodyMedium), 8.f);
+	Toggle->SetToolTipText(Name);
+	return SettingCard(Name,
+		LOCTEXT("BugDetectorsWhat", "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project."),
+		SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth()
+		[
+			AutopilotUI::Greyed(TAttribute<bool>::CreateLambda([this]()
+			{
+				const UPlaytestSubsystem* B = DetectorsBridge();
+				return !(B && B->IsConnected());
+			}), Toggle)
+		]);
+}
+
+UPlaytestSubsystem* SPlaytestPanel::DetectorsBridge() const
+{
+	return TestBridge.IsValid() ? TestBridge.Get() : UPlaytestSubsystem::Get();
+}
+
 TSharedRef<SWidget> SPlaytestPanel::MakeCodingAgents()
 {
 	// Its name, what it is for, each command with Copy (in a well, as a link is)
@@ -3565,6 +3606,7 @@ void SPlaytestPanel::RebuildSettings()
 	];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeDataSharing()];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeResearchAgent()];
+	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeBugDetectors()];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeCodingAgents()];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeRemoveSection()];
 }

@@ -895,6 +895,7 @@ namespace Autopilot.Playtest.Tests
         const string ShareLine = "Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot." +
                                  " For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.";
         const string ResearchLine = "Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.";
+        const string DetectorsLine = "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.";
 
         static void Settings(AutopilotView v) => v.Page = "settings";
 
@@ -903,10 +904,12 @@ namespace Autopilot.Playtest.Tests
         {
             Assert.AreEqual(ShareLine, AutopilotView.ShareLine);
             Assert.AreEqual(ResearchLine, AutopilotView.ResearchLine);
+            Assert.AreEqual(DetectorsLine, AutopilotView.DetectorsLine);
             var sharing = new List<string>
             {
                 "Share runs to improve Autopilot", ShareLine,
                 "RESEARCH AGENT", ResearchLine,
+                "BUG DETECTORS", DetectorsLine,
                 "Uninstall Autopilot", "Uninstall",
             };
             Assert.AreEqual(0, AutopilotUsage.Entries.Count, "the test's own ledger starts empty");
@@ -1094,7 +1097,7 @@ namespace Autopilot.Playtest.Tests
             Assert.IsNull(Callout(), "BYOK");
         }
 
-        /// <summary>Share runs, Research agent and Autopilot in Claude Code &amp; Codex look alike: each card is its
+        /// <summary>Share runs, Research agent, Bug detectors and Autopilot in Claude Code &amp; Codex look alike: each card is its
         /// title (the mono micro-label), the line under it in the sharing text's style, then its control (a switch
         /// with no words of its own, the commands with Copy), with the same gaps; no Time limit card (the composer has
         /// it).</summary>
@@ -1103,11 +1106,13 @@ namespace Autopilot.Playtest.Tests
         {
             Assert.AreEqual("Share runs to improve Autopilot", AutopilotView.ShareTitle);
             Assert.AreEqual("Research agent", AutopilotView.ResearchTitle);
+            Assert.AreEqual("Bug detectors", AutopilotView.DetectorsTitle);
             Show(new Vector2Int(560, 900), Settings);
             Assert.IsNull(host.Q(className: "time-limit"), "no Time limit card");
             var cards = new[]
             {
                 ("sharing", "SHARE RUNS TO IMPROVE AUTOPILOT", ShareLine), ("research", "RESEARCH AGENT", ResearchLine),
+                ("detectors", "BUG DETECTORS", DetectorsLine),
                 ("assistants", "AUTOPILOT IN CLAUDE CODE & CODEX", AutopilotView.AssistantsLine),
             };
             var shareLine = host.Q(className: "sharing").Children().ElementAt(1);
@@ -1198,6 +1203,29 @@ namespace Autopilot.Playtest.Tests
             Assert.AreEqual("Research agent on", lone.text, "and back");
             CollectionAssert.AreEqual(new[] { false, true }, got);
             host.Remove(lone);
+            // Bug detectors: the same switch, "Bug detectors on/off" (as it is now: no memory_state said otherwise, so on)
+            var detectors = host.Q(className: "detectors").Q(className: "setting-control").Q<Toggle>(className: "detectors-toggle");
+            Assert.IsNotNull(detectors);
+            Assert.AreEqual("Bug detectors", detectors.tooltip);
+            Assert.AreEqual(AutopilotView.DetectorsState(detectors.value), detectors.text);
+            Assert.AreEqual("Bug detectors on", AutopilotView.DetectorsState(true));
+            Assert.AreEqual("Bug detectors off", AutopilotView.DetectorsState(false));
+            var detectorsPill = detectors.Q(className: "unity-toggle__checkmark");
+            var detectorsWords = detectors.Q<Label>(className: "unity-toggle__text");
+            Assert.IsNotNull(detectorsPill);
+            Assert.IsNotNull(detectorsWords);
+            Assert.AreEqual(8, detectorsWords.worldBound.xMin - detectorsPill.worldBound.xMax, 0.5f, "8 px from the pill to its words");
+            Assert.AreEqual(detectorsPill.worldBound.center.y, detectorsWords.worldBound.center.y, 2f, "its words centred with the pill");
+            Assert.AreEqual(pill.worldBound.width, detectorsPill.worldBound.width, 0.5f, "the sharing switch's pill");
+            got.Clear();
+            lone = AutopilotView.DetectorsSwitch(true, got.Add);
+            host.Add(lone);
+            lone.value = false;
+            Assert.AreEqual("Bug detectors off", lone.text, "the words follow the switch");
+            lone.value = true;
+            Assert.AreEqual("Bug detectors on", lone.text, "and back");
+            CollectionAssert.AreEqual(new[] { false, true }, got);
+            host.Remove(lone);
             // Claude Code & Codex: the two commands, 6 px apart
             var rows = host.Q(className: "assistants").Q(className: "setting-control").Query(className: "connect-command").ToList();
             Assert.AreEqual(2, rows.Count);
@@ -1283,6 +1311,72 @@ namespace Autopilot.Playtest.Tests
             PlaytestSettings.Get().UseWithAura = false;
             Show(new Vector2Int(560, 900), Settings);
             Assert.IsFalse(host.Q(className: "research").Q<Toggle>(className: "research-toggle").value, "the choice beats the own agent service");
+        }
+
+        /// <summary>The Bug detectors switch shows what the agent service's memory_state says ("detectors"; none, an
+        /// older agent service's, means on), every one of them; flipped, it sends {"type": "detectors", "enabled"} and
+        /// shows the new value at once, and the next memory_state confirms or corrects it. Not connected: greyed, the
+        /// last value said, and flipping it sends nothing.</summary>
+        [Test]
+        public void TheBugDetectorsSwitchFollowsTheAgentService()
+        {
+            Toggle Switch()
+            {
+                Show(new Vector2Int(560, 900), Settings);
+                return host.Q(className: "detectors").Q<Toggle>(className: "detectors-toggle");
+            }
+
+            // Connected, no memory_state yet: on, and it can be flipped
+            var c = Client();
+            var toggle = Switch();
+            Assert.IsTrue(toggle.value, "on until the agent service says otherwise");
+            Assert.IsTrue(toggle.enabledSelf, "connected: it can be flipped");
+
+            // What each memory_state says: off, then on again with no "detectors" (an older agent service)
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+            toggle = Switch();
+            Assert.IsFalse(toggle.value);
+            Assert.AreEqual("Bug detectors off", toggle.text);
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false}");
+            toggle = Switch();
+            Assert.IsTrue(toggle.value, "no \"detectors\": on");
+            Assert.AreEqual("Bug detectors on", toggle.text);
+
+            // Flipped off: sent, shown at once (built again too); the agent service's answer confirms it
+            sent.Clear();
+            toggle.value = false;
+            Assert.AreEqual(1, sent.Count);
+            var frame = Json.ParseObject(sent[0]);
+            Assert.AreEqual("detectors", Json.Str(frame, "type"));
+            Assert.IsTrue(frame.ContainsKey("enabled"));
+            Assert.IsFalse(Json.Bool(frame, "enabled", true));
+            Assert.AreEqual("Bug detectors off", toggle.text);
+            Assert.IsFalse(c.BugDetectors, "shown at once, before the answer");
+            Assert.IsFalse(Switch().value, "and when the page is built again");
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+            Assert.IsFalse(Switch().value, "confirmed");
+
+            // Flipped on, but the agent service couldn't save it: its memory_state puts the switch back
+            sent.Clear();
+            Switch().value = true;
+            Assert.IsTrue(Json.Bool(Json.ParseObject(sent.Last()), "enabled", false));
+            Assert.IsTrue(Switch().value, "on at once");
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+            toggle = Switch();
+            Assert.IsFalse(toggle.value, "corrected");
+            Assert.AreEqual("Bug detectors off", toggle.text);
+
+            // Not connected: greyed, still the last value said; flipped anyway, nothing is sent
+            c.TestConnected(false);
+            toggle = Switch();
+            Assert.IsFalse(toggle.enabledSelf, "not connected: greyed");
+            Assert.IsFalse(toggle.value, "the last value said");
+            sent.Clear();
+            toggle.value = true;
+            Assert.IsEmpty(sent, "nothing to send it to");
+            Assert.IsFalse(c.BugDetectors);
+            c.TestConnected(true);
+            Assert.IsTrue(Switch().enabledSelf, "connected again");
         }
 
         // -- Autopilot in Claude Code & Codex: a run started there, and how to set them up ---------------------------

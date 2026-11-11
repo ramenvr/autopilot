@@ -618,6 +618,11 @@ void UPlaytestSubsystem::SendHello()
 
 void UPlaytestSubsystem::Send(const TSharedRef<FJsonObject>& Message)
 {
+	if (TestSent)
+	{
+		TestSent(PlaytestJson::Write(Message));
+		return;
+	}
 	if (Socket.IsValid() && bConnected)
 	{
 		Socket->Send(PlaytestJson::Write(Message));
@@ -716,6 +721,20 @@ void UPlaytestSubsystem::ClearMemory()
 	Message->SetStringField(TEXT("type"), TEXT("clear_memory"));
 	Send(Message);
 	Status(TEXT("Resetting memory…"));
+}
+
+void UPlaytestSubsystem::SetDetectorsEnabled(bool bOn)
+{
+	if (!bConnected)
+	{
+		Status(TEXT("Not connected: connect first to turn the bug detectors on or off"));
+		return;
+	}
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("type"), TEXT("detectors"));
+	Message->SetBoolField(TEXT("enabled"), bOn);
+	Send(Message);
+	bDetectorsEnabled = bOn;  // (shown at once: the memory_state it answers with confirms it, or puts it back)
 }
 
 UWorld* UPlaytestSubsystem::GetGameWorld() const
@@ -952,6 +971,9 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 		Message->TryGetBoolField(TEXT("notes"), bMemoryNotes);
 		Message->TryGetBoolField(TEXT("lib"), bMemoryLib);
 		bMemoryKnown = true;
+		// And whether the game's detectors run for it: the Bug detectors switch (an older agent service doesn't say: on)
+		bDetectorsEnabled = true;
+		Message->TryGetBoolField(TEXT("detectors"), bDetectorsEnabled);
 	}
 	else if (Type == TEXT("usage"))
 	{

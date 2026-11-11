@@ -1019,9 +1019,7 @@ function Dock:_listen()
 	end)
 	on("memory", function()
 		self:_renderFooter()
-		if self.setupOpen then
-			SetupPage.render(self, self.setupFrame)
-		end
+		self:renderPages() -- (the setup's, and the Settings' Bug detectors switch: memory_state says it)
 	end)
 	on("memory_cleared", function(ok, message)
 		self.reset = if ok then "done" else "failed"
@@ -1860,7 +1858,8 @@ function Dock.editorState(ed: any): any
 	local l = ed.link
 	return { connected = ed:connected(), url = l.url, problem = l.problem, want = l.want, refused = l.refused == true,
 		runActive = ed.runActive, starting = ed.starting, playing = ed.playing, brainAccount = ed.brainAccount,
-		brainSetup = ed.brainSetup, brainSteers = ed.brainSteers, brainSteerModes = ed.brainSteerModes, memory = ed.memory }
+		brainSetup = ed.brainSetup, brainSteers = ed.brainSteers, brainSteerModes = ed.brainSteerModes, memory = ed.memory,
+		detectors = ed.detectors }
 end
 
 -- The mirror's dock as the edit dock is (its snapshot): the run going on, the run shown.

@@ -2,7 +2,7 @@
 ## (its stepper; BYOK keys to autopilot.env; the agent service started, installed or missing, with a stand-in launcher that
 ## runs nothing; the Aura sign-in driven by aura_sign_in frames; the Aura app; Finish to preferences.json), usage and bill frames
 ## kept on the run going on, the Settings page with its Account corner (account frames, the Aura bill, out of Aura credits), Data sharing
-## box and Research agent switch, the footer, and the settings. The link to the agent service is a stand-in that keeps what is sent (no socket). The editor bridge is the
+## box, Research agent and Bug detectors switches, the footer, and the settings. The link to the agent service is a stand-in that keeps what is sent (no socket). The editor bridge is the
 ## real one, over a stand-in debugger; the user settings folder is
 ## UNITS_DIR (a temporary folder).
 extends SceneTree
@@ -1289,6 +1289,7 @@ func run_checks() -> void:
 	round3_checks()
 	fixes_checks()
 	assistants_checks()
+	detectors_checks()
 	history_checks()
 	parity_checks()
 	await flash_checks()
@@ -2080,9 +2081,9 @@ func assistants_checks() -> void:
 		var caps: Array = p.find_children("*", "Label", true, false).filter(func(l): return l.theme_type_variation == "AutopilotCaps")
 		titles.append(caps[0].text if not caps.is_empty() else "")
 	var at_sharing := titles.find("SHARE RUNS TO IMPROVE AUTOPILOT")
-	check("Settings: the plates in order, Research agent right after Data sharing, then Design brief and Show Policy Log",
-		at_sharing >= 0 and titles.slice(at_sharing) == ["SHARE RUNS TO IMPROVE AUTOPILOT", "RESEARCH AGENT", "DESIGN BRIEF",
-			"SHOW POLICY LOG", "AUTOPILOT IN CLAUDE CODE & CODEX", "UNINSTALL AUTOPILOT"], titles)
+	check("Settings: the plates in order, Research agent right after Data sharing, Bug detectors, then Design brief and Show Policy Log",
+		at_sharing >= 0 and titles.slice(at_sharing) == ["SHARE RUNS TO IMPROVE AUTOPILOT", "RESEARCH AGENT", "BUG DETECTORS",
+			"DESIGN BRIEF", "SHOW POLICY LOG", "AUTOPILOT IN CLAUDE CODE & CODEX", "UNINSTALL AUTOPILOT"], titles)
 	check("Settings: no other words about it (no MCP, no Jev)", not "MCP" in t and not "Jev" in t)
 	var copies := []
 	for b in dock._settings_page.find_children("*", "Button", true, false):
@@ -2100,6 +2101,103 @@ func assistants_checks() -> void:
 	dock._setup._go(3)
 	check("setup's Privacy settings: the same text", CONSENT in setup_text(), setup_text())
 	finish("own_keys", true)
+	dock._render()
+
+
+## The Settings page's Bug detectors switch: its plate (title, words, the switch as the others are), what the agent
+## service's memory_state says ("detectors"; on when it doesn't say, or says something else), set in place (the page not
+## built again), flipped: {"type": "detectors", "enabled": ...} sent and shown at once, the next memory_state confirming
+## or putting it back, a run going on included; not connected: disabled, the last known value shown, nothing sent.
+func detectors_checks() -> void:
+	var fake := FakeLink.new()
+	bridge.link = fake
+	_plain_view()
+	_end_run()
+	_online()
+	fake.sent.clear()
+	bridge.detectors_on = true
+	dock.settings_open = true
+	dock._render()
+	var page = dock._settings_page
+	var t := _texts(page)
+	check("Bug detectors plate: its title in mono caps, its words", "BUG DETECTORS" in t
+		and SettingsPage.DETECTORS == ("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "
+			+ "per-project.")
+		and SettingsPage.DETECTORS in t, t)
+	check("Bug detectors plate: title, subtitle, then the control", _setting_plate(page, "Bug detectors", SettingsPage.DETECTORS, "CheckBox"))
+	var sw: CheckBox = page.detectors_switch
+	check("Bug detectors switch: the switch the other settings have, on before any memory_state says, Bug detectors on, 8 px to its right, its tooltip the plate's title",
+		sw != null and sw.is_visible_in_tree() and sw.theme_type_variation == "AutopilotSwitch" and sw.button_pressed
+		and sw.text == "Bug detectors on" and sw.get_theme_constant("h_separation") == HT.px(8)
+		and sw.tooltip_text == "Bug detectors" and not sw.disabled, [sw.text, sw.tooltip_text, sw.disabled] if sw else null)
+	check("Bug detectors: no words about how it works (no Jev, brain, RL, detectors.json)", not "Jev" in t
+		and not "brain" in t.to_lower() and not " RL" in t and not "detectors.json" in t)
+	page.brief_box.text = "typed, the caret in it"
+	var brief: TextEdit = page.brief_box
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": false})
+	check("memory_state detectors false: the switch off, Bug detectors off, nothing sent", not sw.button_pressed
+		and sw.text == "Bug detectors off" and bridge.detectors_on == false and fake.sent.is_empty(), [sw.text, fake.sent])
+	check("memory_state: the switch set in place (the same switch, the Design brief not built again)", page.detectors_switch == sw
+		and page.brief_box == brief and is_instance_valid(sw) and brief.text == "typed, the caret in it")
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false})
+	check("memory_state without detectors (an older agent service): on", sw.button_pressed and sw.text == "Bug detectors on"
+		and bridge.detectors_on == true, sw.text)
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": false})
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": "no"})
+	check("memory_state detectors not true/false: on", sw.button_pressed and bridge.detectors_on == true, sw.text)
+	# flipped: sent at once, shown at once; the agent service's answer confirms it, or puts it back
+	sw.button_pressed = false
+	check("flipped off: the detectors frame sent, enabled false", fake.sent == [{"type": "detectors", "enabled": false}], fake.sent)
+	check("flipped off: shown at once (Bug detectors off), before the agent service answers", not sw.button_pressed
+		and sw.text == "Bug detectors off" and bridge.detectors_on == false, sw.text)
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": false})
+	check("the answer's memory_state says off: still off", not sw.button_pressed and sw.text == "Bug detectors off")
+	fake.sent.clear()
+	sw.button_pressed = true
+	check("flipped on: the detectors frame sent, enabled true; shown on", fake.sent == [{"type": "detectors", "enabled": true}]
+		and sw.button_pressed and sw.text == "Bug detectors on", fake.sent)
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": false})
+	check("the answer's memory_state says off (the setting couldn't be kept): put back off", not sw.button_pressed
+		and sw.text == "Bug detectors off" and bridge.detectors_on == false, sw.text)
+	check("the switch's flips and memory_states sent nothing else", fake.types() == ["detectors"], fake.types())
+	# a run going on: it can still be flipped (the game's detectors are told at once)
+	bridge._on_brain_frame({"type": "run_started", "run": {"kind": "explore", "prompt": "Explore the orchard", "by": "claude-code"}})
+	dock.settings_open = true  # (the run started elsewhere shows itself: the page opened again over it)
+	dock._render()
+	sw = page.detectors_switch
+	fake.sent.clear()
+	check("a run going: the switch still enabled, as last said (off)", dock.active != null and sw.is_visible_in_tree()
+		and not sw.disabled and not sw.button_pressed, [sw.is_visible_in_tree(), sw.disabled, sw.button_pressed])
+	sw.button_pressed = true
+	check("a run going: flipped on, sent", fake.sent == [{"type": "detectors", "enabled": true}], fake.sent)
+	_end_run()
+	# not connected: disabled, the last known value, its tooltip saying why; flipped anyway, nothing sent, put back
+	unwelcome()
+	dock.settings_open = true
+	dock._render()
+	sw = page.detectors_switch
+	check("not connected: the switch disabled, showing the last known value (on), its tooltip saying why", sw != null
+		and sw.is_visible_in_tree() and sw.disabled and sw.button_pressed and sw.text == "Bug detectors on"
+		and sw.tooltip_text == "Connect to the agent service to turn the bug detectors on or off",
+		[sw.disabled, sw.text, sw.tooltip_text] if sw else null)
+	fake.sent.clear()
+	sw.button_pressed = false
+	check("not connected, flipped anyway: nothing sent, the switch back on", fake.sent.is_empty() and sw.button_pressed
+		and sw.text == "Bug detectors on" and bridge.detectors_on == true, [fake.sent, sw.text])
+	check("not connected, flipped anyway: the status line says why", dock._status.text
+		== "Not connected: connect first to turn the bug detectors on or off", dock._status.text)
+	check("not connected: the bridge sends nothing", not bridge.set_detectors(false) and fake.sent.is_empty()
+		and bridge.detectors_on == true)
+	# connected again: enabled, as the new connection's memory_state says
+	_online()
+	dock._render()
+	sw = page.detectors_switch
+	check("connected again: enabled", sw.is_visible_in_tree() and not sw.disabled and sw.tooltip_text == "Bug detectors")
+	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false, "detectors": false})
+	check("connected again: the new memory_state sets it (off)", not sw.button_pressed and sw.text == "Bug detectors off")
+	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false, "detectors": true})
+	fake.sent.clear()
+	dock.settings_open = false
 	dock._render()
 
 

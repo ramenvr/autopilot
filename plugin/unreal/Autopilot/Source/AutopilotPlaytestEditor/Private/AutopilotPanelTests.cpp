@@ -3,7 +3,8 @@
 // a fixed width too wide), no stage name is given less room than it needs, and the composer's hint fits its box. Pages
 // taller than the tab are fine: they scroll. Also: the kind of run the composer's words ask for (Editor.RunKind), and the
 // end of a run: the memory line, the recording kept and copied, or why there is none (Editor.RunEnd); steering only while the game plays, its
-// Rollout (Editor.Steer, and the Live page's steer row in Editor.Layout).
+// Rollout (Editor.Steer, and the Live page's steer row in Editor.Layout); the Settings page's Bug detectors switch
+// (Editor.DetectorsSwitch).
 
 #include "Settings/EditorExperimentalSettings.h"
 #include "Editor.h"
@@ -24,11 +25,14 @@
 #include "PlaytestJson.h"
 #include "PlaytestPreferences.h"
 #include "PlaytestSettings.h"
+#include "PlaytestSubsystem.h"
 #include "AutopilotSession.h"
 #include "AutopilotStyle.h"
 #include "AutopilotWidgets.h"
 #include "Rendering/SlateRenderer.h"
 #include "SPlaytestPanel.h"
+#include "Types/SlateAttributeMetaData.h"
+#include "UObject/StrongObjectPtr.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -2522,7 +2526,7 @@ bool FAutopilotRunStartedTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the session's runs as they were"), Session.Runs.Num(), RunsBefore);
 	Session.AgentStartedRunId = AgentRunBefore;
 
-	// The Settings page: the card after Data sharing and the Research agent, before Uninstall
+	// The Settings page: the card after Data sharing, the Research agent and Bug detectors, before Uninstall
 	TSharedRef<SWidget> SettingsPage = Panel->MakeSettings();
 	Panel->RebuildSettings();
 	const FString Words = Shown(SettingsPage, 600.f, 3000.f);
@@ -2531,7 +2535,10 @@ bool FAutopilotRunStartedTest::RunTest(const FString& Parameters)
 	const int32 Title = Words.Find(TEXT("Autopilot in Claude Code & Codex"), ESearchCase::IgnoreCase);
 	const int32 Uninstall = Words.Find(TEXT("Uninstall Autopilot"));
 	TestTrue(TEXT("settings: Data sharing, then the Research agent"), Share != INDEX_NONE && Research > Share);
-	TestTrue(TEXT("settings: the card, after the Research agent and before Uninstall"), Title > Research && Uninstall > Title);
+	const int32 Detectors = Words.Find(TEXT("Bug detectors"), ESearchCase::CaseSensitive);
+	TestTrue(TEXT("settings: Bug detectors, after the Research agent"), Detectors != INDEX_NONE && Detectors > Research);
+	TestTrue(TEXT("settings: the card, after Bug detectors and before Uninstall"), Title > Detectors && Uninstall > Title);
+	TestTrue(TEXT("settings: what the bug detectors do, for this project"), Words.Contains(TEXT("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.")));
 	TestTrue(TEXT("settings: what the research agent does, and its cost"), Words.Contains(TEXT("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.")));
 	TestTrue(TEXT("settings: what sharing sends, and for these runs"), Words.Contains(TEXT("Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot. For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.")));
 	const TCHAR* CardWords[] = {
@@ -2592,7 +2599,7 @@ namespace
 	}
 }
 
-// The Settings page's sharing, research agent and Claude Code & Codex plates are built alike: the name (the mono
+// The Settings page's sharing, research agent, bug detectors and Claude Code & Codex plates are built alike: the name (the mono
 // micro-label), what it does (in the sharing text's font: Body 12), then what changes it (the switch alone, its name
 // the tooltip; the two commands with Copy), 6 px under the name and 10 px under the words
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotSettingCardsTest, "AutopilotPlaytest.Editor.SettingCards",
@@ -2610,6 +2617,8 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 	Panel->Prefs.bOnboarded = true;
 	Panel->Prefs.bShareData = false;
 	Panel->Prefs.ResearchChoice = false;
+	TStrongObjectPtr<UPlaytestSubsystem> Bridge(NewObject<UPlaytestSubsystem>());  // (the Bug detectors switch's: on, as before any memory_state)
+	Panel->TestBridge = Bridge.Get();
 	struct FCase
 	{
 		const TCHAR* Name;
@@ -2625,6 +2634,9 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 		{ TEXT("research agent"), Panel->MakeResearchAgent(), TEXT("Research agent"),
 			TEXT("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost."),
 			TEXT("Research agent off") },
+		{ TEXT("bug detectors"), Panel->MakeBugDetectors(), TEXT("Bug detectors"),
+			TEXT("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project."),
+			TEXT("Bug detectors on") },
 		{ TEXT("Claude Code & Codex"), Panel->MakeCodingAgents(), TEXT("Autopilot in Claude Code & Codex"),
 			TEXT("One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or ChatGPT subscriptions, respectively."),
 			TEXT("autopilot connect claude | Copy | autopilot connect codex | Copy") },
@@ -2726,6 +2738,127 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("research agent: the choice beats the Aura app's default"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
 		Settings->bUseWithAura = bWasAura;
 	}
+	// The bug detectors' switch: its name is its tooltip too (what it shows and sends: the DetectorsSwitch test)
+	const TSharedPtr<SWidget> DetectorsToggle = FirstOfType(Cases[2].Card, TEXT("SCheckBox"));
+	if (TestTrue(TEXT("bug detectors: a switch"), DetectorsToggle.IsValid()))
+	{
+		const TSharedPtr<IToolTip> Tip = DetectorsToggle->GetToolTip();
+		TestTrue(TEXT("bug detectors: the switch's tooltip, its name"), Tip.IsValid() && AllWords(Tip->AsWidget()).Contains(TEXT("Bug detectors")));
+	}
+	Panel->TestBridge.Reset();
+	return true;
+}
+
+// The Settings page's Bug detectors switch (docs/protocol.md: memory_state's "detectors", the `detectors` message): what
+// each memory_state says (one without it, an older agent service's: on); flipped, it sends {"type": "detectors",
+// "enabled"} and shows the new value at once, the next memory_state confirming it or putting it back; not connected,
+// greyed, and flipped it sends nothing and keeps what it last showed (also once the connection closed)
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotDetectorsSwitchTest, "AutopilotPlaytest.Editor.DetectorsSwitch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAutopilotDetectorsSwitchTest::RunTest(const FString& Parameters)
+{
+	// A subsystem of its own (never the engine's: its connection is left alone), what it sends kept here
+	TStrongObjectPtr<UPlaytestSubsystem> Bridge(NewObject<UPlaytestSubsystem>());
+	TArray<FString> Sent;
+	Bridge->TestSent = [&Sent](const FString& Text) { Sent.Add(Text); };
+	auto Says = [&Bridge](bool bConnected, const FString& Text)
+	{
+		Bridge->bConnected = bConnected;
+		Bridge->HandleMessage(Text);
+	};
+	const FString Off = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+	const FString On = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": true}");
+	const FString Older = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false}");
+	// The message sent last: {"type": "detectors", "enabled"} and nothing else, its "enabled" in OutOn
+	auto LastSent = [&Sent](bool& OutOn)
+	{
+		const TSharedPtr<FJsonObject> Message = Sent.Num() ? PlaytestJson::Parse(Sent.Last()) : nullptr;
+		return Message.IsValid() && Message->Values.Num() == 2 && Message->GetStringField(TEXT("type")) == TEXT("detectors")
+			&& Message->TryGetBoolField(TEXT("enabled"), OutOn);
+	};
+
+	// What each memory_state says
+	TestTrue(TEXT("before any memory_state: on"), Bridge->AreDetectorsEnabled());
+	Says(true, Off);
+	TestFalse(TEXT("\"detectors\": false: off"), Bridge->AreDetectorsEnabled());
+	TestTrue(TEXT("... and the memory as before"), Bridge->IsMemoryKnown() && Bridge->GetMemoryRuns() == 3 && Bridge->HasMemoryNotes());
+	Says(true, On);
+	TestTrue(TEXT("\"detectors\": true: on"), Bridge->AreDetectorsEnabled());
+	Says(true, Off);
+	Says(true, Older);
+	TestTrue(TEXT("an older agent service's, without it: on"), Bridge->AreDetectorsEnabled());
+	TestEqual(TEXT("memory_state sends nothing"), Sent.Num(), 0);
+
+	// Flipped: the message, the new value at once; the memory_state it answers with confirms it, or puts it back
+	Says(true, Off);
+	Bridge->SetDetectorsEnabled(true);
+	bool bSentOn = false;
+	TestTrue(TEXT("turned on: {\"type\": \"detectors\", \"enabled\": true}"), Sent.Num() == 1 && LastSent(bSentOn) && bSentOn);
+	TestTrue(TEXT("turned on: on at once"), Bridge->AreDetectorsEnabled());
+	Says(true, On);
+	TestTrue(TEXT("turned on, its answer: on"), Bridge->AreDetectorsEnabled());
+	Bridge->SetDetectorsEnabled(false);
+	TestTrue(TEXT("turned off: {\"type\": \"detectors\", \"enabled\": false}"), Sent.Num() == 2 && LastSent(bSentOn) && !bSentOn);
+	TestFalse(TEXT("turned off: off at once"), Bridge->AreDetectorsEnabled());
+	Says(true, On);
+	TestTrue(TEXT("turned off, its answer still on (not saved): on again"), Bridge->AreDetectorsEnabled());
+
+	// Not connected: nothing sent, nothing changes; what it showed kept once the connection closed
+	Says(true, Off);
+	Bridge->bConnected = false;
+	Bridge->ForgetMemoryState();
+	TestFalse(TEXT("the connection closed: still off"), Bridge->AreDetectorsEnabled());
+	Bridge->SetDetectorsEnabled(true);
+	TestEqual(TEXT("not connected: nothing sent"), Sent.Num(), 2);
+	TestFalse(TEXT("not connected: still off"), Bridge->AreDetectorsEnabled());
+
+	// The card's switch: the subsystem's value in its words, flipping it through the subsystem, greyed while not connected
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddWarning(TEXT("No Slate here: the switch part of the DetectorsSwitch test is skipped"));
+		Bridge->TestSent = nullptr;
+		return true;
+	}
+	FScratchDir Dir;
+	TSharedRef<SPlaytestPanel> Panel = SNew(SPlaytestPanel).KeysDir(Dir.Path);
+	Panel->Prefs.bOnboarded = true;
+	Panel->TestBridge = Bridge.Get();
+	const TSharedRef<SWidget> Card = Panel->MakeBugDetectors();
+	const TSharedPtr<SWidget> Found = FirstOfType(Card, TEXT("SCheckBox"));
+	if (TestTrue(TEXT("card: a switch"), Found.IsValid()))
+	{
+		const TSharedRef<SCheckBox> Toggle = StaticCastSharedRef<SCheckBox>(Found.ToSharedRef());
+		const TSharedPtr<SWidget> Wrap = Toggle->GetParentWidget();
+		auto Alpha = [&Wrap]()
+		{
+			if (!Wrap.IsValid())
+			{
+				return -1.f;
+			}
+			// (its colour is read again as a paint would: not drawn here)
+			FSlateAttributeMetaData::UpdateAllAttributes(*Wrap, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
+			return StaticCastSharedPtr<SCompoundWidget>(Wrap)->GetColorAndOpacity().A;
+		};
+		TestTrue(TEXT("card: the switch in its grey-out"), Wrap.IsValid() && Wrap->GetType() == FName(TEXT("SBorder")));
+		Says(true, Off);
+		TestFalse(TEXT("card: off"), Toggle->IsChecked());
+		TestEqual(TEXT("card: off, its words"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
+		TestTrue(TEXT("card: connected, not greyed"), FMath::IsNearlyEqual(Alpha(), 1.f));
+		Toggle->ToggleCheckedState();
+		TestTrue(TEXT("card: flipped, it sends enabled true"), Sent.Num() == 3 && LastSent(bSentOn) && bSentOn);
+		TestTrue(TEXT("card: flipped, on at once"), Toggle->IsChecked());
+		TestEqual(TEXT("card: on, its words"), AllWords(Toggle), FString(TEXT("Bug detectors on")));
+		Says(true, Off);
+		TestEqual(TEXT("card: the answer said off: off"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
+		Bridge->bConnected = false;
+		TestTrue(TEXT("card: not connected, greyed"), FMath::IsNearlyEqual(Alpha(), 0.45f));
+		Toggle->ToggleCheckedState();
+		TestEqual(TEXT("card: not connected, flipped: nothing sent"), Sent.Num(), 3);
+		TestEqual(TEXT("card: not connected, flipped: still off"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
+	}
+	Panel->TestBridge.Reset();
+	Bridge->TestSent = nullptr;
 	return true;
 }
 
