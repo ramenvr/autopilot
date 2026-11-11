@@ -316,6 +316,18 @@ def check_players(game, check, ctx, mode):
 
     only("key: W held", 2, lambda: hold_w(2))
     only("key: W held", 1, lambda: hold_w(None))
+    # Each player's own lease: player 1 holds W on a long one, player 2 a key on a short one; past player 2's, player 1
+    # still walks
+    game("key", {"key": "W", "mode": "hold", "lease": 5.0})
+    game("key", {"key": "D", "mode": "hold", "lease": 0.2, "player": 2})
+    time.sleep(0.8)
+    a1 = location(game.link, pawns[1])
+    time.sleep(0.6)
+    still = moved(a1, location(game.link, pawns[1]))
+    game("key", {"key": "W", "mode": "release"})
+    check("key: player 2's short lease doesn't let go of player 1's held key", still > 50,
+          f"player 1 walked {still:.0f} after player 2's lease ran out")
+    time.sleep(0.5)
 
     def action(player):
         game("input", {"action": MOVE, "value": {"X": 0, "Y": 1, "Z": 0}, "mode": "hold", "player": player})

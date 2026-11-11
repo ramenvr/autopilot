@@ -327,9 +327,9 @@ namespace
 	{
 		TMap<FName, FHeldKey> Keys;
 		TWeakObjectPtr<APlayerController> Controller;
+		double LeaseSeconds = 1.0;  // how long a held key stays down without renewal: this player's requests' "lease", not another's
 	};
 	TMap<int32, FPlayerKeys> HeldKeys;  // by player (the request's "player": 1, or another player of a multiplayer game)
-	double KeyLeaseSeconds = 1.0;
 
 	void ReleaseHeldKeys(FPlayerKeys& Held, APlayerController* PC)
 	{
@@ -367,7 +367,7 @@ namespace
 		for (TPair<FName, FHeldKey>& Pair : Keys.Keys)
 		{
 			FHeldKey& Held = Pair.Value;
-			if (Held.Until > 0.0 ? GameNow >= Held.Until : Now - Held.Renewed > KeyLeaseSeconds)
+			if (Held.Until > 0.0 ? GameNow >= Held.Until : Now - Held.Renewed > Keys.LeaseSeconds)
 			{
 				Expired.Add(Pair.Key);
 			}
@@ -402,7 +402,7 @@ namespace
 		double Lease = 0.0;
 		if (Args->TryGetNumberField(TEXT("lease"), Lease) && Lease > 0.0)
 		{
-			KeyLeaseSeconds = FMath::Clamp(Lease, 0.2, 10.0);
+			Keys.LeaseSeconds = FMath::Clamp(Lease, 0.2, 10.0);
 		}
 		if (Mode == TEXT("release_all"))
 		{

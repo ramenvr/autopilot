@@ -89,6 +89,14 @@ def test_each_player_holds_its_own_keys_and_the_pointer_is_player_ones():
     tick = source[source.index("void TickKeys("):]
     assert "TickPlayerKeys(Bridge, PlayerKeys.Key, PlayerKeys.Value, DeltaTime)" in tick
     assert "Bridge.GetGameWorld()" not in source  # (every player's own world)
+    # Each player's own lease: player 2's short lease doesn't let go of a key player 1 holds on a long one
+    assert "KeyLeaseSeconds" not in source
+    held = source[source.index("struct FPlayerKeys"):]
+    assert "double LeaseSeconds" in held[:held.index("};")]
+    player_tick = source[source.index("void TickPlayerKeys("):]
+    assert "Now - Held.Renewed > Keys.LeaseSeconds" in player_tick[:player_tick.index("\n\t}")]
+    key_op = source[source.index("void KeyOp("):]
+    assert "Keys.LeaseSeconds = FMath::Clamp(Lease" in key_op
     pointer = _private("PlaytestOpsPointer.cpp")
     op = pointer[pointer.index("void PointerOp("):]
     assert op.index("PlayerOf(Args) != 1") < op.index("Bridge.GetGameWorld()") and "player 1's only" in op
@@ -103,6 +111,12 @@ def test_the_number_of_players_is_the_editors():
     asked = start.index('TEXT("players"), AskedPlayers')
     assert asked < start.index("Bridge.SessionHandler(") and "can't be changed from here" in start
     assert "Bridge.PlaySettingsPlayers" in start
+    # Against the session the action leaves running: the editor's restart, or its start in another level, plays the Play
+    # settings' number (it starts play again), whatever plays now; a start of a running game keeps its players
+    check = start[asked:start.index("Bridge.SessionHandler(")]
+    assert start.index("const bool bSwitch") < asked
+    assert 'Bridge.SessionHandler && (Action == TEXT("restart") || bSwitch)' in check
+    assert "!bNewSession ? Playing : Bridge.PlaySettingsPlayers" in check
     editor = _read("plugin", "unreal", "Autopilot", "Source", "AutopilotPlaytestEditor", "Private",
                    "AutopilotPlaytestEditorModule.cpp")
     assert "GetPlayNumberOfClients(Clients)" in editor and "GetRunUnderOneProcess(bOneProcess)" in editor
