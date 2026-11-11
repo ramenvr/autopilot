@@ -80,6 +80,26 @@ def test_the_file_tools_find_the_kit_by_its_name_and_say_when_a_path_is_not_ther
     assert files.call("search", {"pattern": "^class Game", "path": "autopilot/kit"}).startswith("No match")
 
 
+def test_the_file_tools_leave_out_autopilots_own_records_unless_named(root):
+    """codex/.fetched.json, .codex-seen.json.gz, .indexing/...: one-line records of tens of thousands of characters a
+    search of the whole folder would return whole, never what the agent looks for. Named, they are searched."""
+    (root / "codex" / ".fetched.json").write_text('{"Source/Crate.cpp": "abc"}\n', encoding="utf-8")
+    (root / ".indexing").mkdir()
+    (root / ".indexing" / "state.json").write_text('{"Crate": 1}\n', encoding="utf-8")
+    files = FileTools(str(root), "runs/r1", sessionmod.PACKAGE)
+    assert files.call("search", {"pattern": "Crate"}) == "codex/README.md:1: Crate: open it with E"
+    assert files.call("search", {"pattern": "Crate", "path": "codex"}) == "codex/README.md:1: Crate: open it with E"
+    assert ".fetched" not in files.call("list_files", {"pattern": "**/*"})
+    assert ".indexing" not in files.call("list_files", {"pattern": "**/*.json"})
+    # named: by its path, a glob or a pattern that names a dot-name
+    named = files.call("search", {"pattern": "Crate", "path": "codex/.fetched.json"})
+    assert named.startswith("codex/.fetched.json:1:")
+    assert files.call("search", {"pattern": "Crate", "path": ".indexing"}).startswith(".indexing/state.json:1:")
+    assert "codex/.fetched.json:1:" in files.call("search", {"pattern": "Crate", "glob": "codex/.*"})
+    assert files.call("list_files", {"pattern": "codex/.*"}) == "codex/.fetched.json"
+    assert "Refused" not in files.call("read_file", {"path": "codex/.fetched.json"})
+
+
 def test_globs_take_braces():
     from autopilot.agents.files import _glob_rx
 

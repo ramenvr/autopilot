@@ -121,6 +121,34 @@ def test_the_lock_and_temporary_files_are_never_memory(tmp_path):
     assert not aura_memory.is_synced(memory.LOCK)
 
 
+# -- each run its own folder ----------------------------------------------------------------------------------------
+
+def test_runs_that_start_in_the_same_second_get_folders_of_their_own(tmp_path):
+    """Two agent services on one memory folder whose runs start in the same second: before, both wrote runs/<second>/
+    (one's harness.py replaced the other's, their traces interleaved)."""
+    now = time.mktime((2026, 11, 10, 17, 24, 22, 0, 0, -1))
+    game = str(tmp_path / "Farm")
+    assert memory.new_run(game, now) == "20261110-172422"
+    assert memory.new_run(game, now) == "20261110-172422-2"
+    # (a folder of that name already there, as one from another machine through a memory sync)
+    os.makedirs(os.path.join(game, "runs", "20261110-172423"))
+    assert memory.new_run(game, now + 1) == "20261110-172423-2"
+    # many at once, from threads: each its own
+    got, start = [], threading.Barrier(8)
+
+    def one():
+        start.wait()
+        got.append(memory.new_run(game, now + 5))
+
+    threads = [threading.Thread(target=one) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert sorted(got) == sorted(["20261110-172427"] + [f"20261110-172427-{n}" for n in range(2, 9)])
+    assert all(os.path.isdir(os.path.join(game, "runs", g)) for g in got)
+
+
 # -- the project's lock ---------------------------------------------------------------------------------------------
 
 def test_the_lock_is_held_for_the_block_and_gone_after_it_even_on_an_error(tmp_path):

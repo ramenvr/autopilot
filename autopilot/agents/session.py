@@ -20,11 +20,11 @@ import time
 import traceback
 
 from .. import codex as codexmod
-from .. import engines, media, runtime, vision
+from .. import engines, media, memory, runtime, vision
 from .. import levels as levelsmod
 from ..kit import control
 from ..telemetry import episode_spans
-from ..words import plain_words
+from ..words import plain_words, report_words
 from . import feed, whole
 
 # Settings shared by every agent (environment variables override them)
@@ -1663,6 +1663,9 @@ class Session:
         if refused:
             self.note(refused)  # (the log shows why the run went on after a report)
             return refused
+        # (the developer reads it: "the agent", never Jev, whatever the agent wrote; report.json and the run's
+        # regression keep it so too)
+        args = report_words(args)
         self.report = args
         self.reported_at_time_up = self.time_up()
         self.to_stage("report")
@@ -2057,8 +2060,8 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
     activity: where the run's activity events go (the plugin's link; docs/protocol.md, `activity`)."""
     from .. import sandbox as sandboxmod
 
-    session = Session(game, project, prompt, run_id or time.strftime("%Y%m%d-%H%M%S"), say=say, client=client,
-                      activity=activity)
+    session = Session(game, project, prompt, run_id or memory.new_run(codexmod.project_dir(project)), say=say,
+                      client=client, activity=activity)
     session.budget = float(timeout or default_timeout())
     # Reading and probing keep to half of the time a run has for play. The agent isn't told the run's time, so without
     # this a short run could go all on probes and end with no episode played
@@ -2166,7 +2169,7 @@ def finish(session, started, stopped, last_text, **facts):
     agent's own (model, cost, turns...)."""
     if session.out_of_time():  # (an exploration ended by its minutes of play, not by the user)
         stopped = f"its {session.play_seconds / 60:.0f} minutes of play were up"
-    report = dict(session.report or {
+    report = report_words(session.report or {
         "outcome": ("explored" if session.out_of_time() else
                     "INCONCLUSIVE" if re.match(r"(?i)\s*verify", session.prompt) else "not_achieved"),
         "summary": f"{NO_REPORT} ({stopped or 'the agent ended without one'}). Last words: {last_text}",
