@@ -10,8 +10,8 @@
 // A package that carries its agent service (a download: AgentService~/ with the installer and an agent-service.json
 // that names a commit or sha256) always runs that one, unless the "Agent service command" setting says otherwise: the
 // command is the installer's (`autopilot` on PATH is not used), and one running from another commit (brain.json's
-// "commit") is stopped and replaced, once per editor session (Decide). A package without one (a repository checkout)
-// does as before: the setting, PATH, the installer's place, and whatever runs is used.
+// "commit") is stopped and replaced, once per editor session for each package (Decide, TriedFor). A package without one
+// (a repository checkout) does as before: the setting, PATH, the installer's place, and whatever runs is used.
 //
 // Nothing here waits on the editor's main thread: processes are started and polled from EditorApplication.update.
 // Their output goes to the log through the shell (cmd.exe /c ... >> log, sh's exec ... >> log) rather than through
@@ -76,9 +76,11 @@ namespace Autopilot.Playtest.Editor
 
         const string StateKey = "Autopilot.AgentService";
         const string StartedKey = "Autopilot.AgentService.StartedUrl";
-        const string UpdateTriedKey = "Autopilot.AgentService.UpdateTried";  // (once per editor session)
+        // Once per editor session for each package (TriedFor): the key holds which package tried (TryKey), so a package
+        // put in while the editor is open (Package Manager's Remove, then the new tarball) gets a try of its own
+        const string UpdateTriedKey = "Autopilot.AgentService.UpdateTriedFor";
         const string UpdatingKey = "Autopilot.AgentService.Updating";  // (the install going is an update)
-        const string ReplaceTriedKey = "Autopilot.AgentService.ReplaceTried";  // (once per editor session)
+        const string ReplaceTriedKey = "Autopilot.AgentService.ReplaceTriedFor";
 
         public static Phase Current { get; private set; } = Phase.Idle;
         /// <summary>The address it listens on (Running).</summary>
@@ -167,6 +169,23 @@ namespace Autopilot.Playtest.Editor
         }
 
         static string Sha256Of(string json) => Field(json, "sha256");
+
+        /// <summary>Which package a once-a-session try is kept for: the agent service it carries (its
+        /// AgentService~/agent-service.json's sha256 and commit; "" for none).</summary>
+        public static string TryKey(string shippedJson)
+        {
+            var sha = Sha256Of(shippedJson);
+            var commit = Field(shippedJson, "commit");
+            return sha.Length == 0 && commit.Length == 0 ? "" : sha + " " + commit;
+        }
+
+        /// <summary>Whether the package carrying <paramref name="shippedJson"/> tried already this session: the session
+        /// kept its TryKey (<paramref name="tried"/>, null when none tried). Another package's try isn't its own: a package
+        /// swapped in while the editor is open (an older one tried first, at its opening) gets its own.</summary>
+        public static bool TriedFor(string tried, string shippedJson)
+        {
+            return !string.IsNullOrEmpty(tried) && tried == TryKey(shippedJson);
+        }
 
         /// <summary>A string field of a JSON object ("" when absent, not a string, or the text unreadable).</summary>
         static string Field(string json, string key)
@@ -378,6 +397,7 @@ namespace Autopilot.Playtest.Editor
         static Situation Here()
         {
             var client = EditorHost.Client;
+            var shipped = ShippedStamp();
             return new Situation
             {
                 Setting = PlaytestSettings.Get().ServiceCommand,
@@ -385,14 +405,14 @@ namespace Autopilot.Playtest.Editor
                 Home = Home,
                 Windows = IsWindows,
                 Exists = File.Exists,
-                Shipped = ShippedStamp(),
+                Shipped = shipped,
                 HasInstaller = HasInstaller,
                 Installed = ReadText(Path.Combine(Aura.Folder(), StampFile)),
                 Announcement = ReadBrainJson(out var text) ? text : null,
                 Alive = Aura.Running,
                 Connected = client != null && client.Connected,
-                ReplaceTried = SessionState.GetBool(ReplaceTriedKey, false),
-                UpdateTried = SessionState.GetBool(UpdateTriedKey, false),
+                ReplaceTried = TriedFor(SessionState.GetString(ReplaceTriedKey, ""), shipped),
+                UpdateTried = TriedFor(SessionState.GetString(UpdateTriedKey, ""), shipped),
             };
         }
 
@@ -565,7 +585,7 @@ namespace Autopilot.Playtest.Editor
                     return;
                 }
                 case Next.Replace:
-                    SessionState.SetBool(ReplaceTriedKey, true);
+                    SessionState.SetString(ReplaceTriedKey, TryKey(ShippedStamp()));
                     if (!StopOlder(announced, out var why))
                     {
                         Debug.Log($"[Autopilot] An older agent service is running (pid {announced}), not replaced ({why}): using it");
@@ -602,13 +622,13 @@ namespace Autopilot.Playtest.Editor
                 case Next.Install:
                     // (the installer's place is empty: this package's goes in, rather than `autopilot` on PATH; once a session)
                     Debug.Log("[Autopilot] Installing this plugin's agent service (an autopilot command on PATH isn't used while the plugin carries its own)");
-                    SessionState.SetBool(UpdateTriedKey, true);
+                    SessionState.SetString(UpdateTriedKey, TryKey(ShippedStamp()));
                     Install();
                     return;
                 case Next.Update:
                     // (an older agent service from an earlier download: this package's goes in first, once a session)
                     Debug.Log("[Autopilot] The agent service installed is older than this plugin's: installing this one");
-                    SessionState.SetBool(UpdateTriedKey, true);
+                    SessionState.SetString(UpdateTriedKey, TryKey(ShippedStamp()));
                     Install(true);
                     return;
                 case Next.Start when command != null:
