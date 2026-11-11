@@ -713,8 +713,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 from .agents import external as agent
             else:
                 agent = agents.select(run.agent_name if run else None)
-            run_id = time.strftime("%Y%m%d-%H%M%S")
             root = codexmod.project_dir(project)
+            run_id = memory.new_run(root)  # (its own folder, even beside another service's run of this second)
             share = telemetry.sharing(getattr(link, "hello", None)) and (run is None or bool(run.training))
             hello = getattr(link, "hello", None) or {}
             key = hello.get("project_id") or hello.get("project") or project  # (the project's key, as Aura keeps it)

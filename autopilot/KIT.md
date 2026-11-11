@@ -157,7 +157,8 @@ between two). Set `trace_every = 0` to keep every observation (each tick's, `tic
 decisions, inputs and findings are kept as they happen, whatever trace_every says. `game.log("kind", t=game.t,
 **fields)` in harness code writes an event of your own to the trace at once, never sampled: the moment that matters (a
 landing, a hit, the speed at an edge) with the numbers to check it by; give it `t=game.t`, as the trace's other events
-have, so it lines up with their times (the summary's t= counts from the episode's first).
+have, so it lines up with their times (the summary's t= counts from the episode's first). The event's kind comes first
+(`game.log(kind="hit", ...)` works too); a field of your own named `kind` or `wall` after it is kept as `kind_`/`wall_`.
 
 ## The plan (a request of more than one step)
 

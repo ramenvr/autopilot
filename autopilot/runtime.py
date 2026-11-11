@@ -140,9 +140,19 @@ class Trace:
         self.events = []
         self.lock = threading.Lock()  # (observe runs in its own thread, beside the executor)
 
-    def __call__(self, kind, /, **fields):
-        # kind is positional only, so a harness's game.log("swing", kind="heavy") keeps its own field "kind"; a field
-        # named like an event key (kind, wall) is kept beside it with a _ after its name
+    def __call__(self, *kind, **fields):
+        # The event's kind comes first, so a harness's game.log("swing", kind="heavy") keeps its own field "kind": a
+        # field named like an event key (kind, wall) is kept beside it with a _ after its name. Without one,
+        # game.log(kind="swing", t=...) names the event's kind by name
+        if len(kind) > 1:
+            raise TypeError(f"game.log takes the event's kind, then its fields by name (game.log(\"hit\", t=game.t, "
+                            f"damage=3)), not {len(kind)} values")
+        if kind:
+            kind = kind[0]
+        elif "kind" in fields:
+            kind = fields.pop("kind")
+        else:
+            raise TypeError("game.log needs the event's kind first: game.log(\"hit\", t=game.t, damage=3)")
         fields = jsonable(fields)
         e = {"kind": kind, "wall": round(time.time(), 3)}
         e.update({(k + "_" if k in RESERVED else k): v for k, v in fields.items()})

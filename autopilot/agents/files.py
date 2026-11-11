@@ -33,13 +33,14 @@ FILE_TOOL_SPECS = (
      "List the files of this game's folder (or of the kit: autopilot/kit/...) whose paths match a glob, e.g. "
      "`codex/**/*.txt`, `runs/*/report.json` or `codex/**/*.{cpp,h}` (** matches any folders, {a,b} either), the "
      "newest first. When they are too many for one answer, all of them are written to a file of this run, and the "
-     "answer says where.",
+     "answer says where. Names starting with a dot (Autopilot's own records) are left out unless the glob names one.",
      {"type": "object", "properties": {"pattern": {"type": "string"}}, "required": ["pattern"]}),
     ("search",
      "Search this game's folder (or `path`, a folder or file in it) for a regular expression: matching lines, whole, "
      "as path:line: text. `glob` limits it to some files, e.g. `codex/**/*.txt` or `**/*.{cpp,h}`. When the matches "
      "are too long for one answer, all of them are written to a file of this run, and the answer gives how many there "
-     "are in which files, that file, and where they are (path:line).",
+     "are in which files, that file, and where they are (path:line). Files and folders whose names start with a dot "
+     "(Autopilot's own records) are left out unless `path` or `glob` names one.",
      {"type": "object", "properties": {"pattern": {"type": "string"}, "path": {"type": "string"},
                                        "glob": {"type": "string"}}, "required": ["pattern"]}),
     ("write_file",
@@ -188,11 +189,15 @@ class FileTools:
             shown[0] = shown[0].replace("\t", f"\t(from character {column:,}) ", 1)
         return "\n".join(shown) + tail
 
-    def _walk(self, top):
+    def _walk(self, top, hidden=False):
+        """Every file under top. A file or folder whose name starts with a dot is Autopilot's own record keeping
+        (.codex-seen.json.gz, codex/.fetched.json, .indexing/, ...): left out unless `hidden` (the search or listing
+        names one)."""
         for folder, dirs, names in os.walk(top):
-            dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
+            dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS and (hidden or not d.startswith(".")))
             for name in names:
-                yield os.path.join(folder, name)
+                if hidden or not name.startswith("."):
+                    yield os.path.join(folder, name)
 
     def _kept(self, stem, text):
         """text written whole to this run's folder (runs/<id>/whole/<stem>-<k>.txt): its path in the game's folder."""
@@ -200,7 +205,7 @@ class FileTools:
 
     def list_files(self, pattern):
         rx = _glob_rx(pattern)
-        files = list(self._walk(self.root))
+        files = list(self._walk(self.root, hidden=_names_hidden(_bare(pattern))))
         if _bare(pattern).lower().startswith("autopilot/") and not os.path.isdir(os.path.join(self.root, "autopilot")):
             # (the kit's files, when the pattern names them and the game's folder has no autopilot/ of its own)
             files += [os.path.join(self.package, "KIT.md"), *self._walk(os.path.join(self.package, "kit"))]
@@ -219,7 +224,8 @@ class FileTools:
         the answer gives their count, how many each file has, that file and the locations (path:line) that fit."""
         rx = re.compile(pattern)
         top = self._existing(path)
-        files = [top] if os.path.isfile(top) else self._walk(top)
+        files = [top] if os.path.isfile(top) else self._walk(
+            top, hidden=_names_hidden(self.rel(top)) or bool(glob and _names_hidden(_bare(glob))))
         only = _glob_rx(glob) if glob else None
         asked_kept = bool(KEPT.match(self.rel(top) + "/"))
         out = None  # (the file all matches go to, once they are more than an answer holds)
@@ -301,6 +307,11 @@ def _bare(pattern):
     while pattern.startswith("./"):
         pattern = pattern[2:]
     return pattern
+
+
+def _names_hidden(path):
+    """Whether a path or glob names a file or folder whose name starts with a dot (codex/.hashes.json, **/.*)."""
+    return any(part.startswith(".") and part not in (".", "..") for part in str(path).replace("\\", "/").split("/"))
 
 
 def _glob_rx(pattern):

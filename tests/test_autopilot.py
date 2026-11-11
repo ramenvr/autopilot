@@ -657,6 +657,18 @@ def test_live_link_follows_reconnects():
     assert live.name == "b"
 
 
+def test_sessions_opened_without_a_run_id_get_folders_of_their_own(game, tmp_path, monkeypatch):
+    from autopilot import codex, memory
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    real = memory.new_run
+    monkeypatch.setattr(memory, "new_run", lambda folder, now=None: real(folder, 1794302662.0))  # (one second)
+    ids = [session.open_session(game, "fake", "Verify that X", timeout=60).run_id for _ in range(2)]
+    assert len(set(ids)) == 2 and ids[1] == ids[0] + "-2"
+    assert all((tmp_path / "fake" / "runs" / i).is_dir() for i in ids)
+
+
 def test_report_needs_an_episode(game, tmp_path, monkeypatch):
     from autopilot import codex
     from autopilot.agents import session
@@ -2160,6 +2172,28 @@ def test_what_the_user_reads_says_the_agent_not_jev():
     assert frame["reason"] == "Shown by the agent."
 
 
+def test_a_report_is_kept_in_the_plugins_words_wherever_it_is_read(game, tmp_path, monkeypatch):
+    """The agent's report says "the agent", never Jev, before anything reads it: report.json (and so `autopilot play`'s
+    output, a regression, a later run's briefing), not only the plugin's result frame."""
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    s = session.Session(game, "fake", "Verify that X", "r1")
+    s.episodes, s.most_decisions = 1, 7
+    assert "Reported" in s.do_report({
+        "outcome": "CONFIRMED",
+        "summary": "Jev chose each option itself (7 Jev decisions; Jev's choices were its own).",
+        "evidence": ["Jev hit the tree at t=3.6"], "findings": ["Jev-played episode 1"], "episode": 1})
+    want = {"summary": "The agent chose each option itself (7 decisions; the agent's choices were its own).",
+            "evidence": ["The agent hit the tree at t=3.6"], "findings": ["agent-played episode 1"]}
+    assert {k: s.report[k] for k in want} == want
+    report = session.finish(s, time.time(), None, "done")
+    assert {k: report[k] for k in want} == want
+    saved = json.loads((tmp_path / "fake" / "runs" / "r1" / "report.json").read_text(encoding="utf-8"))
+    assert {k: saved[k] for k in want} == want and saved["outcome"] == "CONFIRMED"
+
+
 def test_jev_client_asks_for_an_exact_version(monkeypatch):
     monkeypatch.setenv("TYPESAFE_API_KEY", "test-key")
     monkeypatch.setenv("TYPESAFE_DEFAULT_MODEL", "jev-latest")  # (the SDK's own default: not what Jev plays with)
@@ -2314,3 +2348,23 @@ def test_a_harness_may_log_its_own_kind_and_wall_fields(tmp_path):
     assert first["kind"] == "swing_result" and first["kind_"] == "heavy" and first["wall_"] == 3
     assert first["t"] == 1.5 and first["hit"] is True and isinstance(first["wall"], float)
     assert second == {"kind": "plain", "wall": second["wall"], "t": 2}
+
+
+def test_a_harness_may_name_the_events_kind_by_name(tmp_path):
+    """game.log(kind="hit", t=...) with no kind first: the kind is that one (a model writes it so as often as not)."""
+    from autopilot.runtime import Trace
+
+    trace = Trace(str(tmp_path / "trace1.jsonl"))
+    trace(kind="tree_swing", t=3.6, health=4)
+    with pytest.raises(TypeError, match="needs the event's kind first"):
+        trace(t=1)
+    with pytest.raises(TypeError, match="not 2 values"):
+        trace("a", "b")
+    trace.close()
+    lines = (tmp_path / "trace1.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line) for line in lines] == [{"kind": "tree_swing", "wall": json.loads(lines[0])["wall"],
+                                                     "t": 3.6, "health": 4}]
+    # (a Game without a trace takes the same calls)
+    silent = Game(types.SimpleNamespace(), engine=types.SimpleNamespace(keys={}))
+    silent.log("x", kind="y")
+    silent.log(kind="y", t=1)

@@ -27,7 +27,8 @@ that they never corrupt a project's memory:
   passed) is taken over.
 
 Runs themselves don't hold the lock: two runs on one game at the same time both read the memory and both write
-notes.md and lib.py (each edit reads the file as it is then), and a sync merges what either wrote.
+notes.md and lib.py (each edit reads the file as it is then), and a sync merges what either wrote. Each run has a
+folder of its own (``new_run``: two that start in the same second get 20261110-172422 and 20261110-172422-2).
 """
 
 import contextlib
@@ -84,6 +85,24 @@ def write_atomic(path, data, sleep=time.sleep):
         with contextlib.suppress(OSError):
             os.remove(tmp)
         raise
+
+
+def new_run(folder, now=None):
+    """A new run's id, with its folder (folder/runs/<id>/) made by this call: the time it starts, to the second
+    (20261110-172422), with -2, -3, ... after it when another run started in the same second (another agent service
+    on this memory folder) or a folder of that name came from elsewhere. Made in one step, so two runs never share a
+    folder (their harness.py and traces would overwrite each other)."""
+    runs = os.path.join(folder, "runs")
+    os.makedirs(runs, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(now))
+    n = 1
+    while True:
+        run_id = stamp if n == 1 else f"{stamp}-{n}"
+        try:
+            os.mkdir(os.path.join(runs, run_id))
+            return run_id
+        except FileExistsError:
+            n += 1
 
 
 class Busy(OSError):
