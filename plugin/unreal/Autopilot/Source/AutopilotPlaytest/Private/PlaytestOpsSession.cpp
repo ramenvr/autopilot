@@ -326,22 +326,6 @@ namespace
 			Bridge.Respond(Id, Obj(Status));
 			return;
 		}
-		// How many players play is the editor's Play settings' (Number of Players, run under one process; the net mode
-		// with it): the run plays the game as the user set it up, so a start or restart asking for another number is
-		// refused before anything changes (Roblox's plugin starts that many; Unreal's never changes the user's settings)
-		double AskedPlayers = 0.0;
-		if (Args.IsValid() && Args->TryGetNumberField(TEXT("players"), AskedPlayers) && (Action == TEXT("start") || Action == TEXT("restart")))
-		{
-			const int32 Playing = Bridge.GetPlayerWorlds().Num();
-			const int32 Count = World ? Playing : Bridge.PlaySettingsPlayers ? Bridge.PlaySettingsPlayers() : 1;
-			if (FMath::FloorToInt32(AskedPlayers) != Count)
-			{
-				Bridge.RespondError(Id, FString::Printf(TEXT("This game plays %d player%s, as the editor's Play settings start it "
-					"(Number of Players, run under one process): the number of players can't be changed from here. Play "
-					"with the players there are (game.players())"), Count, Count == 1 ? TEXT("") : TEXT("s")), 400);
-				return;
-			}
-		}
 		// A level that can't play (none or several by that name): 404 before anything changes, as Unity's and Godot's
 		FString Map = StringField(Args, TEXT("map"));
 		FString Package, Error;
@@ -349,6 +333,29 @@ namespace
 		{
 			Bridge.RespondError(Id, Error, 404);
 			return;
+		}
+		// A start asking for another level than the one playing goes there, as a restart in it
+		const bool bSwitch = Action == TEXT("start") && World && !Package.IsEmpty() && Package != PlaytestLevels::PackageOf(World);
+		// How many players play is the editor's Play settings' (Number of Players, run under one process; the net mode
+		// with it): the run plays the game as the user set it up, so a start or restart asking for another number is
+		// refused before anything changes (Roblox's plugin starts that many; Unreal's never changes the user's settings)
+		double AskedPlayers = 0.0;
+		if (Args.IsValid() && Args->TryGetNumberField(TEXT("players"), AskedPlayers) && (Action == TEXT("start") || Action == TEXT("restart")))
+		{
+			// Checked against the session the action leaves running: a start of a running game keeps it (the players
+			// playing now); a start of a stopped game, and the editor's restart or level switch (it stops play and starts
+			// it again), play as many as the Play settings start now; a game build's restart reopens the level with the
+			// players it has
+			const bool bNewSession = !World || (Bridge.SessionHandler && (Action == TEXT("restart") || bSwitch));
+			const int32 Playing = Bridge.GetPlayerWorlds().Num();
+			const int32 Count = !bNewSession ? Playing : Bridge.PlaySettingsPlayers ? Bridge.PlaySettingsPlayers() : 1;
+			if (FMath::FloorToInt32(AskedPlayers) != Count)
+			{
+				Bridge.RespondError(Id, FString::Printf(TEXT("This game plays %d player%s, as the editor's Play settings start it "
+					"(Number of Players, run under one process): the number of players can't be changed from here. Play "
+					"with the players there are (game.players())"), Count, Count == 1 ? TEXT("") : TEXT("s")), 400);
+				return;
+			}
 		}
 		if (Bridge.SessionHandler)
 		{
@@ -371,9 +378,8 @@ namespace
 		}
 		// A game build: there is always a session; restarting reopens the map the game was launched with (or the one
 		// asked for: "map"), never the one it travelled to since (a match that ended moves the server on to the next
-		// map), with what the game put on the viewport taken off first (see RemoveGameWidgets). A start asking for
-		// another level than the one playing goes there, as a restart in it
-		const bool bSwitch = Action == TEXT("start") && World && !Package.IsEmpty() && Package != PlaytestLevels::PackageOf(World);
+		// map), with what the game put on the viewport taken off first (see RemoveGameWidgets); a level switch (bSwitch)
+		// goes there the same way
 		if ((Action != TEXT("restart") && !bSwitch) || !World)
 		{
 			Bridge.Respond(Id, Running(World != nullptr, World));
