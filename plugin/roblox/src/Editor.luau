@@ -181,9 +181,10 @@ function Editor:_hello()
 	local h: any = { type = "hello", protocol = Link.PROTOCOL, plugin_version = Editor.VERSION, engine = "roblox",
 		engine_version = version(), project = self:projectName(), host = "editor",
 		inspect = Settings.get(self.plugin, "show_policy_log") ~= false,
-		-- `levels`, `timed_hold`, `pointer`, `touch`, `gamepad`, `device`, `players` (multiplayer), `trace`; `media`
-		-- when Studio gives the plugin pictures
-		features = { "levels", "timed_hold", "pointer", "touch", "gamepad", "device", "players", "trace" },
+		-- `levels`, `timed_hold`, `pointer`, `touch`, `gamepad`, `device`, `players` (multiplayer), `sequence` (input
+		-- sequences the game runs itself, frame by frame: Client.luau), `trace`; `media` when Studio gives the plugin
+		-- pictures
+		features = { "levels", "timed_hold", "pointer", "touch", "gamepad", "device", "players", "sequence", "trace" },
 		-- (how input reaches the games it plays, as the other plugins' hellos say: the client's context says it for
 		-- the game playing)
 		input = Ui.inputCaps({ playing = false }),

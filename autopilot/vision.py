@@ -275,35 +275,81 @@ class Describer:
     def _content(self, frames, questions, base=0.0):
         """The request's parts in order: per frame its label and its picture, then the questions. (kind, value). A
         frame's time is seconds from base (the episode's start), as the agent asking counts them."""
-        parts = [("text", "Frames of a video game, in order, with the time each shows (seconds of game time):")]
-        prev = None
-        for i, f in enumerate(frames, 1):
-            gap = f" ({f['t'] - prev:.2f} s after the one before)" if prev is not None and f["t"] is not None else ""
-            t = f"{f['t'] - base:.2f} s" if f["t"] is not None else "unknown"
-            parts.append(("text", f"Frame {i}: time {t}{gap}"))
-            parts.append(("image", base64.standard_b64encode(f["jpeg"]).decode("ascii")))
-            prev = f["t"] if f["t"] is not None else prev
+        parts = frame_parts(frames, base)
         asked = "\n".join(f"{i}. {q}" for i, q in enumerate(questions, 1)) or "1. Describe what happens."
         parts.append(("text", f"Questions:\n{asked}\n{SWEEP}"))
         return parts
 
     def _ask(self, frames, questions, base=0.0):
         """(the description, the model that gave it, its usage)."""
+        wire = Wire(self.route, self.provider, usage=self.usage, proxied=self.proxied, named=self.named)
+        out = wire.ask(self._content(frames, questions, base), SYSTEM, MAX_TOKENS, EFFORT)
+        self.route = wire.route  # (a model refused gave way to FALLBACK for the rest of the run)
+        return out
+
+    def _count(self, url, body):
+        Wire(self.route, self.provider, usage=self.usage, proxied=self.proxied)._count(url, body)
+
+    def _log(self, frames, questions, text, model, usage, seconds, label, base=0.0):
+        """One line of telemetry/describe.jsonl in a shared run: what was asked about which frames (by time: the
+        pictures are in the recording; `t` the game's own, `base` the episode's first game time the model was told
+        times from), and what came back."""
+        if not self.log:
+            return
+        line = {"wall": round(time.time(), 3), "label": label, "model": model, "questions": questions, "base": base,
+                "frames": [{"t": f["t"], "wall": round(f["wall"], 3), "width": f["width"], "height": f["height"]}
+                           for f in frames],
+                "description": text, "usage": usage, "seconds": round(seconds, 2)}
+        try:
+            with self.lock, open(os.path.join(self.log, LOG), "a", encoding="utf-8") as f:
+                f.write(json.dumps(line, default=str) + "\n")
+        except OSError as e:
+            print(f"note: a description wasn't logged: {e}")
+
+
+def frame_parts(frames, base=0.0):
+    """A request's parts for frames (kind, value): a line saying what they are, then per frame its label (its time
+    as seconds from base, the episode's start, and how long after the one before) and its picture."""
+    parts = [("text", "Frames of a video game, in order, with the time each shows (seconds of game time):")]
+    prev = None
+    for i, f in enumerate(frames, 1):
+        gap = f" ({f['t'] - prev:.2f} s after the one before)" if prev is not None and f["t"] is not None else ""
+        t = f"{f['t'] - base:.2f} s" if f["t"] is not None else "unknown"
+        parts.append(("text", f"Frame {i}: time {t}{gap}"))
+        parts.append(("image", base64.standard_b64encode(f["jpeg"]).decode("ascii")))
+        prev = f["t"] if f["t"] is not None else prev
+    return parts
+
+
+class Wire:
+    """One call to a vision model over a route (route()): the request's parts ((kind, value): text, or an image's
+    base64) with a system prompt, over the provider's wire (Anthropic's Messages, OpenAI's chat completions, Gemini's
+    generateContent). The call's tokens go into the run's usage (unless its proxy counted them). On Anthropic a model
+    the API refuses gives way to FALLBACK, unless Aura named the model (named)."""
+
+    def __init__(self, route, provider, usage=None, proxied=None, named=False):
+        self.route = route
+        self.provider = provider
+        self.usage = usage
+        self.proxied = proxied
+        self.named = named
+
+    def ask(self, parts, system, max_tokens=MAX_TOKENS, effort=EFFORT):
+        """(the model's text, the model that answered, its usage)."""
         wire, root, key, model, path = self.route
-        parts = self._content(frames, questions, base)
         if wire == "anthropic":
             try:
-                return self._anthropic(root, key, model, parts)
+                return self._anthropic(root, key, model, parts, system, max_tokens, effort)
             except Exception as e:
                 if not _refused_model(e) or model == FALLBACK or self.named:
                     raise
                 self.route = (wire, root, key, FALLBACK, path)  # (for the rest of the run)
-                return self._anthropic(root, key, FALLBACK, parts)
+                return self._anthropic(root, key, FALLBACK, parts, system, max_tokens, effort)
         if wire == "gemini":
-            return self._gemini(root, key, model, parts)
-        return self._openai(root + path, key, model, parts)
+            return self._gemini(root, key, model, parts, system, max_tokens)
+        return self._openai(root + path, key, model, parts, system, max_tokens)
 
-    def _anthropic(self, root, key, model, parts):
+    def _anthropic(self, root, key, model, parts, system, max_tokens, effort):
         import anthropic
 
         # (a key in ANTHROPIC_AUTH_TOKEN alone is a bearer token, as Anthropic's SDKs read it)
@@ -314,9 +360,9 @@ class Describer:
         content = [{"type": "text", "text": v} if kind == "text" else
                    {"type": "image", "source": {"type": "base64", "media_type": "image/jpeg", "data": v}}
                    for kind, v in parts]
-        message = client.messages.create(model=model, max_tokens=MAX_TOKENS, system=SYSTEM,
+        message = client.messages.create(model=model, max_tokens=max_tokens, system=system,
                                          messages=[{"role": "user", "content": content}],
-                                         output_config={"effort": EFFORT})
+                                         output_config={"effort": effort})
         if message.stop_reason == "refusal":
             raise RuntimeError("the vision model declined to describe these frames")
         text = "\n".join(b.text for b in message.content if b.type == "text").strip()
@@ -324,15 +370,15 @@ class Describer:
         self._count(root, body)
         return text or "(no description)", message.model, body.get("usage")
 
-    def _openai(self, url, key, model, parts):
+    def _openai(self, url, key, model, parts, system, max_tokens):
         content = [{"type": "text", "text": v} if kind == "text" else
                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{v}"}}
                    for kind, v in parts]
         # (OpenAI's newer models take max_completion_tokens only; other APIs' compatible endpoints take max_tokens)
         limit = "max_completion_tokens" if "api.openai.com" in url or self.provider == "openai" else "max_tokens"
         r = requests.post(url, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-                          json={"model": model, limit: MAX_TOKENS,
-                                "messages": [{"role": "system", "content": SYSTEM},
+                          json={"model": model, limit: max_tokens,
+                                "messages": [{"role": "system", "content": system},
                                              {"role": "user", "content": content}]},
                           timeout=TIMEOUT)
         if r.status_code >= 400:
@@ -343,16 +389,16 @@ class Describer:
         text = ((choice.get("message") or {}).get("content") or "").strip()
         return text or "(no description)", body.get("model") or model, body.get("usage")
 
-    def _gemini(self, root, key, model, parts):
+    def _gemini(self, root, key, model, parts, system, max_tokens):
         """Gemini's own API (models/<model>:generateContent), the one Aura's relay for Google takes."""
         content = [{"text": v} if kind == "text" else {"inline_data": {"mime_type": "image/jpeg", "data": v}}
                    for kind, v in parts]
         name = model[len("models/"):] if model.startswith("models/") else model
         url = f"{root}/models/{name}:generateContent"
         r = requests.post(url, headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-                          json={"systemInstruction": {"parts": [{"text": SYSTEM}]},
+                          json={"systemInstruction": {"parts": [{"text": system}]},
                                 "contents": [{"role": "user", "parts": content}],
-                                "generationConfig": {"maxOutputTokens": MAX_TOKENS}},
+                                "generationConfig": {"maxOutputTokens": max_tokens}},
                           timeout=TIMEOUT)
         if r.status_code >= 400:
             raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
@@ -374,22 +420,6 @@ class Describer:
         model, usage = llm_usage(body)
         if usage:
             self.usage.add("llm", model, **usage)
-
-    def _log(self, frames, questions, text, model, usage, seconds, label, base=0.0):
-        """One line of telemetry/describe.jsonl in a shared run: what was asked about which frames (by time: the
-        pictures are in the recording; `t` the game's own, `base` the episode's first game time the model was told
-        times from), and what came back."""
-        if not self.log:
-            return
-        line = {"wall": round(time.time(), 3), "label": label, "model": model, "questions": questions, "base": base,
-                "frames": [{"t": f["t"], "wall": round(f["wall"], 3), "width": f["width"], "height": f["height"]}
-                           for f in frames],
-                "description": text, "usage": usage, "seconds": round(seconds, 2)}
-        try:
-            with self.lock, open(os.path.join(self.log, LOG), "a", encoding="utf-8") as f:
-                f.write(json.dumps(line, default=str) + "\n")
-        except OSError as e:
-            print(f"note: a description wasn't logged: {e}")
 
 
 def _refused_model(e):

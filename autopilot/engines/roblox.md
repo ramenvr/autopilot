@@ -78,6 +78,11 @@
   mouse (first person, shift lock, its own camera) it moves the mouse alone. `game.calibrate_look()` measures either.
   `game.context()["camera_type"]` and `["mouse_behavior"]` say which. A game with a Scriptable camera turns the view in
   its own code: read it.
+- **Timing the game does**: the plugin runs input sequences itself (`moveset`, `jump_at`, `game.sequence`): each step
+  at its game time, or the frame its condition holds (the player past a point, within reach of one, on the ground,
+  past the top of a jump), checked every Heartbeat on the client. A jump at a platform's edge, a hop over a sweeping
+  bar as it arrives, a press on the beat of a hazard: hand them to the game, and the brain's delay (a frame or more
+  between a read and a press, more while Studio is slow) is out of the move.
 - **Moving without the keys**: `game.request("move", {"direction": kit vector, "seconds": s})` walks the character
   that way as an analog stick would (the player's Move, after the PlayerModule's: `"via": "stick"`, the default;
   `"keys"` for W/A/S/D; `"controller"` for the Humanoid's own Move, for a game whose controls don't go through the

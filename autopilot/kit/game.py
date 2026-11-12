@@ -55,6 +55,14 @@ class Game:
         self._bodies = {}  # n -> Body: the other players of a multiplayer game (player())
         self.index = 1  # which player this is (1: the run's own; a Body is another)
         self._primary = self  # (player 1's game, which a Body shares)
+        self.paused = False  # whether the game is held paused (pause()): its clock stands still then (kit.clock)
+        # Seconds of game time from an input sent until the game shows it (measured by calibrate_look): what a move
+        # timed to the game (a jump at an edge) must be sent ahead by
+        self.lag = 0.0
+        self._sequences = 0  # input sequences started (sequence())
+        # What the picture showed lately (autopilot/watch.py): {question id: answer, "t": game time of the look,
+        # "note": words}, {} before the first look. An executor may read it (game.watch.get("blocked", 0) > 0.7)
+        self.watch = {}
 
     # -- low level -------------------------------------------------------------------------------------
 
@@ -79,6 +87,14 @@ class Game:
     def t(self):
         """The game time (seconds) of the latest answer from the game."""
         return self.link.game_time or 0.0
+
+    @property
+    def now(self):
+        """The game time now (seconds): the latest answer's plus the wall time since it came while the game runs
+        (kit.clock.now). Time a move by this, never by the wall clock: it runs as the game does."""
+        from .clock import now
+
+        return now(self)
 
     def batch(self, thunks):
         """Run several reads at once (they resolve in the same game frame): a list of zero-argument callables, e.g.
@@ -359,6 +375,55 @@ class Game:
         self.log("input", key=key, mode="hold", value=value, seconds=seconds)
         return True
 
+    def sequence(self, steps):
+        """Hand the game a sequence of inputs to run itself, frame by frame on its own clock, so a move timed to the
+        game (a jump at an edge, a combo, a dodge a tenth after a tell) lands the same whatever the brain's frame rate
+        and delay. steps: [{"key", "mode": "press"|"hold"|"release", "value"?, and when it fires: "at" (game
+        seconds after the sequence starts) or "after" (seconds after the step before fired; default 0), and/or
+        "when" (a condition read by the game every frame: {"near": {"x","y","z", "within"}} the player within that
+        many cm of a kit point across the floor, {"past": {"x","y","z","dx","dy","dz"}} the player past the plane
+        through the point facing the direction, {"past_of": {"path", "dir", "along"}} the player past the plane
+        carried by a part (a moving platform's edge: through the part's position moved `along` cm in the
+        direction), {"on_ground": bool}, {"falling": bool}, {"vz_below": cm/s} its vertical speed below that (the
+        top of a jump: 0); all given must hold), "timeout" (seconds after the step before fired after which it is
+        skipped; default 3)}, ...].
+        Returns the sequence's id when the plugin runs sequences (its features say "sequence"), else None: then
+        kit.control.moveset runs the steps from here by the game's clock. A hold a sequence leaves down is held on
+        (renewed) until released, as hold() is."""
+        if "sequence" not in self.features:
+            return None
+        self._sequences += 1
+        sid = f"seq{self.index}-{self._sequences}"
+        clean = []
+        for s in steps:
+            step = {"key": str(s.get("key") or ""), "mode": str(s.get("mode") or "press")}
+            for k in ("at", "after", "timeout", "value"):
+                if s.get(k) is not None:
+                    step[k] = float(s[k])
+            if isinstance(s.get("when"), dict):
+                step["when"] = _when_native(s["when"])
+            clean.append(step)
+        self.request("sequence", {"action": "start", "id": sid, "steps": clean, "lease": KEY_LEASE})
+        with self._lock:
+            for s in clean:
+                if s["mode"] == "hold" and not s["key"].startswith("/"):
+                    self._held[s["key"]] = s.get("value")
+                elif s["mode"] == "release":
+                    self._held.pop(s["key"], None)
+        self.log("input", key="sequence", mode="start", value={"id": sid, "steps": clean})
+        return sid
+
+    def sequence_status(self, sid):
+        """{"done", "fired" (steps fired so far), "skipped" (steps whose condition never came), "t"} of a sequence
+        the game runs."""
+        return self.request("sequence", {"action": "status", "id": sid}) or {"done": True}
+
+    def sequence_cancel(self, sid):
+        try:
+            self.request("sequence", {"action": "cancel", "id": sid})
+        except GameError:
+            pass
+
     def release(self, key):
         with self._lock:
             was = self._held.pop(key, "none")
@@ -429,22 +494,26 @@ class Game:
         if time.monotonic() - getattr(self, "_calibrated_at", -1e9) < 0.5:
             return self.look
         self._calibrated_at = time.monotonic()
+        from .geom import wrap
+
         for axis in ("x", "y"):
             if self.look[axis]:
                 continue
             y0, p0 = self.view_rotation()
+            sent = self.t
             self.mouse(counts if axis == "x" else 0.0, counts if axis == "y" else 0.0)
-            time.sleep(0.15)
-            y1, p1 = self.view_rotation()
-            from .geom import wrap
-
-            moved = wrap(y1 - y0) if axis == "x" else (p1 - p0)
-            if abs(moved) <= 0.05:
-                # (a turn can come in late: e.g. Roblox's camera turns only once the right button it presses has locked
-                # the mouse, a few frames after the move was sent)
-                time.sleep(0.25)
+            # (the game's lag: polled until the view shows the turn, a frame at a time, up to 0.4 s; a turn can come
+            # in late, e.g. Roblox's camera turns only once the right button it presses has locked the mouse)
+            deadline = time.monotonic() + 0.4
+            moved = 0.0
+            while True:
+                time.sleep(0.03)
                 y1, p1 = self.view_rotation()
                 moved = wrap(y1 - y0) if axis == "x" else (p1 - p0)
+                if abs(moved) > 0.05 or time.monotonic() > deadline:
+                    break
+            if abs(moved) > 0.05 and axis == "x":
+                self.lag = max(0.0, min(0.5, self.t - sent))
             if abs(moved) > 0.05:
                 self.look[axis] = moved / counts
                 # turn back
@@ -460,13 +529,15 @@ class Game:
                     self.look[axis] = -moved / counts
                     self.mouse(0.0, counts)
                     time.sleep(0.1)
-        self.log("calibrated", look=self.look)
+        self.log("calibrated", look=self.look, lag=round(self.lag, 3))
         return self.look
 
     # -- the session -----------------------------------------------------------------------------------
 
     def pause(self, paused=True):
-        return self.request("pause", {"paused": paused})
+        out = self.request("pause", {"paused": paused})
+        self.paused = bool(paused) and not (isinstance(out, dict) and out.get("why"))  # (a game that can't pause)
+        return out
 
     def restart(self, map=None, wait_for_pawn=20.0, players=None):
         """Start the level over (or open `map`, e.g. the gameplay level of a game that boots into a menu) and wait up
@@ -562,6 +633,36 @@ class Body(Game):
 def name_of(path):
     """An object's name from its path: /Game/Map.Map:PersistentLevel.BP_Tree_C_3 -> BP_Tree_C_3."""
     return path.rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+
+
+def _when_native(when):
+    """A sequence step's condition (Game.sequence) with its kit-frame points and directions as the plugin takes
+    them: {"near": {"X","Y","Z","within"}}, {"past": {"X","Y","Z","dX","dY","dZ"}} (kit frame: every plugin converts
+    the kit frame itself, as it does for `move`), and the plain ones as they are."""
+    out = {}
+    for key, value in when.items():
+        if key in ("near", "past") and isinstance(value, dict):
+            point = Vec.of(value["point"]) if "point" in value else Vec.of(
+                {k: value.get(k, value.get(k.upper(), 0.0)) for k in ("x", "y", "z")})
+            entry = {"X": point.x, "Y": point.y, "Z": point.z}
+            if key == "near":
+                entry["within"] = float(value.get("within", 60.0))
+            else:
+                d = Vec.of(value["dir"]) if "dir" in value else Vec(
+                    float(value.get("dx", 1.0)), float(value.get("dy", 0.0)), float(value.get("dz", 0.0)))
+                d = d.unit if d.length > 1e-6 else Vec(1, 0, 0)
+                entry.update(dX=d.x, dY=d.y, dZ=d.z)
+            out[key] = entry
+        elif key == "past_of" and isinstance(value, dict):
+            d = Vec.of(value.get("dir")) if value.get("dir") is not None else Vec(1, 0, 0)
+            d = d.unit if d.length > 1e-6 else Vec(1, 0, 0)
+            out[key] = {"path": str(value.get("path") or "").split(":", 1)[-1], "dX": d.x, "dY": d.y, "dZ": d.z,
+                        "along": float(value.get("along", 0.0))}
+        elif key in ("on_ground", "falling"):
+            out[key] = bool(value)
+        elif key in ("vz_below", "vz_above", "t"):
+            out[key] = float(value)
+    return out
 
 
 def _axis(value):

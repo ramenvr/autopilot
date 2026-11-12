@@ -7,6 +7,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -188,9 +189,16 @@ STILL_GAP = 2.0  # seconds between two stills of findings, at least
 
 class Runtime:
     def __init__(self, game, harness, trace_path, client=None, max_seconds=120.0, say=None, stop=None, resume=None,
-                 telemetry=None, progress=None):
+                 telemetry=None, progress=None, looker=None):
         self.game, self.h = game, harness
         self.trace = Trace(trace_path)
+        # Looking while playing (autopilot/watch.py): a model sees the last seconds of frames now and then and after
+        # a death, a failed option or a stall, and answers the harness's and the default questions; the deaths are
+        # reviewed at the end. looker: a watch.Looker (or the sandbox's RemoteLooker); None: no looks
+        self.looker = looker if (os.environ.get("AUTOPILOT_WATCH") or "1").strip() != "0" else None
+        self.watcher = None
+        self.deaths = 0
+        self.last_obs = None
         # The run's telemetry folder when its data is shared (autopilot/telemetry.py): each decision is kept whole
         # there, decisions<n>.jsonl beside trace<n>.jsonl, and stills of the game are taken (autopilot/media.py)
         self.telemetry = telemetry
@@ -432,6 +440,8 @@ class Runtime:
         self.stall_tried[option.name][how] += 1
         if worked:
             self.progressed(after)
+        elif worked is False and self.watcher is not None and t_end - t0 >= 0.5:
+            self.watcher.event("fail", t=t_end, option=option.name, why=str(why)[:120])
         self.trace("option_end", t=t_end, option=option.name, seconds=round(t_end - t0, 2), ok=ok,
                    why=why, effect=effect, data=data)
         self.recent.append({"option": option.name, "seconds": round(t_end - t0, 1), "worked": worked,
@@ -619,10 +629,24 @@ class Runtime:
             self.trace("error", t=self.game.t, where=where, error=f"{type(e).__name__}: {e}",
                        traceback=traceback.format_exc(limit=6))
 
+    def death(self, how, t=None):
+        """The player died (or was sent back): noted in the trace, and the picture of the seconds before it is
+        looked at now and described at the episode's end (autopilot/watch.py)."""
+        t = self.game.t if t is None else t
+        self.deaths += 1
+        self.trace("death", t=t, how=how, n=self.deaths)
+        if self.watcher is not None:
+            self.watcher.event("death", t=t, how=how)
+
     def on_event(self, event):
         """The plugin's events during the episode: its detectors' findings and the engine's error log lines go to the
-        trace (what looked wrong in the game, for verification and exploration)."""
+        trace (what looked wrong in the game, for verification and exploration); a new character (the player's
+        respawned: Roblox's plugin says so) a while into the episode is a death."""
         kind = event.get("kind")
+        if kind == "character":
+            if self.t_start is not None and (self.game.t - self.t_start) > 3.0:
+                self.death("the character respawned", t=event.get("t"))
+            return
         if kind == "finding":
             f = event.get("finding") or {}
             self.trace("finding", t=event.get("t"), detector=f.get("detector"), severity=f.get("severity"),
@@ -685,6 +709,12 @@ class Runtime:
                        steps=[{"name": s.name, "what": s.description, "options": s.options} for s in self.plan])
         t_start, wall_start = g.t, time.monotonic()
         self.t_start, self.wall_start = t_start, wall_start
+        if self.looker is not None and self.looker.available() is None:
+            from .watch import Watcher
+
+            self.watcher = Watcher(self.looker, h, g, self.trace)
+        elif self.looker is not None:
+            self.trace("watch_off", t=g.t, why=self.looker.available())
         first_obs = None  # (when the first observation came in: wall clock)
         tick = 1.0 / max(1.0, h.tick_hz)
         consecutive = 0
@@ -743,6 +773,7 @@ class Runtime:
                     self.plan_update(obs)
                     opts = self.plan_offer(opts)
                     names = [o.name for o in opts]
+                    self.noticed(obs, status)
                     if g.t - self.response["t"] >= RESPONSE_EVERY:
                         self.watch_response()
                     if not trace_every or g.t - last_obs_trace >= trace_every:
@@ -779,6 +810,8 @@ class Runtime:
                                             tried={k: v for k, v in tried.items() if v})
                     self.trace("stalled", t=g.t,
                                **{("cause" if k == "kind" else k): v for k, v in self.stalled.items()})
+                    if self.watcher is not None:
+                        self.watcher.event("stall", t=g.t, step=self.stalled.get("step"))
                     end["reason"] = "stalled"
                     break
                 if self.ending and not self.running:
@@ -834,8 +867,28 @@ class Runtime:
                 if spent < tick:
                     time.sleep(tick - spent)
         finally:
+            self.loop_seconds = time.monotonic() - wall_start  # (the ticks' time: what ran_hz is counted over)
             observer.shutdown(wait=True)  # (an observe in flight ends before teardown)
         return self.finish(end, status, obs)
+
+    def noticed(self, obs, status):
+        """Every observation: a death since the one before (Harness.died, or a failed status that says the player
+        died) is noted, and the watcher gets the facts and its periodic look."""
+        h = self.h
+        try:
+            if self.last_obs is not None and isinstance(obs, dict) and h.died(self.last_obs, obs):
+                self.death("a death count went up (Harness.died)")
+            elif status.state == "failed" and re.search(r"\b(died|dead|death|killed)\b", status.note or "", re.I):
+                self.death(f"status failed: {status.note}"[:160])
+        except Exception as e:
+            self.error("died", e)
+        self.last_obs = obs if isinstance(obs, dict) else None
+        if self.watcher is not None:
+            try:
+                facts = jsonable(h.facts(obs))
+            except Exception:
+                facts = None
+            self.watcher.observed(obs, facts, self.game.t)
 
     def idle_step(self, obs):
         try:
@@ -861,16 +914,30 @@ class Runtime:
             self.h.teardown(self.game)
         except Exception as e:
             self.error("teardown", e)
+        looks, reviews = 0, []
+        if self.watcher is not None:
+            # (a look due for what just happened, then the episode's deaths reviewed: the summary carries them)
+            try:
+                self.watcher.drain(4.0)
+                self.watcher.stop()
+                reviews = self.watcher.review()
+                looks = self.watcher.looks
+            except Exception as e:
+                self.error("watch", e)
         result = {
             "reason": end["reason"],
             "status": jsonable(status) if status else None,
             "seconds": None,
             "decisions": self.decisions,
+            "deaths": self.deaths,
+            "looks": looks,
+            "reviews": reviews,
             "options": {k: dict(v) for k, v in self.stats.items()},
             "errors": dict(self.errors),
             "steps": self.step_report(),
             "ticks": {"asked_hz": self.h.tick_hz,
-                      "ran_hz": round(self.ticks / max(1e-3, time.monotonic() - self.wall_start), 1)
+                      "ran_hz": round(self.ticks / max(1e-3, getattr(self, "loop_seconds", None)
+                                                       or (time.monotonic() - self.wall_start)), 1)
                       if self.wall_start else None},
             "writes": self.game.writes,
             "last_facts": jsonable(self.h.facts(obs)) if obs is not None else None,
@@ -1149,7 +1216,8 @@ def summarize(trace_path, error_log=False):
         st = end.get("status") or {}
         out.append(f"Ended: {end.get('reason')} at t={end.get('t', 0) - t_first:.1f}s  status={st.get('state')} "
                    f"note={st.get('note')!r} evidence={json.dumps(st.get('evidence'))}")
-        out.append(f"Decisions by Jev: {end.get('decisions')}")
+        out.append(f"Decisions by Jev: {end.get('decisions')}"
+                   + (f"; deaths: {end.get('deaths')}" if end.get("deaths") else ""))
     else:
         out.append("Ended: (no end event: the run crashed or is still going)")
     spans, since = [], None
@@ -1224,6 +1292,15 @@ def summarize(trace_path, error_log=False):
             whys[e["option"]][str(e.get("why"))] += 1
     for name, c in whys.items():
         out.append(f"  {name} ended because: " + "; ".join(f"{w} x{n}" for w, n in c.most_common()))
+    # what the picture showed: the deaths reviewed, the looks made while it played (autopilot/watch.py)
+    from .watch import picture_summary
+
+    out += picture_summary(events)
+    deaths = [e for e in events if e["kind"] == "death"]
+    if deaths and not any(e["kind"] in ("watch", "review") for e in events):
+        out.append(f"\nDeaths: {len(deaths)} (at t=" + ", ".join(
+            f"{(e.get('t') or 0) - t_first:.1f}" for e in deaths[:12]) + ("..." if len(deaths) > 12 else "")
+            + "; each: " + "; ".join(dict.fromkeys(str(e.get("how")) for e in deaths)) + ")")
     # executor steps: how long they take and how many reads they wait on one after another
     steps = (end or {}).get("steps") or {}
     if steps:

@@ -97,12 +97,16 @@ def test_claude_code_gets_the_server_the_skill_and_the_describer(no_real_assista
     assert add[3:] == ["--scope", "user", "autopilot", "--", sys.executable, "-m", "autopilot", "mcp"]
     agent = (home / "claude" / "agents" / "frame-describer.md").read_text(encoding="utf-8")
     assert "tools: mcp__autopilot__frames\nmodel: opus\n" in agent and 'description: "Describes' in agent
+    reviewer = (home / "claude" / "agents" / "episode-reviewer.md").read_text(encoding="utf-8")
+    assert "tools: mcp__autopilot__read_file, mcp__autopilot__search, mcp__autopilot__list_files, " \
+           "mcp__autopilot__frames\n" in reviewer and "one change" in reviewer
     assert (home / "claude" / "skills" / "autopilot" / "SKILL.md").exists()
 
     answers["claude mcp get"] = (0, f"autopilot:\n  Command: {sys.executable}\n  Args: -m autopilot mcp\n")
     assert connect.disconnect("claude", say=said.append) == 0
     assert ["claude", "mcp", "remove", "--scope", "user", "autopilot"] in no_real_assistants["ran"]
     assert not (home / "claude" / "agents" / "frame-describer.md").exists()
+    assert not (home / "claude" / "agents" / "episode-reviewer.md").exists()
 
     answers.clear()  # (no `claude` command on this computer: how to add it by hand)
     said.clear()
@@ -144,3 +148,4 @@ def test_the_claude_code_plugin_in_the_repository_is_what_connect_writes():
     files = connect.plugin_files()
     assert json.loads(files[".mcp.json"])["mcpServers"]["autopilot"] == {"command": "autopilot", "args": ["mcp"]}
     assert "tools: mcp__plugin_autopilot_autopilot__frames" in files["agents/frame-describer.md"]
+    assert "mcp__plugin_autopilot_autopilot__read_file" in files["agents/episode-reviewer.md"]

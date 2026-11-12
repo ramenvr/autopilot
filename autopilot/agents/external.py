@@ -95,6 +95,15 @@ this conversation forked into it. Hold its description against what true and fal
 before you asked; a request about how something looks is CONFIRMED or DENIED only on such a description (report it
 with visual: true). describe_frames, Autopilot's own describer, is a fallback for when no subagent of yours can take
 pictures: it works only where the user has a key (or Aura) for one.
+
+## Reviewing an episode with a subagent
+
+After an episode with deaths, failed options or a stall whose causes the summary doesn't settle, hand it to the
+`episode-reviewer` subagent (Claude Code; `episode_reviewer` in Codex) in the same turn as you read the summary
+yourself: tell it the run's folder ({run}) and the episode's number, nothing else. It reads the trace summary, "What
+the picture showed" and the harness with Autopilot's file tools, looks at the frames where a cause is unclear, and
+answers with each death's cause and the one change to make first. Check its proposal against the code (and a probe)
+before the harness takes it. Not needed for an episode the summary explains: then make the change yourself.
 """
 
 START = """Autopilot run {marker} started on {project}: the game is open in the user's editor and paused between your

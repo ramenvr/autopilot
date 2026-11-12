@@ -43,6 +43,7 @@ function Client.start(plugin: Plugin)
 		end
 	end
 
+	local sequencesRef: { any } = {} -- (set below: the sequences table, cleared with the keys)
 	local function releaseAll()
 		for _, h in pairs(held) do
 			if not Keys.isAxis(h.spec) then
@@ -50,6 +51,9 @@ function Client.start(plugin: Plugin)
 			end
 		end
 		table.clear(held)
+		if sequencesRef[1] then
+			table.clear(sequencesRef[1])
+		end
 		Keys.releaseTurn()
 		Fallback.releaseAll()
 		Pad.releaseAll()
@@ -304,6 +308,148 @@ function Client.start(plugin: Plugin)
 		end
 	end
 
+	-- `sequence`: inputs the game runs itself, frame by frame on its own clock (the kit's Game.sequence), so a move
+	-- timed to the game (a jump at an edge) lands on the same frame whatever the brain's delay. Each step fires at its
+	-- game time (`at` seconds after the start, or `after` the step before fired) once its `when` holds, read every
+	-- Heartbeat: {near = {X, Y, Z (kit, cm), within (cm)}} the player within that far across the floor of the point,
+	-- {past = {X, Y, Z, dX, dY, dZ}} the player past the plane through the point facing the direction, {on_ground},
+	-- {falling}, {vz_below}, {vz_above} (its vertical speed, cm/s), {t} (game time); all given must hold. A step whose
+	-- condition doesn't come within `timeout` (3 s) of the step before is skipped. Holds a sequence leaves down are
+	-- leased from then, as any hold (the brain renews them). {action = "start" | "status" | "cancel", id, steps}
+	local sequences: { [string]: any } = {}
+	sequencesRef[1] = sequences
+
+	local function seqHolds(when: any, dt: number): boolean
+		if type(when) ~= "table" then
+			return true
+		end
+		local root, hum = World.root(), World.humanoid()
+		local needsRoot = when.near ~= nil or when.past ~= nil or when.on_ground ~= nil or when.falling ~= nil
+			or when.vz_below ~= nil or when.vz_above ~= nil
+		if needsRoot and root == nil then
+			return false
+		end
+		local rootPart = root :: BasePart
+		-- (where the body will be by the next frame: a press made this frame acts on the next one, and at a low frame
+		-- rate the body moves a long way between two checks; judged on where it is, the press comes a frame late)
+		local ahead = rootPart.Position + rootPart.AssemblyLinearVelocity * math.clamp(dt, 0, 0.1)
+		if type(when.near) == "table" then
+			local d = (ahead - Frame.fromKit(when.near)) * Vector3.new(1, 0, 1)
+			if d.Magnitude * Frame.SCALE > (tonumber(when.near.within) or 60) then
+				return false
+			end
+		end
+		if type(when.past) == "table" then
+			local dir = Frame.fromKitDir({ X = when.past.dX, Y = when.past.dY, Z = when.past.dZ })
+			if (ahead - Frame.fromKit(when.past)):Dot(dir) < 0 then
+				return false
+			end
+		end
+		if type(when.past_of) == "table" then
+			-- a plane carried by a part (a moving platform's edge): through the part's position moved `along` cm
+			-- in the kit direction, facing it; a part that is gone fails the condition
+			local inst = Paths.resolve(tostring(when.past_of.path or ""))
+			if inst == nil or not inst:IsA("BasePart") then
+				return false
+			end
+			local dir = Frame.fromKitDir({ X = when.past_of.dX, Y = when.past_of.dY, Z = when.past_of.dZ })
+			local point = (inst :: BasePart).Position + dir * ((tonumber(when.past_of.along) or 0) / Frame.SCALE)
+			-- (the body's motion relative to the part: a deck drifting back brings its edge to the body)
+			local rel = ahead - (inst :: BasePart).AssemblyLinearVelocity * math.clamp(dt, 0, 0.1)
+			if (rel - point):Dot(dir) < 0 then
+				return false
+			end
+		end
+		if when.on_ground ~= nil then
+			local on = hum ~= nil and hum.FloorMaterial ~= Enum.Material.Air
+			if on ~= (when.on_ground == true) then
+				return false
+			end
+		end
+		if when.falling ~= nil then
+			local falling = hum ~= nil and hum:GetState() == Enum.HumanoidStateType.Freefall
+			if falling ~= (when.falling == true) then
+				return false
+			end
+		end
+		local vz = rootPart and rootPart.AssemblyLinearVelocity.Y * Frame.SCALE or 0
+		if when.vz_below ~= nil and not (vz < (tonumber(when.vz_below) or 0)) then
+			return false
+		end
+		if when.vz_above ~= nil and not (vz > (tonumber(when.vz_above) or 0)) then
+			return false
+		end
+		if when.t ~= nil and World.gameTime() < (tonumber(when.t) or 0) then
+			return false
+		end
+		return true
+	end
+
+	local function sequenceOp(args: any, _id: any): (boolean, any, number?)
+		local action = tostring(args.action or "start")
+		local id = tostring(args.id or "")
+		if action == "status" then
+			local q = sequences[id]
+			if q == nil then
+				return true, { done = true, fired = 0, skipped = {}, t = Frame.r2(World.gameTime()), unknown = true }
+			end
+			return true, { done = q.done, fired = q.fired, skipped = q.skipped, t = Frame.r2(World.gameTime()) }
+		elseif action == "cancel" then
+			sequences[id] = nil
+			return true, Json.object()
+		end
+		if type(args.steps) ~= "table" or #args.steps == 0 then
+			return false, "sequence: steps (a list) are needed"
+		end
+		if tonumber(args.lease) and tonumber(args.lease) > 0 then
+			lease = math.clamp(tonumber(args.lease) :: number, 0.2, 10)
+		end
+		local t0 = World.gameTime()
+		sequences[id] = { steps = args.steps, i = 1, t0 = t0, last = t0, fired = 0, skipped = {}, done = false,
+			endedAt = 0 }
+		return true, { id = id, t0 = Frame.r2(t0) }
+	end
+
+	local function tickSequences(dt: number)
+		local t = World.gameTime()
+		for id, q in pairs(sequences) do
+			local guard = 0
+			while not q.done and guard < 8 do
+				guard += 1
+				local s = q.steps[q.i]
+				if s == nil then
+					q.done = true
+					q.endedAt = t
+					break
+				end
+				local due = if s.at ~= nil then q.t0 + (tonumber(s.at) or 0) else q.last + (tonumber(s.after) or 0)
+				if t < due then
+					break
+				end
+				if type(s.when) == "table" and not seqHolds(s.when, dt) then
+					if t - due > (tonumber(s.timeout) or 3) then
+						table.insert(q.skipped, q.i - 1) -- (0-based, as the kit numbers steps)
+						q.i += 1
+						q.last = t
+					else
+						break
+					end
+				else
+					local step = s
+					task.spawn(function()
+						keyOp({ key = step.key, mode = step.mode or "press", value = step.value }, nil)
+					end)
+					q.fired += 1
+					q.i += 1
+					q.last = t
+				end
+			end
+			if q.done and t - q.endedAt > 30 then
+				sequences[id] = nil -- (its status was there to be asked for a while)
+			end
+		end
+	end
+
 	-- `input`: an action the game bound with ContextActionService, by name (its first key), as `key` presses it.
 	local function inputOp(args: any, id: any): (boolean, any, number?)
 		local action = tostring(args.action or "")
@@ -421,6 +567,7 @@ function Client.start(plugin: Plugin)
 		end,
 		key = keyOp,
 		input = inputOp,
+		sequence = sequenceOp,
 		move = moveOp,
 		watch = watchOp,
 		view = function(args)
@@ -536,6 +683,7 @@ function Client.start(plugin: Plugin)
 		end
 	end
 	table.insert(host.tickers, tickKeys)
+	table.insert(host.tickers, tickSequences)
 	table.insert(host.tickers, function(dt)
 		if detectors then
 			detectors:setActive(host:runUsingGame())

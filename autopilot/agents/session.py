@@ -164,11 +164,21 @@ How to work:
    run on. Before the first run_harness, `check_harness()` in a probe: it loads the harness, runs setup, the first
    observation (facts, status, the plan's step, the options) and each option's executor once without Jev, and says
    what failed. Then `run_harness`, and read the summary: which options worked, which failed and why, errors, how
-   the situation went, where the plan got. Fix and run again. Small, checked steps beat a big untested harness. When
+   the situation went, where the plan got, and "What the picture showed": while the episode played a model watched
+   the recording (every few seconds, and right after each death, failed option and stall) and the summary gives
+   each death's cause as the picture showed it (a beam, a fall, a press, an enemy) with a sentence on the moment,
+   and when the player looked stuck. Read it with the numbers: a cause that shows twice is what the next harness
+   handles (a wait for the hazard's clear moment, a jump the game times with `jump_at`/`moveset`, another way round),
+   before the episode plays again, never a retry of the same move. Give the watcher your own questions in
+   `watch_questions` (what the numbers can't tell and the picture can) and read `game.watch` in executors (stuck:
+   try another way). Fix and run again. Small, checked steps beat a big untested harness. When
    the game seemed to do something wrong in the episode (an input with no effect, a value that wouldn't change) and
    this run can look at the picture, describe_frames that moment before you probe: one look often shows a cause in
    the scene (something in the way, a menu open, the player not where the numbers put it) that rounds of probes
    would only circle.
+   Time every move by the game's clock (the kit's controllers do; your own loops use `Clock(game)`, never the wall
+   clock), and hand a move that must land on a frame to the game (`moveset`, `jump_at`): what the harness learns
+   here then plays the same on a slow machine.
 4. Steer yourself instead of starting over. An episode that ends STALLED (or that you see is going nowhere) leaves
    the game paused where play is. Don't rebuild the harness or restart the level: find out what blocked it
    (describe_frames the last seconds; a probe of where the player is and what is around it), revise the plan's
@@ -584,6 +594,10 @@ class Session:
         self.steered = False  # the user has steered this run (a hint or a redirect)
         self.end_episode = threading.Event()  # (set to end the episode running now: the user redirected)
         self.describer = None  # autopilot.vision.Describer: describe_frames (None: not in this run)
+        # Looking while a harness plays (autopilot/watch.py): the recording's last seconds answered as questions
+        # (Jev with the frames, else the describer's vision model) for the harness and the trace; a watch.Looker, in
+        # the sandbox's child a RemoteLooker (the parent looks). None: no looks in this run
+        self.looker = None
         # each episode's video (media.Recorder's begin/end): the describer's recorder, or in the sandbox the parent's
         # (autopilot.sandbox.RemoteRecorder)
         self.recorder = None
@@ -1299,7 +1313,7 @@ class Session:
                         w["in_play"] = True
             rt = runtime.Runtime(self.game, harness, trace_path, client=self.client, max_seconds=seconds,
                                  stop=lambda: self._episode_over(until), say=self.say, resume=resume,
-                                 telemetry=self.telemetry(), progress=progress)
+                                 telemetry=self.telemetry(), progress=progress, looker=self.looker)
             # The episode's own video (media.Recorder): from here to its end, which it ends on (before the game pauses)
             recorder = self.recorder or getattr(self.describer, "recorder", None)
             if recorder is not None:
@@ -1923,7 +1937,16 @@ def briefing(session, opening=None):
         text, _ = _listing(session, "## Where the request's words appear in the codex (files, with how often)",
                            ranked, "request_words", "files have some of the request's words, the most first")
         out.append("\n".join([text, *(line for line in hits if not line.startswith("- "))]))
-    if opening:
+    try:  # (the workflow for this kind of request: the package's, or this game's own: autopilot/workflows.py)
+        from .. import workflows
+        from ..cli import kind_by_words
+
+        flow = workflows.text(kind_by_words(session.prompt), root)
+        if flow:
+            out.append(flow)
+    except Exception as e:  # noqa: BLE001 - a run never fails for its playbook
+        session.note(f"workflow: {e}")
+    if opening:  # (last: the live game's state is the part a long briefing is cut at, and it is kept whole in a file)
         title = "## The live game now (looked at just before you started; it is paused)"
         if len(opening) > BRIEF_PART:  # (whole in a file of the run)
             rel = whole.kept(session.run_dir, session.run_rel, "opening", opening)[1]
@@ -2074,6 +2097,10 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
     if steering is not None:
         session.steering = steering
     session.describer = describer
+    session.looker = looker_for(describer, client)
+    if session.looker is not None:
+        why = session.looker.available()
+        session.note("watch: " + (f"off ({why})" if why else "on: the picture is looked at while harnesses play"))
     # The run's earlier session, when one stopped before it reported and this one goes on from it (go_on): its
     # episodes keep their numbers (harnessN.py, traceN_summary.txt), and the agent is told to read them first
     marker = os.path.join(session.run_dir, GOING_ON_FILE)
@@ -2091,12 +2118,28 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
                                              codexmod.MEMORY, scrub=scrub,
                                              recorder=getattr(describer, "recorder", None),
                                              level=getattr(game, "level", None), say=session.say,
-                                             activity=session.activity)
+                                             activity=session.activity, looker=session.looker)
         session.note(f"sandbox: {session.sandbox.kind}")
         if session.episodes:  # (episodes play in its process: a new one must not take an earlier one's number)
             session.sandbox.call("go_on", timeout=30, episodes=session.episodes)
     start_reading(session, describer)
     return session
+
+
+def looker_for(describer, client):
+    """The run's watch.Looker (looking while harnesses play): the recording's frames (the describer's recorder's),
+    Jev (the run's client: TypeSafe takes the frames as images) and the describer's vision model as the fallback and
+    for the deaths' reviews. None when the run has no recording (no describer) or AUTOPILOT_WATCH=0."""
+    if describer is None or (os.environ.get("AUTOPILOT_WATCH") or "1").strip() == "0":
+        return None
+    from ..watch import Looker
+
+    frames = getattr(describer, "frames", None)
+    if frames is None:
+        return None
+    return Looker(frames, jev=client, route=describer.route, provider=describer.provider,
+                  usage=describer.usage, proxied=describer.proxied, log=describer.log,
+                  named=getattr(describer, "named", False))
 
 
 def start_reading(session, describer=None):

@@ -118,6 +118,17 @@ Each does one tick of control per step and returns a `Result` (truthy when it wo
 - `aim_and_strike(game, target, key, strikes=1, cooldown=0.5)`: look at the target and press `key` `strikes` times: one
   volley, for tactics of your own that choose when to be in reach.
 - `hold_for(game, key, seconds)`, `press(game, key, times=1, every=0.15)`, `wait(game, seconds)`, `until(game, cond, timeout)`.
+- `moveset(game, steps, timeout=None)`: a sequence of inputs the game runs itself, frame by frame on its own clock
+  (`game.sequence`): `steps` = `[{"key", "mode": "press"|"hold"|"release", "at": s | "after": s, "when": {...},
+  "timeout": s}, ...]`; a step fires at its time once its `when` holds, read by the game every frame: `{"near":
+  {"point": Vec, "within": cm}}`, `{"past": {"point": Vec, "dir": Vec}}` (the player past the plane through the
+  point facing dir), `{"past_of": {"path": a part, "dir": Vec, "along": cm}}` (the plane carried by a moving part:
+  its edge, `along` = its half size that way less a margin; a deck drifting back brings its edge to the body),
+  `{"on_ground": bool}`, `{"falling": bool}`, `{"vz_below": cm/s}` (the top of a jump: 0). For a
+  move that must land on a frame (a jump at an edge, a dodge a tenth after a tell, a combo): the brain's delay is
+  out of it. Where the plugin runs no sequences it runs from here by the game's clock.
+- `jump_at(game, edge, direction, hold=0.6)`: run along `direction` and jump the frame the player passes `edge` (a
+  point on the take-off line), forward held `hold` s more: a gap jump that lands the same on every machine.
 - `run(gen, timeout=15)`: drive a controller to its end from plain code (`setup()`, `teardown()`), as in probes;
   inside executors `yield from` it instead.
 - `sonar(game, turns=(...), reach=1500)`: the sonar ways (see view).
@@ -128,6 +139,30 @@ Each does one tick of control per step and returns a `Result` (truthy when it wo
 `Vec(x, y, z)` (`Vec.of(dict)`, `.dist`, `.dist2d`, `.length`, `.unit`, `.flat`, `.rounded()`), `bearing(at, yaw, point)`
 (degrees right), `clock(bearing)` (ahead / ahead-left / left / behind...), `forward(yaw, pitch)`, `right_of(yaw)`,
 `wrap`, `yaw_of`, `pitch_of`, `where(pose, point)` -> {"distance", "direction", "bearing", "height"} (facts for Jev).
+
+## Time (the game's, never the wall clock's)
+
+Every controller above times itself by the game's own clock: `game.t` is the game time of the latest answer and
+`game.now` the game time at this moment (the answer's plus the wall time since it came, while the game runs); a
+`Clock(game)` is a stopwatch in game seconds (`elapsed()`, `step()`: the game seconds since the last step, the pace
+your loop runs at) that counts real time only while the game's clock stands still (a pause menu, a loading screen).
+Write your own loops the same way: `clock = Clock(game)` ... `while clock.elapsed() < timeout:`, never
+`time.monotonic()` or `time.sleep`. On a machine that runs the game slowly every read waits a frame and a tick covers
+less of the game; timed by the game a move lasts the same wherever it plays, and a harness tuned here plays the same
+there. `game.lag` is the game seconds from an input sent to its effect, measured (calibrate_look): what a move timed
+to the game must be sent ahead by, when the game can't do the timing itself (moveset, jump_at: then it can).
+
+## Looking while playing (the picture)
+
+While an episode plays, a model that sees the last 5 s of the recording answers questions about it: every few
+seconds, and right after a death, a failed option or a stall. By default: `blocked` (the player is stuck), `cause`
+(what happened to it: nothing / hazard / fall / enemy / moving_object / died_unseen) and `menu` (a screen covers the
+view). The answers reach `on_watch(answers, obs)` and `game.watch` (`game.watch.get("blocked", 0) > 0.7` in an
+executor: stop pushing and try another way), and the trace: the summary's "What the picture showed" gives each
+death's cause and a sentence on what the picture showed before it. Add your own in `watch_questions(obs)`: what the
+numbers can't tell and the picture can (`{"beam_across_way": "A beam, laser or fire crosses the player's way
+ahead"}`, `{"clear_shot": True}` for the built-in line-of-sight question when the player aims at something), and
+tell the runtime what a death is when it isn't a count named deaths/falls (`died(before, obs)`).
 
 ## The harness (kit.harness: read its docstrings)
 
@@ -294,7 +329,12 @@ class EscortHarness(Harness):
 - Using a thing by the crosshair (pick up, open, talk to): walk to inside the game's use range but not on top of it
   (a thing on the floor needs 1-2.5 m: standing over it, a third-person camera can't see it), `look_at` it with the
   default tolerance, check the game's own sign that it is targeted (`game.sees([thing])[thing]["crosshair_on"]`, or
-  the game's focus/target property from the code) and only then press.
+  the game's focus/target property from the code) and only then press. `game.sees` tells line of sight to a thing's
+  centre, not whether a shot gets through: when shots keep missing something "visible", ask the picture
+  (`watch_questions`: `{"clear_shot": True}`) and move for a clear one when it says no.
+- When a death's cause repeats in the summary's "What the picture showed" (a beam, a press, a fall at one gap),
+  the next harness handles that cause (a wait for its clear moment, a jump timed by the game, another way round)
+  before the episode plays again: the same failure twice is a fact, not bad luck.
 
 ## Reacting in time (dodging, blocking, jumping)
 
@@ -308,8 +348,10 @@ fraction of a second after it shows. Reactions like that go in executor code, wh
 - Read the player's own move in the code: how long it protects (invincibility frames, a guard window) and from when,
   how long it lasts, what it costs (stamina, a cooldown), whether it cancels an attack of the player's own.
 - Every tick, read the tell (one `game.batch`) and make the move once the hit is less than a lead away: the time from
-  the press until the protection starts, plus the step time (the summary's "Executor steps"). Measure the lead in
-  play (hits taken against moves made), don't guess it: it changes with the frame rate.
+  the press until the protection starts (`game.lag` plus the move's own start-up, from the code), plus the step time
+  (`Clock.step()`, the summary's "Executor steps"). Measure the lead in play (hits taken against moves made), don't
+  guess it. Better: hand the timing to the game with `moveset` when the tell is a time (a hit lands 0.4 s after the
+  wind-up starts: `{"key": dodge, "at": 0.4 - protection_start}`): then the brain's delay doesn't count.
 - React once per hit (remember which hit it was) and not again before the move's recovery ends: a reflex that fires
   for as long as a threat lasts leaves the player dodging and never attacking. Attack in the openings, when the next
   hit is further off than an attack takes.
