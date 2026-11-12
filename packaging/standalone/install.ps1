@@ -14,10 +14,46 @@ $envFile = Join-Path $settings "autopilot.env"
 $wheel = Get-ChildItem -Path $here -Filter "autopilot-*.whl" | Select-Object -First 1
 if (-not $wheel) { throw "No autopilot-*.whl next to install.ps1: unpack the whole download, then run it again." }
 
+# One install at a time. Two editors that start together (or one project opened twice) each run this when the agent
+# service installed is older than theirs; the second moved the installed environment aside while the first was still
+# installing and using it, and left it broken. A later install waits for the one running (the lock is let go when its
+# PowerShell ends, however it ends), then leaves what that one installed if it is this same agent service and works.
+$installLock = New-Object System.Threading.Mutex($false, "Local\AutopilotAgentServiceInstall")
+function Enter-InstallLock([int]$Milliseconds) {
+    try { return $installLock.WaitOne($Milliseconds) }
+    catch [System.Threading.AbandonedMutexException] { return $true }  # (one that ended without letting go: ours now)
+}
+$waited = $false
+if (-not (Enter-InstallLock 0)) {
+    Write-Host "Another Autopilot install is running (another editor's): waiting for it to finish..."
+    $waited = $true
+    if (-not (Enter-InstallLock 1200000)) {
+        throw "Couldn't install Autopilot: another install has been running for 20 minutes. Close the other editors, then run this again."
+    }
+}
+
 if (-not (Get-Command uv -ErrorAction SilentlyContinue)) {
     Write-Host "Installing uv (https://docs.astral.sh/uv/), which installs Autopilot and its Python..."
     powershell -ExecutionPolicy Bypass -c "irm https://astral.sh/uv/install.ps1 | iex"
     $env:Path = "$env:USERPROFILE\.local\bin;$env:Path"
+}
+
+$toolDir = "$(uv tool dir)".Trim()
+$binDir = "$(uv tool dir --bin)".Trim()
+if ($LASTEXITCODE -ne 0 -or -not $binDir) { $binDir = Join-Path $env:USERPROFILE ".local\bin" }  # (an older uv)
+$envDir = Join-Path $toolDir "autopilot"
+$command = Join-Path $binDir "autopilot.exe"
+
+$installedStamp = Join-Path $settings "agent-service.json"
+$ourStamp = Join-Path $here "agent-service.json"
+$envPython = Join-Path $envDir "Scripts\python.exe"
+if ($waited -and (Test-Path $ourStamp) -and (Test-Path $installedStamp) -and (Test-Path $envPython) -and
+        ((Get-Content -Raw $ourStamp) -eq (Get-Content -Raw $installedStamp))) {
+    & $envPython -I -c "import autopilot.cli"
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "The install that was running installed this same agent service: Autopilot is installed."
+        exit 0
+    }
 }
 
 Write-Host "Installing Autopilot from $($wheel.Name)..."
@@ -27,20 +63,30 @@ Write-Host "Installing Autopilot from $($wheel.Name)..."
 # held folder and a running .exe can still be moved, so the installed environment and its command are moved aside,
 # the new one is installed where they were and checked, and on any failure the old ones are moved back. What was moved
 # aside is deleted once nothing holds it (here, or by the next install).
-$toolDir = "$(uv tool dir)".Trim()
-$binDir = "$(uv tool dir --bin)".Trim()
-if ($LASTEXITCODE -ne 0 -or -not $binDir) { $binDir = Join-Path $env:USERPROFILE ".local\bin" }  # (an older uv)
-$envDir = Join-Path $toolDir "autopilot"
-$command = Join-Path $binDir "autopilot.exe"
+# The folder is moved by one rename ([System.IO.Directory]::Move), all of it or none: Move-Item, when a file in it is
+# open by a program that doesn't let it be moved, moves the files before that one and stops, and the installed
+# environment was left in two halves (no pyvenv.cfg where uv looks: "No pyvenv.cfg file", every start).
+# Folders are deleted through their \\?\ path: OpenCode's packages (in the autopilot package) go deeper than Windows
+# PowerShell's 260-character paths, and Remove-Item left every environment moved aside behind.
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $asideDir = Join-Path (Split-Path -Parent $toolDir) "autopilot-previous"  # (not in the tool folder: uv lists those)
 $envAside = Join-Path $asideDir "autopilot-$stamp"
 $commandAside = "autopilot.exe.$stamp.old"  # (beside it: an .exe moves only within its drive)
 
+function Move-Folder([string]$From, [string]$To) {
+    try { [System.IO.Directory]::Move($From, $To) }
+    catch { throw $(if ($_.Exception.InnerException) { $_.Exception.InnerException } else { $_.Exception }) }
+}
+
+function Remove-Folder([string]$Path) {
+    # (as much as isn't held: what is stays for the next install)
+    try { [System.IO.Directory]::Delete("\\?\" + [System.IO.Path]::GetFullPath($Path), $true) } catch { }
+}
+
 function Remove-Aside {
-    # (what earlier updates moved aside: a file still held stays for the next one)
+    # (what earlier updates moved aside)
     if (Test-Path $asideDir) {
-        Get-ChildItem $asideDir | ForEach-Object { Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue }
+        Get-ChildItem $asideDir | ForEach-Object { Remove-Folder $_.FullName }
     }
     Get-ChildItem $binDir -Filter "autopilot.exe.*.old" -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-Item -Force $_.FullName -ErrorAction SilentlyContinue }
@@ -48,8 +94,8 @@ function Remove-Aside {
 
 function Restore-Previous {
     if ($script:movedEnv) {
-        if (Test-Path $envDir) { Remove-Item -Recurse -Force $envDir -ErrorAction SilentlyContinue }  # (what uv made of it)
-        Move-Item -LiteralPath $envAside -Destination $envDir -ErrorAction SilentlyContinue
+        if (Test-Path $envDir) { Remove-Folder $envDir }  # (what uv made of it)
+        try { Move-Folder $envAside $envDir } catch { }
     }
     if ($script:movedCommand) {
         if (Test-Path $command) { Remove-Item -Force $command -ErrorAction SilentlyContinue }
@@ -75,7 +121,7 @@ if (Test-Path $envDir) {
         catch { throw "Couldn't update Autopilot: $command is running. $inUse" }
     }
     New-Item -ItemType Directory -Force -Path $asideDir | Out-Null
-    try { Move-Item -LiteralPath $envDir -Destination $envAside -ErrorAction Stop; $script:movedEnv = $true }
+    try { Move-Folder $envDir $envAside; $script:movedEnv = $true }
     catch {
         Restore-Previous | Out-Null
         throw "Couldn't update Autopilot: its installed files are in use ($($_.Exception.Message)). $inUse"
