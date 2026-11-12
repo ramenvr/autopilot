@@ -367,6 +367,75 @@ def test_installed_reads_uvs_tools(monkeypatch):
     assert tools["autopilot"][0] == os.path.join("/home/me/.local/share/uv/tools", "autopilot")
 
 
+def set_aside_by_updates(tmp_path, monkeypatch, installed=False):
+    """uv's folders as install.ps1's updates leave them: earlier environments in autopilot-previous (one with a path
+    deeper than 260 characters, as OpenCode's packages go) and earlier commands beside the command, with a file of
+    someone else's beside them. uv answers with these folders."""
+    tools, bins = tmp_path / "uv" / "tools", tmp_path / "bin"
+    tools.mkdir(parents=True)
+    bins.mkdir()
+    aside = tmp_path / "uv" / "autopilot-previous"
+    deep = aside / "autopilot-20261112-092040" / "Lib" / "site-packages" / "autopilot" / "agents" / "opencode_host"
+    for part in ("node_modules", "@ai-sdk", "openai-compatible", "node_modules", "@ai-sdk", "provider-utils",
+                 "node_modules", "eventsource-parser", "dist", "stream-with-a-long-enough-name"):
+        deep = deep / part
+    long_dir = uninstall._long(str(deep))
+    os.makedirs(long_dir)
+    with open(os.path.join(long_dir, "index.js"), "w") as f:
+        f.write("x")
+    assert len(str(deep / "index.js")) > 260
+    (aside / "autopilot-20261111-103634" / "Lib").mkdir(parents=True)
+    (aside / "autopilot-20261111-103634" / "Lib" / "x.py").write_text("x")
+    for name in ("autopilot.exe.20261112-092020.old", "autopilot.exe.20261111-103634.old", "uv.exe"):
+        (bins / name).write_text("x")
+    answers = {("tool", "list"): "autopilot v0.1.0\n- autopilot\n" if installed else "",
+               ("tool", "dir"): f"{tools}\n", ("tool", "dir", "--bin"): f"{bins}\n"}
+    monkeypatch.setattr(uninstall, "_uv", lambda exe, *args: answers.get(args))
+    return aside, bins
+
+
+def test_uninstall_removes_what_updates_set_aside_long_paths_too(tmp_path, monkeypatch):
+    folder = settings(tmp_path)
+    aside, bins = set_aside_by_updates(tmp_path, monkeypatch)
+    said = []
+    assert uninstall.uninstall(str(folder), exe="uv", say=said.append) == 0
+    assert not os.path.lexists(uninstall._long(str(aside))), "the environments set aside are gone"
+    assert sorted(os.listdir(bins)) == ["uv.exe"], "the commands set aside are gone, someone else's file stays"
+    assert any(line.startswith(f"Removed {aside} ") for line in said), said
+    assert said[-1].startswith("Autopilot is removed from this computer.")
+
+
+def test_what_updates_set_aside_is_in_what_uninstalling_would_remove_even_with_autopilot_gone(tmp_path, monkeypatch):
+    folder = tmp_path / "no-settings"
+    aside, bins = set_aside_by_updates(tmp_path, monkeypatch, installed=False)
+    lines, tools = uninstall.plan(str(folder), "uv")
+    assert tools == {}
+    assert lines == ["Copies of the autopilot command earlier updates set aside (" + ", ".join(
+        [str(aside), str(bins / "autopilot.exe.20261111-103634.old"), str(bins / "autopilot.exe.20261112-092020.old")])
+        + ")"]
+
+
+def test_without_anything_set_aside_uninstalling_names_none(tmp_path, monkeypatch):
+    answers = {("tool", "list"): "", ("tool", "dir"): f"{tmp_path / 'uv' / 'tools'}\n",
+               ("tool", "dir", "--bin"): f"{tmp_path / 'bin'}\n"}
+    monkeypatch.setattr(uninstall, "_uv", lambda exe, *args: answers.get(args))
+    assert uninstall.set_aside("uv") == [] and uninstall.plan(str(tmp_path / "none"), "uv") == ([], {})
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="a file open on Windows can't be removed")
+def test_a_copy_set_aside_a_program_still_has_open_is_named_and_the_rest_goes(tmp_path, monkeypatch):
+    folder = settings(tmp_path)
+    aside, bins = set_aside_by_updates(tmp_path, monkeypatch)
+    held = aside / "autopilot-20261111-103634" / "Lib" / "x.py"
+    said = []
+    with open(held, "rb"):  # (as Python opens a file: it can't be deleted while open)
+        assert uninstall.uninstall(str(folder), exe="uv", say=said.append) == uninstall.KEPT
+    assert os.path.exists(held) and not os.path.lexists(uninstall._long(str(aside / "autopilot-20261112-092040")))
+    assert sorted(os.listdir(bins)) == ["uv.exe"]
+    assert f"Couldn't remove all of {aside} (in use: a program still runs from it)" in said
+    assert str(aside) in said[-1] and said[-1].startswith("Autopilot is removed from this computer, but for:")
+
+
 def test_main_asks_first_and_removes_nothing_without_an_answer(tmp_path, monkeypatch, capsys):
     folder = settings(tmp_path)
     monkeypatch.setattr(uninstall, "settings_folder", lambda: str(folder))

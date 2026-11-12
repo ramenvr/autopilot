@@ -21,6 +21,9 @@ What it removes, in this order:
    user's own by those names stay);
 6. the `autopilot` command (`uv tool uninstall autopilot`). On Windows,
    when this process runs from that command, after it has ended: a program's files can't be removed while it runs.
+   And the copies of it earlier updates set aside and haven't deleted yet (install.ps1, Windows: the environments in
+   autopilot-previous beside uv's tool folder, the commands autopilot.exe.<time>.old beside the command); what a
+   program still runs from (another session's `autopilot mcp`, say) is named (in use).
 
 Shared run data is never removed: what was sent stays. With --keep-memory the memory kept with Aura stays too (a later
 install gets it back); without it, it is deleted with the memory, while this computer is still signed in to Aura (an
@@ -61,6 +64,8 @@ MEMORY = "memory"
 # What runs leave in the temporary folder, removed when they end; a run that was killed leaves them
 TEMP_PREFIXES = ("autopilot-opencode-", "autopilot-codex-", "autopilot-system-", "autopilot-selftest-",
                  "autopilot-upload-", "autopilot_codex.lock")
+ASIDE = "autopilot-previous"  # (install.ps1: where an update moves the installed environment, beside uv's tool folder)
+ASIDE_COMMAND = re.compile(r"autopilot\.exe\.\d{8}-\d{6}\.old")  # (and the command, beside it)
 WAIT_SECONDS = 120.0  # how long the command's removal waits for the processes running it to end
 ERASE_TIMEOUT = 130  # seconds for Aura to erase a game's memory (it stops starting deletes after 90 s)
 
@@ -358,6 +363,20 @@ def installed(exe):
             for name in names}
 
 
+def set_aside(exe):
+    """What updates moved aside and haven't deleted yet (install.ps1: a file a program still had open stays until the
+    next install, and after an uninstall there is none): the folder of earlier environments beside uv's tool folder and
+    the earlier commands beside the command. Whether or not Autopilot is still installed."""
+    found = []
+    envs = (_uv(exe, "tool", "dir") or "").strip()
+    if envs and os.path.isdir(os.path.join(os.path.dirname(envs), ASIDE)):
+        found.append(os.path.join(os.path.dirname(envs), ASIDE))
+    bins = (_uv(exe, "tool", "dir", "--bin") or "").strip() or os.path.join(os.path.expanduser("~"), ".local", "bin")
+    if os.path.isdir(bins):
+        found += [os.path.join(bins, name) for name in sorted(os.listdir(bins)) if ASIDE_COMMAND.fullmatch(name)]
+    return found
+
+
 # The command's removal once the processes running it have ended (Windows can't remove a program's files while it
 # runs): run by the Python Autopilot's environment was made from, which isn't removed with it. argv: uv, the pids to
 # wait for, the tools, the log
@@ -429,9 +448,17 @@ def remove_tools(exe, tools, found, log=None, say=print):
 
 # -- files -----------------------------------------------------------------------------------------------------------
 
+def _long(path):
+    """The path as Windows takes one longer than 260 characters (\\\\?\\): OpenCode's packages, in the autopilot
+    package, go deeper than that, and without it rmtree stopped there wherever long paths aren't turned on."""
+    if not WINDOWS or path.startswith("\\\\"):
+        return path
+    return "\\\\?\\" + os.path.abspath(path)
+
+
 def _remove(path):
-    """Remove a file or folder, read-only files too (on Windows rmtree can't remove those as they are). Returns
-    whether it is gone."""
+    """Remove a file or folder, read-only files too (on Windows rmtree can't remove those as they are), long paths
+    too. Returns whether it is gone."""
     def retry(func, p, _):
         try:
             os.chmod(p, stat.S_IWRITE)
@@ -441,7 +468,7 @@ def _remove(path):
 
     try:
         if os.path.isdir(path) and not os.path.islink(path):
-            shutil.rmtree(path, onexc=retry)
+            shutil.rmtree(_long(path), onexc=retry)
         else:
             os.chmod(path, stat.S_IWRITE)
             os.remove(path)
@@ -507,6 +534,9 @@ def plan(folder, exe):
                      "about each game")
     if tools:
         lines.append("The autopilot command (" + ", ".join(env for env, _ in tools.values() if env) + ")")
+    aside = set_aside(exe) if exe else []
+    if aside:
+        lines.append("Copies of the autopilot command earlier updates set aside (" + ", ".join(aside) + ")")
     return lines, tools
 
 
@@ -564,6 +594,12 @@ def uninstall(folder=None, keep_memory=False, say=print, exe=None, log=None, upl
     if not connect.remove_all(say=say):
         kept.append("what `autopilot connect` set up in Claude Code or Codex (see above)")
 
+    for path in set_aside(exe) if exe else []:
+        if _remove(path):
+            say(f"Removed {path} (a copy of the autopilot command an update set aside)")
+        else:
+            say(f"Couldn't remove all of {path} (in use: a program still runs from it)")
+            kept.append(path)
     if tools:
         if remove_tools(exe, tools, found, log=log, say=say) == "failed":
             kept.append("the autopilot command")

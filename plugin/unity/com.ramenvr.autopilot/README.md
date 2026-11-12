@@ -426,7 +426,7 @@ and deletes Autopilot’s memories for my entire team.** (unticked each time it 
 system's temporary folder, its output in `<temp>/autopilot-uninstall-<yyyyMMdd-HHmmss>.log`. It stops the agent
 services running (never the Aura app's), sends the shared runs not sent yet, signs out of Aura, removes the
 `Autopilot/` settings folder (your keys, Aura sign-in, setup choices, logs and, with the box ticked, what Autopilot
-learned; the Aura app's `aura-brain.json` stays), and uninstalls the `autopilot` command. With the box ticked the memories are deleted on this computer and also the copy kept with Aura for
+learned; the Aura app's `aura-brain.json` stays), and uninstalls the `autopilot` command, with the copies of it earlier updates on Windows set aside and couldn't delete yet. With the box ticked the memories are deleted on this computer and also the copy kept with Aura for
 your team (and this install's copy kept for your own keys), and it also removes what the package keeps about the runs
 in each project the agent service has run (the files below but the window's settings), and the window forgets its runs
 at once. **Shared run data already sent is never removed**; shared runs not sent yet that can't be sent now go with the

@@ -540,7 +540,8 @@ uninstall --yes` (with `--keep-memory` when that is left unchecked: the memories
 folder, with its output in `autopilot-uninstall-<date-time>.log` there. That removes, for every project and editor on
 the computer: the agent services running (never the Aura app's), your Aura sign-in (ended on Aura's side too), the
 settings folder (`Autopilot/` in your user settings folder: keys, setup choices, logs and, when checked, what
-Autopilot learned) and the `autopilot` command. When it is checked, the memories are deleted on this computer and also
+Autopilot learned) and the `autopilot` command, with the copies of it earlier updates on Windows set aside and
+couldn't delete yet. When it is checked, the memories are deleted on this computer and also
 the copy kept with Aura for your team (and this install's copy kept for your own keys), and it also removes what each
 game's plugin keeps about the runs in its project (below: the run history, reports, recordings and the codex export),
 for every project the agent service has run, and the tab forgets its runs at once. Shared runs not sent yet are sent

@@ -279,7 +279,7 @@ class E2E:
             os.path.join(self.claude_cache, n) for n in os.listdir(self.claude_cache) if n != "someone-elses-project"]
         return {
             "temp": [os.path.join(self.temp, "autopilot-opencode-abc"),
-                     os.path.join(self.temp, "autopilot_codex.lock")],
+                     os.path.join(self.temp, "autopilot_codex.lock")] + self.set_aside(),
             "project_data": project_data,
             "memory": memory,
             "kept": [os.path.join(unreal, "ApGame.uproject"), os.path.join(unreal, "Saved", "Config", "Editor.ini"),
@@ -288,6 +288,24 @@ class E2E:
                      os.path.join(self.game, "project.godot"), os.path.join(self.godot_user, "logs", "godot.log"),
                      os.path.join(self.claude_cache, "someone-elses-project")],
         }
+
+    def set_aside(self):
+        """What install.ps1's updates leave on Windows when a program still ran from what they moved aside: an earlier
+        environment in autopilot-previous beside uv's tool folder, with a path deeper than 260 characters as OpenCode's
+        packages go, and an earlier command beside the command. Removed with the command."""
+        if not WIN:
+            return []
+        tools = subprocess.run(["uv", "tool", "dir"], env=self.env(), capture_output=True, text=True).stdout.strip()
+        aside = os.path.join(os.path.dirname(tools), "autopilot-previous")
+        deep = os.path.join(aside, "autopilot-20261019-110000", "Lib", "site-packages", "autopilot", "agents",
+                            "opencode_host", *(["node_modules", "@ai-sdk", "provider-utils"] * 4), "dist")
+        os.makedirs("\\\\?\\" + deep, exist_ok=True)
+        with open("\\\\?\\" + os.path.join(deep, "index.js"), "w", encoding="utf-8") as f:
+            f.write("x")
+        self.check("an environment set aside with a path over 260 characters", len(deep) > 260, str(len(deep)))
+        command = os.path.join(self.bin, "autopilot.exe.20261019-110000.old")
+        self.write(command)
+        return [aside, command]
 
     # -- processes --------------------------------------------------------------------------------------------------
 
