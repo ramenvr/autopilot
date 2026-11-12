@@ -334,10 +334,7 @@ def test_the_serve_loop_sends_the_feed_again_to_a_plugin_that_asks(monkeypatch):
         cli.cmd_serve(link, types.SimpleNamespace(path=None, model=None))
     ids = [f["id"] for f in link.sent if f["type"] == "activity"]
     assert ids == [1, 2, 3, 2, 3, 1, 2, 3], link.sent
-    # (the feed watches the link for a plugin back from a reload: once. The detectors' watcher is the other kind there
-    # may be, added when a hello comes while the run's thread is still finishing: not counted, it's theirs)
-    feeds = [fn for fn in link.rebound if getattr(fn, "detectors_folder", None) is None]
-    assert len(feeds) == 1, link.rebound
+    assert len(link.rebound) == 1  # (the feed watches the link for a plugin back from a reload: once)
 
 
 def test_the_whole_feed_goes_again_after_a_reload(monkeypatch):

@@ -1167,7 +1167,6 @@ class Session:
         if value[0] is not None:
             text += ("" if text.endswith("\n") or not text else "\n") + _show(value[0])
         dt = time.time() - t0
-        took = f"\n(the probe took {dt:.1f} s)"  # (on a slow game a probe's reads and walks take long: worth knowing)
         lines = len(text.splitlines())
         what = (f"Cut off after {seconds:.0f} s" if late else
                 f"Failed after {dt:.1f} s" if "Traceback (most recent call last)" in text else
@@ -1175,16 +1174,15 @@ class Session:
         text = text or ("" if late else "(no output)")
         # Longer than an answer holds: whole in a file of the run (the feed's detail points to it too); the note on
         # a probe cut off by the time stays in sight, after what fits
-        where = (whole.kept(self.run_dir, self.run_rel, "probe", text)
-                 if len(text) > whole.ANSWER_CHARS - len(late) - len(took) else None)
+        where = (whole.kept(self.run_dir, self.run_rel, "probe", text) if len(text) > whole.ANSWER_CHARS - len(late)
+                 else None)
         self.activity("probe", what, detail=text + late, ends="probe", whole_at=None if late or not where
                       else where[0], log=f"probe ({dt:.1f}s):\n{code}\n-> {text}{late}")
         over = self.started_over()  # (a probe's game.restart or check_harness)
         self.touched = True
         if where:
-            text = whole.deliver(text, whole.ANSWER_CHARS - len(late) - len(took), where[1], what="This probe's output")
-        body = text + late
-        return body + (took[1:] if body.endswith("\n") else took) + ("\n" + over if over else "")
+            text = whole.deliver(text, whole.ANSWER_CHARS - len(late), where[1], what="This probe's output")
+        return text + late + ("\n" + over if over else "")
 
     def started_over(self):
         """STARTED_OVER when the level has started over since the agent was last told, "" when it hasn't or when
@@ -1428,14 +1426,6 @@ class Session:
             out["level"] = c.get("world")
             out["player"] = c.get("character") or "(no player pawn: a menu, a loading screen, dead?)"
             out["game_time"] = round(float(c.get("game_time") or 0.0), 1)
-            # How fast the game runs and answers (measured now, while it runs): a slow one needs harnesses made for it
-            try:
-                pace = runtime.pace_line(g.measure_pace(), now=True)
-            except Exception as e:
-                pace = ""
-                self.note(f"pace not measured: {type(e).__name__}: {e}")
-            if pace:
-                out["pace"] = pace
             out["controls"] = {x.get("name"): x.get("keys") for x in c.get("controls") or []}
             # (the plugin's notes on how input reaches the game, e.g. Unity's: point before clicking, or keys can't)
             notes = c["input"].get("notes") if isinstance(c.get("input"), dict) else None

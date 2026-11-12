@@ -1686,7 +1686,7 @@ def test_the_agent_is_told_the_level_started_over(game, tmp_path, monkeypatch):
     reply = s.restart_level()
     assert reply.startswith("Restarted.") and told in reply
     assert s.restart_level() == "Restarted."  # (nothing done since the last one)
-    assert s.probe("print('still fresh')").rsplit("(the probe took", 1)[0].endswith("still fresh\n")
+    assert s.probe("print('still fresh')").endswith("still fresh\n")
     assert told in s.probe("game.restart()")  # (in a probe, as check_harness does)
     assert told not in s.probe("print('told once')")
     out = s.probe("print(check_harness(only=[]))")

@@ -29,57 +29,6 @@ local function note(text: string)
 	end
 end
 
--- The HTTP transport's requests, paced. Studio throttles a DataModel's HttpService requests, a plugin's and the game's
--- scripts' together: 500 a minute documented (a play session's server: measured so), more in the editor (2000 measured
--- in 2024, not documented), and a refused request ("Number of requests exceeded limit") would end the link. A busy run
--- (a held key renewed 10-15 times a second, reads between) would pass that, so the requests take from a bucket that
--- fills at HTTP_PER_MINUTE (HTTP_BURST at most): an idle or ordinary link never waits; a busy one waits its turn, and
--- what comes meanwhile goes in the next request (one POST takes every frame waiting; the brain answers a poll with every
--- frame waiting). A request refused all the same is tried again after a wait (1 s doubling to 4 s; the bucket then fills
--- at HTTP_THROTTLED_PER_MINUTE), and the link ends only once refusals go on for THROTTLE_GIVE_UP seconds.
-Link.HTTP_PER_MINUTE = if RunService:IsEdit() then 1500 else 400
-Link.HTTP_THROTTLED_PER_MINUTE = 400
-Link.HTTP_BURST = 40
-Link.THROTTLE_GIVE_UP = 30
-local bucket = { tokens = Link.HTTP_BURST, at = os.clock(), throttled = false }
-Link.bucket = bucket -- (for a look, and tests)
-
--- Wait (yields) until one more HTTP request may go now.
-function Link.takeRequest()
-	while true do
-		local now = os.clock()
-		local perSecond = (if bucket.throttled then math.min(Link.HTTP_PER_MINUTE, Link.HTTP_THROTTLED_PER_MINUTE)
-			else Link.HTTP_PER_MINUTE) / 60
-		bucket.tokens = math.min(Link.HTTP_BURST, bucket.tokens + (now - bucket.at) * perSecond)
-		bucket.at = now
-		if bucket.tokens >= 1 then
-			bucket.tokens -= 1
-			return
-		end
-		task.wait((1 - bucket.tokens) / perSecond)
-	end
-end
-
--- Whether a request's failure is Studio's throttle (or a 429): one to try again after a wait, not the link's end.
-function Link.throttled(ok: boolean, r: any): boolean
-	if not ok then
-		local e = string.lower(tostring(r))
-		return string.find(e, "exceeded limit", 1, true) ~= nil or string.find(e, "too many requests", 1, true) ~= nil
-	end
-	return type(r) == "table" and r.StatusCode == 429
-end
-
--- After a throttled request: the bucket emptied and slower from now on; how long to wait before trying again.
-local function throttle(state: any): number
-	bucket.tokens = 0
-	bucket.throttled = true
-	state.since = state.since or os.clock()
-	local wait = state.wait or 1
-	state.wait = math.min(wait * 2, 4)
-	note("http throttled, again in " .. tostring(wait) .. " s")
-	return wait
-end
-
 export type Link = {
 	url: string,
 	token: string,
@@ -258,10 +207,6 @@ function Link:_connectHttp(gen: number)
 	self.http = { base = base, peer = nil, outbox = {}, sending = false }
 	local http = self.http
 	task.spawn(function()
-		Link.takeRequest()
-		if gen ~= self.generation then
-			return
-		end
 		local ok, r = pcall(function()
 			local request: any = { Url = base .. "open?path=" .. HttpService:UrlEncode(path), Method = "POST", Body = "" }
 			if self.token ~= "" then
@@ -281,27 +226,17 @@ function Link:_connectHttp(gen: number)
 		self.transport = "http"
 		self:_opened()
 		self:_flush(gen)
-		local refused: any = {}
 		while gen == self.generation do
-			Link.takeRequest()
-			if gen ~= self.generation then
-				return
-			end
 			local okp, rp = pcall(function()
 				return HttpService:RequestAsync({ Url = base .. "poll?peer=" .. http.peer, Method = "GET" })
 			end)
 			if gen ~= self.generation then
 				return
 			end
-			if Link.throttled(okp, rp) and os.clock() - (refused.since or os.clock()) < Link.THROTTLE_GIVE_UP then
-				task.wait(throttle(refused))
-				continue
-			end
 			if not okp or not rp.Success then
 				self:_ended(gen, true, if okp then tostring(rp.StatusCode) else "")
 				return
 			end
-			table.clear(refused)
 			local frames = Json.decode(rp.Body)
 			if type(frames) == "table" then
 				for _, f in ipairs(frames) do
@@ -315,39 +250,26 @@ function Link:_connectHttp(gen: number)
 	end)
 end
 
--- Send what waits, in order: one POST at a time, what comes meanwhile goes in the next. Deferred (to the end of this
--- resumption, the same frame): the frames sent together (an "acted" note and its request) go in one POST.
+-- Send what waits, in order: one POST at a time, what comes meanwhile goes in the next.
 function Link:_flush(gen: number)
 	local http = self.http
 	if http == nil or http.sending or http.peer == nil or #http.outbox == 0 then
 		return
 	end
 	http.sending = true
-	task.defer(function()
-		local refused: any = {}
+	task.spawn(function()
 		while gen == self.generation and #http.outbox > 0 do
-			Link.takeRequest()
-			if gen ~= self.generation then
-				break
-			end
 			local batch = http.outbox
 			http.outbox = {}
 			local ok, r = pcall(function()
 				return HttpService:RequestAsync({ Url = http.base .. "send?peer=" .. http.peer, Method = "POST",
 					Headers = { ["Content-Type"] = "application/json" }, Body = "[" .. table.concat(batch, ",") .. "]" })
 			end)
-			if Link.throttled(ok, r) and os.clock() - (refused.since or os.clock()) < Link.THROTTLE_GIVE_UP then
-				-- (not sent: the same frames again, before what came meanwhile)
-				http.outbox = table.move(http.outbox, 1, #http.outbox, #batch + 1, batch)
-				task.wait(throttle(refused))
-				continue
-			end
 			if not ok or not r.Success then
 				http.sending = false
 				self:_ended(gen, true, if ok then tostring(r.StatusCode) else "")
 				return
 			end
-			table.clear(refused)
 		end
 		http.sending = false
 	end)

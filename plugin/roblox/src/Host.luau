@@ -234,24 +234,7 @@ function Host:_join()
 	end)
 end
 
--- The frame rate over the second (or more) since the last heartbeat: the frames counted over the time they took, not
--- 1/dt of one frame, which one quick frame or one hitch swings. Tenths below 10 fps (a slow game's 2.5 fps isn't 3).
-function Host.fpsOf(frames: number, seconds: number): number
-	local fps = frames / math.max(seconds, 1e-3)
-	return if fps < 10 then math.round(fps * 10) / 10 else math.round(fps)
-end
-
 function Host:_frame(dt: number)
-	local now = os.clock()
-	self.frameCount = (self.frameCount or 0) + 1
-	local beat = now - self.heartbeatAt >= 1
-	local fps = 0
-	if beat then
-		-- (counted attached or not, so the first heartbeat after attaching has a whole second's frames)
-		fps = Host.fpsOf(self.frameCount, if self.heartbeatAt > 0 then now - self.heartbeatAt else dt * self.frameCount)
-		self.heartbeatAt = now
-		self.frameCount = 0
-	end
 	if not self.attached then
 		return
 	end
@@ -261,8 +244,12 @@ function Host:_frame(dt: number)
 			warn("[Autopilot] " .. self.side .. " ticker failed: " .. tostring(err))
 		end
 	end
-	if beat and self.side == "client" then
-		self:emit({ kind = "heartbeat", t = self:t(), fps = fps, paused = false })
+	local now = os.clock()
+	if now - self.heartbeatAt >= 1 then
+		self.heartbeatAt = now
+		if self.side == "client" then
+			self:emit({ kind = "heartbeat", t = self:t(), fps = math.round(1 / math.max(dt, 1e-3)), paused = false })
+		end
 	end
 	self:flush()
 end

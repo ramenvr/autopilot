@@ -6,7 +6,6 @@ They act only through the player's inputs (mouse flicks, held movement keys, pre
 loop, as a player's eyes do.
 """
 
-import contextlib
 import math
 import time
 from dataclasses import dataclass, field
@@ -56,39 +55,6 @@ class _Pace:
         return self.dt
 
 
-class _Clock:
-    """Seconds of game time since it began, as wait() counts them: a controller's timeout (the kit's seconds are the
-    game's). While the game's clock stands still though the game answers (a menu that pauses it, a loading screen) the
-    seconds pass as real time; a clock that went back (the level started over) counts on from there."""
-
-    def __init__(self, game):
-        self.game = game
-        self.last_t = game.t
-        self.changed = self.credited = time.monotonic()
-        self.elapsed = 0.0
-
-    def __call__(self):
-        now, t = time.monotonic(), self.game.t
-        if t < self.last_t:
-            self.last_t = t
-        if t > self.last_t:
-            self.elapsed += t - self.last_t
-            self.last_t, self.changed, self.credited = t, now, now
-        elif now - self.changed > 0.4:
-            self.elapsed += now - max(self.credited, self.changed)
-            self.credited = now
-        return self.elapsed
-
-
-def _read(game, *thunks):
-    """A step's reads in one round trip (game.batch): their values; the first that failed is raised (a GameError)."""
-    out = game.batch(list(thunks))
-    for v in out:
-        if isinstance(v, GameError):
-            raise v
-    return out
-
-
 def _lead(pose, goal, dt):
     """How much nearer goal (across the floor) the player gets before the next step: its speed toward it times dt."""
     v = pose.get("velocity") or Vec()
@@ -134,10 +100,9 @@ def wait(game, seconds):
 
 
 def until(game, condition, timeout=5.0):
-    """Wait until condition() is true (checked every tick) or timeout seconds of game time pass (real time while the
-    game's clock stands still, as wait())."""
-    clock, end = _Clock(game), time.monotonic() + timeout * 3 + 1
-    while clock() < timeout and time.monotonic() < end:
+    """Wait until condition() is true (checked every tick) or timeout seconds pass."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < timeout:
         if condition():
             return Result(True, "condition met")
         yield
@@ -151,11 +116,8 @@ def fit_tolerance(game, target, eye=None):
     if not isinstance(target, str):
         return 2.5
     try:
-        if eye is None:  # (both in one round trip)
-            (center, ext), p = _read(game, lambda: game.bounds(target), game.pose)
-            eye = p["eye"]
-        else:
-            center, ext = game.bounds(target)
+        center, ext = game.bounds(target)
+        eye = eye or game.pose()["eye"]
     except GameError:
         return 2.5
     if center is None or ext is None:
@@ -168,9 +130,9 @@ def fit_tolerance(game, target, eye=None):
 def look_at(game, target, tolerance=None, timeout=1.5, level=False):
     """Turn the view until it points at target (see point_of) within `tolerance` degrees; by default (None) what puts
     the crosshair well inside an actor's box (fit_tolerance), 2.5 for a point. level=True looks at the horizon in
-    target's direction (for walking). timeout: seconds of game time, once it has made MIN_CORRECTIONS corrections."""
-    clock = _Clock(game)
-    steps = ticks = 0
+    target's direction (for walking)."""
+    t0 = time.monotonic()
+    steps = 0
     if tolerance is None:
         tolerance = 2.5 if level else fit_tolerance(game, target)
     # After a turn is sent the view is judged only once it has answered and come to rest: the input may not have
@@ -185,12 +147,12 @@ def look_at(game, target, tolerance=None, timeout=1.5, level=False):
     before = None  # (yaw, pitch, right, up, sent up) as the last turn was sent
     stalled = 0
     while True:
-        try:  # (the view and where the target is, in one round trip)
-            p, point = _read(game, game.pose, lambda: point_of(game, target))
+        try:
+            p = game.pose()
+            point = point_of(game, target)
         except GameError as e:
             return Result(False, f"can't read: {e}")
         view = (p["yaw"], p["pitch"])
-        ticks += 1
         if sent is not None and waits < 6:
             (yaw0, pitch0), size = sent
             # (most of it shown: judge now; a game that answers at once loses no time to waiting)
@@ -222,11 +184,8 @@ def look_at(game, target, tolerance=None, timeout=1.5, level=False):
                               + ("it is too close below the camera: stand further from it" if up < 0 else
                                  "it is too high above: stand further from it"),
                               {"error": [round(right, 1), round(up, 1)], "pitch": round(view[1], 1)})
-        # Given up past the timeout once it has corrected enough, or past 4 timeouts however few corrections it made
-        # (a view that doesn't turn: waiting ticks aren't corrections), but not before enough ticks for a slow game's
-        # turns to show
-        waited = clock()
-        if (waited > timeout and steps >= MIN_CORRECTIONS) or (waited > 4 * timeout and ticks >= 4 * MIN_CORRECTIONS):
+        waited = time.monotonic() - t0
+        if (waited > timeout and steps >= MIN_CORRECTIONS) or waited > 4 * timeout:
             if not game.look.get("x"):
                 return Result(False, "the mouse doesn't turn the view (yet?): no effect measured; controls not active "
                               "(an intro, a menu, a cutscene)?", {"error": [round(right, 1), round(up, 1)]})
@@ -240,12 +199,12 @@ def look_at(game, target, tolerance=None, timeout=1.5, level=False):
 
 
 def track(game, target, seconds, tolerance=1.0):
-    """Keep the view on a (moving) target for `seconds` of game time (e.g. while firing)."""
-    clock, end = _Clock(game), time.monotonic() + seconds * 3 + 1
-    while clock() < seconds and time.monotonic() < end:
+    """Keep the view on a (moving) target for `seconds` (e.g. while firing)."""
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < seconds:
         try:
-            p, point = _read(game, game.pose, lambda: point_of(game, target))
-            right, up = game.aim_error(point, p)
+            p = game.pose()
+            right, up = game.aim_error(point_of(game, target), p)
         except GameError as e:
             return Result(False, f"lost target: {e}")
         if abs(right) > tolerance or abs(up) > tolerance:
@@ -370,18 +329,17 @@ def walk_to(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_whe
     avoid_drops=False. run_key: a key held while walking (sprint).
     A goal standing higher than the player steps up (on a platform, an upper floor) is reached by a way up the player
     sees (a ramp, stairs: find_way_up) whose top is near it: to its foot, up it, then on. With none in view it walks
-    straight, and if that fails, looks round for one and goes that way. climb=False: straight only. timeout: seconds of
-    game time."""
-    clock = _Clock(game)
-    left = lambda: max(2.0, timeout - clock())
+    straight, and if that fails, looks round for one and goes that way. climb=False: straight only."""
+    t0 = time.monotonic()
+    left = lambda: max(2.0, timeout - (time.monotonic() - t0))
     kw = dict(avoid_drops=avoid_drops, jump_when_stuck=jump_when_stuck, run_key=run_key, look_level=look_level,
               max_drop=max_drop)
     high, floor = False, None
     if climb:
         try:
             m = movement(game)
-            p, goal_z = _read(game, game.pose, lambda: _goal_height(game, target))
-            at = p["at"]
+            at = game.pose()["at"]
+            goal_z = _goal_height(game, target)
             # higher than a step up from where the player stands (with room for a prop's middle), a floor above
             high = goal_z - at.z > float(m.get("step") or 45.0) + 40.0
             floor = goal_z - 40.0  # (what a way up's top must reach: about the goal's floor)
@@ -391,7 +349,7 @@ def walk_to(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_whe
     if high:  # (a way up in view toward the goal; looking round for one only if the straight way fails)
         climbed = yield from _climb(game, target, floor, left, kw, look_around=False)
     r = yield from _walk_on(game, target, within, left(), settle=True, **kw)
-    if not r and high and not climbed and clock() < timeout:
+    if not r and high and not climbed and time.monotonic() - t0 < timeout:
         # (the straight way didn't get there: a way up, then again)
         if (yield from _climb(game, target, floor, left, kw, look_around=True)):
             r = yield from _walk_on(game, target, within, left(), settle=True, **kw)
@@ -427,11 +385,9 @@ def _coast(game):
     return getattr(game, "coast_s", None) or 0.12
 
 
-def _settle(game, speed, start, timeout=1.0, step=0.0):
-    """After letting go: wait until the body has stopped, and learn how far it slid for its speed (game.coast_s).
-    step: the time a step takes; it waits at least 4 of them (a slow game's stop is seen a step or two late)."""
+def _settle(game, speed, start, timeout=1.0):
+    """After letting go: wait until the body has stopped, and learn how far it slid for its speed (game.coast_s)."""
     t0 = time.monotonic()
-    timeout = max(timeout, 4 * step)
     p = None
     while time.monotonic() - t0 < timeout:
         yield
@@ -448,12 +404,10 @@ def _settle(game, speed, start, timeout=1.0, step=0.0):
     return p
 
 
-SONAR_EVERY = 0.2  # seconds of game time between sonar looks while walking (read with the step's other reads)
+SONAR_EVERY = 0.2  # seconds between sonar looks while walking
 SONAR_RING = 12  # ways all round in a look (the rest of its 16 go where the player is heading)
 WAYPOINT_REACHED = 45.0  # cm from a corner of the way at which the walk heads on to the next
-# s of turning toward the way without the view moving at all before the walk gives up (and MIN_CORRECTIONS steps: a
-# slow game's turn shows a step or more after it was sent)
-NO_TURN_GIVE_UP = 2.0
+NO_TURN_GIVE_UP = 2.0  # s of turning toward the way without the view moving at all before the walk gives up
 REPLAN_AHEAD = 600.0  # cm of the planned way checked against what the sonar newly felt (farther on: once nearer)
 REVERSE_AHEAD = 200.0  # cm: turning back again (within REVERSE_HOLD) once the old way is blocked this near
 REVERSE_HOLD = 3.0  # s after turning back during which turning back again waits for a close block
@@ -487,36 +441,26 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
     fwd = game.keys["forward"]
     nav = nav_of(game)
     t0 = time.monotonic()
-    clock = _Clock(game)  # (the timeout's: game time)
     last_progress_at, best_left = t0, None
     since_progress = 0
     stuck_tries = 0
     short = 0
-    sonar_t, flip = None, False  # (game time of the last sonar look)
-    look = None  # (heading, reach) for the next sonar look, from the step before
+    sonar_at, flip = -1e9, False
     path, planned_version, planned_goal = None, -1, None
     replans = 0
     ways, ways_yaw = [], 0.0
     blind = False  # (no way on the map: straight at the target)
-    turning_since = None  # (time, view yaw, steps) since which it has been turning on the spot
+    turning_since = None  # (time, view yaw) since which it has been turning on the spot
     turn_sent = None  # (view yaw then, degrees of turn on the way, steps it has been on the way) of the last turn
     turned_back_at = -1e9  # when the way last turned back on itself
     pace = _Pace()
     try:
         while True:
-            # A step's reads in one round trip: the player, the target and (when due) the sonar, turned the way the
-            # step before saw the way heading; the first look waits for this step's view
-            due = sonar_t is None or clock() - sonar_t >= SONAR_EVERY
-            reads = [game.pose, lambda: point_of(game, target)]
-            if due and look is not None:
-                turns, reach = _look_turns(look[0], not flip), look[1]
-                reads.append(lambda: sonar(game, turns=turns, reach=reach))
             try:
-                got = _read(game, *reads)
+                p = game.pose()
+                goal = point_of(game, target)
             except GameError as e:
                 return Result(False, f"can't read: {e}")
-            p, goal = got[0], got[1]
-            felt = got[2] if len(got) > 2 else None
             at = p["at"]
             d = goal.dist2d(at)
             # It slides on after letting go, and keeps walking until the step it lets go on (the next one: half a step
@@ -529,29 +473,27 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
                 game.release(fwd)
                 if run_key:
                     game.release(run_key)
-                end = yield from _settle(game, p["velocity"].flat.length, at, step=step)
+                end = yield from _settle(game, p["velocity"].flat.length, at)
                 try:
                     d = point_of(game, target).dist2d(end["at"]) if end else d
                 except GameError:
                     pass
                 # (stopped well short, the slide guessed long: on again, a little)
-                if d > within + max(30.0, 0.25 * within) and short < 2 and clock() < timeout:
+                if d > within + max(30.0, 0.25 * within) and short < 2 and time.monotonic() - t0 < timeout:
                     short += 1
                     continue
                 return Result(True, "arrived", {"distance": round(d), "replans": replans})
             now = time.monotonic()
-            if clock() > timeout:
+            if now - t0 > timeout:
                 return Result(False, "walk timed out", {"distance": round(d), "replans": replans,
                                                          "way": [q.rounded() for q in path or []]})
             feet = at.z
             nav.linger(at, step, now, feet=feet)  # (where it goes round and round costs more to plan through)
             # Feel the way and put it on the map
-            if due:
-                if felt is None:  # (the walk's first look: turned toward the way from this step's view)
-                    heading = bearing(at, p["yaw"], path[0] if path else goal)
-                    felt = sonar(game, turns=_look_turns(heading, not flip), reach=min(1500, d + 200))
-                sonar_t, flip = clock(), not flip
-                ways, ways_yaw = felt, p["yaw"]
+            if now - sonar_at >= SONAR_EVERY:
+                sonar_at, flip = now, not flip
+                heading = bearing(at, p["yaw"], path[0] if path else goal)
+                ways, ways_yaw = sonar(game, turns=_look_turns(heading, flip), reach=min(1500, d + 200)), p["yaw"]
                 if ways:
                     nav.observe(at, p["yaw"], ways, now, avoid_drops=avoid_drops, max_drop=max_drop, feet=feet)
             # The way: straight there while the map shows nothing in between, else planned round what's in the way
@@ -602,8 +544,6 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
             r, _ = _flick_toward(game, steer - on_way, -p["pitch"] if look_level else 0.0)
             ticks = turn_sent[2] + 1 if turn_sent is not None and on_way else 0
             turn_sent = (p["yaw"], on_way + r, ticks) if abs(on_way + r) >= 1.0 else None
-            # (the next look's close turns go where the way heads, from the view as it will be once this turn shows)
-            look = (wrap(bearing(at, p["yaw"], path[0]) - (on_way + r)), min(1500, d + 200))
             # (close to what it walks to, turn on the spot first: walking on while turning circles round it)
             walking = abs(steer) < (50 if aim.dist2d(at) > 3 * within + 150 else 20)
             # Never off the edge of a deep drop just ahead (the map steers round drops it knows)
@@ -624,10 +564,8 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
                 # The view won't turn (an intro, a menu, a held interaction that takes the mouse): give up now, not at
                 # the timeout
                 if turning_since is None or abs(wrap(p["yaw"] - turning_since[1])) > 3.0:
-                    turning_since = (now, p["yaw"], 0)
-                else:
-                    turning_since = turning_since[:2] + (turning_since[2] + 1,)
-                if now - turning_since[0] > NO_TURN_GIVE_UP and turning_since[2] >= MIN_CORRECTIONS:
+                    turning_since = (now, p["yaw"])
+                elif now - turning_since[0] > NO_TURN_GIVE_UP:
                     return Result(False, "the view doesn't turn: the mouse has no effect now (a menu, an intro, or "
                                   "an interaction holding the mouse?)", {"distance": round(d), "replans": replans})
             # Stuck: no progress along the way for a second (and a few steps: a slow game steps seldom) while walking
@@ -660,24 +598,23 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
 
 def keep_away(game, threat, distance=800.0, timeout=6.0, run_key=None):
     """Move away from a threat (see point_of) until it is `distance` away or timeout: picks the open way (sonar) that
-    points most away from it, so the player doesn't back into a wall. timeout: seconds of game time."""
+    points most away from it, so the player doesn't back into a wall."""
     fwd = game.keys["forward"]
-    clock = _Clock(game)
+    t0 = time.monotonic()
     heading, heading_at = None, 0.0
-    pace = _Pace()
     try:
-        while clock() < timeout:
+        while time.monotonic() - t0 < timeout:
             try:
-                p, danger = _read(game, game.pose, lambda: point_of(game, threat))
+                p = game.pose()
+                danger = point_of(game, threat)
             except GameError as e:
                 return Result(False, f"can't read: {e}")
             d = danger.dist2d(p["at"])
             if d >= distance:
                 return Result(True, "far enough", {"distance": round(d)})
             away = wrap(bearing(p["at"], p["yaw"], danger) + 180.0)
-            now, step = time.monotonic(), pace.step()
-            # (picked again every 0.6 s, or every 3 steps on a slow game: a pick costs a sonar look)
-            if heading is None or now - heading_at > max(0.6, 3 * step):
+            now = time.monotonic()
+            if heading is None or now - heading_at > 0.6:
                 heading_at = now
                 ways = sonar(game, turns=sorted({round(away) + k for k in (-90, -60, -30, 0, 30, 60, 90)}), reach=600)
                 open_ways = [w for w in ways if w.get("clear", 0) >= 250 and not deep_drop(w, 300.0)]
@@ -701,23 +638,21 @@ def keep_away(game, threat, distance=800.0, timeout=6.0, run_key=None):
 
 def melee(game, target, key, reach=150.0, cooldown=0.5, alive=None, timeout=12.0, tolerance=8.0):
     """Close in on target and strike it with `key` every `cooldown` seconds while it is in reach and in view, until
-    alive() is false (e.g. its health read <= 0) or timeout (seconds of game time). alive defaults to "the actor still
-    exists"."""
+    alive() is false (e.g. its health read <= 0) or timeout. alive defaults to "the actor still exists"."""
     alive = alive or (lambda: game.exists(target) if isinstance(target, str) else True)
     fwd = game.keys["forward"]
-    clock = _Clock(game)
+    t0 = time.monotonic()
     last_hit = -1e9
     hits = 0
     pace = _Pace()
     try:
-        while clock() < timeout:
-            # (whether it is still up, the player and where the target is: one round trip)
-            living, p, at = game.batch([alive, game.pose, lambda: point_of(game, target)])
-            if isinstance(living, GameError):
-                raise living  # (as alive() raising on its own)
-            if not living:
+        while time.monotonic() - t0 < timeout:
+            if not alive():
                 return Result(True, "target down", {"hits": hits})
-            if isinstance(p, GameError) or isinstance(at, GameError):
+            try:
+                p = game.pose()
+                at = point_of(game, target)
+            except GameError:
                 return Result(True, "target gone", {"hits": hits})
             d = at.dist2d(p["at"])
             right, up = game.aim_error(at, p)
@@ -956,24 +891,20 @@ def _jump_once(game, target, run_key=None, timeout=8.0):
             away = away.unit if away.length > 1 else (p["at"] - box[0]).flat.unit
             start = near + away * (need + 60.0)
             yield from walk_to(game, Vec(start.x, start.y, p["at"].z), within=60, timeout=6, avoid_drops=True)
-    clock = _Clock(game)  # (the timeout's: game time)
+    t0 = time.monotonic()
     jumped_at = None
     rise_at_takeoff = 0.0
     best_feet = -1e9
     speeds = []  # (time, speed across the floor) while running up: take off once it stops rising
     prev_still = False
-    let_go = False  # (forward let go over the top: it stays let go until the landing)
     pace = _Pace()
     try:
-        while clock() < timeout:
+        while time.monotonic() - t0 < timeout:
             try:
                 asked = time.monotonic()
-                if box:
-                    p = game.pose()
-                    goal = Vec(box[0].x, box[0].y, box[0].z + box[1].z)
-                else:  # (the player and the point in one round trip)
-                    p, goal = _read(game, game.pose, lambda: point_of(game, target))
+                p = game.pose()
                 read = time.monotonic() - asked  # (about a frame of the game: how old what it says is)
+                goal = Vec(box[0].x, box[0].y, box[0].z + box[1].z) if box else point_of(game, target)
             except GameError as e:
                 return Result(False, f"can't read: {e}")
             dt = pace.step()
@@ -987,23 +918,20 @@ def _jump_once(game, target, run_key=None, timeout=8.0):
                     return Result(False, f"too high: {rise:.0f} above the feet, a jump reaches {m['reach_up']:.0f} "
                                   f"(lifts {m['peak']:.0f}, steps up {m['step'] or 0:.0f})",
                                   {"rise": round(rise), "reach_up": round(m["reach_up"])})
-                # How far the run still has to go to its take-off point, as of now. (+ how far it runs before the press
-                # acts: what it reads is a read's trip old, and the press takes the way there; longer on a slow game.)
-                # The press is timed within the step (below), so a slow game's long steps don't take off early
                 if box:
                     # over the near edge at the top of the jump: take off one apex time's run from the edge
                     edge, near = _footprint_distance(p["at"], *box)
                     aim_at = near if edge > 60 else goal
-                    takeoff = speed * t_apex + speed * read
-                    to_go = edge - takeoff
+                    # (+ how far it runs before the press acts: what it reads is a frame old, and the press comes
+                    # within a step, half of one on average; both longer on a machine that runs the game slowly)
+                    takeoff = speed * t_apex + speed * (read + 0.5 * dt)
+                    ready = edge <= takeoff
                 else:
                     # land on the point: the time until the feet come back down to its height
                     disc = vz * vz - 2 * g * max(0.0, rise)
                     air = (vz + math.sqrt(disc)) / g if disc > 0 else t_apex
                     aim_at = goal
-                    to_go = d - speed * read - speed * air * 0.9
-                # ready: the take-off point comes before the next step reads (a step's run from here)
-                ready = to_go <= speed * dt
+                    ready = d - speed * (read + 0.5 * dt) <= speed * air * 0.9
                 b = bearing(p["at"], p["yaw"], goal if box is None else aim_at)
                 _flick_toward(game, b, -p["pitch"])
                 if abs(b) < 25:
@@ -1013,21 +941,12 @@ def _jump_once(game, target, run_key=None, timeout=8.0):
                 else:
                     game.release(fwd)
                 now = time.monotonic()
-                # (the readings of the last half second, and always the last three: on a slow game a step can take
-                # half a second or more, and no reading would ever be old enough to compare with)
-                speeds = speeds + [(now, speed)]
-                speeds = [(t, v) for i, (t, v) in enumerate(speeds) if now - t < 0.5 or i >= len(speeds) - 3]
-                # at its running speed: moving, and no faster than 0.3 s (or two steps) ago (the game's own speed,
-                # whatever MaxWalkSpeed says)
+                speeds = [(t, v) for t, v in speeds if now - t < 0.5] + [(now, speed)]
+                # at its running speed: moving, and no faster than 0.3 s ago (the game's own speed, whatever
+                # MaxWalkSpeed says)
                 older = [v for t, v in speeds if now - t > 0.3]
                 fast = speed > 150 and bool(older) and speed <= max(older) * 1.04
                 if ready and abs(b) < 12 and fast:
-                    # (when the take-off point is still ahead within this step, wait until the run gets there: a
-                    # step of a slow game covers a long stretch of the run, and pressing at once took off up to a step
-                    # early and fell short)
-                    wait = to_go / speed - (time.monotonic() - asked - read)
-                    if 0.0 < wait <= max(dt, 0.0):
-                        time.sleep(min(wait, 0.5))
                     game.press(jump)
                     jumped_at = time.monotonic()
                     rise_at_takeoff = rise
@@ -1037,22 +956,8 @@ def _jump_once(game, target, run_key=None, timeout=8.0):
             else:
                 b = bearing(p["at"], p["yaw"], goal)
                 # Coming down inside the top's footprint: stop pushing on, or a small top is crossed before the
-                # landing is seen (a step or two of running, more on a machine that runs the game slowly). And once
-                # the run is to reach the top's middle before the next step reads, let go when it gets there (timed
-                # within the step, a read's trip early, as the take-off is): a slow game's step can cross a small top
-                # whole, so letting go when a reading shows it inside came after it had run off the far side. Let go
-                # once, it stays let go until the landing.
-                flat_v = p["velocity"].flat
-                run = flat_v.length
-                to_middle = (Vec(box[0].x, box[0].y, 0) - p["at"].flat).dot(flat_v.unit) if box and run > 1 else None
-                over_soon = to_middle is not None and to_middle - run * read <= run * max(dt, 0.0)
-                if box and (let_go or (p["velocity"].z < 0 and feet - goal.z < 60
-                                       and _footprint_distance(p["at"], *box)[0] < 1) or over_soon):
-                    if over_soon and not let_go:
-                        wait = (to_middle - run * read) / run - (time.monotonic() - asked - read)
-                        if 0.0 < wait <= max(dt, 0.0):
-                            time.sleep(min(wait, 0.5))
-                    let_go = True
+                # landing is seen (a step or two of running, more on a machine that runs the game slowly)
+                if box and p["velocity"].z < 0 and feet - goal.z < 60 and _footprint_distance(p["at"], *box)[0] < 1:
                     game.release(fwd)
                 else:
                     _flick_toward(game, b * 0.5, -p["pitch"])
@@ -1122,17 +1027,14 @@ def run(gen, timeout=15.0, hz=15.0, game=None):
     the generator acts on (default: its `game` argument)."""
     game = game or (getattr(gen, "gi_frame", None) and gen.gi_frame.f_locals.get("game"))
     t0 = time.monotonic()
-    # (held keys renewed between ticks too: a step slower than a lease, on a slow game, doesn't let go of them)
-    keep = getattr(game, "keeping_held", None)
     try:
-        with keep() if callable(keep) else contextlib.nullcontext():
-            while time.monotonic() - t0 < timeout:
-                if game is not None:
-                    getattr(game, "renew_due", game.renew)()
-                next(gen)
-                time.sleep(1.0 / hz)
-            gen.close()
-            return Result(False, "run timed out")
+        while time.monotonic() - t0 < timeout:
+            if game is not None:
+                game.renew()
+            next(gen)
+            time.sleep(1.0 / hz)
+        gen.close()
+        return Result(False, "run timed out")
     except StopIteration as s:
         return s.value
     finally:

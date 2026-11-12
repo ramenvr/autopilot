@@ -3,7 +3,6 @@ for the contract). One runtime plays every game; what differs per game is the ha
 """
 
 import concurrent.futures as futures
-import contextlib
 import importlib.util
 import inspect
 import json
@@ -42,11 +41,6 @@ MAX_CONSECUTIVE_ERRORS = 25
 TRACE_EVERY = 1.0  # seconds of game time between observations written to the trace (a harness's trace_every)
 STEP_SAMPLES = 4000  # executor step times kept per option (for the summary's median and p90)
 SLOW_WAITS = 3.0  # an option whose steps wait on the game this many times on average is flagged in the summary
-# ... and one whose steps take this long (median ms), or SLOW_TICKS ticks and over 100 ms, however few their waits:
-# each read itself takes long (a slow frame rate or link)
-SLOW_STEP_MS = 250.0
-SLOW_TICKS = 3.0
-PACE_EVERY = 1.0  # seconds between the samples of the game's pace (frame rate, round trip) the episode's end averages
 # seconds after the first observation by which a game held paused runs again, an option started or not
 RESUME_AFTER = 1.5
 # The player stops answering its inputs (dead, a menu or cutscene holding the controls) when the view doesn't turn
@@ -248,7 +242,6 @@ class Runtime:
         # Executor steps per option: how long each took and how many times it waited on the game (see Game.waits)
         self.steps = defaultdict(lambda: {"n": 0, "ms": [], "waits": 0, "max_waits": 0})
         self.ticks, self.wall_start = 0, None
-        self.paces, self.paced_at = [], -1e9  # samples of the game's pace (Game.pace), one every PACE_EVERY s
 
     # -- Jev ---------------------------------------------------------------------------------------------
 
@@ -396,24 +389,6 @@ class Runtime:
             out[name] = {"steps": s["n"], "median_ms": round(ms[len(ms) // 2], 1),
                          "p90_ms": round(ms[int(len(ms) * 0.9)], 1), "max_ms": round(ms[-1], 1),
                          "waits_mean": round(s["waits"] / s["n"], 2), "waits_max": s["max_waits"]}
-        return out
-
-    def sample_pace(self):
-        pace = getattr(self.game, "pace", None)
-        if callable(pace):
-            try:
-                self.paces.append(pace())
-            except Exception:
-                pass
-
-    def pace_report(self):
-        """The game's pace over the episode: {"fps", "round_trip_ms", "round_trip_p90_ms"}, the median of its samples
-        (None for what was never known)."""
-        self.sample_pace()  # (the end's too: a short episode has one at least)
-        out = {}
-        for k in ("fps", "round_trip_ms", "round_trip_p90_ms"):
-            vals = sorted(p[k] for p in self.paces if isinstance(p, dict) and isinstance(p.get(k), (int, float)))
-            out[k] = vals[len(vals) // 2] if vals else None
         return out
 
     def stop_running(self, why):
@@ -666,11 +641,8 @@ class Runtime:
         listeners = getattr(g.link, "listeners", None)
         if isinstance(listeners, list):
             listeners.append(self.on_event)
-        # (held keys renewed between ticks too: a step slower than a lease, on a slow game, doesn't let go of them)
-        keep = getattr(g, "keeping_held", None)
         try:
-            with keep() if callable(keep) else contextlib.nullcontext():
-                return self._run()
+            return self._run()
         finally:
             if isinstance(listeners, list) and self.on_event in listeners:
                 listeners.remove(self.on_event)
@@ -741,10 +713,7 @@ class Runtime:
                 if g.link.closed:
                     end["reason"] = f"the game disconnected: {g.link.closed}"
                     break
-                getattr(g, "renew_due", g.renew)()  # (each key about three times a lease, however fast the tick)
-                if t0 - self.paced_at >= PACE_EVERY:
-                    self.paced_at = t0
-                    self.sample_pace()
+                g.renew()
                 if seen is None:
                     seen = observer.submit(look)
                 if seen.done():
@@ -903,7 +872,6 @@ class Runtime:
             "ticks": {"asked_hz": self.h.tick_hz,
                       "ran_hz": round(self.ticks / max(1e-3, time.monotonic() - self.wall_start), 1)
                       if self.wall_start else None},
-            "pace": self.pace_report(),
             "writes": self.game.writes,
             "last_facts": jsonable(self.h.facts(obs)) if obs is not None else None,
         }
@@ -1069,7 +1037,7 @@ def check(game, harness, seconds=CHECK_SECONDS, restart=True, only=None):
                         gen.close()
                         result = _Result(False, f"still running after {limit:.0f} s (check's limit)")
                         break
-                    getattr(game, "renew_due", game.renew)()
+                    game.renew()
                     try:
                         next(gen)
                     except StopIteration as s:
@@ -1157,24 +1125,6 @@ def _findings_lines(finds, t_first):
     return out
 
 
-def pace_line(pace, now=False):
-    """A game's pace in a line ({"fps", "round_trip_ms"}: Game.pace, or an episode's end), "" when nothing of it is
-    known. now: of the game now (the run's opening), else of an episode."""
-    pace = pace if isinstance(pace, dict) else {}
-    fps, ms = pace.get("fps"), pace.get("round_trip_ms")
-    if fps is None and ms is None:
-        return ""
-    runs, takes = ("runs", "takes") if now else ("ran", "took")
-    parts = [f"This game {runs} at about {fps:.0f} fps" if fps is not None else
-             f"This game's frame rate {'isn' if now else 'wasn'}'t reported"]
-    if ms is not None:
-        parts.append(f"a read of it {takes} about {ms:.0f} ms")
-    from .kit.game import SLOW_FPS, SLOW_READ
-
-    slow = (fps is not None and fps < SLOW_FPS) or (ms is not None and ms > 1000 * SLOW_READ)
-    return "; ".join(parts) + "." + (" A slow game: see the kit's 'A slow game'." if slow else "")
-
-
 def summarize(trace_path, error_log=False):
     """The trace in brief, for the implementer: how each option fared, decisions, errors, findings, then the timeline
     and the situation over time. Nothing in it is cut: a summary longer than a tool result holds is delivered from
@@ -1200,9 +1150,6 @@ def summarize(trace_path, error_log=False):
         out.append(f"Ended: {end.get('reason')} at t={end.get('t', 0) - t_first:.1f}s  status={st.get('state')} "
                    f"note={st.get('note')!r} evidence={json.dumps(st.get('evidence'))}")
         out.append(f"Decisions by Jev: {end.get('decisions')}")
-        pace = pace_line(end.get("pace"))
-        if pace:
-            out.append(pace)
     else:
         out.append("Ended: (no end event: the run crashed or is still going)")
     spans, since = [], None
@@ -1285,26 +1232,19 @@ def summarize(trace_path, error_log=False):
         out.append(f"\nExecutor steps (steps, ms a step median/p90/max, waits on the game a step mean/max; a tick is "
                    f"{1000 / max(1.0, asked):.0f} ms at tick_hz {asked:g}, "
                    f"the loop ran {ticks.get('ran_hz')} ticks/s):")
-        slow, long_reads = [], False
-        tick_ms = 1000 / max(1.0, asked)
+        slow = []
         for name, s in sorted(steps.items(), key=lambda kv: -kv[1]["steps"]):
             out.append(f"  {name}: {s['steps']} steps, {s['median_ms']:.0f}/{s['p90_ms']:.0f}/{s['max_ms']:.0f} ms, "
                        f"{s['waits_mean']:.1f}/{s['waits_max']} waits")
-            # (by its waits one after another, or by how long it takes: a few slow reads are as slow as many)
-            long = s["median_ms"] >= SLOW_STEP_MS or (s["median_ms"] >= SLOW_TICKS * tick_ms and s["median_ms"] >= 100)
-            if s["steps"] >= 10 and (s["waits_mean"] >= SLOW_WAITS or long):
+            if s["steps"] >= 10 and s["waits_mean"] >= SLOW_WAITS:
                 per = s["median_ms"] / max(1.0, s["waits_mean"])
                 slow.append(f"{name} (~{s['median_ms']:.0f} ms a step, {s['waits_mean']:.1f} waits of ~{per:.0f} ms)")
-                long_reads = long_reads or (long and s["waits_mean"] < SLOW_WAITS)
         if slow:
             out.append("  SLOW STEPS: " + "; ".join(slow) + ". Every read waits for the game's answer (about a frame) "
                        "and reads one after another add up: a step reacts to what it read that long ago, and the next "
                        "step comes that much later. Gather a step's reads into one game.batch([...]) (one wait) and "
                        "read only what the step needs. A reaction timed to the game (dodging before a hit lands, "
-                       "jumping at an edge) must allow for the step time, which changes with the frame rate."
-                       + (" Here each read itself takes long (a slow frame rate or connection): set tick_hz to about "
-                          "1000 / a step's ms (no faster than the game answers), act a step ahead (leads), and let "
-                          "the game time holds (hold_for)." if long_reads else ""))
+                       "jumping at an edge) must allow for the step time, which changes with the frame rate.")
     # decisions
     dec = [e for e in events if e["kind"] == "decision"]
     if dec:

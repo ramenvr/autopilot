@@ -535,13 +535,8 @@ function Ui.touch(args: any): (boolean, any)
 			if not ok then
 				return false, why
 			end
-			-- (down 2 frames and 0.05 s, as a key's tap: about 3 frames at 60 fps, and on a slow game's long frames not
-			-- so long that the tap reads as a long press)
-			local downAt = os.clock()
-			local waited = 0
-			while waited < 2 or os.clock() - downAt < 0.05 do
+			for _ = 1, 3 do
 				RunService.Heartbeat:Wait()
-				waited += 1
 			end
 			fingerUp()
 			if i == 1 and action == "double_tap" then
