@@ -212,6 +212,15 @@ def trace_of(trace):
     return kept or None
 
 
+def client_of(client):
+    """The MCP client whose own agent works on a run (codex, claude-code), as Aura takes it: a plain name of at most 40
+    characters, lowercase; None when there is none (an agent of Autopilot's plays the run)."""
+    if not isinstance(client, str):
+        return None
+    client = client.strip().lower()
+    return client if client and len(client) <= 40 and all(c.isalnum() or c in "._-" for c in client) else None
+
+
 def model_of(model):
     """A start frame's run "model" as Aura takes it (the model picked in Aura's chat, as Aura's model picker names it:
     "opus-5.5", "deepseek-v4-pro", "auto"): stripped, at most MAX_MODEL characters; None when there is none."""
@@ -301,8 +310,11 @@ class Run:
     use Aura's relay; on leaving, the run is finished (and billed) and the model settings are put back."""
 
     def __init__(self, token, kind, mode=PLAYTEST, project=None, http=None, say=None, project_key=None, trace=None,
-                 model=None, disable_premium_models=False, thinking_level=None):
+                 model=None, disable_premium_models=False, thinking_level=None, client=None):
         self.token = token
+        # The MCP client whose own agent works on the run, through `autopilot mcp` (agents/external.py): Aura is told,
+        # so it records the run as that agent's and not as played by a model of Autopilot's; None for any other run
+        self.client = client_of(client)
         self.project_key = project_key or project  # (which project's memory: the Unreal ProjectID when there is one)
         # Where in Aura the run was asked for (the start frame's run "trace": the chat thread, tool call and tool), so
         # Aura files the run's model calls under that chat in its analytics; None for a run the Autopilot tab started
@@ -339,7 +351,8 @@ class Run:
                 **({"project_key": self.project_key} if self.project_key else {}),
                 **({"trace": self.trace} if self.trace else {}), **({"model": self.model} if self.model else {}),
                 **({"disable_premium_models": True} if self.disable_premium_models else {}),
-                **({"thinking_level": self.thinking_level} if self.thinking_level else {})}
+                **({"thinking_level": self.thinking_level} if self.thinking_level else {}),
+                **({"client": self.client} if self.client else {})}
         try:
             r = self.http.post(f"{api_url()}/api/autopilot/runs", json=body, timeout=START_TIMEOUT,
                                headers={"Authorization": f"Bearer {self.token}"})
