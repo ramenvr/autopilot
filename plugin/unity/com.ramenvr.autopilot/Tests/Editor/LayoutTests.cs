@@ -154,7 +154,7 @@ namespace Autopilot.Playtest.Tests
             if (client != null) return client;
             client = new PlaytestClient(EditorHost.Instance) { TestWire = s => sent.Add(s) };
             client.TestConnected(true);
-            client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"layout\", \"features\": [\"account\", \"steer\"]}");
+            client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"layout\", \"features\": [\"account\", \"steer\", \"detectors\"]}");
             EditorHost.TestClient(client);
             return client;
         }
@@ -1381,8 +1381,56 @@ namespace Autopilot.Playtest.Tests
             toggle.value = true;
             Assert.IsEmpty(sent, "nothing to send it to");
             Assert.IsFalse(c.BugDetectors);
+            Assert.IsFalse(toggle.value, "and it goes back");
+            Assert.AreEqual("Bug detectors off", toggle.text);
+            Assert.IsNull(host.Q(className: "detectors-why"), "no line saying why: it isn't the agent service's");
             c.TestConnected(true);
             Assert.IsTrue(Switch().enabledSelf, "connected again");
+            Assert.IsNull(host.Q(className: "detectors-why"), "connected: no line saying why");
+        }
+
+        /// <summary>Connected to an agent service older than this plugin (its welcome's features without "detectors"),
+        /// which would ignore the switch and go on running the game's detectors: the switch is greyed and shows them on,
+        /// a line under it says why in the card's small words, and flipping it anyway sends nothing and goes back. The
+        /// agent service of this plugin again: as before.</summary>
+        [Test]
+        public void AnOlderAgentServiceGreysTheBugDetectorsSwitchOn()
+        {
+            Toggle Switch()
+            {
+                Show(new Vector2Int(560, 900), Settings);
+                return host.Q(className: "detectors").Q<Toggle>(className: "detectors-toggle");
+            }
+
+            var c = Client();
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+            Assert.IsFalse(Switch().value, "this plugin's agent service: off, as it says");
+            c.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"older\", \"features\": [\"account\", \"steer\"]}");
+            var toggle = Switch();
+            Assert.IsTrue(toggle.value, "an older one: on (it runs them)");
+            Assert.AreEqual("Bug detectors on", toggle.text);
+            Assert.IsFalse(toggle.enabledSelf, "greyed");
+            var why = host.Q(className: "detectors").Q<Label>(className: "detectors-why");
+            Assert.IsNotNull(why, "a line saying why");
+            Assert.AreEqual("The agent service in use is older than this plugin and can't turn them off.", why.text);
+            Assert.AreEqual(PlaytestClient.BugDetectorsFixedOnWhy, why.text);
+            Assert.IsTrue(why.ClassListContains("small") && why.ClassListContains("t-sec2"), "in the card's small words");
+            Assert.Greater(why.worldBound.yMin, toggle.worldBound.yMax, "under the switch");
+            Assert.LessOrEqual(why.worldBound.xMax, host.Q(className: "detectors").worldBound.xMax + 0.5f, "inside its card");
+            sent.Clear();
+            toggle.value = false;
+            Assert.IsEmpty(sent, "flipped anyway: nothing sent");
+            Assert.IsTrue(toggle.value, "and it goes back");
+            Assert.AreEqual("Bug detectors on", toggle.text);
+            Assert.IsTrue(c.BugDetectors);
+            Assert.AreEqual(PlaytestClient.BugDetectorsFixedOnWhy, c.LastStatus, "the status line says why");
+
+            // This plugin's agent service again
+            c.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"layout\", \"features\": [\"account\", \"steer\", \"detectors\"]}");
+            toggle = Switch();
+            Assert.IsTrue(toggle.enabledSelf, "this plugin's agent service: it can be flipped");
+            Assert.IsFalse(toggle.value, "what it said");
+            Assert.IsNull(host.Q(className: "detectors-why"));
         }
 
         // -- Autopilot in Claude Code & Codex: a run started there, and how to set them up ---------------------------

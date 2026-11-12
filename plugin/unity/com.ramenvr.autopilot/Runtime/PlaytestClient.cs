@@ -155,8 +155,25 @@ namespace Autopilot.Playtest
         public bool MemoryLib { get; private set; }
         // Whether the game's detectors run for this project (the Settings page's Bug detectors switch): what the agent
         // service's last memory_state said ("detectors"; one without it, an older agent service's, means on). Kept when
-        // the connection closes (the switch shows the last one said, greyed), and set at once when the switch is flipped
-        public bool BugDetectors { get; private set; } = true;
+        // the connection closes (the switch shows the last one said, greyed), and set at once when the switch is flipped.
+        // Always on with an agent service that can't turn them off (BugDetectorsFixedOn): it runs them
+        public bool BugDetectors
+        {
+            get => bugDetectors || BugDetectorsFixedOn;
+            private set => bugDetectors = value;
+        }
+        bool bugDetectors = true;
+        // The welcome's features had "detectors": the brain takes the Bug detectors switch's `detectors` frame
+        public bool BrainDetectors { get; private set; }
+        // Whether the Bug detectors switch can be flipped: connected to an agent service that takes it
+        public bool CanSetBugDetectors => Connected && BrainRole != null && BrainDetectors;
+        // Connected to an agent service older than this plugin, whose welcome's features don't have "detectors": it would
+        // ignore the switch and the game's detectors would go on running, so the switch shows them on, greyed, and says
+        // why (BugDetectorsFixedOnWhy)
+        public bool BugDetectorsFixedOn => Connected && BrainRole != null && !BrainDetectors;
+        // Why the Bug detectors switch can't be flipped with an agent service that can't turn them off (the card and the
+        // status line say it; the same words in every plugin)
+        public const string BugDetectorsFixedOnWhy = "The agent service in use is older than this plugin and can't turn them off.";
         public string Problem { get; private set; } = "";
         public int ProblemCode { get; private set; }
         public string LastStatus { get; private set; } = "";
@@ -821,10 +838,16 @@ namespace Autopilot.Playtest
 
         // The Bug detectors switch flipped: the agent service keeps it for the project (detectors.json), tells the game's
         // detectors at once (a run going on included) and answers with a memory_state, which the switch then shows; the
-        // new value is shown meanwhile. Not connected: nothing (the switch is greyed then)
+        // new value is shown meanwhile. Not connected: nothing (the switch is greyed then). An agent service that can't
+        // turn them off: nothing sent or changed (greyed too, saying why), and the status line says why
         public void SetBugDetectors(bool on)
         {
             if (!Connected) return;
+            if (!CanSetBugDetectors)
+            {
+                Status(BugDetectorsFixedOnWhy);
+                return;
+            }
             BugDetectors = on;
             Send(new Dictionary<string, object> { ["type"] = "detectors", ["enabled"] = on });
         }
@@ -1022,6 +1045,7 @@ namespace Autopilot.Playtest
                         BrainSteers = false;
                         BrainSteerModes = false;
                         BrainHasAccount = false;
+                        BrainDetectors = false;
                         // (a sign-in going on stays: the agent service keeps it, and it's asked again on the next
                         // connection, ResumeSignIn)
                         if (SignIn.Going) AccountChanged();
@@ -1107,6 +1131,7 @@ namespace Autopilot.Playtest
                     BrainSteers = false;
                     BrainSteerModes = false;
                     BrainHasAccount = false;
+                    BrainDetectors = false;
                     var features = Json.List(m, "features");
                     if (features != null)
                         foreach (var feature in features)
@@ -1114,6 +1139,7 @@ namespace Autopilot.Playtest
                             BrainSteers |= feature is string name && name == "steer";
                             BrainSteerModes |= feature is string mode && mode == "steer_mode";
                             BrainHasAccount |= feature is string acc && acc == "account";
+                            BrainDetectors |= feature is string det && det == "detectors";
                         }
                     var session = Json.Str(m, "session");
                     // (a resume the brain didn't take is a new connection: no recording goes on)

@@ -93,6 +93,8 @@ def test_local_server_accepts_the_plugin_and_answers():
     assert link.loopback
     assert link.request("ping") == {"game_time": 3.0}
     assert result["welcome"]["role"] == "cli"
+    # (what the plugin may offer: the Bug detectors switch among it, which an older agent service can't take)
+    assert result["welcome"]["features"] == bridge.BRAIN_FEATURES and "detectors" in bridge.BRAIN_FEATURES
     link.server.shutdown()
 
 

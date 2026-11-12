@@ -2107,13 +2107,17 @@ func assistants_checks() -> void:
 ## The Settings page's Bug detectors switch: its plate (title, words, the switch as the others are), what the agent
 ## service's memory_state says ("detectors"; on when it doesn't say, or says something else), set in place (the page not
 ## built again), flipped: {"type": "detectors", "enabled": ...} sent and shown at once, the next memory_state confirming
-## or putting it back, a run going on included; not connected: disabled, the last known value shown, nothing sent.
+## or putting it back, a run going on included; not connected: disabled, the last known value shown, nothing sent;
+## connected to an agent service older than this plugin (its welcome's features without "detectors"), which can't turn
+## them off: disabled and on, a line under it and its tooltip saying why, flipped anyway nothing sent, put back.
 func detectors_checks() -> void:
 	var fake := FakeLink.new()
 	bridge.link = fake
 	_plain_view()
 	_end_run()
-	_online()
+	if bridge.is_connected_to_brain():
+		unwelcome()
+	welcome(["steer", "usage", "account", "detectors"])  # (this plugin's agent service: it takes the switch)
 	fake.sent.clear()
 	bridge.detectors_on = true
 	dock.settings_open = true
@@ -2188,13 +2192,49 @@ func detectors_checks() -> void:
 		== "Not connected: connect first to turn the bug detectors on or off", dock._status.text)
 	check("not connected: the bridge sends nothing", not bridge.set_detectors(false) and fake.sent.is_empty()
 		and bridge.detectors_on == true)
+	check("not connected: no line about an older agent service", not page.detectors_older.visible)
 	# connected again: enabled, as the new connection's memory_state says
-	_online()
+	welcome(["steer", "usage", "account", "detectors"])
 	dock._render()
 	sw = page.detectors_switch
-	check("connected again: enabled", sw.is_visible_in_tree() and not sw.disabled and sw.tooltip_text == "Bug detectors")
+	check("connected again: enabled", sw.is_visible_in_tree() and not sw.disabled and sw.tooltip_text == "Bug detectors"
+		and not page.detectors_older.visible)
 	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false, "detectors": false})
 	check("connected again: the new memory_state sets it (off)", not sw.button_pressed and sw.text == "Bug detectors off")
+	# an agent service older than this plugin: it would ignore the frame and run them, so on and disabled, saying why
+	unwelcome()
+	welcome(["steer", "steer_mode", "usage", "account", "setup"])
+	check("older agent service: the words", SettingsPage.DETECTORS_OLDER
+		== "The agent service in use is older than this plugin and can't turn them off.")
+	sw = page.detectors_switch
+	check("older agent service: the switch disabled and on (it runs them), Bug detectors on, before its memory_state too",
+		sw.is_visible_in_tree() and sw.disabled and sw.button_pressed and sw.text == "Bug detectors on"
+		and bridge.shown_detectors() and not bridge.can_set_detectors() and bridge.detectors_fixed_on(),
+		[sw.disabled, sw.button_pressed, sw.text])
+	check("older agent service: the line under the switch and its tooltip say why", page.detectors_older.is_visible_in_tree()
+		and page.detectors_older.text == SettingsPage.DETECTORS_OLDER and SettingsPage.DETECTORS_OLDER in _texts(page)
+		and sw.tooltip_text == SettingsPage.DETECTORS_OLDER, sw.tooltip_text)
+	check("older agent service: the line under the switch, in the plate's small words",
+		page.detectors_older.theme_type_variation == "AutopilotSmall"
+		and page.detectors_older.get_parent() == sw.get_parent() and page.detectors_older.get_index() > sw.get_index()
+		and page.detectors_older.autowrap_mode != TextServer.AUTOWRAP_OFF,
+		[page.detectors_older.theme_type_variation, page.detectors_older.get_index(), sw.get_index()])
+	fake.sent.clear()
+	sw.button_pressed = false
+	check("older agent service, flipped anyway: nothing sent, the switch back on", fake.sent.is_empty() and sw.button_pressed
+		and sw.text == "Bug detectors on", [fake.sent, sw.text])
+	check("older agent service, flipped anyway: the status line says why", dock._status.text == SettingsPage.DETECTORS_OLDER,
+		dock._status.text)
+	check("older agent service: the bridge sends nothing", not bridge.set_detectors(false) and fake.sent.is_empty())
+	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false})
+	check("older agent service: its memory_state, on", sw.button_pressed and sw.disabled and page.detectors_older.visible)
+	# this plugin's agent service again
+	unwelcome()
+	welcome(["steer", "usage", "account", "detectors"])
+	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false, "detectors": false})
+	sw = page.detectors_switch
+	check("this plugin's agent service again: enabled, as it says (off), no line", not sw.disabled and not sw.button_pressed
+		and not page.detectors_older.visible, [sw.disabled, sw.button_pressed])
 	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false, "detectors": true})
 	fake.sent.clear()
 	dock.settings_open = false

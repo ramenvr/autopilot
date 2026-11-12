@@ -174,6 +174,7 @@ function MirrorEditor.new(mirror: any): any
 	self.brainSetup = false
 	self.brainSteers = false
 	self.brainSteerModes = false
+	self.brainDetectors = false
 	self.sides = {}
 	return self
 end
@@ -214,6 +215,7 @@ function MirrorEditor:applyState(s: any)
 	self.brainSetup = s.brainSetup == true
 	self.brainSteers = s.brainSteers == true
 	self.brainSteerModes = s.brainSteerModes == true
+	self.brainDetectors = s.brainDetectors == true
 	if type(s.memory) == "table" then
 		self.memory = { known = s.memory.known == true, runs = tonumber(s.memory.runs) or 0, notes = s.memory.notes == true,
 			lib = s.memory.lib == true }
@@ -255,6 +257,11 @@ end
 
 function MirrorEditor:stopRun()
 	self:_act({ action = "stop" })
+end
+
+-- (as the edit side's: an agent service that can't turn the bug detectors off)
+function MirrorEditor:detectorsFixedOn(): boolean
+	return self:connected() and not self.brainDetectors
 end
 
 function MirrorEditor:canSteer(): boolean

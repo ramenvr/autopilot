@@ -19,6 +19,8 @@ local SHARING = "Enabling this sends recordings, screenshots, and agent traces a
 	.. "Autopilot. For runs from your own Claude Code or Codex, the agent traces are its conversation during the run."
 local DETECTORS = "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "
 	.. "per-project."
+-- (under the Bug detectors switch, and the status line when it is flipped: an agent service that can't turn them off)
+local DETECTORS_OLDER = "The agent service in use is older than this plugin and can't turn them off."
 local ASSISTANTS_TITLE = "Autopilot in Claude Code & Codex"
 local ASSISTANTS_INTRO = "One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or "
 	.. "ChatGPT subscriptions, respectively."
@@ -335,13 +337,22 @@ function SettingsPage.render(d: any, frame: Frame)
 		research = not research
 	end, { disabled = d.mirror })
 	-- Bug detectors: this project's (memory_state's "detectors", sent as {"type": "detectors"}); as last told, and not
-	-- changed, while not connected. (After Research agent, as in the other plugins.)
+	-- changed, while not connected. Connected to an agent service older than this plugin, which can't turn them off
+	-- (its welcome's features without "detectors"): on (it runs them) and not changed, a line under it saying why.
+	-- (After Research agent, as in the other plugins.)
 	local dc = settingCard(v, "Bug detectors", DETECTORS)
-	T.switch(dc, d.editor.detectors ~= false, "Bug detectors on", "Bug detectors off", function(on)
-		if not d.editor:setDetectors(on) then
-			SettingsPage.render(d, frame) -- (not sent: the switch shows the setting as it is)
+	local fixedOn = d.editor:detectorsFixedOn()
+	T.switch(dc, fixedOn or d.editor.detectors ~= false, "Bug detectors on", "Bug detectors off", function(on)
+		if d.editor:detectorsFixedOn() then
+			d.editor:status(DETECTORS_OLDER)
+		elseif d.editor:setDetectors(on) then
+			return
 		end
-	end, { disabled = d.mirror or not d.editor:connected() })
+		SettingsPage.render(d, frame) -- (not sent: the switch shows the setting as it is)
+	end, { disabled = d.mirror or not d.editor:connected() or fixedOn })
+	if fixedOn then
+		T.label(dc, DETECTORS_OLDER, "small")
+	end
 	-- Design brief: sent with every run the dock starts (the start's `design_brief`)
 	local bc = settingCard(v, "Design brief", BRIEF_TEXT)
 	local brief = T.input(bc, { multiline = true, height = 84, name = "DesignBrief", placeholder = "Optional",

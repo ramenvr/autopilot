@@ -853,6 +853,8 @@
 .autopilot .setting-control > .connect-command { align-self: stretch; }
 .autopilot .setting-control > .brief-field { align-self: stretch; margin: 0; }
 .autopilot .setting-control > .next { margin-top: 6px; }
+/* under the bug detectors switch, why it can't be flipped (an agent service older than the plugin) */
+.autopilot .setting-control > .detectors-why { align-self: stretch; margin-top: 6px; white-space: normal; }
 /* the sharing, research agent and bug detectors switches: their words (Data sharing on/off, Research agent on/off,
    Bug detectors on/off) 8 px from the pill, checked or not */
 .autopilot .switch.share-toggle .unity-toggle__checkmark,

@@ -749,9 +749,9 @@ def test_the_settings_have_a_bug_detectors_switch():
     assert 'settingCard(v, "Bug detectors", DETECTORS)' in page
     assert ('"During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "\n'
             '\t.. "per-project."') in page
-    assert 'T.switch(dc, d.editor.detectors ~= false, "Bug detectors on", "Bug detectors off"' in page
-    assert "if not d.editor:setDetectors(on) then" in page
-    assert "{ disabled = d.mirror or not d.editor:connected() }" in page
+    assert ('T.switch(dc, fixedOn or d.editor.detectors ~= false, "Bug detectors on", "Bug detectors off"') in page
+    assert "elseif d.editor:setDetectors(on) then" in page
+    assert "{ disabled = d.mirror or not d.editor:connected() or fixedOn }" in page
     # (after the Research agent, before the Design brief, as in the other plugins)
     assert page.index('"Research agent", RESEARCH') < page.index('"Bug detectors", DETECTORS') < \
         page.index('"Design brief", BRIEF_TEXT')
@@ -767,7 +767,8 @@ def test_the_settings_have_a_bug_detectors_switch():
     memory = dock[dock.index('on("memory", function()'):]
     assert "self:renderPages()" in memory[:memory.index("end)")]
     # the mirror's dock: shown as the edit side's, never flipped
-    assert "detectors = ed.detectors }" in dock and "self.detectors = s.detectors ~= false" in mirror
+    assert "detectors = ed.detectors, brainDetectors = ed.brainDetectors }" in dock
+    assert "self.detectors = s.detectors ~= false" in mirror
     body = mirror[mirror.index("function MirrorEditor:setDetectors("):]
     assert "_act(" not in body[:body.index("end")]
     readme = open(os.path.join(ROOT, "plugin", "roblox", "README.md"), encoding="utf-8").read()
@@ -775,6 +776,35 @@ def test_the_settings_have_a_bug_detectors_switch():
     for word in ("`memory_state`", '`{"type": "detectors", "enabled": ...}`', "`detectors.json`",
                  "only while connected"):
         assert word in row, word
+
+
+def test_an_older_agent_service_greys_the_bug_detectors_switch_on():
+    """As the other plugins: an agent service older than this plugin (its welcome's features without "detectors")
+    ignores the switch's frame and the game's detectors go on running, so the switch shows them on and can't be flipped,
+    and a line under it says why in the same words as every plugin's; the mirror's dock shows it as the edit side's."""
+    sources = _sources()
+    page, editor, mirror, dock = (sources[m] for m in ("SettingsPage", "Editor", "Mirror", "Dock"))
+    why = "The agent service in use is older than this plugin and can't turn them off."
+    assert f'local DETECTORS_OLDER = "{why}"' in page
+    assert "T.label(dc, DETECTORS_OLDER, \"small\")" in page and "d.editor:status(DETECTORS_OLDER)" in page
+    # the welcome's features say it, each welcome afresh
+    welcome = editor[editor.index('elseif kind == "welcome" then'):]
+    welcome = welcome[:welcome.index("self:_startPipe(")]
+    assert "self.brainSteerModes, self.brainDetectors = false, false" in welcome
+    assert 'elseif f == "detectors" then\n\t\t\t\tself.brainDetectors = true' in welcome
+    assert "\tself.brainDetectors = false" in editor
+    fixed = _function_body(editor, "function Editor:detectorsFixedOn(): boolean")
+    assert "return self:connected() and not self.brainDetectors" in fixed
+    flip = _function_body(editor, "function Editor:setDetectors(on: boolean): boolean")
+    assert flip.index("if self:detectorsFixedOn() then\n\t\treturn false") < flip.index("self.detectors = on")
+    # the mirror: the edit side's, the same check
+    assert "self.brainDetectors = s.brainDetectors == true" in mirror
+    assert "return self:connected() and not self.brainDetectors" in \
+        _function_body(mirror, "function MirrorEditor:detectorsFixedOn(): boolean")
+    assert "brainDetectors = ed.brainDetectors" in dock
+    readme = open(os.path.join(ROOT, "plugin", "roblox", "README.md"), encoding="utf-8").read()
+    row = next(line for line in readme.splitlines() if line.startswith("| **Bug detectors** |"))
+    assert '"detectors"' in row and why in row
 
 
 # Enough of Roblox for the Editor's and the Settings page's modules to load and draw in Luau's own CLI: every service,
@@ -811,7 +841,11 @@ local sent = {}
 local link = { connected = true, role = "editor", url = "ws://127.0.0.1:8765/v1/bridge", problem = "",
 	send = function(_, frame) table.insert(sent, frame) return true end }
 local ed = setmetatable({ plugin = plugin, link = link, listeners = {}, memory = {}, detectors = true,
-	runActive = false, account = {} }, Editor)
+	runActive = false, account = {}, connection = 0, sides = {} }, Editor)
+local WHY = "The agent service in use is older than this plugin and can't turn them off."
+-- this plugin's agent service: its welcome's features say "detectors"
+ed:_onBrainFrame({ type = "welcome", role = "editor", session = "s1", features = { "steer", "detectors" } })
+assert(ed.brainDetectors == true and not ed:detectorsFixedOn(), "this agent service's welcome: it can be flipped")
 local memoryEvents = 0
 ed:on("memory", function() memoryEvents += 1 end)
 -- an older agent service's memory_state: on
@@ -855,11 +889,36 @@ link.connected = false
 local n = #sent
 s = card(d)
 assert(s.on == true and s.opts.disabled == true, "not connected: disabled, the last value")
+assert(not table.find(labels, WHY), "not connected: no line about an older agent service")
 assert(ed:setDetectors(false) == false and #sent == n and ed.detectors == true, "not connected: nothing sent")
 -- mid-play (the mirror's dock): disabled
 link.connected = true
 d.mirror = true
 assert(card(d).opts.disabled == true, "the mirror: disabled")
+d.mirror = false
+-- an agent service older than this plugin (its welcome's features without "detectors"): it would ignore the frame and
+-- run them, so on and disabled, a line under it saying why; flipped anyway, nothing sent, the status line says why
+ed:_onBrainFrame({ type = "memory_state", runs = 2, detectors = false })
+ed:_onBrainFrame({ type = "welcome", role = "editor", session = "s2",
+	features = { "steer", "steer_mode", "usage", "account", "setup" } })
+assert(ed:detectorsFixedOn(), "older: it can't turn them off")
+local said = {}
+ed:on("status", function(text) table.insert(said, text) end)
+n = #sent
+s = card(d)
+assert(s.on == true and s.opts.disabled == true, "older: on and disabled")
+assert(table.find(labels, WHY), "older: the line saying why")
+assert(table.find(labels, WHY) > table.find(labels, "Bug detectors"), "older: the line in the Bug detectors card")
+s.onToggle(false)
+assert(#sent == n and said[#said] == WHY, "older, flipped: nothing sent, the status line says why")
+assert(card(d).on == true, "older, flipped: still on")
+assert(ed:setDetectors(false) == false and #sent == n, "older: the editor sends nothing")
+-- this plugin's agent service again: as it says, and flipped as before
+ed:_onBrainFrame({ type = "welcome", role = "editor", session = "s3", features = { "detectors" } })
+s = card(d)
+assert(s.on == false and not s.opts.disabled and not table.find(labels, WHY), "this agent service again: as it says")
+s.onToggle(true)
+assert(sent[#sent].type == "detectors" and sent[#sent].enabled == true, "this agent service again: flipped, sent")
 print("ok")
 """
 

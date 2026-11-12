@@ -82,6 +82,7 @@ function Editor.new(plugin: Plugin)
 	self.brainSteerModes = false -- ("steer_mode": a steer says whether it is a hint or a redirect)
 	self.brainAccount = false
 	self.brainSetup = false
+	self.brainDetectors = false -- ("detectors": the Bug detectors switch's frame is taken: detectorsFixedOn)
 	self.privacyReady = false
 	self.memory = { known = false, runs = 0, notes = false, lib = false }
 	-- the game's bug detectors for this project (memory_state's "detectors": the Settings' Bug detectors switch), on
@@ -346,14 +347,24 @@ function Editor:setSharing(share: boolean): boolean
 end
 
 -- The Settings' Bug detectors switch: the agent service saves it for this project (its detectors.json) and tells the
--- game's detectors at once, then answers with a memory_state, which says it as saved. Shown as flipped meanwhile.
+-- game's detectors at once, then answers with a memory_state, which says it as saved. Shown as flipped meanwhile. Not
+-- with an agent service that can't turn them off (detectorsFixedOn: the Settings page says why).
 function Editor:setDetectors(on: boolean): boolean
 	if not self:connected() then
 		self:status("Not connected: connect first")
 		return false
 	end
+	if self:detectorsFixedOn() then
+		return false
+	end
 	self.detectors = on
 	return self.link:send({ type = "detectors", enabled = on })
+end
+
+-- Connected to an agent service older than this plugin, whose welcome's features don't have "detectors": it would
+-- ignore the switch and the game's detectors would go on running, so the switch shows them on, greyed, and says why.
+function Editor:detectorsFixedOn(): boolean
+	return self:connected() and not self.brainDetectors
 end
 
 -- A dock setting the hello carries changed (Show Policy Log's `inspect`, Research agent's `research`): the hello again,
@@ -374,7 +385,7 @@ function Editor:_onBrainFrame(frame: any)
 		self.link.role = tostring(frame.role or "")
 		self.connection += 1
 		self.brainSteers, self.brainAccount, self.brainSetup = false, false, false
-		self.brainSteerModes = false
+		self.brainSteerModes, self.brainDetectors = false, false
 		for _, f in ipairs(frame.features or {}) do
 			if f == "steer" then
 				self.brainSteers = true
@@ -384,6 +395,8 @@ function Editor:_onBrainFrame(frame: any)
 				self.brainAccount = true
 			elseif f == "setup" then
 				self.brainSetup = true
+			elseif f == "detectors" then
+				self.brainDetectors = true
 			end
 		end
 		if self.link.role == "cli" then

@@ -223,7 +223,10 @@ detectors on* / *Bug detectors off*; *During gameplay, Autopilot watches for pot
 detectors run for this project. The agent service keeps it (the project's `detectors.json`) and says it in every
 `memory_state` (`"detectors"`; none, from an older agent service, means on); flipped, the plugin sends
 `{"type": "detectors", "enabled": true|false}`, shows the new value at once, and the agent service's next
-`memory_state` confirms it (a run going on included). Not connected, it is greyed, showing the last value said. Then **Design brief**: how the game is meant to work (the design, the rules players are told, e.g. *the
+`memory_state` confirms it (a run going on included). Not connected, it is greyed, showing the last value said.
+Connected to an agent service older than this plugin (its `welcome`'s `features` without `"detectors"`), which would
+ignore the message and go on running the game's detectors, it is greyed and on, with *The agent service in use is
+older than this plugin and can't turn them off.* under it. Then **Design brief**: how the game is meant to work (the design, the rules players are told, e.g. *the
 player has three lives; each coin is worth 10 points*), a box saved as you type, sent with every run (the composer's
 `start` as `design_brief`, an Explore run's as `brief`, as Unreal's Design Brief): explorations report behavior that
 differs from it as a bug. Then **Policy log**, a switch (*Policy log shown* / *Policy log hidden*): whether the hello
