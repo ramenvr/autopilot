@@ -676,7 +676,7 @@ removes, for every project and editor on the computer: the agent services runnin
 sign-in (ended on Aura's side too), the `Autopilot/` settings folder (your keys, setup choices, logs, this machine's
 upload id and, with the box ticked, what Autopilot learned about each game in `memory/`), and the `autopilot`
 command (`uv tool uninstall autopilot`; on Windows once the removal has
-ended). With the box ticked the memories are deleted on this computer and also the copy kept with Aura for your team
+ended), with the copies of it earlier updates on Windows set aside and couldn't delete yet. With the box ticked the memories are deleted on this computer and also the copy kept with Aura for your team
 (and this install's copy kept for your own keys), and it also removes what the addon keeps about the runs in each
 project the agent service has run (the run history, the usage, the codex summary and `user://playtest/`, below), and the dock forgets
 its runs at once. Shared run data already sent is never removed; shared runs not sent yet are sent first, and those that

@@ -1,6 +1,6 @@
 """Check an Autopilot download on a computer that has never had Autopilot: install the agent service from the zip as
-the plugin's first-run setup does, update it in place while a program runs from it, then play a game through it with
-BYOK keys.
+the plugin's first-run setup does, update it in place while a program runs from it, install it from two editors at
+once, then play a game through it with BYOK keys.
 
     python tools/check_download.py <Autopilot-*-Godot.zip> --godot <Godot 4.7+ console executable> --disposable
 
@@ -59,19 +59,40 @@ def on_path(name):
     print(f"{name}: {found or 'not installed'}")
 
 
-def install(addon):
-    """Run the installer the addon carries, the way its Install button does."""
+def installer(addon):
+    """The command the addon's Install button runs."""
     folder = os.path.join(addon, "agent_service")
     if WINDOWS:
-        cmd = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", os.path.join(folder, "install.ps1")]
-    else:
-        cmd = ["sh", os.path.join(folder, "install.sh")]
+        return ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", os.path.join(folder, "install.ps1")]
+    return ["sh", os.path.join(folder, "install.sh")]
+
+
+def install(addon, must_pass=True):
+    """Run the installer the addon carries, the way its Install button does."""
     started = time.time()
-    done = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=1200)
+    done = subprocess.run(installer(addon), capture_output=True, text=True, errors="replace", timeout=1200)
     print(done.stdout[-6000:], done.stderr[-3000:], sep="\n")
     print(f"(the installer took {time.time() - started:.0f} s, exit {done.returncode})")
-    if done.returncode != 0:
+    if must_pass and done.returncode != 0:
         fail("the installer failed")
+    return done
+
+
+def check_installed(when):
+    """The installed Autopilot is whole and starts."""
+    env = os.path.dirname(os.path.dirname(tool_python()))
+    if not os.path.isfile(os.path.join(env, "pyvenv.cfg")):
+        fail(f"{when}: the installed environment has no pyvenv.cfg (its `autopilot` can't start)")
+    works = subprocess.run([tool_python(), "-I", "-c", "import autopilot.cli"], capture_output=True, text=True)
+    if works.returncode != 0:
+        fail(f"{when}: the installed Autopilot doesn't import\n{works.stderr[-2000:]}")
+
+
+def moved_aside():
+    """The files of earlier environments install.ps1 moved aside and hasn't deleted yet (Windows)."""
+    folder = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(tool_python())))),
+                          "autopilot-previous")
+    return sum(len(files) for _, _, files in os.walk("\\\\?\\" + folder)) if os.path.isdir(folder) else 0
 
 
 def installed_autopilot():
@@ -108,6 +129,50 @@ def rebuild_in_place(folder):
             z.writestr(i, data)
         z.writestr(record, "\n".join(lines + [f"{record.filename},,"]) + "\n")
     os.utime(path, (dated, dated))
+
+
+def check_installs_at_once(addon, settings):
+    """Two editors install at once; on Windows, an update while a file of the installed one is held."""
+    step("Install from two editors at once (both start, each finds the agent service installed older than theirs)")
+    # (the second moved the installed environment aside while the first installed it: it was left in two halves, no
+    # pyvenv.cfg, and every start ended "No pyvenv.cfg file". Now the second waits, then leaves what the first
+    # installed)
+    os.makedirs(settings, exist_ok=True)
+    with open(os.path.join(settings, "agent-service.json"), "w", encoding="utf-8") as f:
+        f.write('{"commit": "an older one"}\n')  # (so both editors find the installed one older than theirs)
+    first = subprocess.Popen(installer(addon), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                             errors="replace")
+    time.sleep(3)
+    second = subprocess.Popen(installer(addon), stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                              errors="replace")
+    said = [p.communicate(timeout=1200)[0] for p in (first, second)]
+    print(said[0][-3000:], said[1][-3000:], sep="\n-- the second editor's install:\n")
+    if first.returncode != 0 or second.returncode != 0:
+        fail(f"installing from two editors at once failed (exit {first.returncode} and {second.returncode})")
+    if "waiting for it to finish" not in said[1]:
+        fail("the second install didn't wait for the first")
+    check_installed("after two installs at once")
+    if WINDOWS and moved_aside():
+        fail(f"{moved_aside()} files of earlier environments were left moved aside")
+
+    if WINDOWS:
+        step("Update it while a file of it is open by a program that doesn't let it be moved")
+        # (Move-Item moved the files before that one and stopped: the same two halves. Now nothing moves, the update
+        # says the files are in use, and the installed one goes on working)
+        held = os.path.join(os.path.dirname(os.path.dirname(tool_python())), "Lib", "site-packages", "autopilot",
+                            "cli.py")
+        holder = subprocess.Popen([sys.executable, "-c", f"f = open({held!r}, 'rb'); import time; time.sleep(900)"])
+        time.sleep(3)
+        try:
+            refused = install(addon, must_pass=False)
+        finally:
+            holder.kill()
+            holder.wait()
+        if refused.returncode == 0 or "in use" not in refused.stdout + refused.stderr:
+            fail("the update with a file held didn't say the files are in use")
+        check_installed("after the update refused")
+        if moved_aside():
+            fail(f"the refused update left {moved_aside()} files moved aside")
 
 
 def save_byok(settings):
@@ -203,6 +268,8 @@ def main():
     finally:
         holder.kill()
         holder.wait()
+
+    check_installs_at_once(addon, settings)
 
     step("BYOK with OpenAI, as the first-run setup saves it")
     save_byok(settings)
