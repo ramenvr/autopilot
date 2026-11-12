@@ -351,6 +351,9 @@ namespace Autopilot.Playtest.Tests
             {
                 Assert.IsTrue(client.BugDetectors, "on until an agent service says otherwise");
                 client.TestConnected(true);
+                Assert.IsFalse(client.CanSetBugDetectors || client.BugDetectorsFixedOn, "not welcomed yet: neither");
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"d1\", \"features\": [\"steer\", \"detectors\"]}");
+                Assert.IsTrue(client.CanSetBugDetectors && !client.BugDetectorsFixedOn, "its welcome says \"detectors\"");
                 client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
                 Assert.IsFalse(client.BugDetectors);
                 client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false}");
@@ -375,6 +378,51 @@ namespace Autopilot.Playtest.Tests
                 client.SetBugDetectors(true);
                 Assert.IsEmpty(sent, "not connected: nothing sent");
                 Assert.IsFalse(client.BugDetectors, "and nothing changed");
+            }
+            finally
+            {
+                client.Disconnect();
+                client.TestWire = null;
+            }
+        }
+
+        [Test]
+        public void AnOlderAgentServiceCantTurnTheBugDetectorsOff()
+        {
+            // An agent service older than this plugin: its welcome's features don't have "detectors", so it would ignore
+            // the switch's frame and the game's detectors would go on running. They show on (whatever was shown before),
+            // the switch can't be flipped, and flipping it anyway sends nothing, changes nothing and says why
+            var sent = new List<string>();
+            var client = new PlaytestClient(EditorHost.Instance) { TestWire = sent.Add };
+            try
+            {
+                Assert.AreEqual("The agent service in use is older than this plugin and can't turn them off.",
+                    PlaytestClient.BugDetectorsFixedOnWhy);
+                client.TestConnected(true);
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"d1\", \"features\": [\"detectors\"]}");
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
+                Assert.IsFalse(client.BugDetectors, "this agent service: off, as it says");
+                client.TestConnected(false);
+                client.TestConnected(true);
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"d2\", \"features\": [\"steer\", \"steer_mode\", \"usage\", \"account\", \"setup\"]}");
+                Assert.IsTrue(client.BugDetectorsFixedOn && !client.CanSetBugDetectors, "an older one: it can't turn them off");
+                Assert.IsTrue(client.BugDetectors, "on at once, before its memory_state");
+                sent.Clear();
+                client.SetBugDetectors(false);
+                Assert.IsEmpty(sent, "nothing sent");
+                Assert.IsTrue(client.BugDetectors, "still on");
+                Assert.AreEqual(PlaytestClient.BugDetectorsFixedOnWhy, client.LastStatus, "the status line says why");
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false}");
+                Assert.IsTrue(client.BugDetectors, "and on with its memory_state");
+
+                // This agent service again: what it says, and flipped as before
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"d3\", \"features\": [\"detectors\"]}");
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
+                Assert.IsTrue(client.CanSetBugDetectors && !client.BugDetectorsFixedOn && !client.BugDetectors);
+                sent.Clear();
+                client.SetBugDetectors(true);
+                Assert.AreEqual(1, sent.Count);
+                Assert.IsTrue(client.BugDetectors);
             }
             finally
             {

@@ -28,7 +28,7 @@ namespace Autopilot.Playtest.Editor
             var prefs = Preferences.Current;
             return $"settings|{Wide}|{AutopilotUsage.Version}|{SelectedId}|{share}|{research}|{client != null && client.Connected}|{client != null && client.RunActive}|" +
                    $"{client?.AccountVersion}|{client != null && client.CanSignIn}|{SigningIn}|{signOutConfirm}|{setupProblem}|{prefs.Access}|{PlaytestSettings.Get().UseWithAura}|{removeConfirm}|" +
-                   $"{AgentService.Current}|{AgentService.Version}|{PlaytestSettings.Get().ShowPolicyLog}|{client == null || client.BugDetectors}";
+                   $"{AgentService.Current}|{AgentService.Version}|{PlaytestSettings.Get().ShowPolicyLog}|{client == null || client.BugDetectors}|{client != null && client.CanSetBugDetectors}";
         }
 
         void BuildSettings()
@@ -206,14 +206,29 @@ namespace Autopilot.Playtest.Editor
         /// <summary>Whether the game's detectors run for this project: the sharing card's look, its switch, showing what
         /// the agent service's last memory_state said (PlaytestClient.BugDetectors; on until one says otherwise). The
         /// agent service keeps it (the project's detectors.json), so it is greyed while not connected, still showing
-        /// the last one said; flipped, it is sent at once, a run going on included.</summary>
+        /// the last one said; flipped, it is sent at once, a run going on included. Connected to an agent service older
+        /// than this plugin, which can't turn them off (PlaytestClient.BugDetectorsFixedOn): greyed and on (it runs
+        /// them), a line under it saying why. Flipped while it can't be, it goes back to what it showed.</summary>
         static VisualElement DetectorsCard()
         {
             var card = SettingCard(DetectorsTitle, DetectorsLine, "detectors", out var control);
             var client = EditorHost.Client;
-            var toggle = DetectorsSwitch(client == null || client.BugDetectors, on => EditorHost.Client?.SetBugDetectors(on));
-            toggle.SetEnabled(client != null && client.Connected);
+            Toggle toggle = null;
+            toggle = DetectorsSwitch(client == null || client.BugDetectors, on =>
+            {
+                var c = EditorHost.Client;
+                c?.SetBugDetectors(on);
+                var shown = c == null || c.BugDetectors;
+                if (toggle.value != shown)
+                {
+                    toggle.SetValueWithoutNotify(shown);
+                    toggle.text = DetectorsState(shown);
+                }
+            });
+            toggle.SetEnabled(client != null && client.CanSetBugDetectors);
             control.Add(toggle);
+            if (client != null && client.BugDetectorsFixedOn)
+                control.Add(Para(PlaytestClient.BugDetectorsFixedOnWhy, "small t-sec2 detectors-why"));
             return card;
         }
 

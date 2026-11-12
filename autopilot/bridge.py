@@ -44,8 +44,10 @@ REPEAT_SECONDS = 180
 # sends "mode" only when this is offered, and a frame without one is a hint); "usage", the tokens a run uses (`usage`
 # frames); "account", how runs go and the Aura sign-in the plugin may ask for (`account`, `aura_sign_in` frames:
 # autopilot/account.py); "setup", the first-run setup's choices saved for a plugin that can't write Autopilot/'s files
-# itself (`save_setup`: Roblox's)
-BRAIN_FEATURES = ["steer", "steer_mode", "usage", "account", "setup"]
+# itself (`save_setup`: Roblox's); "detectors", the Settings' Bug detectors switch (a `detectors` frame sets the
+# project's detectors.json and is answered with a memory_state carrying "detectors": an agent service without it
+# ignores the frame and the game's detectors stay on, so a plugin shows the switch on and greyed then)
+BRAIN_FEATURES = ["steer", "steer_mode", "usage", "account", "setup", "detectors"]
 DEFERRED_OPS = ("move", "watch", "touch")  # (touch: a long press or swipe takes its `seconds`)
 # Ops the brain can't play without, each with arguments that make it answer without changing anything (see
 # Link.missing_ops). A plugin lacking one answers "unknown op": without this check the brain would go on blind

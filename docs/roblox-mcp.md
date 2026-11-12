@@ -32,7 +32,7 @@ Autopilot (the brain) <-- bridge WebSocket, protocol v1 --> Roblox connector <--
 | camera turns (`MouseX`, `MouseY`) | `execute_luau` in the Client: the `turn` op sets the camera's look (Studio's synthetic right-drag doesn't turn it) |
 | `game.request("move", {"to": ...})` | `character_navigation` |
 | start, stop and restart the session | `start_stop_play` (a restart is stop, then start) |
-| the game's errors (`log_error`) | `get_console_output`, read every couple of seconds while the game plays |
+| the game's errors (`log_error`) | `get_console_output`, read every couple of seconds while the game plays: always as log lines, as `log_error` findings only while the project's Bug detectors are on (the `detectors` op: `detectors.json`'s `enabled` and `mute`) |
 | stills | `screen_capture` |
 | the codex | a Rojo project's files from disk, else every script via `script_read`; the place's CollectionService tags and its instance tree (`search_game_tree`) |
 

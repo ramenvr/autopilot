@@ -67,6 +67,9 @@ const DETECTORS := ("During gameplay, Autopilot watches for potential bugs and r
 const DETECTORS_ON := "Bug detectors on"  # (the switch's words, as it stands)
 const DETECTORS_OFF := "Bug detectors off"
 const DETECTORS_AWAY := "Connect to the agent service to turn the bug detectors on or off"  # (its tooltip, not connected)
+## Connected to an agent service older than this plugin, which can't turn them off (its welcome's features without
+## "detectors"): the line under the switch, its tooltip and the status line when flipped (the same words in every plugin)
+const DETECTORS_OLDER := "The agent service in use is older than this plugin and can't turn them off."
 ## The setting plates' spacing (Sharing, Research agent, Bug detectors, Claude Code & Codex): title to subtitle,
 ## subtitle to its control, between the command rows
 const TITLE_GAP := 6.0
@@ -87,6 +90,7 @@ var _last := []  # show_data's arguments (built again when Sign out asks to conf
 var brief_box: TextEdit = null  # the Design brief's box (for the checks)
 var policy_switch: CheckBox = null  # Show Policy Log's switch
 var detectors_switch: CheckBox = null  # the Bug detectors switch
+var detectors_older: Label = null  # the line under it, shown with an agent service that can't turn them off
 ## What Copy does with a command (the clipboard; checks put a stand-in here: a headless Godot has no clipboard)
 var copy_text := func(text: String) -> void: DisplayServer.clipboard_set(text)
 
@@ -152,10 +156,11 @@ func _plate(row := false, sep := 10.0, border := HT.RULE, margins := Vector4(14,
 ## preferences.json's share_data; note: a line under the sharing choice ("" for none); account: the Account plate
 ## (account_view()); research: what the Research agent switch shows (research_shown()); detectors: what the Bug
 ## detectors switch shows (the agent service's last memory_state, or the user's flip since), detectors_live: whether it
-## can be flipped (connected to the agent service: it keeps the setting).
+## can be flipped (connected to an agent service that takes it: it keeps the setting), detectors_older: connected to an
+## agent service older than this plugin, which can't turn them off (the switch on and disabled, a line saying why).
 func show_data(entries: Array, share: bool, note := "", account := {}, runs := {}, research := true, detectors := true,
-		detectors_live := false) -> void:
-	_last = [entries, share, note, account, runs, research, detectors, detectors_live]
+		detectors_live := false, detectors_older := false) -> void:
+	_last = [entries, share, note, account, runs, research, detectors, detectors_live, detectors_older]
 	_busy = account.get("busy", false) == true
 	for c in _scroll.get_children():
 		_scroll.remove_child(c)
@@ -170,7 +175,7 @@ func show_data(entries: Array, share: bool, note := "", account := {}, runs := {
 	_v.add_child(_runs_list(entries))
 	_v.add_child(_sharing_card(share, note))
 	_v.add_child(_research_card(research))
-	_v.add_child(_detectors_card(detectors, detectors_live))
+	_v.add_child(_detectors_card(detectors, detectors_live, detectors_older))
 	if not runs.is_empty():
 		_v.add_child(_brief_card(str(runs.get("design_brief", ""))))
 		_v.add_child(_policy_card(runs.get("show_policy_log", true) == true))
@@ -213,34 +218,42 @@ func _research_card(research: bool) -> PanelContainer:
 
 ## Bug detectors: the switch (the agent service's memory_state "detectors", on when it doesn't say) with "Bug detectors
 ## on/off" to its right, as the sharing switch is; flipping it tells the agent service (it keeps the setting for the
-## project), so not connected it is disabled, showing the last known value, and its tooltip says why.
-func _detectors_card(on: bool, live: bool) -> PanelContainer:
+## project), so not connected it is disabled, showing the last known value, and its tooltip says why. Connected to an
+## agent service older than this plugin, which can't turn them off: disabled and on (it runs them), a line under it and
+## its tooltip saying why.
+func _detectors_card(on: bool, live: bool, older := false) -> PanelContainer:
 	var box := VBoxContainer.new()
 	box.add_theme_constant_override("separation", HT.px(ROW_GAP))
 	detectors_switch = _switch(on, DETECTORS_TITLE, DETECTORS_ON, DETECTORS_OFF, detectors_toggled)
-	_detectors_live(live)
 	box.add_child(detectors_switch)
+	detectors_older = _label(DETECTORS_OLDER, "AutopilotSmall")
+	box.add_child(detectors_older)
+	_detectors_live(live, older)
 	return _setting_card(DETECTORS_TITLE, DETECTORS, box)
 
 
 ## The Bug detectors switch as the agent service says now (a memory_state came, or the connection changed), set in place:
 ## nothing on the page is built again (the Design brief keeps its caret) and nothing is emitted.
-func show_detectors(on: bool, live: bool) -> void:
-	if _last.size() == 8:
+func show_detectors(on: bool, live: bool, older := false) -> void:
+	if _last.size() == 9:
 		_last[6] = on
 		_last[7] = live
+		_last[8] = older
 	if detectors_switch == null or not is_instance_valid(detectors_switch):
 		return
 	detectors_switch.set_pressed_no_signal(on)
 	detectors_switch.text = DETECTORS_ON if on else DETECTORS_OFF
-	_detectors_live(live)
+	_detectors_live(live, older)
 
 
-## The Bug detectors switch enabled (connected) or not: disabled, its tooltip saying why (still showing it, as Sign out).
-func _detectors_live(live: bool) -> void:
+## The Bug detectors switch enabled (connected to an agent service that takes it) or not: disabled, its tooltip saying
+## why (still showing it, as Sign out); with an older agent service the line under it says why too.
+func _detectors_live(live: bool, older := false) -> void:
 	detectors_switch.disabled = not live
-	detectors_switch.tooltip_text = DETECTORS_TITLE if live else DETECTORS_AWAY
+	detectors_switch.tooltip_text = DETECTORS_TITLE if live else (DETECTORS_OLDER if older else DETECTORS_AWAY)
 	detectors_switch.mouse_filter = Control.MOUSE_FILTER_STOP if live else Control.MOUSE_FILTER_PASS
+	if detectors_older != null and is_instance_valid(detectors_older):
+		detectors_older.visible = older
 
 
 ## A setting's switch: its words to its right, 8 px away (on_words or off_words as it stands: pressing them flips it
@@ -744,5 +757,5 @@ func _dim(text: String) -> Label:
 
 
 func _rebuild() -> void:
-	if _last.size() == 8:
-		show_data(_last[0], _last[1], _last[2], _last[3], _last[4], _last[5], _last[6], _last[7])
+	if _last.size() == 9:
+		show_data(_last[0], _last[1], _last[2], _last[3], _last[4], _last[5], _last[6], _last[7], _last[8])

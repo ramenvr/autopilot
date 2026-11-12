@@ -378,7 +378,10 @@ Each of these settings is a plate laid out the same way: its name (mono caps), a
   `{"type": "detectors", "enabled": <bool>}` and shows the new value at once; the agent service answers with a
   `memory_state` that confirms it (or puts it back), and tells the game's detectors at once, a run going on included.
   While the dock isn't connected to the agent service the switch is disabled ("Connect to the agent service to turn
-  the bug detectors on or off"), showing the last value it said.
+  the bug detectors on or off"), showing the last value it said. Connected to an agent service older than this plugin
+  (its `welcome`'s `features` without `"detectors"`), which would ignore the message and go on running the game's
+  detectors, the switch is disabled and on, and a line under it (its tooltip too) says "The agent service in use is
+  older than this plugin and can't turn them off."
 - **Design brief** (a text box, "Optional"): "How the game is meant to work: its design, the rules players are told
   (e.g. “the player has three lives; each coin is worth 10 points”). Explorations report what differs from it as a bug.
   Sent with every run." Kept as typed; a run from the prompt box sends it as `design_brief`, the first-run setup's

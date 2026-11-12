@@ -79,11 +79,22 @@ public:
 	bool HasMemoryLib() const { return bMemoryLib; }
 	/** Whether the game's detectors run for this project (the Settings page's Bug detectors switch): the last memory_state's
 	 *  "detectors" (one without it, from an older agent service: on), or what the switch was flipped to since. Kept when
-	 *  the connection closes: the switch shows what it last knew. */
-	bool AreDetectorsEnabled() const { return bDetectorsEnabled; }
+	 *  the connection closes: the switch shows what it last knew. Always on with an agent service that can't turn them
+	 *  off (AreDetectorsFixedOn): it runs them. */
+	bool AreDetectorsEnabled() const { return bDetectorsEnabled || AreDetectorsFixedOn(); }
+	/** Whether the Bug detectors switch can be flipped: the agent service on this connection takes the `detectors`
+	 *  message (its welcome's features had "detectors"). */
+	bool CanSetDetectors() const { return IsWelcomed() && bBrainDetectors; }
+	/** Connected to an agent service older than this plugin, whose welcome's features don't have "detectors": it would
+	 *  ignore the switch and the game's detectors would go on running, so the switch shows them on, greyed, and says why
+	 *  (DetectorsFixedOnWhy). */
+	bool AreDetectorsFixedOn() const { return IsWelcomed() && !bBrainDetectors; }
+	/** Why the Bug detectors switch can't be flipped with an agent service that can't turn them off (the card and the
+	 *  status line say it; the same words in every plugin). */
+	static const TCHAR* DetectorsFixedOnWhy() { return TEXT("The agent service in use is older than this plugin and can't turn them off."); }
 	/** The Bug detectors switch flipped: `{"type": "detectors", "enabled"}` to the agent service (docs/protocol.md), shown
-	 *  at once; the memory_state it answers with says what the project's setting is now. Not connected: nothing changes,
-	 *  and the status line says why. */
+	 *  at once; the memory_state it answers with says what the project's setting is now. Not connected, or connected to
+	 *  an agent service that can't turn them off: nothing is sent or changes, and the status line says why. */
 	void SetDetectorsEnabled(bool bOn);
 	/** Whether the user can steer the run going now (the agent service takes `steer`: its welcome said so). */
 	bool CanSteer() const { return bConnected && bRunActive && bBrainSteers; }
@@ -327,6 +338,7 @@ private:
 	bool bBrainSteers = false;  // the welcome's features had "steer"
 	bool bBrainSteerModes = false;  // and "steer_mode": a steer says "hint" or "redirect"
 	bool bBrainAccount = false;  // ... "account"
+	bool bBrainDetectors = false;  // ... "detectors": the Bug detectors switch can turn them off (CanSetDetectors)
 	bool bWelcomedHere = false;  // a welcome came on this connection
 	FPlaytestAccount Account;
 	FPlaytestSignIn SignIn;

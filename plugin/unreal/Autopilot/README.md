@@ -466,7 +466,10 @@ not something runs learned.
 The Settings page's **Bug detectors** ("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.") turns them all off
 for the project, or on again: the agent service keeps it as `"enabled": false` in the same `detectors.json`, and tells
 the game at once, a run going on included. The switch shows what the agent service says (on when it doesn't say); it
-can't be changed while the tab isn't connected (greyed, showing what it last knew).
+can't be changed while the tab isn't connected (greyed, showing what it last knew). Connected to an agent service
+older than this plugin (its `welcome`'s `features` without `"detectors"`), which would ignore the switch and go on
+running the game's detectors, it is greyed and on, with "The agent service in use is older than this plugin and can't
+turn them off." under it.
 
 ## Headless and CI runs (command line)
 

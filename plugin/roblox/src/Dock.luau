@@ -1859,7 +1859,7 @@ function Dock.editorState(ed: any): any
 	return { connected = ed:connected(), url = l.url, problem = l.problem, want = l.want, refused = l.refused == true,
 		runActive = ed.runActive, starting = ed.starting, playing = ed.playing, brainAccount = ed.brainAccount,
 		brainSetup = ed.brainSetup, brainSteers = ed.brainSteers, brainSteerModes = ed.brainSteerModes, memory = ed.memory,
-		detectors = ed.detectors }
+		detectors = ed.detectors, brainDetectors = ed.brainDetectors }
 end
 
 -- The mirror's dock as the edit dock is (its snapshot): the run going on, the run shown.

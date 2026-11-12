@@ -3234,7 +3234,7 @@ func _render_usage() -> void:
 	var research := SettingsPage.research_shown(Prefs.research_agent(prefs), _with_aura())
 	_settings_page.show_data(_usage_runs, Prefs.share_data(prefs), _usage_note, account_view(prefs),
 		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()}, research,
-		bridge.detectors_on, bridge.is_connected_to_brain())
+		bridge.shown_detectors(), bridge.can_set_detectors(), bridge.detectors_fixed_on())
 
 
 ## The composer's Time limit as last set (a run's minutes in all), kept per user and project (project metadata
@@ -3262,17 +3262,22 @@ func _on_research_toggled(on: bool) -> void:
 ## The Settings page's Bug detectors switch: told to the agent service, which keeps it for the project (a `detectors`
 ## frame; the switch shows the new value at once, and the memory_state it answers with confirms it or puts it back). Not
 ## connected the switch is disabled; flipped anyway, it goes back to the last known value and the status line says why.
+## So with an agent service older than this plugin, which can't turn them off: disabled and on, the page saying why.
 func _on_detectors_toggled(on: bool) -> void:
 	if not bridge.set_detectors(on):
-		_set_status("Not connected: connect first to turn the bug detectors on or off")
-		_settings_page.show_detectors(bridge.detectors_on, false)
+		if bridge.detectors_fixed_on():
+			_set_status(SettingsPage.DETECTORS_OLDER)
+		else:
+			_set_status("Not connected: connect first to turn the bug detectors on or off")
+		_show_detectors(true)
 
 
 ## The Bug detectors switch as the agent service last said (a memory_state came, or the connection closed): set in place
-## on the Settings page while it shows, so nothing there is built again (the Design brief keeps its caret).
-func _show_detectors() -> void:
-	if _settings_page and _settings_page.visible:
-		_settings_page.show_detectors(bridge.detectors_on, bridge.is_connected_to_brain())
+## on the Settings page while it shows, so nothing there is built again (the Design brief keeps its caret). always: even
+## while the page is hidden (its switch was just flipped).
+func _show_detectors(always := false) -> void:
+	if _settings_page and (always or _settings_page.visible):
+		_settings_page.show_detectors(bridge.shown_detectors(), bridge.can_set_detectors(), bridge.detectors_fixed_on())
 
 
 ## A Settings page switch's choice merged into preferences.json; with no run going an open connection is made again at

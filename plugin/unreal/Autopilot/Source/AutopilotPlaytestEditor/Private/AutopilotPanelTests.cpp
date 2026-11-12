@@ -2761,7 +2761,10 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 // The Settings page's Bug detectors switch (docs/protocol.md: memory_state's "detectors", the `detectors` message): what
 // each memory_state says (one without it, an older agent service's: on); flipped, it sends {"type": "detectors",
 // "enabled"} and shows the new value at once, the next memory_state confirming it or putting it back; not connected,
-// greyed, and flipped it sends nothing and keeps what it last showed (also once the connection closed)
+// greyed, and flipped it sends nothing and keeps what it last showed (also once the connection closed); connected to an
+// agent service older than this plugin (its welcome's features without "detectors": it would ignore the message and run
+// them), on and greyed, a line under it saying why, and flipped it sends nothing, shows the same and the status line
+// says why
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotDetectorsSwitchTest, "AutopilotPlaytest.Editor.DetectorsSwitch",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
@@ -2779,6 +2782,9 @@ bool FAutopilotDetectorsSwitchTest::RunTest(const FString& Parameters)
 	const FString Off = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
 	const FString On = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": true}");
 	const FString Older = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false}");
+	// The welcomes: this agent service's (it takes the `detectors` message) and an older one's (it doesn't)
+	const FString Welcome = TEXT("{\"type\": \"welcome\", \"role\": \"service\", \"session\": \"s1\", \"features\": [\"steer\", \"steer_mode\", \"usage\", \"detectors\"]}");
+	const FString OlderWelcome = TEXT("{\"type\": \"welcome\", \"role\": \"service\", \"session\": \"s2\", \"features\": [\"steer\", \"steer_mode\", \"usage\"]}");
 	// The message sent last: {"type": "detectors", "enabled"} and nothing else, its "enabled" in OutOn
 	auto LastSent = [&Sent](bool& OutOn)
 	{
@@ -2786,9 +2792,17 @@ bool FAutopilotDetectorsSwitchTest::RunTest(const FString& Parameters)
 		return Message.IsValid() && Message->Values.Num() == 2 && Message->GetStringField(TEXT("type")) == TEXT("detectors")
 			&& Message->TryGetBoolField(TEXT("enabled"), OutOn);
 	};
+	FString Said;  // (the status line's last words)
+	Bridge->OnStatus.AddLambda([&Said](const FString& Text) { Said = Text; });
+	const FString Why = TEXT("The agent service in use is older than this plugin and can't turn them off.");
+	TestEqual(TEXT("the words for an older agent service"), FString(UPlaytestSubsystem::DetectorsFixedOnWhy()), Why);
 
 	// What each memory_state says
 	TestTrue(TEXT("before any memory_state: on"), Bridge->AreDetectorsEnabled());
+	TestFalse(TEXT("before any welcome: can't be flipped"), Bridge->CanSetDetectors() || Bridge->AreDetectorsFixedOn());
+	Says(true, Welcome);
+	Sent.Reset();  // (what a welcome asks for besides)
+	TestTrue(TEXT("this agent service's welcome: can be flipped"), Bridge->CanSetDetectors() && !Bridge->AreDetectorsFixedOn());
 	Says(true, Off);
 	TestFalse(TEXT("\"detectors\": false: off"), Bridge->AreDetectorsEnabled());
 	TestTrue(TEXT("... and the memory as before"), Bridge->IsMemoryKnown() && Bridge->GetMemoryRuns() == 3 && Bridge->HasMemoryNotes());
@@ -2821,6 +2835,29 @@ bool FAutopilotDetectorsSwitchTest::RunTest(const FString& Parameters)
 	Bridge->SetDetectorsEnabled(true);
 	TestEqual(TEXT("not connected: nothing sent"), Sent.Num(), 2);
 	TestFalse(TEXT("not connected: still off"), Bridge->AreDetectorsEnabled());
+	TestFalse(TEXT("not connected: can't be flipped, and not for an older agent service"), Bridge->CanSetDetectors() || Bridge->AreDetectorsFixedOn());
+
+	// An older agent service (its welcome's features without "detectors"): on at once (it runs them), before its
+	// memory_state too; flipped, nothing sent, still on, the status line saying why
+	Says(true, OlderWelcome);
+	Sent.Reset();
+	TestTrue(TEXT("older: can't be flipped"), !Bridge->CanSetDetectors() && Bridge->AreDetectorsFixedOn());
+	TestTrue(TEXT("older: on, whatever was shown before"), Bridge->AreDetectorsEnabled());
+	Bridge->SetDetectorsEnabled(false);
+	TestEqual(TEXT("older, flipped: nothing sent"), Sent.Num(), 0);
+	TestTrue(TEXT("older, flipped: still on"), Bridge->AreDetectorsEnabled());
+	TestEqual(TEXT("older, flipped: the status line says why"), Said, Why);
+	Says(true, Off);  // (not what an older agent service says, but even so)
+	TestTrue(TEXT("older: on, whatever a memory_state says"), Bridge->AreDetectorsEnabled());
+	// ... and this agent service again: what it says, flipped as before
+	Says(true, Welcome);
+	Says(true, Off);
+	Sent.Reset();
+	TestTrue(TEXT("this agent service again: off, as it says"), Bridge->CanSetDetectors() && !Bridge->AreDetectorsEnabled());
+	Bridge->SetDetectorsEnabled(true);
+	TestTrue(TEXT("this agent service again: flipped, sent"), Sent.Num() == 1 && LastSent(bSentOn) && bSentOn && Bridge->AreDetectorsEnabled());
+	Says(true, Off);
+	Sent.Reset();
 
 	// The card's switch: the subsystem's value in its words, flipping it through the subsystem, greyed while not connected
 	if (!FSlateApplication::IsInitialized())
@@ -2849,22 +2886,65 @@ bool FAutopilotDetectorsSwitchTest::RunTest(const FString& Parameters)
 			FSlateAttributeMetaData::UpdateAllAttributes(*Wrap, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
 			return StaticCastSharedPtr<SCompoundWidget>(Wrap)->GetColorAndOpacity().A;
 		};
+		// The line under the switch, why it can't be flipped: shown only with an older agent service
+		TSharedPtr<SWidget> WhyLine;
+		TFunction<void(const TSharedRef<SWidget>&)> Look = [&WhyLine, &Why, &Look](const TSharedRef<SWidget>& W)
+		{
+			if (W->GetType() == FName(TEXT("STextBlock")) && StaticCastSharedRef<STextBlock>(W)->GetText().ToString() == Why)
+			{
+				WhyLine = W;
+			}
+			FChildren* Children = W->GetChildren();
+			for (int32 i = 0; Children && i < Children->Num(); ++i)
+			{
+				Look(Children->GetChildAt(i));
+			}
+		};
+		Look(Card);
+		auto WhyShown = [&WhyLine]()
+		{
+			if (!WhyLine.IsValid())
+			{
+				return false;
+			}
+			FSlateAttributeMetaData::UpdateAllAttributes(*WhyLine, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
+			return WhyLine->GetVisibility().IsVisible();
+		};
 		TestTrue(TEXT("card: the switch in its grey-out"), Wrap.IsValid() && Wrap->GetType() == FName(TEXT("SBorder")));
+		TestTrue(TEXT("card: the line saying why it can't be flipped, under the switch"), WhyLine.IsValid());
 		Says(true, Off);
 		TestFalse(TEXT("card: off"), Toggle->IsChecked());
 		TestEqual(TEXT("card: off, its words"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
 		TestTrue(TEXT("card: connected, not greyed"), FMath::IsNearlyEqual(Alpha(), 1.f));
+		TestFalse(TEXT("card: connected, no line saying why"), WhyShown());
 		Toggle->ToggleCheckedState();
-		TestTrue(TEXT("card: flipped, it sends enabled true"), Sent.Num() == 3 && LastSent(bSentOn) && bSentOn);
+		TestTrue(TEXT("card: flipped, it sends enabled true"), Sent.Num() == 1 && LastSent(bSentOn) && bSentOn);
 		TestTrue(TEXT("card: flipped, on at once"), Toggle->IsChecked());
 		TestEqual(TEXT("card: on, its words"), AllWords(Toggle), FString(TEXT("Bug detectors on")));
 		Says(true, Off);
 		TestEqual(TEXT("card: the answer said off: off"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
 		Bridge->bConnected = false;
 		TestTrue(TEXT("card: not connected, greyed"), FMath::IsNearlyEqual(Alpha(), 0.45f));
+		TestFalse(TEXT("card: not connected, no line saying why"), WhyShown());
 		Toggle->ToggleCheckedState();
-		TestEqual(TEXT("card: not connected, flipped: nothing sent"), Sent.Num(), 3);
+		TestEqual(TEXT("card: not connected, flipped: nothing sent"), Sent.Num(), 1);
 		TestEqual(TEXT("card: not connected, flipped: still off"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
+		// An older agent service: on, greyed, the line saying why; flipped, nothing sent and still on
+		Says(true, OlderWelcome);
+		Sent.Reset();
+		TestTrue(TEXT("card: older, on"), Toggle->IsChecked());
+		TestEqual(TEXT("card: older, on, its words"), AllWords(Toggle), FString(TEXT("Bug detectors on")));
+		TestTrue(TEXT("card: older, greyed"), FMath::IsNearlyEqual(Alpha(), 0.45f));
+		TestTrue(TEXT("card: older, the line saying why"), WhyShown());
+		Said.Empty();
+		Toggle->ToggleCheckedState();
+		TestEqual(TEXT("card: older, flipped: nothing sent"), Sent.Num(), 0);
+		TestEqual(TEXT("card: older, flipped: still on"), AllWords(Toggle), FString(TEXT("Bug detectors on")));
+		TestEqual(TEXT("card: older, flipped: the status line says why"), Said, Why);
+		// ... and this agent service again: not greyed, no line
+		Says(true, Welcome);
+		TestTrue(TEXT("card: this agent service again, not greyed"), FMath::IsNearlyEqual(Alpha(), 1.f));
+		TestFalse(TEXT("card: this agent service again, no line saying why"), WhyShown());
 	}
 	Panel->TestBridge.Reset();
 	Bridge->TestSent = nullptr;

@@ -70,7 +70,10 @@ var memory_serial := -1  # the connection (connection_serial) the last memory_st
 ## it (the project's detectors.json) and says it in every memory_state ("detectors"; one without it, from an older agent
 ## service, means on), or as the user flipped it since (shown at once: the memory_state the agent service answers with
 ## confirms it, or puts it back). Kept once the connection closes: the switch shows it, not to be changed, until the next.
+## Always on with an agent service that can't turn them off (detectors_fixed_on()): it runs them. (shown_detectors())
 var detectors_on := true
+## The welcome's features had "detectors": the agent service takes the Bug detectors switch's `detectors` frame.
+var brain_detectors := false
 ## The account (docs/protocol.md "Account"): brain_account, the welcome's features had "account" (it can sign in to
 ## Aura); account, its last account frame ({} until one came; kept after the connection closes).
 var brain_account := false
@@ -305,12 +308,30 @@ func feedback(signature: String, verdict: String) -> void:
 ## The Settings page's Bug detectors switch flipped: `{"type": "detectors", "enabled": on}` to the agent service (the
 ## project's detectors.json says so from now on, and the game's detectors are told at once, a run going on included),
 ## shown at once in detectors_on; the memory_state it answers with says how it is. Whether it was sent (not without a
-## connection: the setting is the agent service's).
+## connection: the setting is the agent service's; nor to an agent service that can't turn them off, detectors_fixed_on()).
 func set_detectors(on: bool) -> bool:
-	if not is_connected_to_brain() or not link.send({"type": "detectors", "enabled": on}):
+	if not can_set_detectors() or not link.send({"type": "detectors", "enabled": on}):
 		return false
 	detectors_on = on
 	return true
+
+
+## Whether the Bug detectors switch can be flipped: connected to an agent service that takes it (its welcome's features
+## had "detectors").
+func can_set_detectors() -> bool:
+	return is_connected_to_brain() and brain_detectors
+
+
+## Connected to an agent service older than this plugin, whose welcome's features don't have "detectors": it would ignore
+## the switch and the game's detectors would go on running, so the switch shows them on, greyed, and says why
+## (ui/settings_page.gd DETECTORS_OLDER).
+func detectors_fixed_on() -> bool:
+	return is_connected_to_brain() and not brain_detectors
+
+
+## What the Bug detectors switch shows: detectors_on, or on with an agent service that can't turn them off.
+func shown_detectors() -> bool:
+	return detectors_on or detectors_fixed_on()
 
 
 # --- the editor kept awake during a run ---------------------------------------------------------------
@@ -386,6 +407,7 @@ func _on_brain_frame(frame: Dictionary) -> void:
 			brain_steers = false
 			brain_steer_modes = false
 			brain_account = false
+			brain_detectors = false
 			_record = null
 			var features = frame.get("features", [])
 			if typeof(features) == TYPE_ARRAY:
@@ -396,6 +418,8 @@ func _on_brain_frame(frame: Dictionary) -> void:
 						brain_steer_modes = true
 					elif typeof(feature) == TYPE_STRING and feature == "account":
 						brain_account = true
+					elif typeof(feature) == TYPE_STRING and feature == "detectors":
+						brain_detectors = true
 			if link.role == "cli":
 				run_active = true
 				run_changed.emit(true)

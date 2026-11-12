@@ -3479,7 +3479,9 @@ TSharedRef<SWidget> SPlaytestPanel::MakeBugDetectors()
 {
 	// (as the sharing card: the switch under its name, and beside it "Bug detectors on" / "Bug detectors off". The agent
 	// service keeps it for the project: flipped, it shows the new value at once and the memory_state it answers with
-	// confirms it. Not connected: greyed, showing what it last said, and flipped the status line says why)
+	// confirms it. Not connected: greyed, showing what it last said, and flipped the status line says why. Connected to
+	// an agent service older than this plugin, which can't turn them off: greyed and on (it runs them), a line under it
+	// saying why, and flipped the status line says it too)
 	const FText Name = LOCTEXT("BugDetectors", "Bug detectors");
 	TSharedRef<SCheckBox> Toggle = AutopilotUI::Switch([this]()
 		{
@@ -3499,15 +3501,29 @@ TSharedRef<SWidget> SPlaytestPanel::MakeBugDetectors()
 			return !B || B->AreDetectorsEnabled() ? LOCTEXT("DetectorsOn", "Bug detectors on") : LOCTEXT("DetectorsOff", "Bug detectors off");
 		}), 13.f, AutopilotColor::Text(), false, EAutopilotFont::BodyMedium), 8.f);
 	Toggle->SetToolTipText(Name);
+	TSharedRef<STextBlock> Why = AutopilotUI::Body(FText::FromString(UPlaytestSubsystem::DetectorsFixedOnWhy()), 12.f, AutopilotColor::Text3());
+	Why->SetVisibility(TAttribute<EVisibility>::CreateLambda([this]()
+	{
+		const UPlaytestSubsystem* B = DetectorsBridge();
+		return B && B->AreDetectorsFixedOn() ? EVisibility::Visible : EVisibility::Collapsed;
+	}));
 	return SettingCard(Name,
 		LOCTEXT("BugDetectorsWhat", "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project."),
-		SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth()
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight()
 		[
-			AutopilotUI::Greyed(TAttribute<bool>::CreateLambda([this]()
-			{
-				const UPlaytestSubsystem* B = DetectorsBridge();
-				return !(B && B->IsConnected());
-			}), Toggle)
+			SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth()
+			[
+				AutopilotUI::Greyed(TAttribute<bool>::CreateLambda([this]()
+				{
+					const UPlaytestSubsystem* B = DetectorsBridge();
+					return !(B && B->CanSetDetectors());
+				}), Toggle)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)
+		[
+			Why
 		]);
 }
 

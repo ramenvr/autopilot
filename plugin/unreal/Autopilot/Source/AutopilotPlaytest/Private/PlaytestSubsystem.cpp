@@ -483,6 +483,7 @@ void UPlaytestSubsystem::OpenSocket()
 			This->bConnected = true;
 			This->bWelcomedHere = false;
 			This->bBrainAccount = false;
+			This->bBrainDetectors = false;
 			This->LastRequestAt = -1.0;
 			++This->ConnectionSerial;
 			This->Backoff = 1.0;
@@ -730,6 +731,12 @@ void UPlaytestSubsystem::SetDetectorsEnabled(bool bOn)
 		Status(TEXT("Not connected: connect first to turn the bug detectors on or off"));
 		return;
 	}
+	if (!CanSetDetectors())
+	{
+		// (an older agent service ignores the message and goes on running them: the switch stays on)
+		Status(DetectorsFixedOnWhy());
+		return;
+	}
 	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
 	Message->SetStringField(TEXT("type"), TEXT("detectors"));
 	Message->SetBoolField(TEXT("enabled"), bOn);
@@ -909,6 +916,7 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 		bBrainSteers = false;
 		bBrainSteerModes = false;
 		bBrainAccount = false;
+		bBrainDetectors = false;
 		const TArray<TSharedPtr<FJsonValue>>* BrainFeatures = nullptr;
 		if (Message->TryGetArrayField(TEXT("features"), BrainFeatures) && BrainFeatures)
 		{
@@ -918,6 +926,7 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 				bBrainSteers |= Name == TEXT("steer");
 				bBrainSteerModes |= Name == TEXT("steer_mode");
 				bBrainAccount |= Name == TEXT("account");
+				bBrainDetectors |= Name == TEXT("detectors");
 			}
 		}
 		Problem.Empty();
