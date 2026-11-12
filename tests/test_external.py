@@ -365,6 +365,39 @@ def test_the_mcp_front_lists_its_tools_and_finds_the_service(tmp_path, monkeypat
     assert mcp.control_urls() == (["http://c/d", "http://a/b"], None)
     bridge.announce("ws://127.0.0.1:2/v1/bridge", str(tmp_path / "own.json"), {"control": "http://e/f"})
     assert json.loads((tmp_path / "own.json").read_text())["control"] == "http://e/f"
+    # A program that runs an agent service of its own names the one this server uses: no other is looked for
+    monkeypatch.setenv("AUTOPILOT_MCP_BRAIN", str(tmp_path / "own.json"))
+    assert mcp.control_urls() == (["http://e/f"], None)
+    (tmp_path / "old.json").write_text(json.dumps({"url": "ws://z", "started": 9}))
+    monkeypatch.setenv("AUTOPILOT_MCP_BRAIN", str(tmp_path / "old.json"))
+    assert mcp.control_urls() == ([], mcp.TOO_OLD)
+    monkeypatch.setenv("AUTOPILOT_MCP_BRAIN", str(tmp_path / "none.json"))
+    assert mcp.control_urls() == ([], mcp.NOT_RUNNING)  # (not the others': the one named isn't running)
+    monkeypatch.delenv("AUTOPILOT_MCP_BRAIN")
+    assert mcp.control_urls() == (["http://c/d", "http://a/b"], None)
+
+
+def test_a_start_call_says_where_it_was_asked_for_when_the_server_was_told(monkeypatch):
+    monkeypatch.delenv("AUTOPILOT_MCP_TRACE", raising=False)
+    assert mcp.run_trace() is None
+    asked = []
+    front = mcp.Server(out=io.StringIO(), find=lambda: (["http://control"], None))
+    front.client = "codex"
+    monkeypatch.setattr(front, "post",
+                        lambda url, body: asked.append((url, body)) or mcp.text("Autopilot run r1-ab started"))
+    front.forward("start_run", {"request": "The gate opens", "kind": "verify"})
+    assert asked[-1] == ("http://control/start", {"request": "The gate opens", "kind": "verify", "client": "codex"})
+    monkeypatch.setenv("AUTOPILOT_MCP_TRACE", json.dumps({"thread_id": "t1", "tool": "playtest"}))
+    front.forward("start_run", {"request": "The gate opens", "kind": "verify"})
+    assert asked[-1][1] == {"request": "The gate opens", "kind": "verify", "client": "codex",
+                            "trace": {"thread_id": "t1", "tool": "playtest"}}
+    for told in ("not json", "[1]", "{}", ""):  # (anything but an object with something in it: no trace)
+        monkeypatch.setenv("AUTOPILOT_MCP_TRACE", told)
+        assert mcp.run_trace() is None
+    # (the run the agent service makes of the call keeps it, as a start frame's run does)
+    run = cli.external_run({"request": "The gate opens", "kind": "verify", "trace": {"thread_id": "t1"}})
+    assert run == {"kind": "verify", "claim": "The gate opens", "trace": {"thread_id": "t1"}}
+    assert "trace" not in cli.external_run({"request": "The gate opens", "kind": "verify", "trace": "t1"})
 
 
 def test_the_run_goes_to_the_agent_service_the_editor_is_connected_to(started):

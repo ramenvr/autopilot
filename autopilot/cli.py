@@ -504,12 +504,13 @@ def as_claim(prompt):
 
 
 def start_aura_run(link, kind, project, path=None, trace=None, model=None, disable_premium_models=False,
-                   thinking_level=None):
+                   thinking_level=None, client=None):
     """With AUTOPILOT_AURA_URL set: the run, started with Aura (autopilot/aura.py), to play inside of; project: the
     project's name; trace: the start frame's run "trace" (where in Aura the run was asked for), passed on to Aura;
     model: its run "model" (the model picked in Aura's chat), which Aura answers with the agent and model to play,
     disable_premium_models its run "disable_premium_models" (Aura's chat's "Disable Premium Models", for Auto), and
-    thinking_level its run "thinking_level" (the level picked in Aura's chat for that model).
+    thinking_level its run "thinking_level" (the level picked in Aura's chat for that model); client: the MCP client
+    whose own agent works on the run (a Desk's: codex, claude-code), None for a run an agent of Autopilot's plays.
     Its memory is kept in the project's own folder (codex.project_of). Raises aura.Refused, with what to tell the
     user, when Aura won't start it (a signed-out user signs in on Aura's website)."""
     hello = getattr(link, "hello", None) or {}
@@ -521,7 +522,7 @@ def start_aura_run(link, kind, project, path=None, trace=None, model=None, disab
             return aura.Run(token, kind, getattr(link, "mode", None), project,
                             say=lambda text: link.status(text), project_key=hello.get("project_id") or project,
                             trace=trace, model=model, disable_premium_models=disable_premium_models,
-                            thinking_level=thinking_level).start()
+                            thinking_level=thinking_level, client=client).start()
         except aura.Refused as e:
             print(f"Aura refused the run: HTTP {e.status} {e.code} {e.message}")
             raise
@@ -688,7 +689,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             # (a kind not known yet is told to Aura as a goal: Aura bills every kind the same)
             run = start_aura_run(link, kind or "goal", (link.hello or {}).get("project") or "game", path,
                                  trace=trace, model=aura_model, disable_premium_models=disable_premium_models,
-                                 thinking_level=thinking_level)
+                                 thinking_level=thinking_level,
+                                 client=(desk.client or "mcp") if desk is not None else None)
             account.note_credits(None)  # (Aura started it: the team has credits)
     except aura.Refused as e:
         report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
@@ -1087,6 +1089,8 @@ def external_run(params):
         run["time_limit_minutes"] = params["minutes"]
     if str(params.get("level") or "").strip():
         run["level"] = str(params["level"]).strip()
+    if isinstance(params.get("trace"), dict):  # (where the run was asked for, as its MCP server was told)
+        run["trace"] = params["trace"]
     return run
 
 

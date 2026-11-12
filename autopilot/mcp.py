@@ -9,6 +9,11 @@ It is a front for the agent service the editor's plugin started: it finds it by 
 connected. A call that takes longer than WAIT_SECONDS (an episode, the game starting: a client gives up on a slow
 call, Codex after 60 s) answers "still going", and `wait` gives its result.
 
+A program that runs an agent service of its own and sets this server up for its own agent says which service to use:
+AUTOPILOT_MCP_BRAIN names a brain file (what that service announced: its "control" address), and then no other service
+on the machine is looked for. It may also say where the runs its agent starts were asked for: AUTOPILOT_MCP_TRACE, a
+JSON object (a start frame's run "trace": thread_id, tool_call_id, tool), goes with every start_run.
+
 Nothing but the protocol goes to stdout.
 """
 
@@ -84,15 +89,31 @@ def client_name(info):
     return "claude-code" if "claude" in low else "codex" if "codex" in low else (name or None)
 
 
+def pinned_brain():
+    """The one brain file this server was told to use (AUTOPILOT_MCP_BRAIN), or None: every service is looked for."""
+    return (os.environ.get("AUTOPILOT_MCP_BRAIN") or "").strip() or None
+
+
+def run_trace():
+    """Where the runs this server starts were asked for (AUTOPILOT_MCP_TRACE: a JSON object), or None."""
+    try:
+        trace = json.loads(os.environ.get("AUTOPILOT_MCP_TRACE") or "null")
+    except ValueError:
+        return None
+    return trace if isinstance(trace, dict) and trace else None
+
+
 def control_urls():
     """The running agent services' control addresses, the newest first (brain.json: the editor's; aura-brain.json: the
-    Aura app's brain, which may run beside it with no editor connected), or ([], why)."""
+    Aura app's brain, which may run beside it with no editor connected), or ([], why). With AUTOPILOT_MCP_BRAIN, the
+    service that file names and no other."""
     from . import aura, bridge
 
+    pinned = pinned_brain()
     found = []
-    for name in (bridge.BRAIN_FILE, aura.BRAIN_FILE):
+    for path in ([pinned] if pinned else [bridge.brain_file(name) for name in (bridge.BRAIN_FILE, aura.BRAIN_FILE)]):
         try:
-            with open(bridge.brain_file(name), encoding="utf-8") as f:
+            with open(path, encoding="utf-8") as f:
                 info = json.load(f)
         except (OSError, ValueError):
             continue
@@ -177,7 +198,9 @@ class Server:
     def forward(self, name, args):
         """The call, made on the agent service (blocking)."""
         if name == "start_run":
-            url, answer = self.first_taker("start", {**(args or {}), "client": self.client}, "connected")
+            trace = run_trace()
+            body = {**(args or {}), "client": self.client, **({"trace": trace} if trace else {})}
+            url, answer = self.first_taker("start", body, "connected")
             if url is not None and not answer.get("isError"):
                 self.control = url
                 first = next((c.get("text", "") for c in answer.get("content") or [] if c.get("type") == "text"), "")
