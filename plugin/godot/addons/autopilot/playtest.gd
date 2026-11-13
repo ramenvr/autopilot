@@ -26,6 +26,7 @@ const Media = preload("lib/media.gd")
 const Prefs = preload("lib/prefs.gd")
 const Isolation = preload("lib/isolation.gd")
 const MouseReads = preload("lib/mouse_reads.gd")
+const Trace = preload("lib/trace.gd")
 
 const CAPTURE := "autopilot"
 const KEY_TAP_SECONDS := 0.05
@@ -228,9 +229,9 @@ func hello(host: String) -> Dictionary:
 		"engine_version": Engine.get_version_info().string, "project": str(ProjectSettings.get_setting("application/config/name", "")),
 		"host": host,
 		# what this addon does beyond the protocol's first version: the brain falls back for one without them (a key
-		# hold with "seconds" let go in the game; `levels`, and `session` playing the `map` asked for; `pointer`;
+		# hold with "seconds" let go in the game; `levels`, and `session` playing the `map` asked for; `pointer`; `trace`;
 		# `record` and `capture`, in a game that draws)
-		"features": ["timed_hold", "levels", "pointer"] + (["media"] if Media.can_capture() else []),
+		"features": ["timed_hold", "levels", "pointer", "trace"] + (["media"] if Media.can_capture() else []),
 		# whether the user shares runs' data (preferences.json, or -PlaytestShare on the command line)
 		"share": Prefs.share_for_run(cli_share),
 		# how input reaches the game (as Unity's: point before clicking, what headless changes)
@@ -572,7 +573,13 @@ func _handle_request(frame: Dictionary) -> void:
 func dispatch(id, op: String, args: Dictionary):
 	match op:
 		"rc":
-			return rc.handle(str(args.get("verb", "")), args.get("body", null))
+			var verb := str(args.get("verb", ""))
+			var body = args.get("body", null)
+			if detectors and typeof(body) == TYPE_DICTIONARY and ((verb == "call" and not _reads(str(body.get("functionName", ""))))
+					or (verb == "property" and (typeof(body.get("propertyValue")) == TYPE_DICTIONARY
+						or str(body.get("access", "")).begins_with("WRITE")))):
+				detectors.note_move()  # (what it moves is the agent's doing, not the game teleporting it)
+			return rc.handle(verb, body)
 		"context":
 			if args.has("player"):
 				world.chosen = str(args.get("player", ""))
@@ -600,6 +607,7 @@ func dispatch(id, op: String, args: Dictionary):
 		"ui":
 			return [true, {"elements": ui.list()}]
 		"ui_act":
+			_note_input(str(args.get("id", "")))
 			var r: Array = ui.act(args)
 			if r[0] and r[1] is Dictionary:
 				return [true, r[1]]
@@ -634,6 +642,8 @@ func dispatch(id, op: String, args: Dictionary):
 			return world.find(args)
 		"transforms":
 			return [true, world.transforms(args, rc.resolve)]
+		"trace":
+			return Trace.trace(world, args)
 		"pose":
 			return world.pose(args)
 		"movement":
@@ -1006,6 +1016,7 @@ func key_op(id, args: Dictionary):
 			_held[name] = {"spec": spec}
 			if not axis:
 				_send_key(spec, true, value)
+				_note_input(name)
 		elif spec.kind == "action" and _held[name].value != value:
 			_send_key(spec, true, value)
 		_held[name].value = value
@@ -1022,6 +1033,7 @@ func key_op(id, args: Dictionary):
 			_send_key(spec, false)
 		return [true, {}]
 	_send_key(spec, true, value)
+	_note_input(name)
 	var started := _now()
 	var frame := Engine.get_process_frames()
 	_pending.append({"id": id, "op": "key", "tick": func(now: float) -> bool:
@@ -1032,6 +1044,23 @@ func key_op(id, args: Dictionary):
 		respond(id, {})
 		return true})
 	return null
+
+
+## Whether a called function only reads (get_, find_, is_, has_, can_; GetX, FindX, IsX, HasX, CanX): the kit calls
+## those every step, and they move nothing.
+static func _reads(fn: String) -> bool:
+	for p in ["get", "find", "is", "has", "can"]:
+		if fn == p or fn.begins_with(p + "_") or (fn.begins_with(p.capitalize()) and fn.length() > p.length()
+				and fn.substr(p.length(), 1) == fn.substr(p.length(), 1).to_upper() and fn.substr(p.length(), 1) != "_"):
+			return true
+	return false
+
+
+## The agent's input went to the game (a key down, an action, a UI element): the detectors tell a teleport right after
+## it apart (Detectors.note_input).
+func _note_input(key: String) -> void:
+	if detectors:
+		detectors.note_input(key)
 
 
 func _tick_keys(now: float, dt: float) -> void:
@@ -1095,6 +1124,7 @@ func input_op(id, args: Dictionary):
 		_send_key(spec, false)
 		return [true, {}]
 	_send_key(spec, true, strength)
+	_note_input(action)
 	if mode == "hold":
 		return [true, {}]
 	var started := _now()

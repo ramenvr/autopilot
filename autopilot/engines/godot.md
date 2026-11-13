@@ -82,8 +82,10 @@
   `game.request("watch", {"objects": [...], "drawn": True})` notes "part shown"/"part hidden", "effect started"/"effect
   stopped", "light on"/"light off", "animation started"/"animation ended" and "went limp" besides moves, turns and size.
 - **Findings** the addon reports by itself, as Unreal's: log_error, nan, out_of_world, long_fall, hitch, hud_fraction,
-  `teleport` (a body moved farther in one frame than its speed allows: a suspicion; moving the player with `game.set`
-  counts too), `actor_growth` (the nodes of one kind kept growing for 2 minutes: a leak), `clamp` (a script variable
+  `teleport` (a body moved farther in one frame than its speed allows: a suspicion; never what `game.set` or `game.call`
+  moved; right after the agent's own key or action, `info` naming it in `details.after_input`: maybe what that key is
+  for), `actor_growth` (the nodes of one kind the game spawned kept growing for 2 minutes: a leak; not what a level part
+  brought), `clamp` (a script variable
   outside its `@export_range`) and `over_max` (a number above its `max_<name>` / `<name>_max` sibling).
 - **`game.screen()`** keys are `<UI>.<Node name>`: `<UI>` is the CanvasLayer or the scene the control belongs to
   (`HUD.ScoreLabel`, `PauseMenu.ResumeButton`). `game.ui()` lists Buttons, CheckBoxes, OptionButtons (combo), Sliders and
@@ -100,3 +102,7 @@
   Engine.time_scale, set every frame from the frame before's wall time, and the frame rate capped at fps); `fixed: False`
   puts both back. `context`'s `net` says how the game is networked (`standalone`, `listen_server`, `dedicated_server`,
   `client`); a client's `pause` pauses only its own copy (its answer says why).
+- **Boxes and traces**: `game.bounds(path)` (3D) is the box round the node's enabled collision shapes (an Area's too),
+  or round what is drawn of it when it has none; `visual=True`: round what is drawn. `game.trace` asks the 3D physics
+  space: what stops the body is the player's `collision_mask`, a line of sight every layer; Areas never stop it. Not in a
+  2D scene.

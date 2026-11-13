@@ -30,13 +30,37 @@ SKILL = os.path.join(HERE, "assistants", "SKILL.md")
 MARK = "autopilot connect"  # in every file this writes (a comment), and before its Codex config table
 NAME = "autopilot"  # the MCP server's name
 CLAUDE_DESCRIBER, CODEX_DESCRIBER = "frame-describer", "frame_describer"
+CLAUDE_REVIEWER, CODEX_REVIEWER = "episode-reviewer", "episode_reviewer"
 DESCRIBER_ABOUT = ("Describes frames of an Autopilot episode (the autopilot `frames` tool) for an agent checking how "
-                   "something in a game looks. Give it only the episode, the game times and open questions: never the "
-                   "claim, the request or what you expect to see.")
-DESCRIBER_HOW = ("You are given an episode, game times and open questions. Call the autopilot `frames` tool with that "
-                 "episode, start, end and count, then describe the frames you get, answering each question by its "
-                 "number from the frames alone. If `frames` gives no pictures, say what it said instead and stop.")
+                   "something in a game looks. Give it only the episode, the times in it (seconds from its start, as "
+                   "its summary's t=) and open questions: never the claim, the request or what you expect to see.")
+DESCRIBER_HOW = ("You are given an episode, times in it (seconds from its start) and open questions. Call the "
+                 "autopilot `frames` tool with that episode, start, end and count, then describe the frames you get, "
+                 "answering each question by its number from the frames alone. If `frames` gives no pictures, say "
+                 "what it said instead and stop.")
+REVIEWER_ABOUT = ("Reviews one Autopilot episode (its trace summary, what the picture showed, the harness that "
+                  "played it) and proposes the one change for the next harness. Give it the run's folder (runs/<id>) "
+                  "and the episode's number; it reads with Autopilot's file tools and looks at frames where a "
+                  "death's cause is unclear. It can't act on the game or write.")
+REVIEWER_HOW = """You review one episode of an Autopilot run for the agent writing the harness, and propose the one
+change to make next. You are given the run's folder (runs/<id>, relative to the game's folder) and the episode's number
+n. With the autopilot `read_file` tool read runs/<id>/trace<n>_summary.txt (how each option fared, the timeline, where
+the plan got, "What the picture showed": each death's cause as a model saw it in the frames, with a sentence; the
+executors' step times) and runs/<id>/harness<n>.py; `search` and `read_file` for lib.py, notes.md and
+runs/<id>/findings.md as you need them. Where the summary leaves a death's or a stall's cause unclear, or the numbers
+and the picture disagree, call the autopilot `frames` tool for that moment (episode n, start and end as seconds from
+its start, the summary's t=, count up to 12) and look: the picture wins.
+
+Answer in under 40 lines, no preamble:
+1. How the episode ended and where the plan stood.
+2. Each death or stall: its cause, from the picture and the numbers together (say which you went by).
+3. THE one change to make first, as a concrete edit: the function, the condition or number, what it should read
+   instead, and why that fixes the cause (a wait for a hazard's clear moment, a jump the game times, another way).
+4. What to check in a probe before relying on it.
+Say what you could not find rather than guess."""
 PLUGIN_SERVER = f"mcp__plugin_{NAME}_{NAME}__frames"  # (a plugin's server's tools are named for the plugin too)
+PLUGIN_PREFIX = f"mcp__plugin_{NAME}_{NAME}__"
+REVIEWER_TOOLS = ("read_file", "search", "list_files", "frames")  # (Autopilot's tools a reviewer uses)
 TABLE = re.compile(r"^\s*\[\s*mcp_servers\s*\.\s*(\"autopilot\"|autopilot)\s*(\.[^\]]*)?\]\s*(#.*)?$")
 HEADER = re.compile(r"^\s*\[")
 
@@ -93,6 +117,21 @@ def codex_describer():
             f"developer_instructions = '''\n{describer_instructions()}\n'''\n")
 
 
+def claude_reviewer(prefix):
+    """The Claude Code subagent that reviews an episode (prefix: Autopilot's tools' name prefix as Claude Code knows
+    them, `mcp__autopilot__` or the plugin's)."""
+    tools = ", ".join(prefix + t for t in REVIEWER_TOOLS)
+    return (f"---\nname: {CLAUDE_REVIEWER}\ndescription: {json.dumps(REVIEWER_ABOUT)}\ntools: {tools}\n"
+            "model: opus\n---\n\n"
+            f"{REVIEWER_HOW}\n\n<!-- {MARK}: Autopilot's episode reviewer -->\n")
+
+
+def codex_reviewer():
+    return (f"# {MARK}: Autopilot's episode reviewer\n"
+            f"name = {json.dumps(CODEX_REVIEWER)}\ndescription = {json.dumps(REVIEWER_ABOUT)}\n"
+            f"developer_instructions = '''\n{REVIEWER_HOW}\n'''\n")
+
+
 def codex_table(command):
     return (f"# {MARK}: Autopilot's MCP server, for the game open in your editor (`autopilot connect codex --remove` "
             f"takes it out)\n[mcp_servers.{NAME}]\ncommand = {json.dumps(command[0])}\n"
@@ -113,7 +152,8 @@ def plugin_files():
     return {".claude-plugin/plugin.json": json.dumps(manifest, indent=2) + "\n",
             ".mcp.json": json.dumps(servers, indent=2) + "\n",
             "skills/autopilot/SKILL.md": skill_text(),
-            f"agents/{CLAUDE_DESCRIBER}.md": claude_describer(PLUGIN_SERVER)}
+            f"agents/{CLAUDE_DESCRIBER}.md": claude_describer(PLUGIN_SERVER),
+            f"agents/{CLAUDE_REVIEWER}.md": claude_reviewer(PLUGIN_PREFIX)}
 
 
 def write_plugin(folder):
@@ -257,11 +297,13 @@ def connect(client, say=print, runner=None):
         ok &= put(os.path.join(home, "skills", NAME, "SKILL.md"), skill_text(), say)
         ok &= put(os.path.join(home, "agents", f"{CLAUDE_DESCRIBER}.md"), claude_describer(f"mcp__{NAME}__frames"),
                   say)
+        ok &= put(os.path.join(home, "agents", f"{CLAUDE_REVIEWER}.md"), claude_reviewer(f"mcp__{NAME}__"), say)
         what = "Claude Code"
     else:
         ok = edit_codex_config(command, say)
         ok &= put(os.path.join(agents_home(), "skills", NAME, "SKILL.md"), skill_text(), say)
         ok &= put(os.path.join(codex_home(), "agents", f"{CODEX_DESCRIBER}.toml"), codex_describer(), say)
+        ok &= put(os.path.join(codex_home(), "agents", f"{CODEX_REVIEWER}.toml"), codex_reviewer(), say)
         what = "Codex"
     say(f"{what} is set up for Autopilot{'' if ok else ', but for what is said above'}. Open the game's project in the "
         f"editor with the Autopilot tab connected, start a new {what} session, and ask it, e.g.: \"Use Autopilot to "
@@ -281,10 +323,12 @@ def disconnect(client, say=print, runner=None):
         home = claude_home()
         drop(os.path.join(home, "skills", NAME, "SKILL.md"), say)
         drop(os.path.join(home, "agents", f"{CLAUDE_DESCRIBER}.md"), say)
+        drop(os.path.join(home, "agents", f"{CLAUDE_REVIEWER}.md"), say)
     else:
         ok = edit_codex_config(None, say)
         drop(os.path.join(agents_home(), "skills", NAME, "SKILL.md"), say)
         drop(os.path.join(codex_home(), "agents", f"{CODEX_DESCRIBER}.toml"), say)
+        drop(os.path.join(codex_home(), "agents", f"{CODEX_REVIEWER}.toml"), say)
     return 0 if ok else 3
 
 

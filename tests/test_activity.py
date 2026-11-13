@@ -160,9 +160,14 @@ def test_steer_alert_restart_and_report_events(game, tmp_path, monkeypatch):
     harness_file(s.run_dir)
     s.run_harness(15)
     s.steering.add("go to the lantern")
-    s.steer_note()  # (from here play goes on from where the game is: no more restarts)
-    assert frames[-1]["kind"] == "steer" and frames[-1]["text"] == "Steered: go to the lantern"
-    assert "steered: ['go to the lantern']" in log_of(s)
+    s.steer_note()
+    assert frames[-1]["kind"] == "steer" and frames[-1]["text"] == "Hint: go to the lantern"
+    assert "steered (hint): ['go to the lantern']" in log_of(s)
+    s.steering.add("stop and climb the tower", "redirect")
+    s.steer_note()
+    assert frames[-1]["kind"] == "steer" and frames[-1]["text"] == "Redirected: stop and climb the tower"
+    assert "steered (redirect): ['stop and climb the tower']" in log_of(s)
+    assert s.restart_level().startswith("Restarted")  # (a steer doesn't lock restarts: the agent decides)
     s.alert("The recording could not be analyzed.")
     s.alert("The recording could not be analyzed.")  # (once)
     assert [f["kind"] for f in frames].count("alert") == 1 and frames[-1]["text"].startswith("The recording")
@@ -177,11 +182,23 @@ def test_text_and_detail_are_in_the_users_words_and_free_of_secrets(game, tmp_pa
     s, frames, said = open_run(game, tmp_path, monkeypatch)
     s.activity("text", "Jev's turn: key lantern-secret-0123456789", detail="Jev picks. " + "x" * 40000)
     assert frames[0]["text"] == "The agent's turn: key [secret]"
-    assert frames[0]["detail"].startswith("The agent picks.") and len(frames[0]["detail"]) < 30100
-    assert frames[0]["detail"].endswith("more characters)")
-    # a long detail is cut on a line boundary where there is one
-    cut = session._cut_lines("\n".join(f"line {i}" for i in range(5000)), 30000)
-    assert cut.rsplit("\n", 1)[0].endswith(tuple(f"line {i}" for i in range(5000))) and "more characters" in cut
+    # A detail longer than the tabs show is written whole to a file of the run: the detail says where, with the part
+    # of its one long line that fits
+    detail = frames[0]["detail"]
+    kept = os.path.join(s.run_dir, "whole", "activity-1.txt")
+    assert len(detail) <= session.DETAIL_CHARS and kept in detail and "\nThe agent picks. xxx" in detail
+    assert open(kept, encoding="utf-8").read() == "The agent picks. " + "x" * 40000
+    # ... and of many lines, the whole lines that fit
+    s.activity("text", "Lines", detail="\n".join(f"line {i}" for i in range(5000)))
+    detail = frames[1]["detail"]
+    note, *lines = detail.split("\n")
+    assert len(detail) <= session.DETAIL_CHARS and lines == [f"line {i}" for i in range(len(lines))]
+    assert f"Lines 1-{len(lines)} follow" in note and os.path.join(s.run_dir, "whole", "activity-2.txt") in note
+    # a detail already whole in a file is pointed to there, not written again
+    summary = os.path.join(s.run_dir, "trace1_summary.txt")
+    s.activity("episode", "Episode 1", detail="y\n" * 10000, whole_at=summary)
+    assert summary in frames[2]["detail"] and not os.path.exists(os.path.join(s.run_dir, "whole", "activity-3.txt"))
+    assert "activity-1.txt" in open(os.path.join(s.run_dir, "activity.jsonl"), encoding="utf-8").read()
 
 
 def test_tool_calls_as_the_feed_shows_them(tmp_path):
@@ -317,7 +334,10 @@ def test_the_serve_loop_sends_the_feed_again_to_a_plugin_that_asks(monkeypatch):
         cli.cmd_serve(link, types.SimpleNamespace(path=None, model=None))
     ids = [f["id"] for f in link.sent if f["type"] == "activity"]
     assert ids == [1, 2, 3, 2, 3, 1, 2, 3], link.sent
-    assert len(link.rebound) == 1  # (the feed watches the link for a plugin back from a reload: once)
+    # (the feed watches the link for a plugin back from a reload: once. The detectors' watcher is the other kind there
+    # may be, added when a hello comes while the run's thread is still finishing: not counted, it's theirs)
+    feeds = [fn for fn in link.rebound if getattr(fn, "detectors_folder", None) is None]
+    assert len(feeds) == 1, link.rebound
 
 
 def test_the_whole_feed_goes_again_after_a_reload(monkeypatch):

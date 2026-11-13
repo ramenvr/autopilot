@@ -51,7 +51,9 @@ namespace Autopilot.Playtest.Editor
         string resetKeyShown = "";
         // Steer: the user's words to the run while it plays. Kept out of the content, which a live run builds again
         // on each new line, so what is being typed (and the focus) stays.
-        readonly VisualElement steer, steerButton;
+        // With an agent service that tells hints from redirects ("steer_mode"): Send (a hint: play goes on) and Redirect
+        // beside it (the attempt playing now ends); else one Steer button, as before.
+        readonly VisualElement steer, steerButton, redirectButton;
         readonly TextField steerField;
         readonly Label statusLine;
         AutopilotPolicyView policy;
@@ -125,9 +127,13 @@ namespace Autopilot.Playtest.Editor
             // As tall as the longer of its two hints needs at its width: both fit, and the row never jumps between stages
             steerField.Q<TextElement>()?.RegisterCallback<GeometryChangedEvent>(_ => FitSteerHints());
             steerBox.Add(steerField);
-            steerButton = Btn("Steer", SendSteer, "primary");
+            steerButton = Btn("Steer", () => SendSteer(), "primary");
             steerButton.SetEnabled(false);
             steerBox.Add(steerButton);
+            redirectButton = Btn("Redirect", () => SendSteer(true), "outline steer-redirect");
+            redirectButton.SetEnabled(false);
+            redirectButton.style.display = DisplayStyle.None;
+            steerBox.Add(redirectButton);
             main.Add(steer);
             // The status line: the main column's last row (AutopilotStatus: a message for 8 s)
             statusLine = L("", "status-bar nowrap");
@@ -231,10 +237,26 @@ namespace Autopilot.Playtest.Editor
             // (stopping: the box and Steer locked until the run ends)
             steer.Q(className: "steer-box")?.EnableInClassList("locked", stopping);
             if (steerField.enabledSelf == stopping) steerField.SetEnabled(!stopping);
-            if (steerField.textEdition.placeholder != SteerHint) steerField.textEdition.placeholder = SteerHint;
-            var tip = now || !show || stopping ? "" : SteerWaitHint;
+            var modes = show && AutopilotSession.CanRedirect;
+            var hint = modes ? SteerHintModes : SteerHint;
+            if (steerField.textEdition.placeholder != hint)
+            {
+                steerField.textEdition.placeholder = hint;
+                FitSteerHints();
+            }
+            var label = steerButton.Q<Label>();
+            var name = modes ? "Send" : "Steer";
+            if (label != null && label.text != name) label.text = name;
+            var redirectShown = modes ? DisplayStyle.Flex : DisplayStyle.None;
+            if (redirectButton.style.display != redirectShown) redirectButton.style.display = redirectShown;
+            var wait = !now && show && !stopping;
+            var tip = wait ? SteerWaitHint : now && modes ? SteerSendTip : "";
             if (steerButton.tooltip != tip) steerButton.tooltip = tip;
-            steerButton.SetEnabled(now && !string.IsNullOrWhiteSpace(steerField.value));
+            var redirectTip = wait ? SteerWaitHint : now ? SteerRedirectTip : "";
+            if (redirectButton.tooltip != redirectTip) redirectButton.tooltip = redirectTip;
+            var can = now && !string.IsNullOrWhiteSpace(steerField.value);
+            steerButton.SetEnabled(can);
+            redirectButton.SetEnabled(can);
         }
 
         /// <summary>The status line: the last message (AutopilotStatus) while it is fresh, on every page but the setup
@@ -257,14 +279,15 @@ namespace Autopilot.Playtest.Editor
             var w = text?.contentRect.width ?? float.NaN;
             if (float.IsNaN(w) || w < 1) return;
             float Lines(string hint) => text.MeasureTextSize(hint, w, MeasureMode.AtMost, 0, MeasureMode.Undefined).y;
-            var h = Mathf.Ceil(Lines(SteerHint));
+            var h = Mathf.Ceil(Lines(steerField.textEdition.placeholder ?? SteerHint));
             if (float.IsNaN(h) || Mathf.Abs(text.style.minHeight.value.value - h) < 0.5f) return;
             text.style.minHeight = h;
         }
 
-        void SendSteer()
+        /// <summary>Sends the box's words: a hint (Send, Steer, Enter), or with redirect a redirect (Redirect).</summary>
+        void SendSteer(bool redirect = false)
         {
-            if (AutopilotSession.SteerRun(steerField.value)) steerField.value = "";
+            if (AutopilotSession.SteerRun(steerField.value, redirect)) steerField.value = "";
             UpdateSteer();
         }
 
@@ -1198,6 +1221,10 @@ namespace Autopilot.Playtest.Editor
         public const string SteerHint = "Send a steering prompt to Autopilot";
         /// <summary>Steer's tooltip before the Rollout.</summary>
         public const string SteerWaitHint = "You can steer once the game is playing";
+        /// <summary>With an agent service that tells hints from redirects: the box's hint and the two buttons' tooltips.</summary>
+        public const string SteerHintModes = "Add a hint; Autopilot keeps playing";
+        public const string SteerSendTip = "Autopilot reads your hint and keeps playing";
+        public const string SteerRedirectTip = "End the current attempt now and play on from your words";
 
         /// <summary>The run the composer's text asks for (always real time: no turn_based), and how it is shown; with
         /// the Design Brief setting when it says anything.</summary>

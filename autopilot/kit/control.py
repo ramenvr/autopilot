@@ -4,12 +4,18 @@ Result (truthy when it worked) with why it stopped.
 
 They act only through the player's inputs (mouse flicks, held movement keys, presses) and read the game to close the
 loop, as a player's eyes do.
+
+Time is the game's (kit.clock): every timeout, pace and lead here is in game seconds, read from the game's own clock
+as its answers stamp it, so a controller behaves the same on a machine that runs the game slowly or with the game
+held between an agent's calls. A move that must land on a frame (a jump at an edge) is handed to the game itself
+where the plugin runs input sequences (Game.sequence, moveset, jump_at), else timed from here by the game's clock.
 """
 
 import math
 import time
 from dataclasses import dataclass, field
 
+from .clock import Clock, uptime
 from .game import GameError
 from .geom import Vec, bearing, wrap
 
@@ -40,21 +46,6 @@ def point_of(game, target):
     return Vec.of(target)
 
 
-class _Pace:
-    """The time between a controller's steps: the brain's tick, which takes longer the slower the game's frame rate
-    (each read waits for a frame). What a controller does now lasts until its next step, so it acts that far ahead."""
-
-    def __init__(self):
-        self.last, self.dt = None, 0.1
-
-    def step(self):
-        now = time.monotonic()
-        if self.last is not None:
-            self.dt = min(1.0, max(0.02, now - self.last))
-        self.last = now
-        return self.dt
-
-
 def _lead(pose, goal, dt):
     """How much nearer goal (across the floor) the player gets before the next step: its speed toward it times dt."""
     v = pose.get("velocity") or Vec()
@@ -76,37 +67,172 @@ def _flick_toward(game, right_deg, up_deg):
 
 def wait(game, seconds):
     """Do nothing for `seconds` of game time (keys held stay held). While the game's clock stands still (a menu
-    that pauses the game, a loading screen) the seconds pass as real time."""
-    last_t = game.t
-    changed = credited = checked = time.monotonic()
-    waited = 0.0
-    end = changed + seconds * 3 + 1
-    while waited < seconds and time.monotonic() < end:
+    that pauses the game, a loading screen) the seconds pass as real time (kit.clock.Clock)."""
+    clock = Clock(game)
+    last_t, checked = game.t, time.monotonic()
+    end = checked + seconds * 3 + 1
+    while clock.elapsed() < seconds and time.monotonic() < end:
         yield
-        now, t = time.monotonic(), game.t
-        if t <= last_t and now - changed > 0.4 and now - checked > 0.4:
+        now = time.monotonic()
+        if game.t <= last_t and now - checked > 0.4:
             try:  # (no fresh answer for a while: ask, so a clock that runs isn't taken for a stopped one)
                 game.context(fresh=True)
             except GameError:
                 pass
-            checked, t = now, game.t
-        if t > last_t:
-            waited += t - last_t
-            last_t, changed, credited = t, now, now
-        elif now - changed > 0.4:  # the clock stands still though the game answers: real time passes instead
-            waited += now - max(credited, changed)
-            credited = now
+            checked = now
+        last_t = max(last_t, game.t)
     return Result(True, "waited")
 
 
 def until(game, condition, timeout=5.0):
-    """Wait until condition() is true (checked every tick) or timeout seconds pass."""
-    t0 = time.monotonic()
-    while time.monotonic() - t0 < timeout:
+    """Wait until condition() is true (checked every tick) or timeout seconds of game time pass."""
+    clock = Clock(game)
+    while clock.elapsed() < timeout:
         if condition():
             return Result(True, "condition met")
         yield
     return Result(False, "timed out")
+
+
+# -- input sequences the game runs itself ----------------------------------------------------------------------------
+
+def _holds(when, pose, ahead=0.0, game=None):
+    """Whether a sequence step's condition (Game.sequence's `when`) holds for the player's pose, judged here (the
+    fallback when the plugin runs no sequences). ahead: seconds the body moves on before a press made now acts (the
+    game's lag and a step): a place condition is judged on where it will be by then. game: for a `past_of` plane
+    (the part it is carried by is read)."""
+    v = pose.get("velocity") or Vec()
+    at = pose["at"] + v * max(0.0, ahead)
+    for key, value in (when or {}).items():
+        if key == "past_of":
+            if game is None:
+                return False
+            try:
+                carrier = game.loc(value["path"])
+            except (GameError, KeyError):
+                return False
+            d = Vec.of(value.get("dir")) if value.get("dir") is not None else Vec(1, 0, 0)
+            d = d.unit if d.length > 1e-6 else Vec(1, 0, 0)
+            if (at - (carrier + d * float(value.get("along", 0.0)))).dot(d) < 0:
+                return False
+            continue
+        if key == "near":
+            p = Vec.of(value.get("point", value))
+            if p.dist2d(at) > float(value.get("within", 60.0)):
+                return False
+        elif key == "past":
+            p = Vec.of(value.get("point", value))
+            d = Vec.of(value["dir"]) if "dir" in value else Vec(
+                float(value.get("dx", 1.0)), float(value.get("dy", 0.0)), float(value.get("dz", 0.0)))
+            if (at - p).dot(d) < 0:
+                return False
+        elif key == "on_ground":
+            if bool(pose.get("on_ground")) != bool(value):
+                return False
+        elif key == "falling":
+            if (v.z < -5) != bool(value):
+                return False
+        elif key == "vz_below":
+            if not v.z < float(value):
+                return False
+        elif key == "vz_above":
+            if not v.z > float(value):
+                return False
+        elif key == "t":
+            if game_time_of(pose) < float(value):
+                return False
+    return True
+
+
+def game_time_of(pose):
+    return float(pose.get("t") or 0.0)
+
+
+def moveset(game, steps, timeout=None):
+    """Run a sequence of inputs timed by the game (Game.sequence: each step at its game time, or when its condition
+    is read true by the game itself, frame by frame) and wait for it to end. Where the plugin runs no sequences the
+    steps run from here by the game's clock, the conditions read from game.pose() every tick: later by the brain's
+    delay, but the same on every machine. Returns ok when every step fired; data: fired, skipped (steps whose
+    condition never came within their timeout), by ("game" or "brain")."""
+    steps = [dict(s) for s in steps]
+    limit = timeout if timeout is not None else sum(
+        float(s.get("at") or 0) + float(s.get("after") or 0) + float(s.get("timeout", 3.0)) for s in steps) + 2.0
+    sid = game.sequence(steps)
+    clock = Clock(game)
+    if sid is not None:
+        status = {}
+        try:
+            while clock.elapsed() < limit:
+                yield
+                status = game.sequence_status(sid) or {}
+                if status.get("done"):
+                    skipped = status.get("skipped") or []
+                    return Result(not skipped, "ran" if not skipped else f"{len(skipped)} step(s) skipped",
+                                  {"fired": status.get("fired"), "skipped": skipped, "by": "game"})
+        finally:
+            if not status.get("done"):
+                game.sequence_cancel(sid)
+        return Result(False, "the sequence didn't end in time", {"fired": status.get("fired"), "by": "game"})
+    # the fallback: from here, by the game's clock
+    fired, skipped = 0, []
+    t0 = clock.elapsed()
+    last_fired = t0
+    for i, s in enumerate(steps):
+        due = (t0 + float(s["at"])) if s.get("at") is not None else last_fired + float(s.get("after") or 0.0)
+        give_up = last_fired + float(s.get("timeout", 3.0)) if s.get("when") else None
+        while True:
+            t = clock.elapsed()
+            if t >= due:
+                if not s.get("when"):
+                    break
+                try:
+                    pose = game.pose()
+                except GameError:
+                    pose = None
+                if pose is not None and _holds(s["when"], {**pose, "t": game.t}, ahead=game.lag + clock.step(),
+                                               game=game):
+                    break
+                if give_up is not None and t > give_up:
+                    skipped.append(i)
+                    break
+            if t - t0 > limit:
+                return Result(False, "the sequence didn't end in time", {"fired": fired, "skipped": skipped,
+                                                                          "by": "brain"})
+            yield
+        if skipped and skipped[-1] == i:
+            last_fired = clock.elapsed()
+            continue
+        key, mode = str(s.get("key") or ""), str(s.get("mode") or "press")
+        if mode == "hold":
+            game.hold(key, s.get("value"))
+        elif mode == "release":
+            game.release(key)
+        else:
+            game.press(key, s.get("value"))
+        fired += 1
+        last_fired = clock.elapsed()
+    yield
+    return Result(not skipped, "ran" if not skipped else f"{len(skipped)} step(s) skipped",
+                  {"fired": fired, "skipped": skipped, "by": "brain"})
+
+
+def jump_at(game, edge, direction, forward=None, jump=None, hold=0.6, run_up=True, timeout=6.0):
+    """Run along `direction` (a kit vector across the floor) and press jump the frame the player passes `edge` (a
+    kit point on the take-off line, e.g. a platform's edge less a few cm), holding forward for `hold` seconds more
+    (the air time). The press is the game's own where the plugin runs sequences (Game.sequence), so it lands on the
+    same frame whatever the brain's delay: for gaps a jump timed from the brain misses on a slow machine. run_up:
+    hold forward from now (False: forward is already held, or walking is done some other way)."""
+    fwd, jmp = forward or game.keys["forward"], jump or game.keys["jump"]
+    d = Vec.of(direction)
+    d = d.flat.unit if d.flat.length > 1e-6 else Vec(1, 0, 0)
+    steps = []
+    if run_up:
+        steps.append({"key": fwd, "mode": "hold"})
+    steps.append({"key": jmp, "mode": "press", "when": {"past": {"point": Vec.of(edge), "dir": d}},
+                  "timeout": timeout})
+    if run_up:
+        steps.append({"key": fwd, "mode": "release", "after": hold})
+    return (yield from moveset(game, steps, timeout=timeout + hold + 1.0))
 
 
 def fit_tolerance(game, target, eye=None):
@@ -131,7 +257,7 @@ def look_at(game, target, tolerance=None, timeout=1.5, level=False):
     """Turn the view until it points at target (see point_of) within `tolerance` degrees; by default (None) what puts
     the crosshair well inside an actor's box (fit_tolerance), 2.5 for a point. level=True looks at the horizon in
     target's direction (for walking)."""
-    t0 = time.monotonic()
+    clock = Clock(game)
     steps = 0
     if tolerance is None:
         tolerance = 2.5 if level else fit_tolerance(game, target)
@@ -184,7 +310,7 @@ def look_at(game, target, tolerance=None, timeout=1.5, level=False):
                               + ("it is too close below the camera: stand further from it" if up < 0 else
                                  "it is too high above: stand further from it"),
                               {"error": [round(right, 1), round(up, 1)], "pitch": round(view[1], 1)})
-        waited = time.monotonic() - t0
+        waited = clock.elapsed()
         if (waited > timeout and steps >= MIN_CORRECTIONS) or waited > 4 * timeout:
             if not game.look.get("x"):
                 return Result(False, "the mouse doesn't turn the view (yet?): no effect measured; controls not active "
@@ -199,9 +325,9 @@ def look_at(game, target, tolerance=None, timeout=1.5, level=False):
 
 
 def track(game, target, seconds, tolerance=1.0):
-    """Keep the view on a (moving) target for `seconds` (e.g. while firing)."""
-    t0 = time.monotonic()
-    while time.monotonic() - t0 < seconds:
+    """Keep the view on a (moving) target for `seconds` of game time (e.g. while firing)."""
+    clock = Clock(game)
+    while clock.elapsed() < seconds:
         try:
             p = game.pose()
             right, up = game.aim_error(point_of(game, target), p)
@@ -330,8 +456,8 @@ def walk_to(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_whe
     A goal standing higher than the player steps up (on a platform, an upper floor) is reached by a way up the player
     sees (a ramp, stairs: find_way_up) whose top is near it: to its foot, up it, then on. With none in view it walks
     straight, and if that fails, looks round for one and goes that way. climb=False: straight only."""
-    t0 = time.monotonic()
-    left = lambda: max(2.0, timeout - (time.monotonic() - t0))
+    clock = Clock(game)
+    left = lambda: max(2.0, timeout - clock.elapsed())
     kw = dict(avoid_drops=avoid_drops, jump_when_stuck=jump_when_stuck, run_key=run_key, look_level=look_level,
               max_drop=max_drop)
     high, floor = False, None
@@ -349,7 +475,7 @@ def walk_to(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_whe
     if high:  # (a way up in view toward the goal; looking round for one only if the straight way fails)
         climbed = yield from _climb(game, target, floor, left, kw, look_around=False)
     r = yield from _walk_on(game, target, within, left(), settle=True, **kw)
-    if not r and high and not climbed and time.monotonic() - t0 < timeout:
+    if not r and high and not climbed and clock.elapsed() < timeout:
         # (the straight way didn't get there: a way up, then again)
         if (yield from _climb(game, target, floor, left, kw, look_around=True)):
             r = yield from _walk_on(game, target, within, left(), settle=True, **kw)
@@ -387,9 +513,9 @@ def _coast(game):
 
 def _settle(game, speed, start, timeout=1.0):
     """After letting go: wait until the body has stopped, and learn how far it slid for its speed (game.coast_s)."""
-    t0 = time.monotonic()
+    clock = Clock(game)
     p = None
-    while time.monotonic() - t0 < timeout:
+    while clock.elapsed() < timeout:
         yield
         try:
             p = game.pose()
@@ -440,8 +566,8 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
 
     fwd = game.keys["forward"]
     nav = nav_of(game)
-    t0 = time.monotonic()
-    last_progress_at, best_left = t0, None
+    clock = Clock(game)  # (this walk's seconds, game time)
+    last_progress_at, best_left = 0.0, None
     since_progress = 0
     stuck_tries = 0
     short = 0
@@ -453,7 +579,6 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
     turning_since = None  # (time, view yaw) since which it has been turning on the spot
     turn_sent = None  # (view yaw then, degrees of turn on the way, steps it has been on the way) of the last turn
     turned_back_at = -1e9  # when the way last turned back on itself
-    pace = _Pace()
     try:
         while True:
             try:
@@ -466,7 +591,7 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
             # It slides on after letting go, and keeps walking until the step it lets go on (the next one: half a step
             # on average when it settles, a whole one when it doesn't): let go that much early, so it stops about
             # `within` away however long a step takes, and not on top of the target
-            step = pace.step()
+            step = clock.step()
             if d - _lead(p, goal, _coast(game) + (0.5 * step if settle else step)) <= within:
                 if not settle:
                     return Result(True, "arrived", {"distance": round(d), "replans": replans})
@@ -479,23 +604,25 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
                 except GameError:
                     pass
                 # (stopped well short, the slide guessed long: on again, a little)
-                if d > within + max(30.0, 0.25 * within) and short < 2 and time.monotonic() - t0 < timeout:
+                if d > within + max(30.0, 0.25 * within) and short < 2 and clock.elapsed() < timeout:
                     short += 1
                     continue
                 return Result(True, "arrived", {"distance": round(d), "replans": replans})
-            now = time.monotonic()
-            if now - t0 > timeout:
+            now = clock.t
+            if now > timeout:
                 return Result(False, "walk timed out", {"distance": round(d), "replans": replans,
                                                          "way": [q.rounded() for q in path or []]})
             feet = at.z
-            nav.linger(at, step, now, feet=feet)  # (where it goes round and round costs more to plan through)
+            # (the map's stamps are on one timeline across walks: game seconds since the run began, kit.clock.uptime)
+            stamp = uptime(game)
+            nav.linger(at, step, stamp, feet=feet)  # (where it goes round and round costs more to plan through)
             # Feel the way and put it on the map
             if now - sonar_at >= SONAR_EVERY:
                 sonar_at, flip = now, not flip
                 heading = bearing(at, p["yaw"], path[0] if path else goal)
                 ways, ways_yaw = sonar(game, turns=_look_turns(heading, flip), reach=min(1500, d + 200)), p["yaw"]
                 if ways:
-                    nav.observe(at, p["yaw"], ways, now, avoid_drops=avoid_drops, max_drop=max_drop, feet=feet)
+                    nav.observe(at, p["yaw"], ways, stamp, avoid_drops=avoid_drops, max_drop=max_drop, feet=feet)
             # The way: straight there while the map shows nothing in between, else planned round what's in the way
             moved_goal = planned_goal is None or goal.dist2d(planned_goal) > max(100.0, 0.15 * d)
             if path is None or moved_goal or (nav.version != planned_version
@@ -508,7 +635,7 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
                     path = nav.plan(at, goal, within, feet)
                     if path is None:
                         # Nothing open on the map: forget what may have moved and the guessed faces, and try again
-                        nav.forget(now - 5.0)
+                        nav.forget(stamp - 5.0)
                         planned_version = nav.version
                         path = nav.plan(at, goal, within, feet)
                     replans += 1
@@ -581,14 +708,14 @@ def _walk_on(game, target, within=120.0, timeout=20.0, avoid_drops=True, jump_wh
                     return Result(False, "stuck", {"distance": round(d), "replans": replans,
                                                    "way": [q.rounded() for q in path]})
                 # Something the sonar doesn't feel (low, thin) is in the way: on the map, and a jump in case it's low
-                nav.block_ahead(at, wrap(p["yaw"] + steer), now, feet=feet)
+                nav.block_ahead(at, wrap(p["yaw"] + steer), stamp, feet=feet)
                 # (never a jump at the edge of a deep drop: it would carry the body over)
                 edge = avoid_drops and any(deep_drop(w, max_drop) and w.get("clear", 1e9) < 150 and abs(wrap(
                     ways_yaw + w.get("turn", 0) - p["yaw"] - steer)) < 45 for w in ways)
                 if jump_when_stuck and not edge:
                     game.press(game.keys["jump"])
                     yield from wait(game, 0.3)
-                last_progress_at, best_left, since_progress = time.monotonic(), None, 0
+                last_progress_at, best_left, since_progress = clock.elapsed(), None, 0
             yield
     finally:
         game.release(fwd)
@@ -600,10 +727,10 @@ def keep_away(game, threat, distance=800.0, timeout=6.0, run_key=None):
     """Move away from a threat (see point_of) until it is `distance` away or timeout: picks the open way (sonar) that
     points most away from it, so the player doesn't back into a wall."""
     fwd = game.keys["forward"]
-    t0 = time.monotonic()
+    clock = Clock(game)
     heading, heading_at = None, 0.0
     try:
-        while time.monotonic() - t0 < timeout:
+        while clock.elapsed() < timeout:
             try:
                 p = game.pose()
                 danger = point_of(game, threat)
@@ -613,7 +740,7 @@ def keep_away(game, threat, distance=800.0, timeout=6.0, run_key=None):
             if d >= distance:
                 return Result(True, "far enough", {"distance": round(d)})
             away = wrap(bearing(p["at"], p["yaw"], danger) + 180.0)
-            now = time.monotonic()
+            now = clock.t
             if heading is None or now - heading_at > 0.6:
                 heading_at = now
                 ways = sonar(game, turns=sorted({round(away) + k for k in (-90, -60, -30, 0, 30, 60, 90)}), reach=600)
@@ -641,12 +768,11 @@ def melee(game, target, key, reach=150.0, cooldown=0.5, alive=None, timeout=12.0
     alive() is false (e.g. its health read <= 0) or timeout. alive defaults to "the actor still exists"."""
     alive = alive or (lambda: game.exists(target) if isinstance(target, str) else True)
     fwd = game.keys["forward"]
-    t0 = time.monotonic()
+    clock = Clock(game)
     last_hit = -1e9
     hits = 0
-    pace = _Pace()
     try:
-        while time.monotonic() - t0 < timeout:
+        while clock.elapsed() < timeout:
             if not alive():
                 return Result(True, "target down", {"hits": hits})
             try:
@@ -657,7 +783,7 @@ def melee(game, target, key, reach=150.0, cooldown=0.5, alive=None, timeout=12.0
             d = at.dist2d(p["at"])
             right, up = game.aim_error(at, p)
             _flick_toward(game, right, up)
-            if d - _lead(p, at, pace.step()) > reach * 0.8:
+            if d - _lead(p, at, clock.step()) > reach * 0.8:
                 game.hold(fwd)
             else:
                 game.release(fwd)
@@ -731,8 +857,8 @@ def strike_and_retreat(game, target, key, reach=150.0, strikes=1, cooldown=0.5, 
     approach is logged ("tactic": what it walked, struck, took and how far it got away)."""
     alive = alive or (lambda: game.exists(target) if isinstance(target, str) else True)
     retreat = 3.0 * reach if retreat is None else retreat
-    t0 = time.monotonic()
-    left = lambda: max(0.5, timeout - (time.monotonic() - t0))
+    clock = Clock(game)
+    left = lambda: max(0.5, timeout - clock.elapsed())
     out = {"strikes": 0, "approaches": 0, "seconds": 0.0}
     hp = health() if health is not None else None
     if health is not None:
@@ -743,7 +869,7 @@ def strike_and_retreat(game, target, key, reach=150.0, strikes=1, cooldown=0.5, 
     hit = False  # a hit taken this approach
 
     def done(ok, why):
-        out["seconds"] = round(time.monotonic() - t0, 1)
+        out["seconds"] = round(clock.elapsed(), 1)
         return Result(ok, why, out)
 
     def over():
@@ -752,7 +878,7 @@ def strike_and_retreat(game, target, key, reach=150.0, strikes=1, cooldown=0.5, 
             return done(True, "target down")
         if hp is not None and hp <= 0:
             return done(False, "player dead")
-        if time.monotonic() - t0 > timeout:
+        if clock.elapsed() > timeout:
             return done(False, "timeout")
         return None
 
@@ -891,23 +1017,25 @@ def _jump_once(game, target, run_key=None, timeout=8.0):
             away = away.unit if away.length > 1 else (p["at"] - box[0]).flat.unit
             start = near + away * (need + 60.0)
             yield from walk_to(game, Vec(start.x, start.y, p["at"].z), within=60, timeout=6, avoid_drops=True)
-    t0 = time.monotonic()
+    clock = Clock(game)
     jumped_at = None
     rise_at_takeoff = 0.0
     best_feet = -1e9
     speeds = []  # (time, speed across the floor) while running up: take off once it stops rising
     prev_still = False
-    pace = _Pace()
+    handed = None  # the take-off handed to the game (an input sequence that presses jump at the take-off line)
     try:
-        while time.monotonic() - t0 < timeout:
+        while clock.elapsed() < timeout:
             try:
                 asked = time.monotonic()
                 p = game.pose()
-                read = time.monotonic() - asked  # (about a frame of the game: how old what it says is)
+                # (how old what it says is, in game seconds: about a frame, more on a machine that runs the game
+                # slowly; and the game's own lag from a press to its effect, measured by calibrate_look)
+                read = (time.monotonic() - asked) * clock.rate + game.lag
                 goal = Vec(box[0].x, box[0].y, box[0].z + box[1].z) if box else point_of(game, target)
             except GameError as e:
                 return Result(False, f"can't read: {e}")
-            dt = pace.step()
+            dt = clock.step()
             feet = p["at"].z - (m["half_height"] or 90.0)
             best_feet = max(best_feet, feet)
             rise = goal.z - feet
@@ -940,16 +1068,32 @@ def _jump_once(game, target, run_key=None, timeout=8.0):
                         game.hold(run_key)
                 else:
                     game.release(fwd)
-                now = time.monotonic()
+                now = clock.t
                 speeds = [(t, v) for t, v in speeds if now - t < 0.5] + [(now, speed)]
                 # at its running speed: moving, and no faster than 0.3 s ago (the game's own speed, whatever
                 # MaxWalkSpeed says)
                 older = [v for t, v in speeds if now - t > 0.3]
                 fast = speed > 150 and bool(older) and speed <= max(older) * 1.04
-                if ready and abs(b) < 12 and fast:
+                if handed is not None:
+                    # (the game presses at the take-off line itself: the jump shows as the body rising)
+                    if p["velocity"].z > 0.25 * vz or (game.sequence_status(handed) or {}).get("done"):
+                        jumped_at = clock.t
+                        rise_at_takeoff = rise
+                elif ready and abs(b) < 12 and fast:
                     game.press(jump)
-                    jumped_at = time.monotonic()
+                    jumped_at = clock.t
                     rise_at_takeoff = rise
+                elif (box and fast and abs(b) < 12 and "sequence" in game.features
+                      and edge <= speed * t_apex + speed * (read + 2.0 * dt)):
+                    # Lined up and at speed, a couple of steps from the take-off: the game itself presses jump the
+                    # frame the body passes the take-off line, whatever this loop's delay (Game.sequence)
+                    toward = (near - p["at"]).flat
+                    toward = toward.unit if toward.length > 1 else Vec(math.cos(math.radians(p["yaw"])),
+                                                                     math.sin(math.radians(p["yaw"])), 0)
+                    line = near - toward * (speed * t_apex + speed * game.lag)
+                    handed = game.sequence([{"key": jump, "mode": "press", "when": {"past": {"point": line,
+                                                                                            "dir": toward}},
+                                             "timeout": 2.0}])
                 elif box and not fast and edge < 0.5 * takeoff:
                     return Result(False, "ran past the take-off point at too low a speed",
                                   {"edge": round(edge), "speed": round(speed)})
@@ -965,7 +1109,7 @@ def _jump_once(game, target, run_key=None, timeout=8.0):
                 # landed: no vertical speed on two ticks in a row (at the top of the jump it only passes through 0)
                 still = abs(p["velocity"].z) < 5
                 landed, prev_still = still and prev_still, still
-                if time.monotonic() - jumped_at > 0.25 and landed:
+                if clock.t - jumped_at > 0.25 and landed:
                     game.release(fwd)
                     # On the top already (feet at its height, inside its footprint): done. A small top is crossed in
                     # a step or two of walking, more so on a machine that runs the game slowly, so it doesn't walk on
@@ -1000,6 +1144,8 @@ def _jump_once(game, target, run_key=None, timeout=8.0):
             yield
         return Result(False, "jump timed out", {"best_feet": round(best_feet), "jumped": jumped_at is not None})
     finally:
+        if handed is not None and jumped_at is None:
+            game.sequence_cancel(handed)
         game.release(fwd)
         if run_key:
             game.release(run_key)

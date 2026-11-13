@@ -39,6 +39,7 @@ namespace
 		TWeakObjectPtr<UEnhancedInputLocalPlayerSubsystem> Subsystem;
 		TWeakObjectPtr<UInputAction> Action;
 		FInputActionValue Value;
+		int32 Player = 1;  // whose (the request's "player")
 	};
 	TArray<FHeldAction> HeldActions;
 #endif
@@ -79,9 +80,9 @@ namespace
 
 	/** A legacy action mapping ("legacy:<Name>"): press its key through the player controller, as the
 	 *  keyboard would (the game's action events fire from it); release it a moment later, or on "release". */
-	void LegacyInput(UPlaytestSubsystem& Bridge, int64 Id, const FString& Name, const FString& Mode)
+	void LegacyInput(UPlaytestSubsystem& Bridge, int64 Id, UWorld* World, const FString& Name, const FString& Mode)
 	{
-		APlayerController* PC = PlayerController(Bridge.GetGameWorld());
+		APlayerController* PC = PlayerController(World);
 		if (!PC)
 		{
 			Bridge.RespondError(Id, TEXT("No player controller"));
@@ -107,6 +108,7 @@ namespace
 			return;
 		}
 		SendKey(PC, Key, IE_Pressed);
+		Bridge.GetDetectors().NoteAgentInput(Name);
 		if (Mode == TEXT("hold"))
 		{
 			Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
@@ -137,10 +139,13 @@ namespace
 
 	void Input(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args)
 	{
-		UWorld* World = Bridge.GetGameWorld();
+		UWorld* World = PlayerWorld(Bridge, Args);  // (the player's: each player has its own input subsystem)
+#if UE_VERSION_OLDER_THAN(5, 3, 0)
+		const int32 Player = PlayerOf(Args);
+#endif
 		if (StringField(Args, TEXT("action")).StartsWith(TEXT("legacy:")))
 		{
-			LegacyInput(Bridge, Id, StringField(Args, TEXT("action")).Mid(7), StringField(Args, TEXT("mode")));
+			LegacyInput(Bridge, Id, World, StringField(Args, TEXT("action")).Mid(7), StringField(Args, TEXT("mode")));
 			return;
 		}
 		UEnhancedInputLocalPlayerSubsystem* Subsystem = InputSubsystem(World);
@@ -157,6 +162,10 @@ namespace
 			return;
 		}
 		const FString Mode = StringField(Args, TEXT("mode"));
+		if (Mode != TEXT("release"))
+		{
+			Bridge.GetDetectors().NoteAgentInput(Action->GetName());
+		}
 		TSharedPtr<FJsonObject> ValueJson = ObjectField(Args, TEXT("value"));
 		const FVector V = ValueJson.IsValid() ? VectorField(Args, TEXT("value")) : FVector(1, 0, 0);
 		const FInputActionValue Value(Action->ValueType, V);
@@ -165,8 +174,8 @@ namespace
 		if (Mode == TEXT("hold"))
 		{
 #if UE_VERSION_OLDER_THAN(5, 3, 0)
-			HeldActions.RemoveAll([Action](const FHeldAction& Held) { return Held.Action.Get() == Action; });
-			HeldActions.Add({Subsystem, Action, Value});
+			HeldActions.RemoveAll([Action, Subsystem](const FHeldAction& Held) { return Held.Action.Get() == Action && Held.Subsystem.Get() == Subsystem; });
+			HeldActions.Add({Subsystem, Action, Value, Player});
 			Subsystem->InjectInputForAction(Action, Value, Modifiers, Triggers);
 #else
 			Subsystem->StartContinuousInputInjectionForAction(Action, Value, Modifiers, Triggers);
@@ -175,7 +184,7 @@ namespace
 		else if (Mode == TEXT("release"))
 		{
 #if UE_VERSION_OLDER_THAN(5, 3, 0)
-			HeldActions.RemoveAll([Action](const FHeldAction& Held) { return Held.Action.Get() == Action; });
+			HeldActions.RemoveAll([Action, Subsystem](const FHeldAction& Held) { return Held.Action.Get() == Action && Held.Subsystem.Get() == Subsystem; });
 #else
 			Subsystem->StopContinuousInputInjectionForAction(Action);
 #endif
@@ -185,8 +194,8 @@ namespace
 			// A press: held a moment and across two frames, then let go (as a key's tap, and as Unity's and Godot's
 			// actions): a trigger reading the action once a frame sees it go down and up
 #if UE_VERSION_OLDER_THAN(5, 3, 0)
-			HeldActions.RemoveAll([Action](const FHeldAction& Held) { return Held.Action.Get() == Action; });
-			HeldActions.Add({Subsystem, Action, Value});
+			HeldActions.RemoveAll([Action, Subsystem](const FHeldAction& Held) { return Held.Action.Get() == Action && Held.Subsystem.Get() == Subsystem; });
+			HeldActions.Add({Subsystem, Action, Value, Player});
 			Subsystem->InjectInputForAction(Action, Value, Modifiers, Triggers);
 #else
 			Subsystem->StartContinuousInputInjectionForAction(Action, Value, Modifiers, Triggers);
@@ -206,7 +215,8 @@ namespace
 				}
 				UInputAction* Current = WeakAction.Get();
 #if UE_VERSION_OLDER_THAN(5, 3, 0)
-				HeldActions.RemoveAll([Current](const FHeldAction& Held) { return Held.Action.Get() == Current; });
+				UEnhancedInputLocalPlayerSubsystem* S = WeakSubsystem.Get();
+				HeldActions.RemoveAll([Current, S](const FHeldAction& Held) { return Held.Action.Get() == Current && Held.Subsystem.Get() == S; });
 #else
 				if (UEnhancedInputLocalPlayerSubsystem* S = WeakSubsystem.Get())
 				{
@@ -227,7 +237,7 @@ namespace
 
 	void Move(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args)
 	{
-		UWorld* World = Bridge.GetGameWorld();
+		UWorld* World = PlayerWorld(Bridge, Args);
 		APlayerController* PC = PlayerController(World);
 		APawn* Pawn = PC ? PC->GetPawn() : nullptr;
 		if (!Pawn)
@@ -278,6 +288,27 @@ namespace
 	// value every frame, until released, until the brain stops renewing it (the lease: a brain gone quiet
 	// leaves nothing held), or until the session ends.
 
+	// When the game's view loses the focus (the person clicked elsewhere in the editor, or left it) the engine lets go of
+	// every key, and a held key goes down again. The player's input reads a key once a frame, so the key reads as up on
+	// the tick that pressed it (not seen down yet: no second press, which a game's pressed action would run twice), and
+	// the engine's release is queued as a press is and beats a press read with it (a full input pass goes by first).
+	bool HeldKeyGoesDownAgain(bool bDown, bool& bSeenDown, int32& UpTicks)
+	{
+		if (bDown)
+		{
+			bSeenDown = true;
+			UpTicks = 0;
+			return false;
+		}
+		if (!bSeenDown || ++UpTicks < 2)
+		{
+			return false;
+		}
+		bSeenDown = false;
+		UpTicks = 0;
+		return true;
+	}
+
 namespace
 {
 	struct FHeldKey
@@ -288,16 +319,23 @@ namespace
 		bool bRate = false;  // an axis value per second (mouse movement): sent as Value * frame time each frame
 		double Renewed = 0.0;
 		double Until = 0.0;  // a timed hold: let go at this game time (world seconds), needing no renewal; 0: leased
+		bool bSeenDown = false;  // the player's input has read it down (HeldKeyGoesDownAgain)
+		int32 UpTicks = 0;
 	};
-	TMap<FName, FHeldKey> HeldKeys;
-	TWeakObjectPtr<APlayerController> KeysController;
-	double KeyLeaseSeconds = 1.0;
+	/** One player's held keys, and the controller they are held on (another one: a new session, nothing held). */
+	struct FPlayerKeys
+	{
+		TMap<FName, FHeldKey> Keys;
+		TWeakObjectPtr<APlayerController> Controller;
+		double LeaseSeconds = 1.0;  // how long a held key stays down without renewal: this player's requests' "lease", not another's
+	};
+	TMap<int32, FPlayerKeys> HeldKeys;  // by player (the request's "player": 1, or another player of a multiplayer game)
 
-	void ReleaseHeldKeys(APlayerController* PC)
+	void ReleaseHeldKeys(FPlayerKeys& Held, APlayerController* PC)
 	{
 		if (PC)
 		{
-			for (const TPair<FName, FHeldKey>& Pair : HeldKeys)
+			for (const TPair<FName, FHeldKey>& Pair : Held.Keys)
 			{
 				if (!Pair.Value.bAxis)
 				{
@@ -305,22 +343,70 @@ namespace
 				}
 			}
 		}
-		HeldKeys.Reset();
+		Held.Keys.Reset();
+	}
+
+	/** One player's held keys, this frame: held axes send their value, leases and timed holds run out, keys the engine
+	 *  let go of go down again; all let go once the brain or the player's session is gone. */
+	void TickPlayerKeys(UPlaytestSubsystem& Bridge, int32 Player, FPlayerKeys& Keys, float DeltaTime)
+	{
+		if (Keys.Keys.Num() == 0)
+		{
+			return;
+		}
+		UWorld* World = Bridge.GetPlayerWorld(Player);
+		APlayerController* PC = PlayerController(World);
+		if (!Bridge.IsConnected() || !PC || PC != Keys.Controller.Get())
+		{
+			ReleaseHeldKeys(Keys, PC && PC == Keys.Controller.Get() ? PC : nullptr);  // the brain or the session is gone
+			return;
+		}
+		const double Now = FPlatformTime::Seconds();
+		const double GameNow = World ? World->GetTimeSeconds() : 0.0;
+		TArray<FName> Expired;
+		for (TPair<FName, FHeldKey>& Pair : Keys.Keys)
+		{
+			FHeldKey& Held = Pair.Value;
+			if (Held.Until > 0.0 ? GameNow >= Held.Until : Now - Held.Renewed > Keys.LeaseSeconds)
+			{
+				Expired.Add(Pair.Key);
+			}
+			else if (Held.bAxis)
+			{
+				SendAxis(PC, Held.Key, Held.bRate ? Held.Value * DeltaTime : Held.Value, DeltaTime);
+			}
+			else if (!Held.Key.IsMouseButton() && PC->PlayerInput  // (a mouse button may be down in the game's UI, not here)
+				&& HeldKeyGoesDownAgain(PC->IsInputKeyDown(Held.Key), Held.bSeenDown, Held.UpTicks))
+			{
+				SendKey(PC, Held.Key, IE_Pressed);
+			}
+		}
+		for (const FName& Name : Expired)
+		{
+			const FHeldKey Held = Keys.Keys.FindAndRemoveChecked(Name);
+			if (!Held.bAxis)
+			{
+				SendKey(PC, Held.Key, IE_Released);
+			}
+		}
 	}
 }
 
 	void KeyOp(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args)
 	{
-		APlayerController* PC = PlayerController(Bridge.GetGameWorld());
+		const int32 Player = PlayerOf(Args);
+		UWorld* World = PlayerWorld(Bridge, Args);
+		APlayerController* PC = PlayerController(World);
+		FPlayerKeys& Keys = HeldKeys.FindOrAdd(Player);
 		const FString Mode = StringField(Args, TEXT("mode"));
 		double Lease = 0.0;
 		if (Args->TryGetNumberField(TEXT("lease"), Lease) && Lease > 0.0)
 		{
-			KeyLeaseSeconds = FMath::Clamp(Lease, 0.2, 10.0);
+			Keys.LeaseSeconds = FMath::Clamp(Lease, 0.2, 10.0);
 		}
 		if (Mode == TEXT("release_all"))
 		{
-			ReleaseHeldKeys(PC == KeysController.Get() ? PC : nullptr);
+			ReleaseHeldKeys(Keys, PC == Keys.Controller.Get() ? PC : nullptr);
 			Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
 			return;
 		}
@@ -329,10 +415,10 @@ namespace
 			Bridge.RespondError(Id, TEXT("No player controller"));
 			return;
 		}
-		if (KeysController.Get() != PC)
+		if (Keys.Controller.Get() != PC)
 		{
-			HeldKeys.Reset();  // a new session: nothing of the old one is held
-			KeysController = PC;
+			Keys.Keys.Reset();  // a new session: nothing of the old one is held
+			Keys.Controller = PC;
 		}
 		const FKey Key(*StringField(Args, TEXT("key")));
 		if (!Key.IsValid())
@@ -347,27 +433,28 @@ namespace
 		const bool bAxis = Key.IsAxis1D();
 		if (Mode == TEXT("release"))
 		{
-			if (const FHeldKey* Held = HeldKeys.Find(Key.GetFName()))
+			if (const FHeldKey* Held = Keys.Keys.Find(Key.GetFName()))
 			{
 				if (!Held->bAxis)
 				{
 					SendKey(PC, Key, IE_Released);
 				}
-				HeldKeys.Remove(Key.GetFName());
+				Keys.Keys.Remove(Key.GetFName());
 			}
 			Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
 			return;
 		}
 		if (Mode == TEXT("hold"))
 		{
-			FHeldKey* Held = HeldKeys.Find(Key.GetFName());
+			FHeldKey* Held = Keys.Keys.Find(Key.GetFName());
 			if (!Held)
 			{
-				Held = &HeldKeys.Add(Key.GetFName());
+				Held = &Keys.Keys.Add(Key.GetFName());
 				Held->Key = Key;
 				if (!bAxis)
 				{
 					SendKey(PC, Key, IE_Pressed);  // goes down once and stays down
+					Bridge.GetDetectors().NoteAgentInput(Key.ToString());
 				}
 			}
 			Held->Value = (float)Value;
@@ -376,7 +463,6 @@ namespace
 			Held->Renewed = FPlatformTime::Seconds();
 			// A timed hold ("seconds"): the game lets go after exactly that much game time, however late the brain is
 			double Seconds = 0.0;
-			const UWorld* World = Bridge.GetGameWorld();
 			Held->Until = Args->TryGetNumberField(TEXT("seconds"), Seconds) && Seconds > 0.0 && World
 				? World->GetTimeSeconds() + Seconds : 0.0;
 			Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
@@ -390,20 +476,22 @@ namespace
 			return;
 		}
 		SendKey(PC, Key, IE_Pressed);
+		Bridge.GetDetectors().NoteAgentInput(Key.ToString());
 		TWeakObjectPtr<APlayerController> WeakPC(PC);
 		FPending Pending;
 		Pending.Id = Id;
 		Pending.Op = TEXT("key");
 		Pending.StartReal = FPlatformTime::Seconds();
 		Pending.Seconds = TapSeconds;
-		Pending.Tick = [&Bridge, WeakPC, Key, StartFrame = GFrameCounter](FPending& P, double Now)
+		Pending.Tick = [&Bridge, WeakPC, Key, Player, StartFrame = GFrameCounter](FPending& P, double Now)
 		{
 			if (!TapDone(P, Now, StartFrame))
 			{
 				return false;
 			}
 			APlayerController* Current = WeakPC.Get();
-			if (Current && !HeldKeys.Contains(Key.GetFName()))  // (unless it is held now)
+			const FPlayerKeys* Held = HeldKeys.Find(Player);
+			if (Current && !(Held && Held->Keys.Contains(Key.GetFName())))  // (unless it is held now)
 			{
 				SendKey(Current, Key, IE_Released);
 			}
@@ -421,7 +509,8 @@ namespace
 		{
 			UEnhancedInputLocalPlayerSubsystem* Subsystem = HeldActions[I].Subsystem.Get();
 			const UInputAction* Action = HeldActions[I].Action.Get();
-			if (!Bridge.IsConnected() || !Subsystem || !Action || Subsystem != InputSubsystem(Bridge.GetGameWorld()))
+			if (!Bridge.IsConnected() || !Subsystem || !Action
+				|| Subsystem != InputSubsystem(Bridge.GetPlayerWorld(HeldActions[I].Player)))
 			{
 				HeldActions.RemoveAt(I);
 				continue;
@@ -429,45 +518,9 @@ namespace
 			Subsystem->InjectInputForAction(Action, HeldActions[I].Value, {}, {});
 		}
 #endif
-		if (HeldKeys.Num() == 0)
+		for (TPair<int32, FPlayerKeys>& PlayerKeys : HeldKeys)
 		{
-			return;
-		}
-		APlayerController* PC = PlayerController(Bridge.GetGameWorld());
-		if (!Bridge.IsConnected() || !PC || PC != KeysController.Get())
-		{
-			ReleaseHeldKeys(PC && PC == KeysController.Get() ? PC : nullptr);  // the brain or the session is gone
-			return;
-		}
-		const double Now = FPlatformTime::Seconds();
-		const UWorld* World = Bridge.GetGameWorld();
-		const double GameNow = World ? World->GetTimeSeconds() : 0.0;
-		TArray<FName> Expired;
-		for (TPair<FName, FHeldKey>& Pair : HeldKeys)
-		{
-			const FHeldKey& Held = Pair.Value;
-			if (Held.Until > 0.0 ? GameNow >= Held.Until : Now - Held.Renewed > KeyLeaseSeconds)
-			{
-				Expired.Add(Pair.Key);
-			}
-			else if (Held.bAxis)
-			{
-				SendAxis(PC, Held.Key, Held.bRate ? Held.Value * DeltaTime : Held.Value, DeltaTime);
-			}
-			else if (!Held.Key.IsMouseButton() && PC->PlayerInput && !PC->IsInputKeyDown(Held.Key))
-			{
-				// The game's view lost the focus (the person clicked elsewhere in the editor, or left it) and the engine let
-				// go of every key: this one is still held. (A mouse button may be down in the game's UI, not here.)
-				SendKey(PC, Held.Key, IE_Pressed);
-			}
-		}
-		for (const FName& Name : Expired)
-		{
-			const FHeldKey Held = HeldKeys.FindAndRemoveChecked(Name);
-			if (!Held.bAxis)
-			{
-				SendKey(PC, Held.Key, IE_Released);
-			}
+			TickPlayerKeys(Bridge, PlayerKeys.Key, PlayerKeys.Value, DeltaTime);
 		}
 	}
 }

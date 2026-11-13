@@ -128,6 +128,8 @@ class ArenaLink:
     CharacterMovement MaxWalkSpeed (600) read. `enemy` makes a goblin come at the hero at a speed and bite from a reach
     every period for a damage, its health regenerating (see _advance)."""
 
+    MAX_FRAME = 0.05  # the most game time one request moves the game on by (see _advance)
+
     def __init__(self):
         self.hello = {"project": "Arena", "engine": "unreal"}
         self.pos = {HERO: Vec(0, 0, 90), GOB1: Vec(600, 0, 90), GOB2: Vec(-900, 300, 90), CRATE: Vec(0, 400, 50)}
@@ -158,7 +160,10 @@ class ArenaLink:
 
     def _advance(self):
         now = time.monotonic()
-        dt, self._wall = now - self._wall, now
+        # (a frame moves the game on by at most MAX_FRAME, as an engine clamps its frame time: a stall of the machine
+        # running the tests slows the game down rather than skipping a stretch of it, which made an enemy's bites
+        # come a stall apart instead of a period apart, now and then on a busy CI runner)
+        dt, self._wall = min(now - self._wall, self.MAX_FRAME), now
         self.game_time += dt
         me = self.pos[HERO]
         if "W" in self.held and self.health[HERO] > 0:
@@ -463,7 +468,7 @@ def test_enemy_profile_measures_an_enemy_without_fighting_it(arena):
     link.enemy = {"actor": GOB1, "speed": 400, "reach": 110, "period": 0.3, "damage": 25, "regen": 2.0, "max": 30}
     link.health[GOB1] = 20
     r = research.enemy_profile(game, "/Game/BP_Goblin.BP_Goblin_C", seconds=6, safe_distance=600)
-    assert r["target"] == GOB1 and r["comes"] and 480 <= r["start_distance"] <= 610 and r["min_distance"] <= 115
+    assert r["target"] == GOB1 and r["comes"] and 480 <= r["start_distance"] <= 610 and r["min_distance"] <= 115, r
     assert 300 <= r["approach_speed"] <= 500 and 300 <= r["speed"] <= 500 and r["player_speed"] == 600
     assert r["hits"] == 3 and r["damage_per_hit"] == 25 and r["damage_taken"] == 75
     assert 100 <= r["attack_range"] <= 125 and 0.2 <= r["attack_period"] <= 0.45, r

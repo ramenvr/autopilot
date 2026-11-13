@@ -629,6 +629,34 @@ def test_a_run_refused_for_credits_tells_the_plugins_chat_page_and_settings_at_o
     assert not [f for f in link.sent if f["type"] == "account"]
 
 
+def test_a_run_the_users_own_agent_works_on_tells_aura_which_client_it_is(through_aura, monkeypatch, tmp_path):
+    from autopilot.agents import external
+
+    # (Aura records such a run as that agent's, not as played by a model of Autopilot's)
+    assert aura.client_of(" Codex ") == "codex" and aura.client_of("claude-code") == "claude-code"
+    assert aura.client_of("") is None and aura.client_of(None) is None and aura.client_of(7) is None
+    assert aura.client_of("a client") is None and aura.client_of("x" * 41) is None
+    http = FakeAura()
+    aura.Run("aura-session", "verify", project="Farm", http=http, client="Codex").start()
+    assert http.calls[0][1] == {"kind": "verify", "mode": "playtest", "project": "Farm", "project_key": "Farm",
+                                "client": "codex"}
+    http.calls.clear()
+    aura.Run("aura-session", "verify", project="Farm", http=http).start()
+    assert "client" not in http.calls[0][1]
+    # run_prompt says it for a run worked on through `autopilot mcp` (its desk's client), and for no other
+    started = FakeAura(Answer(402, {"valid": False, "code": "NO_CREDITS", "error": "Out of Aura credits."}))
+    monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
+    monkeypatch.setattr(cli.aura.requests, "Session", lambda: started)
+    cli.run_prompt(Plugin(), "The gate opens.", kind="verify", desk=external.Desk(client="claude-code"))
+    assert started.calls[0][1]["client"] == "claude-code"
+    started.calls.clear()
+    cli.run_prompt(Plugin(), "The gate opens.", kind="verify", desk=external.Desk())  # (a client that gave no name)
+    assert started.calls[0][1]["client"] == "mcp"
+    started.calls.clear()
+    cli.run_prompt(Plugin(), "The gate opens.", kind="verify")
+    assert "client" not in started.calls[0][1]
+
+
 def test_run_prompt_passes_the_trace_on_when_it_starts_the_run_with_aura(through_aura, monkeypatch, tmp_path):
     started = FakeAura(Answer(402, {"valid": False, "code": "NO_CREDITS", "error": "Out of Aura credits."}))
     monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
@@ -659,6 +687,38 @@ def test_the_serve_loop_takes_the_trace_from_the_start_frames_run(monkeypatch):
             break
         time.sleep(0.02)
     assert asked and asked[0]["trace"] == trace and asked[0]["kind"] == "goal"
+
+
+def test_the_serve_loop_passes_a_steers_mode_on_and_a_frame_without_one_is_a_hint(monkeypatch):
+    steerings = []
+    monkeypatch.setattr(cli, "run_prompt", lambda *a, **k: steerings.append(k["steering"]) or time.sleep(2))
+    link = Plugin()
+    link.hello = {"project": "Farm", "run": {"kind": "goal", "goal": "Open the gate"}}
+    link.current = link
+    frames = [{"type": "steer", "text": "the gate's lever is behind the barn"},  # (an older plugin: no mode)
+              {"type": "steer", "text": "stop, try the barn door", "mode": "redirect"},
+              {"type": "steer", "text": "look up", "mode": "nonsense"}]
+
+    def next_message(timeout=None):
+        for _ in range(100):  # (the run goes in its own thread)
+            if steerings:
+                break
+            time.sleep(0.02)
+        if frames:
+            return frames.pop(0)
+        raise KeyboardInterrupt
+
+    link.next_message = next_message
+    monkeypatch.setattr(cli, "send_memory_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "send_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "SignIn", lambda link: None)
+    with pytest.raises(KeyboardInterrupt):
+        cli.cmd_serve(link, types.SimpleNamespace(path=None, model=None))
+    assert steerings[0].take() == [("the gate's lever is behind the barn", "hint"),
+                                   ("stop, try the barn door", "redirect"), ("look up", "hint")]
+    said = [f["text"] for f in link.sent if f.get("type") == "status"]
+    assert "Hint: the gate's lever is behind the barn" in said and "Redirecting: stop, try the barn door" in said
+    assert "steer_mode" in bridge.BRAIN_FEATURES
 
 
 def picked_model_aura(agent):

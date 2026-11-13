@@ -65,7 +65,9 @@ default; safe to skip) and send your first prompt. In detail:
      website: the tab installs and starts it if needed ("Setting up the agent service…", "Starting the agent
      service…"), asks it to sign in, and your browser opens on Aura's page. While it waits, the card shows the link
      (**Open again**, **Copy link**, **Cancel**); once you choose Allow it shows **Signed in as** *your email*, with
-     **Continue** and **Use another account**. If the sign-in is denied, times out or Aura can't be reached, it says
+     **Continue** and **Use another account** (it signs out, then opens Aura's page asking it to let you pick the
+     account; while it waits the card adds "If the page shows the wrong account, sign out of Aura in your browser,
+     then open the sign-in page again."). If the sign-in is denied, times out or Aura can't be reached, it says
      so in one line with **Try again**. While the sign-in goes on (getting ready, in your browser, waiting for the
      agent service) the BYOK card is not shown; **Cancel** brings it back. Once signed in it is folded and dimmed,
      with **Show**. The plugin never sees Aura's tokens: the agent service keeps the sign-in for
@@ -226,11 +228,16 @@ While a run is going, the tab shows:
   for an older one), the feed's last 10 lines (one line each, no folds; the Feed tab has them all), what the agent is doing now, its
   **Harness attempts** so far (a square each, in one row that never wraps: the newest that fit, at most 24, so the current one, outlined, is always last; the others filled; then the count of them all), and **Stop** to finish
   early (it says **Stopping…** until the result; the agent still writes its report). "Saving what it learned to
-  memory", at the end, is part of the report. If the agent service supports it, a box at the foot ("Send a steering
-  prompt to Autopilot") lets you nudge the run, e.g. "go round the rocks to the left first": you can type at any
-  stage, and **Steer** sends it while the game is playing (the Rollout stage; before that its tooltip says "You can
-  steer once the game is playing"). While it stops, both are locked. The Feed tab has the same box, with the same
-  words.
+  memory", at the end, is part of the report. If the agent service supports it, a box at the foot ("Add a hint;
+  Autopilot keeps playing") is where you write to the agent mid-run, e.g. when it isn't figuring something out on its
+  own: "the ramp is behind the shed". **Send** (or Enter) sends it as a hint: the attempt playing now goes on, and the
+  agent reads your words as soon as it next acts (at the latest when that attempt ends) and plays on from where the
+  game is. **Redirect** ends the current attempt now and takes your words as the new direction ("forget the gate,
+  climb the tower"). Either way the agent goes on from where the game is unless your words ask for a restart. You can
+  type at any stage; both send only while the game is playing (the Rollout stage; before that their tooltips say "You
+  can steer once the game is playing"). While it stops, both are locked. The Feed tab has the same box, with the same
+  words. (An older agent service without hints shows one **Steer** button and "Send a steering prompt to Autopilot";
+  what it sends ends the current attempt.)
 - **Feed**: the run as a transcript, grouped by stage ("Nothing yet." before the first line): a heading per stage
   (Launch, Analyze, Probe, Build harness, Play, Results, Report) with its count of lines, and under it what the agent did
   and said, one line per event of the agent service's activity feed (its `activity` frames): its time (m:ss), a
@@ -287,9 +294,10 @@ nothing. Older runs leave the history but keep their usage and bill for the Sett
 a bill (**Time**, **Prompt**, **Billed**; **No usage yet.** when there are none; plain rows, nothing to pick): what Autopilot was billed for each through Aura (the agent service says it when the run is
 finished; two decimals, **< $0.01** below a cent, **—** for a BYOK run), and **Billed by Aura $X.XX**, their sum. The
 tokens the models used are still counted and saved with each run, for the agent service's reports, but the page no
-longer shows them. It also holds the [Data sharing](#data-sharing) choice, then the card **Autopilot in Claude Code &
+longer shows them. It also holds the [Data sharing](#data-sharing) choice, the **Research agent**, **Bug detectors**
+(see [Turning the detectors off](#turning-the-detectors-off)), then the card **Autopilot in Claude Code &
 Codex** (see [Runs from Claude Code or Codex](#runs-from-claude-code-or-codex)) and, last, **Uninstall Autopilot**. Those
-two settings are laid out alike: the setting's name, what it does, then the switch (with **Data sharing on** or **Data
+settings are laid out alike: the setting's name, what it does, then the switch (with e.g. **Data sharing on** or **Data
 sharing off** beside it) or the commands. A run's time limit is the prompt box's own (**Time limit**, beside **Run**).
 
 ### Runs from Claude Code or Codex
@@ -387,6 +395,15 @@ world or an object) and click or drag there: the game's own mouse reads (`GetMou
 `GetHitResultUnderCursor`, click events) see that place, and a click over the game's UI goes to that UI as the
 mouse's would. Your computer's own cursor doesn't move.
 
+**Multiplayer games: every player of Play In Editor.** When the editor plays several players in one process (Play
+settings: Number of Players above 1, Run Under One Process on; a listen server or clients of a dedicated server), the
+agent plays player 1 (the listen server's host, or the first client) and can drive the others too: each player's keys,
+movement, view, on-screen texts and UI are its own. A player the agent doesn't drive stands idle where it is; the agent
+drives the others when the prompt is about players together (co-op, handing things over, one player seeing another) or
+when the game needs every player to go on. Play In Editor plays as you set it up: the agent never changes the number of
+players or the net mode. Pointing the mouse at a place is player 1's only for now (another player's UI is clicked
+through its widgets directly), and the recording and the bug detectors follow player 1's world.
+
 **While a run plays, the game gets the agent's input alone.** Your own keyboard, mouse and gamepads don't reach the
 game: a key or stick while the game has focus, or the mouse over the game's view, is held off before anything else in
 the engine sees it, so nothing you press (or a controller in your hands) mixes with the agent's input. The rest of the
@@ -410,17 +427,49 @@ plays at its normal speed:
 |---|---|
 | `log_error` / `ensure` | an Error-level log line, an `ensure` failure, or a Blueprint runtime error such as "Accessed None" |
 | `nan` | an actor's transform is NaN or infinite |
-| `out_of_world` | an actor is below KillZ or outside the world bounds |
-| `teleport` | a pawn moves farther in one frame than its speed allows |
+| `out_of_world` | a movable actor is below KillZ, or beyond the world bounds: past the level's own extent (what its static and stationary actors' colliding parts span, and in the editor a World Partition's bounds) by half its size (at least 2^19 units), and never within 2^20 units (UE4's world size) of the origin; `max_distance` sets a fixed distance from the origin instead |
+| `teleport` | a pawn moves farther in one frame than its speed allows (not what the agent itself moved: a property it wrote, a function it called; within `teleport_after_input_seconds` (1 s) of a key, action or UI element the agent pressed it is told as `info`, "right after the agent pressed R", with `details.after_input` `{key, seconds}`: a reset key may move the player on purpose) |
 | `long_fall` | a character keeps falling for 8 s |
 | `hitch` | a frame takes longer than 0.75 s |
-| `actor_growth` | the number of actors of one class keeps growing for 2 minutes |
-| `clamp` | a project property is outside its `ClampMin`/`ClampMax` |
+| `actor_growth` | the number of actors of one class spawned while playing keeps growing for 2 minutes (actors placed in a level, a streamed sublevel or a World Partition cell aren't counted: level streaming isn't a leak) |
+| `clamp` | a project property (declared in the project's C++, Blueprints or AngelScript) is outside its `ClampMin`/`ClampMax` |
 | `over_max` | a project number `X` is above its sibling `MaxX` |
 | `hud_fraction` | on-screen text shows `a/b` with `a > b` (e.g. a bag showing `6/5`) |
 
+A detector that finds more than three kinds of the same problem in a run (one `out_of_world` per class of actor) is
+told once: one line in the copied report and one card naming every kind with its count (Show each opens its own
+cards), and a few lines in the feed.
+
 The agent service adds its own checks on top, confirms findings by replaying them, and can turn them into
 claims to verify.
+
+### Muting a finding
+
+A finding your game is meant to have (a big world's far-off actors, a hitch you know of) can be
+muted for the project: press **Not a bug** on it in the run's report, and it isn't reported again, in this run or the
+next ones. The agent service keeps the list in `detectors.json` in the project's memory folder
+(`Autopilot/memory/<project>/` in your user settings folder, or under `AUTOPILOT_MEMORY`; `memory/<project>/` when
+Autopilot runs from a checkout of its repository), where you can edit it by hand:
+
+```json
+{"mute": ["out_of_world:BP_Tree", "hitch"], "max_distance": 5000000}
+```
+
+`mute` takes a finding's signature (`out_of_world:BP_Tree`: that class's) or a detector's name (`out_of_world`: all of
+its findings); a muted `teleport:<kind>` mutes that kind's teleports right after the agent's key
+(`teleport:<kind> after <key>`) too. The other keys are the detectors' settings (`max_distance`, `teleport_min`,
+`teleport_after_input_seconds`, `hitch_seconds`, `long_fall_seconds`...). Each run sends the file to the game as it starts. Reset memory keeps it: it is your setting,
+not something runs learned.
+
+### Turning the detectors off
+
+The Settings page's **Bug detectors** ("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.") turns them all off
+for the project, or on again: the agent service keeps it as `"enabled": false` in the same `detectors.json`, and tells
+the game at once, a run going on included. The switch shows what the agent service says (on when it doesn't say); it
+can't be changed while the tab isn't connected (greyed, showing what it last knew). Connected to an agent service
+older than this plugin (its `welcome`'s `features` without `"detectors"`), which would ignore the switch and go on
+running the game's detectors, it is greyed and on, with "The agent service in use is older than this plugin and can't
+turn them off." under it.
 
 ## Headless and CI runs (command line)
 
@@ -491,7 +540,8 @@ uninstall --yes` (with `--keep-memory` when that is left unchecked: the memories
 folder, with its output in `autopilot-uninstall-<date-time>.log` there. That removes, for every project and editor on
 the computer: the agent services running (never the Aura app's), your Aura sign-in (ended on Aura's side too), the
 settings folder (`Autopilot/` in your user settings folder: keys, setup choices, logs and, when checked, what
-Autopilot learned) and the `autopilot` command. When it is checked, the memories are deleted on this computer and also
+Autopilot learned) and the `autopilot` command, with the copies of it earlier updates on Windows set aside and
+couldn't delete yet. When it is checked, the memories are deleted on this computer and also
 the copy kept with Aura for your team (and this install's copy kept for your own keys), and it also removes what each
 game's plugin keeps about the runs in its project (below: the run history, reports, recordings and the codex export),
 for every project the agent service has run, and the tab forgets its runs at once. Shared runs not sent yet are sent
@@ -588,11 +638,12 @@ The plugin has three modules:
 | `Private/PlaytestOpsUI.cpp` | `screen`, `ui`, `ui_act` |
 | `Private/PlaytestOpsView.cpp` | `view`: what the player sees and what its body feels |
 | `Private/PlaytestOpsOpenings.cpp`, `Private/PlaytestOpsSonar.cpp` | view's `openings` and `ways_up`, and its `sonar` |
+| `Private/PlaytestOpsTrace.cpp` | `trace`: a line trace or sphere sweep through the played world, on the pawn's own collision channel and responses (`sight`: Visibility) |
 | `Private/PlaytestOpsLook.cpp` | how a thing is drawn (meshes, effects, lights, animation), for `view` and `watch` |
 | `Private/PlaytestOpsWatch.cpp` | `watch`: what changes over a stretch of game time |
 | `Private/PlaytestDetectors.cpp` | the in-engine bug detectors |
 | `Private/PlaytestScreen.cpp`, `Private/PlaytestUI.cpp` | reading what is on screen (widgets and text) and clicking or dragging game UI |
-| `Private/PlaytestCodex.cpp` | the codex ops: exporting the project's game logic and data for the agent to research |
+| `Private/PlaytestCodex.cpp` | the codex ops: exporting the project's game logic and data for the agent to research, its AngelScript (`Script/**/*.as`) with its C++ |
 | `Private/PlaytestMedia.cpp` | `record` and `capture`: the game viewport's part of its window's back buffer, read back with `FRHIGPUTextureReadback` on the render thread, scaled and JPEG-encoded on a pool thread |
 | `Public/PlaytestPreferences.h`, `Private/PlaytestPreferences.cpp` | `preferences.json` (setup, data sharing), `autopilot.env` (the setup's keys, Coding Agent and LLM provider: written, merged, read back) and the agent service's `usage` counts |
 | `Public/PlaytestAura.h`, `Private/PlaytestAura.cpp` | Use with Aura: where the Aura app's agent service listens, starting Aura; the user settings folder (`SettingsDir`) |
@@ -614,7 +665,7 @@ The plugin has three modules:
 | `Private/SPlaytestPanel.h/.cpp` | the tab's main widget: first-run setup (account, agent service, privacy settings, first run), connect card, composer, live view, result, Settings page with its account corner |
 | `Private/SPlaytestPolicyLog.h/.cpp` | the policy log view |
 | `Private/SPlaytestVideo.h/.cpp` | a run's recording in its result: the Media Framework player (`UMediaPlayer`, `UFileMediaSource`, `UMediaTexture` through a brush), letterboxed in its screen (230 px; 200 narrow), with its controls |
-| `Private/AutopilotPanelTests.cpp` | automation tests: every page laid out at 320 to 1400 px wide (nothing past the edges; Uninstall asked, and what the tab shows while and after it uninstalls; the BYOK keys and the Coding Agent stacked, the LLM provider dropdown and key on one row, each key's hint and each provider's name fitting its box, with each agent; the Settings page with long bills, BYOK with and without keys, with each agent and LLM provider), where the dropdowns start, picks over them, the provider each agent locks, the LLM key emptied when its provider changes, and a run's bill kept, saved and summed; every stage name of the Live page given the room it needs, the steer box taking words at every stage (its one hint fitting the box), Steer at the Rollout only, its words kept, the composer's hint fitting its box, the kind's tag and **Duration** following the words (no explaining lines), the gear beside **New run** at every width (no **Rerun setup** outside the Settings page), **Harness attempts** on the Live page, the Settings page's billing period, no usage table, this project's runs with their bills, what sharing sends (as the setup says it) and no time limit (each run's is the prompt box's), the result with and without a recording (the line saying why there is none wrapping inside the tab, never while the run goes on or with a player) and with and without findings (the agent's **Found**, **Engine findings · n** with ×n; nothing with none); the kind of run each text asks for and its start frame (`Editor.RunKind`); the end of a run: "Saving what it learned to memory" as the report, the memory line, the recording copied and saved, why a run has none (as the agent service said; else nothing) decided, saved and read back, the history's harness attempts (`Editor.RunEnd`); steering only at the Rollout, stage by stage as the status lines come (`Editor.Steer`); the gears opening and closing the Settings page, **Rerun setup** on it (one button, whatever the account) opening the setup at step 1, disabled while a run goes, BYOK as the mode's one name, the setup's privacy words (what sharing sends) and no explaining paragraphs in any step (`Editor.RerunSetup`); the connect card's states, each with its words and buttons (**Reconnect** after Disconnect, never a **Connect** to press, **Stop**), **Advanced**, no Aura line (`Editor.Connect`); the status line (said, gone after 8 s), the Feed tab's steer box saying the Live page's words, **Back to the last run** (`Editor.StatusLine`); the Aura card's **Use Aura app** before **Sign in with browser**, Explore's 10 minutes, step 3's **Next** or **Finish** and the stepper's 4th step by what the memory holds, step 4 waiting (**Skip**), offering the Explore run with the memory empty (**Explore and finish** sending the composer's start frame for "Explore" with the minutes, not while a run goes; **Skip and finish**) and closing by itself when the memory holds something (`Editor.FirstRun`); step 4 laid out at every size, waiting and offering (`Editor.Layout`); **Uninstall Autopilot** last on the Settings page, asked in place (what it removes, **Delete Autopilot's memories** unchecked each time it asks), not while a run goes, and what the tab shows while and after it removes, in place of the setup too, with **View logs**, **Set up again** (the setup's step 1) and **Cancel** (`Editor.Remove`); a run the user's own Claude Code or Codex started (`run_started`): a run of the tab's, shown from wherever the tab was (the Settings page too; the first-run setup stays), its words and **Started from Claude Code**, **Codex** or **your coding agent** under them, live and in its result, kept in the history; nothing while a run goes; the card **Claude Code and Codex** after Data sharing and before Uninstall, its words in order, each command's **Copy** copying it; what sharing sends for those runs (`Editor.RunStarted`); the activity feed: each `activity` frame a line under its stage (which drives the stage track), a call and its result one line with two folds, a frame sent again changing nothing, an orphan result its own line, the Feed tab's headings with their counts, the folds' words, what the hello asks for (`activity_since`), a run saved and read back with its events (`Editor.Activity`) |
+| `Private/AutopilotPanelTests.cpp` | automation tests: every page laid out at 320 to 1400 px wide (nothing past the edges; Uninstall asked, and what the tab shows while and after it uninstalls; the BYOK keys and the Coding Agent stacked, the LLM provider dropdown and key on one row, each key's hint and each provider's name fitting its box, with each agent; the Settings page with long bills, BYOK with and without keys, with each agent and LLM provider), where the dropdowns start, picks over them, the provider each agent locks, the LLM key emptied when its provider changes, and a run's bill kept, saved and summed; every stage name of the Live page given the room it needs, the steer box taking words at every stage (its one hint fitting the box), Send and Redirect at the Rollout only (one Steer button and the old hint without the agent service's steer_mode), its words kept, the composer's hint fitting its box, the kind's tag and **Duration** following the words (no explaining lines), the gear beside **New run** at every width (no **Rerun setup** outside the Settings page), **Harness attempts** on the Live page, the Settings page's billing period, no usage table, this project's runs with their bills, what sharing sends (as the setup says it) and no time limit (each run's is the prompt box's), the result with and without a recording (the line saying why there is none wrapping inside the tab, never while the run goes on or with a player) and with and without findings (the agent's **Found**, **Engine findings · n** with ×n; nothing with none); the kind of run each text asks for and its start frame (`Editor.RunKind`); the end of a run: "Saving what it learned to memory" as the report, the memory line, the recording copied and saved, why a run has none (as the agent service said; else nothing) decided, saved and read back, the history's harness attempts, the copied report's findings (a detector with more than three kinds on one line naming every kind) (`Editor.RunEnd`); steering only at the Rollout, stage by stage as the status lines come (`Editor.Steer`); the gears opening and closing the Settings page, **Rerun setup** on it (one button, whatever the account) opening the setup at step 1, disabled while a run goes, BYOK as the mode's one name, the setup's privacy words (what sharing sends) and no explaining paragraphs in any step (`Editor.RerunSetup`); the connect card's states, each with its words and buttons (**Reconnect** after Disconnect, never a **Connect** to press, **Stop**), **Advanced**, no Aura line (`Editor.Connect`); the status line (said, gone after 8 s), the Feed tab's steer box saying the Live page's words, **Back to the last run** (`Editor.StatusLine`); the Aura card's **Use Aura app** before **Sign in with browser**, Explore's 10 minutes, step 3's **Next** or **Finish** and the stepper's 4th step by what the memory holds, step 4 waiting (**Skip**), offering the Explore run with the memory empty (**Explore and finish** sending the composer's start frame for "Explore" with the minutes, not while a run goes; **Skip and finish**) and closing by itself when the memory holds something (`Editor.FirstRun`); step 4 laid out at every size, waiting and offering (`Editor.Layout`); **Uninstall Autopilot** last on the Settings page, asked in place (what it removes, **Delete Autopilot's memories** unchecked each time it asks), not while a run goes, and what the tab shows while and after it removes, in place of the setup too, with **View logs**, **Set up again** (the setup's step 1) and **Cancel** (`Editor.Remove`); a run the user's own Claude Code or Codex started (`run_started`): a run of the tab's, shown from wherever the tab was (the Settings page too; the first-run setup stays), its words and **Started from Claude Code**, **Codex** or **your coding agent** under them, live and in its result, kept in the history; nothing while a run goes; the card **Claude Code and Codex** after Data sharing and before Uninstall, its words in order, each command's **Copy** copying it; what sharing sends for those runs (`Editor.RunStarted`); the activity feed: each `activity` frame a line under its stage (which drives the stage track), a call and its result one line with two folds, a frame sent again changing nothing, an orphan result its own line, the Feed tab's headings with their counts, the folds' words, what the hello asks for (`activity_since`), a run saved and read back with its events (`Editor.Activity`) |
 | `Private/AutopilotStyle.h/.cpp`, `Private/AutopilotWidgets.h` | the tab's look, Aura's "The Flatness" (dark only: flat fills, 1px rules, one amber accent `#f0873a`; every color a named token), its fonts (sizes in the design's px), icons, brushes (8px corners on plates, square controls, a pill only for the switch) and small shared widgets (buttons, tags, plates, the switch, the check box, the spinner, tooltips) |
 
 **`Source/AutopilotCodex`** (editor only): the `AutopilotCodex` commandlet, which exports a project's Blueprints

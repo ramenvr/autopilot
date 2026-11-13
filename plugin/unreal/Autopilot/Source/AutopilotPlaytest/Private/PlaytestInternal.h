@@ -7,6 +7,7 @@
 
 class UPlaytestSubsystem;
 class UWorld;
+class ULevel;
 class AActor;
 class UClass;
 class UObject;
@@ -111,11 +112,12 @@ public:
 private:
 	struct FJobs;
 
-	/** "" and the game viewport's rectangle in its window's back buffer, or why there is no picture ("no picture: ..."). */
-	FString FindPicture(FIntRect& OutRect, const SWindow*& OutWindow);
+	/** "" and the game viewport's rectangle in its window's back buffer, or why there is no picture ("no picture: ...").
+	 *  World: whose picture (a player's world; a recording is always player 1's). */
+	FString FindPicture(UWorld* World, FIntRect& OutRect, const SWindow*& OutWindow);
 	/** Hooks the render thread's side to Slate's presents (once). */
 	bool Hook();
-	bool Start(bool bStill, int64 Number, int32 MaxDim, int32 Quality, FString& OutError);
+	bool Start(UWorld* World, bool bStill, int64 Number, int32 MaxDim, int32 Quality, FString& OutError);
 	void StopRecording();
 
 	UPlaytestSubsystem& Bridge;
@@ -171,20 +173,36 @@ public:
 	void Reset();
 	void Tick(UWorld* World, double RealDelta);
 	void OnLogLines(const TArray<FPlaytestLogCapture::FLine>& Lines, double GameTime);
+	/** The agent service pressed something in the game: a key or an input action going down, a UI element (Key: its
+	 *  name). A teleport soon after is still told, as info, saying so: a key that moves the player (a reset) may be meant. */
+	void NoteAgentInput(const FString& Key);
+	/** The agent service moved or changed something directly (rc: a property written, a function called): a teleport in
+	 *  the next frames is its own, not the game's, and isn't told. */
+	void NoteAgentMove();
 
 	bool bEnabled = true;
 	double TeleportFactor = 3.0;
 	double TeleportMin = 1000.0;
+	double TeleportAfterInputSeconds = 1.0;
 	double LongFallSeconds = 8.0;
 	double HitchSeconds = 0.75;
 	double GrowthSeconds = 120.0;
 	double HudEvery = 0.5;
 	double PropertyEvery = 0.5;
+	/** out_of_world's far bound in units from the origin (max_distance); 0: the level's own extent (BeyondWorld) */
+	double MaxDistance = 0.0;
+	/** Detector names ("out_of_world") and signatures ("out_of_world:BP_Tree") never reported (mute) */
+	TSet<FString> Muted;
 
 private:
 	void Report(const FString& Detector, const FString& Severity, const FString& Summary, const FString& Signature,
 		double GameTime, const AActor* Actor = nullptr, const TSharedPtr<FJsonObject>& Details = nullptr);
 	void CheckActors(UWorld* World, double GameTime);
+	/** Whether Location is beyond the world bounds; OutBox: the box it is outside of (MaxDistance's, or the levels'
+	 *  extent with its margin). */
+	bool BeyondWorld(UWorld* World, const FVector& Location, FBox& OutBox);
+	/** Adds the extent of each level not measured yet (and a World Partition's bounds, once) to LevelExtent. */
+	void MeasureLevels(UWorld* World);
 	void CheckPawns(UWorld* World, double GameTime, double WorldDelta);
 	void CheckGrowth(UWorld* World, double GameTime);
 	void CheckProperties(UWorld* World, double GameTime);
@@ -225,6 +243,9 @@ private:
 	double NextGrowthSample = 0;
 	double NextPropertyCheck = 0;
 	double NextHudCheck = 0;
+	FString AgentInputKey;  // the agent's last key, action or UI element pressed (NoteAgentInput)
+	double AgentInputTime = -1;  // its game time (-1: none in this world)
+	int32 AgentMoveFrames = 0;  // frames that advance game time left in which a teleport is the agent's own move
 
 	struct FPawnTrack
 	{
@@ -235,4 +256,9 @@ private:
 	TMap<TWeakObjectPtr<AActor>, FPawnTrack> Pawns;
 	TArray<TMap<FString, int32>> GrowthSamples;
 	TSet<FString> ProjectPackages;
+	/** What the world's levels span: their static and stationary actors (and a World Partition's bounds), measured
+	 *  as each level comes in, so a body flung away later is never part of it */
+	FBox LevelExtent = FBox(ForceInit);
+	TSet<TWeakObjectPtr<ULevel>> MeasuredLevels;
+	bool bPartitionMeasured = false;
 };

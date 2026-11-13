@@ -1004,9 +1004,12 @@ function Dock:_listen()
 		local fresh = r:onFinding(f)
 		local count = tonumber(f.count) or 1
 		local engine = M.isEngine(f)
-		r:addFeed(M.scrub(tostring(f.summary or f.detector or "")) .. (if count > 1 then string.format(" (×%d)", count)
-			else ""), if engine then "engine" else "agent")
-		r.feed[#r.feed].tone = if engine then T.severityKind(tostring(f.severity or "")) else "bad"
+		-- (a detector's many kinds aren't a line each: Run:findingLine)
+		local line = r:findingLine(f, fresh)
+		if line then
+			r:addFeed(line, if engine then "engine" else "agent")
+			r.feed[#r.feed].tone = if engine then T.severityKind(tostring(f.severity or "")) else "bad"
+		end
 		if fresh or count > 1 then
 			self:liveChanged()
 		end
@@ -1016,9 +1019,7 @@ function Dock:_listen()
 	end)
 	on("memory", function()
 		self:_renderFooter()
-		if self.setupOpen then
-			SetupPage.render(self, self.setupFrame)
-		end
+		self:renderPages() -- (the setup's, and the Settings' Bug detectors switch: memory_state says it)
 	end)
 	on("memory_cleared", function(ok, message)
 		self.reset = if ok then "done" else "failed"
@@ -1230,13 +1231,15 @@ function Dock:cancelSignIn()
 	self:renderPages()
 end
 
--- Use another account: sign out, then sign in again.
+-- Use another account: sign out, then sign in again with Aura's page asked to let the user pick the account (an older
+-- agent service ignores that and signs in as before). "another" stays with the sign-in while it waits: the setup says
+-- what to do if the page shows the wrong account.
 function Dock:anotherAccount()
 	self.editor:signOut()
-	self.signIn = { state = "preparing" }
+	self.signIn = { state = "preparing", another = true }
 	task.delay(0.5, function()
 		if self.signIn and self.signIn.state == "preparing" then
-			self.editor:signIn()
+			self.editor:signIn(true)
 		end
 	end)
 	self:renderPages()
@@ -1252,7 +1255,7 @@ function Dock:_onSignIn(f: any)
 	end
 	local state = tostring(f.state or "")
 	if state == "waiting" then
-		self.signIn = { state = "waiting", url = tostring(f.url or "") }
+		self.signIn = { state = "waiting", url = tostring(f.url or ""), another = self.signIn.another }
 	elseif state == "signed_in" then
 		-- (in the setup: Continue; on the Settings page the account frame that follows shows it)
 		self.signIn = if self.setupOpen then { state = "signed_in", email = tostring(f.email or "") } else nil
@@ -1855,7 +1858,8 @@ function Dock.editorState(ed: any): any
 	local l = ed.link
 	return { connected = ed:connected(), url = l.url, problem = l.problem, want = l.want, refused = l.refused == true,
 		runActive = ed.runActive, starting = ed.starting, playing = ed.playing, brainAccount = ed.brainAccount,
-		brainSetup = ed.brainSetup, brainSteers = ed.brainSteers, memory = ed.memory }
+		brainSetup = ed.brainSetup, brainSteers = ed.brainSteers, brainSteerModes = ed.brainSteerModes, memory = ed.memory,
+		detectors = ed.detectors, brainDetectors = ed.brainDetectors }
 end
 
 -- The mirror's dock as the edit dock is (its snapshot): the run going on, the run shown.

@@ -1,6 +1,9 @@
 #include "PlaytestInternal.h"
 
 #include "Components/ActorComponent.h"
+#include "Components/SceneComponent.h"
+#include "Engine/Engine.h"
+#include "Engine/Level.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "Misc/App.h"
@@ -18,6 +21,7 @@
 #include "Runtime/Launch/Resources/Version.h"
 #include "UObject/Package.h"
 #include "UObject/UnrealType.h"
+#include "WorldPartition/WorldPartition.h"
 
 // ---------------------------------------------------------------------------------------------------
 // Log capture
@@ -161,6 +165,8 @@ FPlaytestDetectors::FPlaytestDetectors(UPlaytestSubsystem& InBridge)
 			ProjectPackages.Add(FString::Printf(TEXT("/Script/%s"), *Module.Name.ToString()));
 		}
 	}
+	// The game's AngelScript classes (the Hazelight engine fork), its Script/**/*.as: none in a stock engine
+	ProjectPackages.Add(TEXT("/Script/Angelscript"));
 }
 
 void FPlaytestDetectors::Configure(const TSharedPtr<FJsonObject>& Args)
@@ -172,11 +178,27 @@ void FPlaytestDetectors::Configure(const TSharedPtr<FJsonObject>& Args)
 	Args->TryGetBoolField(TEXT("enabled"), bEnabled);
 	Args->TryGetNumberField(TEXT("teleport_factor"), TeleportFactor);
 	Args->TryGetNumberField(TEXT("teleport_min"), TeleportMin);
+	Args->TryGetNumberField(TEXT("teleport_after_input_seconds"), TeleportAfterInputSeconds);
 	Args->TryGetNumberField(TEXT("long_fall_seconds"), LongFallSeconds);
 	Args->TryGetNumberField(TEXT("hitch_seconds"), HitchSeconds);
 	Args->TryGetNumberField(TEXT("growth_seconds"), GrowthSeconds);
 	Args->TryGetNumberField(TEXT("hud_every"), HudEvery);
 	Args->TryGetNumberField(TEXT("property_every"), PropertyEvery);
+	Args->TryGetNumberField(TEXT("max_distance"), MaxDistance);
+	const TArray<TSharedPtr<FJsonValue>>* Mute = nullptr;
+	if (Args->TryGetArrayField(TEXT("mute"), Mute))
+	{
+		// (the whole list each time: what is no longer in it is reported again)
+		Muted.Reset();
+		for (const TSharedPtr<FJsonValue>& Value : *Mute)
+		{
+			FString Name;
+			if (Value.IsValid() && Value->TryGetString(Name) && !Name.TrimStartAndEnd().IsEmpty())
+			{
+				Muted.Add(Name.TrimStartAndEnd());
+			}
+		}
+	}
 }
 
 void FPlaytestDetectors::Reset()
@@ -193,10 +215,28 @@ void FPlaytestDetectors::Reset()
 	Seen.Reset();
 	Pawns.Reset();
 	GrowthSamples.Reset();
+	LevelExtent = FBox(ForceInit);
+	MeasuredLevels.Reset();
+	bPartitionMeasured = false;
 	World.Reset();
 	SessionStartReal = FPlatformTime::Seconds();
 	LastGameTime = -1;
 	NextActorCheck = NextGrowthSample = NextPropertyCheck = NextHudCheck = 0;
+	AgentInputKey.Reset();
+	AgentInputTime = -1;
+	AgentMoveFrames = 0;
+}
+
+void FPlaytestDetectors::NoteAgentInput(const FString& Key)
+{
+	const UWorld* W = World.Get();
+	AgentInputKey = Key;
+	AgentInputTime = W ? W->GetTimeSeconds() : -1;
+}
+
+void FPlaytestDetectors::NoteAgentMove()
+{
+	AgentMoveFrames = 3;
 }
 
 bool FPlaytestDetectors::IsProjectClass(const UClass* Class) const
@@ -212,6 +252,17 @@ bool FPlaytestDetectors::IsProjectClass(const UClass* Class) const
 void FPlaytestDetectors::Report(const FString& Detector, const FString& Severity, const FString& Summary, const FString& Signature,
 	double GameTime, const AActor* Actor, const TSharedPtr<FJsonObject>& Details)
 {
+	if (Muted.Contains(Detector) || Muted.Contains(Signature))
+	{
+		return;  // the project said it isn't a bug (Not a bug, or its detectors.json)
+	}
+	// A teleport right after the agent's input ("teleport:<kind> after <key>") is muted with that kind's teleports too
+	const int32 After = Detector == TEXT("teleport")
+		? Signature.Find(TEXT(" after "), ESearchCase::CaseSensitive, ESearchDir::FromEnd) : INDEX_NONE;
+	if (After != INDEX_NONE && Muted.Contains(Signature.Left(After)))
+	{
+		return;
+	}
 	int32& Count = Seen.FindOrAdd(Signature);
 	++Count;
 	if (Count != 1 && Count != 10 && Count != 100 && Count != 1000)
@@ -333,6 +384,12 @@ void FPlaytestDetectors::Tick(UWorld* InWorld, double RealDelta)
 
 void FPlaytestDetectors::CheckPawns(UWorld* InWorld, double GameTime, double WorldDelta)
 {
+	// (what the agent moved itself in the last frames isn't the game teleporting it; right after a key the agent pressed,
+	// a teleport is told as that key's, an info: a reset key moves the player as it should)
+	const bool bAgentMoved = AgentMoveFrames > 0;
+	AgentMoveFrames = FMath::Max(0, AgentMoveFrames - 1);
+	const double SinceInput = AgentInputTime >= 0 ? GameTime - AgentInputTime : -1.0;
+	const bool bAfterInput = SinceInput >= 0 && SinceInput <= TeleportAfterInputSeconds;
 	TSet<TWeakObjectPtr<AActor>> Alive;
 	for (TActorIterator<APawn> It(InWorld); It; ++It)
 	{
@@ -353,16 +410,25 @@ void FPlaytestDetectors::CheckPawns(UWorld* InWorld, double GameTime, double Wor
 			}
 			const double Allowed = FMath::Max(TeleportMin, TeleportFactor * Speed * WorldDelta);
 			const double Moved = FVector::Dist(Location, Track.Location);
-			if (Moved > Allowed)
+			if (Moved > Allowed && !bAgentMoved)
 			{
 				TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
 				Details->SetObjectField(TEXT("from"), Vec(Track.Location));
 				Details->SetObjectField(TEXT("to"), Vec(Location));
 				Details->SetField(TEXT("moved"), PlaytestJson::Number(FMath::RoundToDouble(Moved)));
 				Details->SetField(TEXT("allowed"), PlaytestJson::Number(FMath::RoundToDouble(Allowed)));
-				Report(TEXT("teleport"), TEXT("suspicion"),
-					FString::Printf(TEXT("%s moved %.0f units in one frame (at most %.0f expected)"), *ClassLabel(Pawn), Moved, Allowed),
-					FString::Printf(TEXT("teleport:%s"), *ClassLabel(Pawn)), GameTime, Pawn, Details);
+				FString Summary = FString::Printf(TEXT("%s moved %.0f units in one frame (at most %.0f expected)"), *ClassLabel(Pawn), Moved, Allowed);
+				FString Signature = FString::Printf(TEXT("teleport:%s"), *ClassLabel(Pawn));
+				if (bAfterInput)
+				{
+					TSharedRef<FJsonObject> After = MakeShared<FJsonObject>();
+					After->SetStringField(TEXT("key"), AgentInputKey);
+					After->SetField(TEXT("seconds"), PlaytestJson::Number(FMath::RoundToDouble(SinceInput * 100) / 100));
+					Details->SetObjectField(TEXT("after_input"), After);
+					Summary += FString::Printf(TEXT(" right after the agent pressed %s"), *AgentInputKey);
+					Signature += FString::Printf(TEXT(" after %s"), *AgentInputKey);
+				}
+				Report(TEXT("teleport"), bAfterInput ? TEXT("info") : TEXT("suspicion"), Summary, Signature, GameTime, Pawn, Details);
 			}
 		}
 		if (const ACharacter* Character = Cast<ACharacter>(Pawn))
@@ -429,22 +495,115 @@ void FPlaytestDetectors::CheckActors(UWorld* InWorld, double GameTime)
 				FString::Printf(TEXT("%s is below the world's KillZ (%.0f)"), *ClassLabel(Actor), Settings->KillZ),
 				FString::Printf(TEXT("out_of_world:%s"), *ClassLabel(Actor)), GameTime, Actor);
 		}
-		else if (Location.GetAbsMax() > UE_OLD_HALF_WORLD_MAX)
+		else if (FBox Bounds(ForceInit); BeyondWorld(InWorld, Location, Bounds))
 		{
+			TSharedRef<FJsonObject> Details = MakeShared<FJsonObject>();
+			Details->SetObjectField(TEXT("bounds_min"), Vec(Bounds.Min));
+			Details->SetObjectField(TEXT("bounds_max"), Vec(Bounds.Max));
 			Report(TEXT("out_of_world"), TEXT("warning"),
-				FString::Printf(TEXT("%s is beyond the world bounds (%.0f)"), *ClassLabel(Actor), Location.GetAbsMax()),
-				FString::Printf(TEXT("out_of_world:%s"), *ClassLabel(Actor)), GameTime, Actor);
+				FString::Printf(TEXT("%s is beyond the world bounds (%.0f units past them)"), *ClassLabel(Actor),
+					FMath::Sqrt(Bounds.ComputeSquaredDistanceToPoint(Location))),
+				FString::Printf(TEXT("out_of_world:%s"), *ClassLabel(Actor)), GameTime, Actor, Details);
+		}
+	}
+}
+
+bool FPlaytestDetectors::BeyondWorld(UWorld* InWorld, const FVector& Location, FBox& OutBox)
+{
+	const double Far = Location.GetAbsMax();
+	if (MaxDistance > 0)
+	{
+		OutBox = FBox(FVector(-MaxDistance), FVector(MaxDistance));
+		return Far > MaxDistance;
+	}
+	// Within UE4's world size nothing is: most levels never measure. Past it, the levels' own extent decides, with a
+	// margin of half its size (a world built at a large scale puts its actors far from the origin, and they belong)
+	if (Far <= UE_OLD_HALF_WORLD_MAX)
+	{
+		return false;
+	}
+	MeasureLevels(InWorld);
+	if (!LevelExtent.IsValid)
+	{
+		OutBox = FBox(FVector(-HALF_WORLD_MAX), FVector(HALF_WORLD_MAX));  // (the engine's own limit)
+		return Far > HALF_WORLD_MAX;
+	}
+	OutBox = LevelExtent.ExpandBy(FMath::Max(LevelExtent.GetSize().GetMax() * 0.5, UE_OLD_HALF_WORLD_MAX * 0.5));
+	return !OutBox.IsInsideOrOn(Location);
+}
+
+void FPlaytestDetectors::MeasureLevels(UWorld* InWorld)
+{
+#if WITH_EDITOR
+	if (!bPartitionMeasured)
+	{
+		// A World Partition's bounds take in its cells that aren't loaded. Only the editor's world has them (its
+		// editor hash; a play-in-editor world's copy hasn't), so it is read from the editor's world of the same map
+		bPartitionMeasured = true;
+		const FString Map = UWorld::RemovePIEPrefix(InWorld->GetOutermost()->GetName());
+		for (const FWorldContext& Context : GEngine->GetWorldContexts())
+		{
+			UWorld* Editor = Context.WorldType == EWorldType::Editor ? Context.World() : nullptr;
+			UWorldPartition* Partition = Editor ? Editor->GetWorldPartition() : nullptr;
+			if (Partition && Partition->EditorHash && Editor->GetOutermost()->GetName() == Map)
+			{
+				const FBox Bounds = Partition->GetRuntimeWorldBounds();
+				if (Bounds.IsValid)
+				{
+					LevelExtent += Bounds;
+				}
+			}
+		}
+	}
+#endif
+	for (ULevel* Level : InWorld->GetLevels())
+	{
+		if (!Level || MeasuredLevels.Contains(Level))
+		{
+			continue;
+		}
+		MeasuredLevels.Add(Level);
+		for (const AActor* Actor : Level->Actors)
+		{
+			const USceneComponent* Root = IsValid(Actor) ? Actor->GetRootComponent() : nullptr;
+			if (!Root || Root->Mobility == EComponentMobility::Movable || !Actor->IsLevelBoundsRelevant())
+			{
+				continue;  // (what moves may already be somewhere it shouldn't be)
+			}
+			const FVector At = Root->GetComponentLocation();
+			if (!FMath::IsFinite(At.X) || !FMath::IsFinite(At.Y) || !FMath::IsFinite(At.Z) || At.GetAbsMax() > HALF_WORLD_MAX)
+			{
+				continue;
+			}
+			// What collides (the ground, a landscape, walls), not a sky dome's or a fog's reach: else where it stands
+			const FBox Solid = Actor->GetComponentsBoundingBox(false);
+			LevelExtent += Solid.IsValid && Solid.GetExtent().GetMax() < HALF_WORLD_MAX ? Solid : FBox(At, At);
 		}
 	}
 }
 
 void FPlaytestDetectors::CheckGrowth(UWorld* InWorld, double GameTime)
 {
-	// (counted by class, then named once per class: an open world has tens of thousands of actors)
+	// Only what the game spawned while playing: an actor placed in a level came with it (the persistent level, a streamed
+	// sublevel, a World Partition cell: loaded from its package, or a level's startup actor), and a level streaming in
+	// isn't a leak. A child actor counts as its parent does. (Counted by class, then named once per class: an open world
+	// has tens of thousands of actors)
+	auto PlacedInLevel = [](const AActor* Actor)
+	{
+		for (int32 Depth = 0; Actor && Depth < 16; ++Depth)
+		{
+			if (Actor->HasAnyFlags(RF_WasLoaded) || Actor->IsNetStartupActor())
+			{
+				return true;
+			}
+			Actor = Actor->IsChildActor() ? Actor->GetParentActor() : nullptr;
+		}
+		return false;
+	};
 	TMap<const UClass*, int32> ByClass;
 	for (TActorIterator<AActor> It(InWorld); It; ++It)
 	{
-		if (IsValid(*It))
+		if (IsValid(*It) && !PlacedInLevel(*It))
 		{
 			++ByClass.FindOrAdd(It->GetClass());
 		}

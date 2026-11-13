@@ -12,8 +12,8 @@ import threading
 import time
 import traceback
 
-from .files import FILE_TOOLS
-from .session import PROBING, READING, REPORT_FIELDS, WRITING
+from .files import FILE_TOOL_SPECS, FILE_TOOLS
+from .session import PROBING, READING, REPORT_FIELDS, TOOL_SPECS, WRITING, unknown_args
 
 TOOLS = ("probe", "run_harness", "snapshot", "describe_frames", "restart_level", "report")
 
@@ -76,16 +76,19 @@ class ToolServer:
             "restart_level": lambda: s.restart_level(args.get("level")),
             "report": lambda: s.do_report({k: args[k] for k in REPORT_FIELDS if k in args}),
         }
+        refused = unknown_args(tool, args, TOOL_SPECS + (FILE_TOOL_SPECS if self.files is not None else ()))
+        if refused:
+            return refused
         if self.files is not None and tool in FILE_TOOLS:
-            s.tool_call(tool, args, log=f"{tool}: {json.dumps(args)[:600]}")
+            s.tool_call(tool, args, log=f"{tool}: {json.dumps(args)}")
             self.say(WRITING if tool in ("write_file", "edit_file") else READING)
             # (no clock: file tools take no game time; the news, as every tool result has)
-            return self.files.call(tool, args) + s.news()
+            return s.result(self.files.call(tool, args), clock=False, steer=False)
         if tool not in tools:
             names = list(tools) + (list(FILE_TOOLS) if self.files is not None else [])
             return f"No tool {tool!r}: the tools are {', '.join(names)}."
         with self.lock:
-            s.tool_call(tool, args, log=f"tool {tool}: {json.dumps(args)[:600]}")
+            s.tool_call(tool, args, log=f"tool {tool}: {json.dumps(args)}")
             if tool in ("probe", "describe_frames"):
                 self.say(PROBING)
             t0 = time.time()
@@ -94,7 +97,7 @@ class ToolServer:
             except Exception:
                 text = "Tool failed:\n" + traceback.format_exc(limit=5)
             s.tool_seconds += time.time() - t0
-            return text + s.steer_note() + s.news() + "\n" + s.clock()
+            return s.result(text)
 
     def close(self):
         self.httpd.shutdown()

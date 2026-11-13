@@ -72,6 +72,9 @@ NEUTRAL_KIT = [
      "(from the codex),\n  or click through the menu in setup() (`game.ui()`, `game.ui_act`).\n"),
     ('"step" (MaxStepHeight)', '"step" (the highest step it walks up)'),
     ('"air_control"}, read from its CharacterMovement and capsule.\n', '"air_control"}, read from the game.\n'),
+    ("  Unreal's players are the editor's multiplayer Play In Editor (Number of Players in its Play settings, run "
+     "under one\n  process: a listen server's host or the first client is player 1): `game.restart(players=N)` can't "
+     "change how many,\n  and `game.pointer` is player 1's only (another player's UI: its `ui_act`).\n", ""),
 ]
 
 
@@ -240,7 +243,9 @@ class Engine:
     def rot(self, game, actor):
         raise NotImplementedError
 
-    def bounds(self, game, actor):
+    def bounds(self, game, actor, visual=False):
+        """(center, half extent) of the world box round the actor's collision, or round everything drawn of it when
+        nothing of it collides; visual=True: round everything drawn of it."""
         raise NotImplementedError
 
     def velocity(self, game, actor):
@@ -306,13 +311,18 @@ class OpEngine(Engine):
     def all_actors(self, game):
         return list((game.request("find", {}) or {}).get("objects") or [])
 
-    def transforms(self, game, objects):
+    def transforms(self, game, objects, visual=False):
         """{path: {"location", "rotation", "velocity", "center", "extent", "active"?} or None (gone)} for these objects.
-        An object with no place in the world (a Godot Node that isn't spatial) has them null: loc() is None for it."""
-        return (game.request("transforms", {"objects": list(objects)}) or {}).get("objects") or {}
+        An object with no place in the world (a Godot Node that isn't spatial) has them null: loc() is None for it.
+        center/extent: the box round its collision (round what is drawn of it when nothing collides); visual=True: the
+        box round what is drawn of it (an older plugin answers one box either way)."""
+        args = {"objects": list(objects)}
+        if visual:
+            args["visual"] = True
+        return (game.request("transforms", args) or {}).get("objects") or {}
 
-    def _one(self, game, actor):
-        t = self.transforms(game, [actor]).get(actor)
+    def _one(self, game, actor, visual=False):
+        t = self.transforms(game, [actor], visual=visual).get(actor)
         if not t:
             raise GameError(f"transforms: Object {actor} does not exist")
         return t
@@ -330,8 +340,8 @@ class OpEngine(Engine):
     def rot(self, game, actor):
         return self._one(game, actor).get("rotation")
 
-    def bounds(self, game, actor):
-        t = self._one(game, actor)
+    def bounds(self, game, actor, visual=False):
+        t = self._one(game, actor, visual=visual)
         return Vec.of(t.get("center") or t.get("location")), Vec.of(t.get("extent") or {"X": 0, "Y": 0, "Z": 0})
 
     def velocity(self, game, actor):

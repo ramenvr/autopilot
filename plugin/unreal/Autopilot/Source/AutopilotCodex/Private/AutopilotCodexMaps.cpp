@@ -17,7 +17,7 @@ namespace AutopilotCodex
 	{
 		for (const UClass* K = C; K; K = K->GetSuperClass())
 		{
-			if (Cast<UBlueprintGeneratedClass>(K))
+			if (IsScriptedClass(K))
 			{
 				return true;
 			}

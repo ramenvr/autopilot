@@ -30,6 +30,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import traceback
 import types
 
@@ -86,10 +87,11 @@ class Sandbox:
     """The parent side: starts the child and serves its requests with the real link and Jev client."""
 
     def __init__(self, link, client, project, prompt, run_id, root, memory, scrub=None, recorder=None, level=None,
-                 say=None, activity=None):
+                 say=None, activity=None, looker=None):
         self.link, self.client = link, client
         self.recorder = recorder  # (the run's media.Recorder: the episodes the child plays mark their videos on it)
         self.reader = None  # (the run's llm.Reader: the child's llm and llm_map calls; set by the parent's session)
+        self.looker = looker  # (the run's watch.Looker: the child's looks at the picture while its harness plays)
         self.scrub = scrub or (lambda x: x)
         # The child's progress lines and activity events (docs/protocol.md): the parent session's say() and
         # activity(), so its stage and its feed know what the child does; without them, the link's status alone
@@ -110,7 +112,9 @@ class Sandbox:
                                      bufsize=0)
         self._write({"type": "init", "project": project, "prompt": prompt, "run_id": run_id,
                      "hello": getattr(link, "hello", None) or {}, "loopback": bool(getattr(link, "loopback", False)),
-                     "level": level})
+                     "level": level,
+                     # (whether the child's runtime may look at the picture: why not, or None)
+                     "watch": looker.available() if looker is not None else "no looker in this run"})
         self.listener = lambda event: self._write({"type": "event", "event": event})
         if isinstance(getattr(link, "listeners", None), list):
             link.listeners.append(self.listener)
@@ -153,6 +157,8 @@ class Sandbox:
                 self.pool.submit(self._episode, msg)
             elif kind == "llm":
                 self.pool.submit(self._llm, msg)
+            elif kind == "watch":
+                self.pool.submit(self._watch, msg)
             elif kind == "send":
                 try:
                     self.link.send(self.scrub(msg["frame"]))
@@ -220,6 +226,19 @@ class Sandbox:
             reply = {"type": "res", "rid": msg["rid"], "ok": False, "error": f"{type(e).__name__}: {e}"}
         self._write(reply)
 
+    def _watch(self, msg):
+        """A look at the picture for the child's runtime (autopilot/watch.py, RemoteLooker): the parent's looker has
+        the frames and the keys."""
+        from . import watch
+
+        try:
+            if self.looker is None:
+                raise RuntimeError("no looker in this run")
+            reply = {"type": "res", "rid": msg["rid"], "ok": True, "result": watch.serve(self.looker, msg)}
+        except Exception as e:
+            reply = {"type": "res", "rid": msg["rid"], "ok": False, "error": f"{type(e).__name__}: {e}"[:500]}
+        self._write(reply)
+
     def _jev(self, msg):
         from typesafe_sdk import Choice, Noul, Score
 
@@ -262,7 +281,7 @@ class Sandbox:
         self._write({"type": "stop"})
 
     def end_episode(self):
-        """Ends the episode running in the child now (the user steered), not the run."""
+        """Ends the episode running in the child now (the user redirected), not the run."""
         self._write({"type": "end_episode"})
 
     def close(self):
@@ -304,6 +323,7 @@ class ProxyLink:
         self.loopback = loopback
         self.listeners = []
         self.game_time = None
+        self.game_time_at = None  # (the wall time it came: the game's clock runs on from it, kit.clock)
         self.closed = None
         self.pending = {}
         self.ids = itertools.count(1)
@@ -325,7 +345,7 @@ class ProxyLink:
 
     def answer(self, msg):
         if msg.get("game_time") is not None:
-            self.game_time = msg["game_time"]
+            self.game_time, self.game_time_at = msg["game_time"], time.time()
         entry = self.pending.get(msg.get("rid"))
         if entry:
             entry[1] = msg
@@ -340,7 +360,7 @@ class ProxyLink:
                       timeout=(timeout or 30) + 15)
         if r.get("ok"):
             if r.get("t") is not None:
-                self.game_time = r["t"]
+                self.game_time, self.game_time_at = r["t"], time.time()
             return r.get("result"), r.get("t")
         if r.get("conn"):
             raise requests.ConnectionError(r["conn"])
@@ -461,6 +481,9 @@ def child_main():
     session.budget = 0  # (the run's time is the parent's: it closes play itself, and gives episodes their end)
     session.recorder = RemoteRecorder(link)
     session.reader = RemoteReader(link)
+    from .watch import RemoteLooker
+
+    session.looker = RemoteLooker(link, available=init.get("watch", "no looker in this run"))
     pool = futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="call")
 
     def run_call(msg):

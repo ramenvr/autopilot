@@ -339,6 +339,99 @@ namespace Autopilot.Playtest.Tests
         }
 
         [Test]
+        public void TheBugDetectorsFollowEachMemoryStateAndAFlipIsSent()
+        {
+            // Each memory_state says whether the game's detectors run for the project ("detectors"; none, an older agent
+            // service's, means on); flipping the switch sends {"type": "detectors", "enabled"} and holds the new value
+            // until the answer. Unlike the memory, the last value said is kept when the connection closes (the switch
+            // shows it, greyed), and nothing is sent then
+            var sent = new List<string>();
+            var client = new PlaytestClient(EditorHost.Instance) { TestWire = sent.Add };
+            try
+            {
+                Assert.IsTrue(client.BugDetectors, "on until an agent service says otherwise");
+                client.TestConnected(true);
+                Assert.IsFalse(client.CanSetBugDetectors || client.BugDetectorsFixedOn, "not welcomed yet: neither");
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"d1\", \"features\": [\"steer\", \"detectors\"]}");
+                Assert.IsTrue(client.CanSetBugDetectors && !client.BugDetectorsFixedOn, "its welcome says \"detectors\"");
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
+                Assert.IsFalse(client.BugDetectors);
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false}");
+                Assert.IsTrue(client.BugDetectors, "no \"detectors\": on");
+
+                sent.Clear();
+                client.SetBugDetectors(false);
+                Assert.AreEqual(1, sent.Count);
+                var frame = Json.ParseObject(sent[0]);
+                Assert.AreEqual("detectors", Json.Str(frame, "type"));
+                Assert.IsTrue(frame.ContainsKey("enabled"));
+                Assert.IsFalse(Json.Bool(frame, "enabled", true));
+                Assert.IsFalse(client.BugDetectors, "the new value at once");
+                client.SetBugDetectors(true);
+                Assert.IsTrue(Json.Bool(Json.ParseObject(sent[sent.Count - 1]), "enabled", false));
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
+                Assert.IsFalse(client.BugDetectors, "the answer corrects it");
+
+                client.TestConnected(false);
+                Assert.IsFalse(client.BugDetectors, "kept when the connection closes");
+                sent.Clear();
+                client.SetBugDetectors(true);
+                Assert.IsEmpty(sent, "not connected: nothing sent");
+                Assert.IsFalse(client.BugDetectors, "and nothing changed");
+            }
+            finally
+            {
+                client.Disconnect();
+                client.TestWire = null;
+            }
+        }
+
+        [Test]
+        public void AnOlderAgentServiceCantTurnTheBugDetectorsOff()
+        {
+            // An agent service older than this plugin: its welcome's features don't have "detectors", so it would ignore
+            // the switch's frame and the game's detectors would go on running. They show on (whatever was shown before),
+            // the switch can't be flipped, and flipping it anyway sends nothing, changes nothing and says why
+            var sent = new List<string>();
+            var client = new PlaytestClient(EditorHost.Instance) { TestWire = sent.Add };
+            try
+            {
+                Assert.AreEqual("The agent service in use is older than this plugin and can't turn them off.",
+                    PlaytestClient.BugDetectorsFixedOnWhy);
+                client.TestConnected(true);
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"d1\", \"features\": [\"detectors\"]}");
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
+                Assert.IsFalse(client.BugDetectors, "this agent service: off, as it says");
+                client.TestConnected(false);
+                client.TestConnected(true);
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"d2\", \"features\": [\"steer\", \"steer_mode\", \"usage\", \"account\", \"setup\"]}");
+                Assert.IsTrue(client.BugDetectorsFixedOn && !client.CanSetBugDetectors, "an older one: it can't turn them off");
+                Assert.IsTrue(client.BugDetectors, "on at once, before its memory_state");
+                sent.Clear();
+                client.SetBugDetectors(false);
+                Assert.IsEmpty(sent, "nothing sent");
+                Assert.IsTrue(client.BugDetectors, "still on");
+                Assert.AreEqual(PlaytestClient.BugDetectorsFixedOnWhy, client.LastStatus, "the status line says why");
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false}");
+                Assert.IsTrue(client.BugDetectors, "and on with its memory_state");
+
+                // This agent service again: what it says, and flipped as before
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"d3\", \"features\": [\"detectors\"]}");
+                client.TestReceive("{\"type\": \"memory_state\", \"runs\": 2, \"notes\": false, \"lib\": false, \"detectors\": false}");
+                Assert.IsTrue(client.CanSetBugDetectors && !client.BugDetectorsFixedOn && !client.BugDetectors);
+                sent.Clear();
+                client.SetBugDetectors(true);
+                Assert.AreEqual(1, sent.Count);
+                Assert.IsTrue(client.BugDetectors);
+            }
+            finally
+            {
+                client.Disconnect();
+                client.TestWire = null;
+            }
+        }
+
+        [Test]
         public void ASignInGoesOnAfterTheConnectionComesBack()
         {
             // The agent service keeps a sign-in going when the connection to it closes: the account frame after the next
@@ -390,6 +483,45 @@ namespace Autopilot.Playtest.Tests
                 Connect();
                 client.TestReceive(signedOut);
                 Assert.AreEqual(3, signIns);
+            }
+            finally
+            {
+                client.Disconnect();
+                client.TestWire = null;
+            }
+        }
+
+        [Test]
+        public void UseAnotherAccountAsksForTheAccountAndAgainAfterTheConnectionComesBack()
+        {
+            // "Use another account": the sign-in frame carries another_account (a plain one doesn't), kept through the
+            // waiting frame and on the new connection's sign-in asked again
+            var sent = new List<Dictionary<string, object>>();
+            var client = new PlaytestClient(EditorHost.Instance) { TestWire = s => sent.Add(Json.ParseObject(s)) };
+            void Connect()
+            {
+                client.TestConnected(true);
+                client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"another-test\", \"features\": [\"account\"]}");
+            }
+            List<Dictionary<string, object>> SignIns() => sent.FindAll(f => Json.Str(f, "type") == "aura_sign_in");
+            try
+            {
+                Connect();
+                Assert.IsTrue(client.AskAuraSignIn());
+                Assert.IsFalse(SignIns()[0].ContainsKey("another_account"));
+                Assert.IsFalse(client.SignIn.AnotherAccount);
+                client.CancelAuraSignIn();
+
+                Assert.IsTrue(client.AskAuraSignIn(true));
+                Assert.AreEqual(true, SignIns()[1]["another_account"]);
+                client.TestReceive("{\"type\": \"aura_sign_in\", \"state\": \"waiting\", \"url\": \"https://aura.test/x\"}");
+                Assert.IsTrue(client.SignIn.AnotherAccount, "kept while waiting");
+
+                client.TestConnected(false);
+                Connect();
+                client.TestReceive("{\"type\": \"account\", \"mode\": \"aura\", \"signed_in\": false, \"keys\": {}}");
+                Assert.AreEqual(3, SignIns().Count, "asked again on the new connection");
+                Assert.AreEqual(true, SignIns()[2]["another_account"]);
             }
             finally
             {

@@ -24,6 +24,8 @@ import requests
 
 import autopilot
 
+from .detectors import is_muted
+
 PROTOCOL = 1
 TIMEOUT = 30.0  # seconds to wait for an answer from the game
 DEFERRED_SLACK = 15.0  # extra seconds for requests that answer when they finish (move, watch)
@@ -36,10 +38,15 @@ RESUME_SECONDS = 90.0
 # run (autopilot/cli.py)
 REPEAT_SECONDS = 180
 # What this brain does that a plugin may offer only when told (the welcome's "features"): "steer", the user's
-# words to a run while it plays (a `steer` frame); "usage", the tokens a run uses (`usage` frames); "account", how runs
-# go and the Aura sign-in the plugin may ask for (`account`, `aura_sign_in` frames: autopilot/account.py); "setup", the
-# first-run setup's choices saved for a plugin that can't write Autopilot/'s files itself (`save_setup`: Roblox's)
-BRAIN_FEATURES = ["steer", "usage", "account", "setup"]
+# words to a run while it plays (a `steer` frame); "steer_mode", the frame's "mode": "hint" (the default: a note read
+# with the agent's next tool result while play goes on) or "redirect" (it also ends the episode playing now; a plugin
+# sends "mode" only when this is offered, and a frame without one is a hint); "usage", the tokens a run uses (`usage`
+# frames); "account", how runs go and the Aura sign-in the plugin may ask for (`account`, `aura_sign_in` frames:
+# autopilot/account.py); "setup", the first-run setup's choices saved for a plugin that can't write Autopilot/'s files
+# itself (`save_setup`: Roblox's); "detectors", the Settings' Bug detectors switch (a `detectors` frame sets the
+# project's detectors.json and is answered with a memory_state carrying "detectors": an agent service without it
+# ignores the frame and the game's detectors stay on, so a plugin shows the switch on and greyed then)
+BRAIN_FEATURES = ["steer", "steer_mode", "usage", "account", "setup", "detectors"]
 DEFERRED_OPS = ("move", "watch", "touch")  # (touch: a long press or swipe takes its `seconds`)
 # Ops the brain can't play without, each with arguments that make it answer without changing anything (see
 # Link.missing_ops). A plugin lacking one answers "unknown op": without this check the brain would go on blind
@@ -115,7 +122,12 @@ class Link:
         self.game_time = None  # the latest game time the plugin reported
         self.game_time_at = None  # ... and the wall time (time.time()) it came in
         self.last_heartbeat = None  # wall time of the latest heartbeat
+        self.fps = None  # the game's frame rate, as its latest heartbeat said it
+        self.awake = None  # wincap.Awake: Roblox Studio kept at full frame rate behind other windows
         self.findings = []  # finding dicts from in-engine detectors, in arrival order
+        # Detector names and signatures the project muted (autopilot/detectors.py): their findings are dropped here too,
+        # for a plugin that doesn't drop them itself
+        self.muted = frozenset()
         self.logs = []  # log events (errors and Blueprint warnings), in arrival order
         self.messages = queue.Queue()  # other frames from the plugin: start, stop, feedback
         self.listeners = []  # callables taking each event dict
@@ -311,6 +323,15 @@ class Link:
         self.last_heartbeat = time.time()
         if str(frame.get("engine") or "").lower() != "roblox":
             return
+        if getattr(self, "awake", None) is None:
+            # (Roblox Studio draws 15 frames a second behind another window: kept at full rate while a game plays)
+            try:
+                from . import wincap
+
+                if wincap.awake_enabled():
+                    self.awake = wincap.Awake(self, "Roblox Studio", str(frame.get("project") or "") or None)
+            except Exception as e:  # noqa: BLE001 - the run goes on, slower
+                print(f"note: Studio isn't kept at full frame rate: {type(e).__name__}: {e}", file=sys.stderr)
         if self.media is not None:
             features = frame.setdefault("features", [])
             if isinstance(features, list) and "media" not in features:
@@ -328,8 +349,12 @@ class Link:
         kind = event.get("kind")
         if kind == "heartbeat":
             self.last_heartbeat = time.time()
+            if isinstance(event.get("fps"), (int, float)) and event["fps"] > 0:
+                self.fps = event["fps"]
         elif kind == "finding":
             finding = dict(event.get("finding", {}))
+            if self.muted and is_muted(finding, self.muted):
+                return
             finding.setdefault("t", event.get("t"))
             self.findings.append(finding)
         elif kind == "log":
@@ -645,11 +670,14 @@ def serve_http(host, port, handler, state):
             self._answer(200, "[" + ",".join(texts) + "]")
 
         def do_POST(self):
+            # The body is read first, whatever the answer: a refusal that left it unread would leave it in a connection
+            # kept open (read as the next request) or close one with data still in it (Windows answers that with a
+            # reset the plugin can see before the refusal)
+            n = int(self.headers.get("Content-Length") or 0)
+            body = self.rfile.read(n) if n > 0 else b""
             if self.headers.get("Origin") is not None:
                 return self._answer(403, '{"error": "native plugins only"}')
             path, q = self._parts()
-            n = int(self.headers.get("Content-Length") or 0)
-            body = self.rfile.read(n) if n else b""
             if path == HTTP_PATH + "open":
                 peer = HttpPeer(q.get("path") or "/v1/bridge", self.headers, self.client_address)
                 peers[peer.id] = peer

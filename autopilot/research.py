@@ -262,9 +262,9 @@ def cell(value, key=None):
 
 
 def grep(pattern, where="", root=None, limit=50):
-    """Lines matching a regex across the codex (or its subfolder `where`: "blueprints", "data", "source"), as
-    "path:line: text" (paths from the codex's top, text cut to 200 characters), up to `limit`; the last line says when
-    there were more. Case-sensitive unless the pattern says (?i)."""
+    """Lines matching a regex across the codex (or its subfolder `where`: "blueprints", "data", "source", "script"),
+    as "path:line: text" (paths from the codex's top, lines whole), up to `limit`; the last line says when there
+    were more. Case-sensitive unless the pattern says (?i)."""
     root = _root(root)
     base = os.path.join(root, where) if where else root
     if not os.path.isdir(base):
@@ -284,7 +284,7 @@ def grep(pattern, where="", root=None, limit=50):
                 for i, line in enumerate(f, 1):
                     if rx.search(line):
                         if len(out) < limit:
-                            out.append(f"{_rel(path, root)}:{i}: {line.rstrip()[:200]}")
+                            out.append(f"{_rel(path, root)}:{i}: {line.rstrip()}")
                         else:
                             more += 1
         except OSError:

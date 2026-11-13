@@ -14,6 +14,7 @@ const SettingsPage = preload("res://addons/autopilot/ui/settings_page.gd")
 const Model = preload("res://addons/autopilot/ui/model.gd")
 const W = preload("res://addons/autopilot/ui/widgets.gd")
 const HT = preload("res://addons/autopilot/ui/autopilot_theme.gd")
+const Detectors = preload("res://addons/autopilot/lib/detectors.gd")
 
 var failed := 0
 var passed := 0
@@ -49,8 +50,39 @@ func _init() -> void:
 	alerts_tests(dir)
 	history_tests(dir)
 	look_tests()
+	mute_tests()
 	print("\n%d/%d checks passed" % [passed, passed + failed])
 	quit(0 if failed == 0 else 1)
+
+
+## The detectors' mute (configure's list of detector names and signatures): a muted finding is never sent, nor counted;
+## the list is replaced whole each time, so an emptied one reports it again.
+func mute_tests() -> void:
+	var sent := []
+	var emit := func(e): sent.append(e)
+	var host := Node.new()
+	var d = Detectors.new(host, null, null)
+	d.configure({"mute": ["hitch", " out_of_world:Gate ", 3, ""]})
+	d._finding(emit, 1.0, {"detector": "hitch", "severity": "warning", "summary": "A frame took 1 s", "signature": "hitch"})
+	d._finding(emit, 1.0, {"detector": "out_of_world", "severity": "warning", "summary": "Gate fell", "signature": "out_of_world:Gate"})
+	d._finding(emit, 1.0, {"detector": "out_of_world", "severity": "warning", "summary": "Crate fell", "signature": "out_of_world:Crate"})
+	check("mute: a muted detector's and a muted signature's findings aren't sent, another's is",
+		sent.size() == 1 and sent[0].finding.signature == "out_of_world:Crate" and not d.counts.has("hitch"), sent)
+	d.configure({"hitch_seconds": 2.0})
+	d._finding(emit, 2.0, {"detector": "hitch", "severity": "warning", "summary": "A frame took 2 s", "signature": "hitch"})
+	check("mute: settings without a mute list keep it", sent.size() == 1, sent)
+	d.configure({"mute": []})
+	d._finding(emit, 3.0, {"detector": "hitch", "severity": "warning", "summary": "A frame took 3 s", "signature": "hitch"})
+	check("mute: an emptied list reports it again", sent.size() == 2 and sent[1].finding.signature == "hitch", sent)
+	d.configure({"mute": ["teleport:Player"]})
+	d._finding(emit, 4.0, {"detector": "teleport", "severity": "info", "summary": "Player moved right after R",
+		"signature": "teleport:Player after R"})
+	d._finding(emit, 4.0, {"detector": "teleport", "severity": "info", "summary": "Enemy moved right after R",
+		"signature": "teleport:Enemy after R"})
+	check("mute: a muted kind's teleport right after the agent's key is muted too, another kind's isn't",
+		sent.size() == 3 and sent[2].finding.signature == "teleport:Enemy after R", sent)
+	d.shutdown()
+	host.free()
 
 
 ## A finished run as the dock keeps it (ui/model.gd Run): started at unix, its result, feed and findings.

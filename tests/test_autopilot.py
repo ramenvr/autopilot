@@ -197,6 +197,58 @@ def test_runtime_plays_harness_to_done(game, tmp_path):
     assert "open_crate" in text and "status=done" in text
 
 
+def test_the_harness_says_how_often_the_trace_keeps_its_observation(game, tmp_path):
+    def observations(harness, name):
+        path = tmp_path / name
+        # (4 s: a slow CI runner's loop runs 7 ticks a second where 30 are asked, and 2 s kept under 10 of them)
+        runtime.Runtime(game, harness, str(path), client=FakeJev("wait"), max_seconds=4).run()
+        events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+        start = next(e for e in events if e["kind"] == "start")
+        return start["trace_every"], [e for e in events if e["kind"] == "obs"]
+
+    every, sparse = observations(CrateHarness(), "sparse.jsonl")  # (the default: one a second)
+    dense_harness = CrateHarness()
+    dense_harness.trace_every = 0  # (every observation: each tick's, 30 a second)
+    dense_every, dense = observations(dense_harness, "dense.jsonl")
+    assert every == 1.0 and len(sparse) <= 5
+    assert dense_every == 0 and len(dense) >= 10 and len(dense) > 2 * len(sparse)
+    assert all(b["t"] >= a["t"] for a, b in zip(dense, dense[1:]))
+    for odd, kept in ((None, 1.0), ("x", 1.0), (-1, 1.0), (float("nan"), 1.0), (float("inf"), 1.0), (0.1, 0.1)):
+        assert runtime.trace_every_of(types.SimpleNamespace(trace_every=odd)) == kept
+    assert runtime.trace_every_of(object()) == runtime.TRACE_EVERY
+
+
+def test_a_dense_trace_is_summarized_quickly(tmp_path):
+    # A 10-minute episode with every observation kept at 15 Hz (trace_every = 0): 9000 of them, with its decisions,
+    # options and inputs
+    path = tmp_path / "trace1.jsonl"
+    with open(path, "w", encoding="utf-8") as f:
+        def put(**e):
+            f.write(json.dumps({"wall": 1000.0 + (e.get("t") or 50.0) - 50.0, **e}) + "\n")
+
+        put(kind="start", harness="RaceHarness", goal="Finish the lap", tempo=4.0, tick_hz=15.0, trace_every=0,
+            max_seconds=600)
+        for i in range(9000):
+            t = 50.0 + i / 15
+            put(kind="obs", t=t, facts={"speed": 2000 + i % 7, "gate": {"distance": 300 - i % 300}},
+                status="running", note="", options=["push", "ollie", "grind"], running="push", step=None)
+            if i % 4 == 0:
+                put(kind="input", t=t, key="W", mode="hold", value=None)
+            if i % 8 == 0:
+                put(kind="decision", t=t, latency=0.2, action="push", state={"speed": 2000}, probs={"push": 0.7})
+            if i % 30 == 0:
+                put(kind="option_start", t=t, option="push", p=0.7)
+                put(kind="option_end", t=t + 1.9, option="push", ok=True, effect=True, why="pushed", seconds=1.9)
+        put(kind="end", t=650.0, reason="time", status={"state": "running"}, decisions=1125, options={})
+    started = time.perf_counter()
+    text = runtime.summarize(str(path))
+    took = time.perf_counter() - started
+    assert "Ended: time at t=600.0s" in text and "Jev: 1125 answers" in text
+    situation = text.split("Situation over time")[1].splitlines()
+    assert 115 <= len([line for line in situation if line.strip().startswith("t=")]) <= 125  # (every ~5 s, not each)
+    assert took < 5.0, f"summarize took {took:.1f} s"
+
+
 def test_runtime_reports_harness_errors(game, tmp_path):
     class Broken(CrateHarness):
         def observe(self, game):
@@ -242,6 +294,69 @@ def test_resolve_class_by_codex_and_name(game, tmp_path):
     assert game.named("hero") == ["/Game/M.M:PersistentLevel.Hero_C_0"]
     with pytest.raises(GameError):
         game.resolve_class("Nothing")
+
+
+class ScriptClassLink(FakeLink):
+    """A level with an AngelScript class's actor (ASkateRamp: /Script/Angelscript.SkateRamp, its A dropped as for C++),
+    and two of another plugin's classes no name finds: one actor named after its class, one renamed."""
+
+    LEVEL = "/Game/M.M:PersistentLevel."
+    CLASSES = {"SkateRamp_0": "/Script/Angelscript.SkateRamp", "Grinder_0": "/Script/SkatePlugin.Grinder",
+               "Fence_7": "/Script/SkatePlugin.Rail", "Hero_C_0": "/Game/Hero.Hero_C"}
+
+    def __init__(self):
+        super().__init__()
+        self.asked = []
+
+    def request(self, op, args=None, timeout=None):
+        from autopilot.bridge import BridgeError
+
+        if op == "rc":
+            body = args["body"]
+            obj, fn = body.get("objectPath"), body.get("functionName")
+            if args["verb"] == "describe":
+                if obj == "/Script/Angelscript.SkateRamp":
+                    return {"Name": "SkateRamp", "Class": "/Script/CoreUObject.Class"}
+                if obj.startswith("/Script/"):
+                    raise BridgeError(400, f"Object {obj} does not exist")
+            if fn == "GetAllActorsOfClass":
+                cls = body["parameters"]["ActorClass"]
+                if cls == "/Script/Engine.Actor":
+                    return {"OutActors": [self.LEVEL + a for a in self.CLASSES]}
+                return {"OutActors": [self.LEVEL + a for a, c in self.CLASSES.items() if c == cls]}
+            if fn == "GetObjectClass":
+                actor = body["parameters"]["Object"]
+                self.asked.append(actor.rsplit(".", 1)[-1])
+                return {"ReturnValue": self.CLASSES[actor.rsplit(".", 1)[-1]]}
+        return super().request(op, args, timeout)
+
+
+def test_resolve_class_finds_angelscript_classes():
+    link = ScriptClassLink()
+    game = Game(link)
+    for name in ("ASkateRamp", "SkateRamp"):
+        assert game.resolve_class(name) == "/Script/Angelscript.SkateRamp"
+    assert game.actors("ASkateRamp") == ["/Game/M.M:PersistentLevel.SkateRamp_0"]
+    assert link.asked == []  # (found by its path: no actor asked)
+
+
+def test_resolve_class_falls_back_to_the_level_actors_classes():
+    link = ScriptClassLink()
+    game = Game(link)
+    assert game.resolve_class("AGrinder") == "/Script/SkatePlugin.Grinder"
+    assert link.asked == ["Grinder_0"]  # (the actor named after the class, first)
+    assert game.actors("Grinder") == ["/Game/M.M:PersistentLevel.Grinder_0"]
+    link.asked.clear()
+    assert game.resolve_class("Rail") == "/Script/SkatePlugin.Rail"  # (its actor renamed: one actor of each kind)
+    assert sorted(link.asked) == ["Fence_7", "Grinder_0", "Hero_C_0", "SkateRamp_0"]
+    assert game.resolve_class("hero") == "/Game/Hero.Hero_C"  # (a Blueprint's, without its _C, any case)
+    with pytest.raises(GameError) as e:
+        game.resolve_class("ANothing")
+    assert "no class named ANothing" in str(e.value)
+    assert "/Script/Angelscript.Nothing, /Script/Engine.Nothing, and the classes of the level's actors" in str(e.value)
+    # (from inside a batch of reads too: asked one by one there)
+    game = Game(ScriptClassLink())
+    assert game.batch([lambda: game.resolve_class("Rail")] * 16) == ["/Script/SkatePlugin.Rail"] * 16
 
 
 def test_probe_tool(game, tmp_path, monkeypatch):
@@ -391,7 +506,7 @@ def test_cli_prompt_and_result_frames():
     assert f["changes"][2]["text"] == ('Called /Script/Engine.Default__GameplayStatics.SetGlobalTimeDilation with '
                                        '{"TimeDilation": 0.5}')  # (no name: the path)
     assert writes[0]["why"] == "the wolf blocks Jev's path"  # (the report itself is left as it was)
-    assert len(cli.change_text({"name": "A", "property": "P", "value": "x" * 500})) == 200
+    assert cli.change_text({"name": "A", "property": "P", "value": "x" * 500}) == f'Set A.P to "{"x" * 500}"'  # (whole)
 
 
 def test_a_prompts_kind_is_read_from_its_first_words_when_jev_cant_be_asked():
@@ -491,6 +606,36 @@ def test_findings_reach_the_trace(game, tmp_path):
     assert "no errors logged" not in runtime.summarize(str(tmp_path / "t.jsonl"), error_log=True)
 
 
+def test_summary_groups_a_detectors_many_kinds_and_cuts_none(tmp_path):
+    """One out_of_world per class of actor doesn't push the other detectors out: findings are told by detector, a
+    detector with more than three kinds under one heading, every kind and every detector there, nothing cut; the
+    plugin's own count (its 10th, 100th... time) is the count when it said."""
+    path = tmp_path / "t.jsonl"
+    events = [{"kind": "start", "harness": "h", "goal": "g", "t": 0.0}]
+    for i in range(33):
+        events.append({"kind": "finding", "t": 1.0 + i, "detector": "out_of_world", "severity": "warning",
+                       "signature": f"out_of_world:Prop{i}", "summary": f"Prop{i} is below the world's KillZ (-1000)"})
+    events.append({"kind": "finding", "t": 40.0, "detector": "out_of_world", "severity": "warning",
+                   "signature": "out_of_world:Prop0", "summary": "Prop0 is below the world's KillZ (-1000)",
+                   "count": 10})
+    long = "Skater moved 5000 units in one frame (at most 1000 expected) right after the agent pressed R " + "x" * 300
+    events.append({"kind": "finding", "t": 41.0, "detector": "teleport", "severity": "info",
+                   "signature": "teleport:Skater after R", "summary": long})
+    for i in range(20):
+        events.append({"kind": "finding", "t": 42.0, "detector": f"det{i}", "severity": "warning",
+                       "signature": f"det{i}:x", "summary": f"detector {i} saw something"})
+    events.append({"kind": "game_log", "t": 43.0, "verbosity": "Error", "category": "LogScript",
+                   "message": "Accessed None " + "y" * 400})
+    path.write_text("\n".join(json.dumps(e) for e in events) + "\n", encoding="utf-8")
+    text = runtime.summarize(str(path))
+    assert "  out_of_world: 33 kinds, x42" in text
+    assert "    x10 t=" in text and "Prop0 is below" in text
+    assert all(f"Prop{i} is below" in text for i in range(33))
+    assert all(f"detector {i} saw something" in text for i in range(20))
+    assert long in text and "y" * 400 in text
+    assert text.index("out_of_world: 33 kinds") < text.index("Prop5 is below")
+
+
 def test_summary_says_when_no_errors_were_logged(game, tmp_path):
     rt = runtime.Runtime(game, CrateHarness(), str(tmp_path / "t.jsonl"), client=FakeJev("open_crate"),
                          max_seconds=20)
@@ -511,6 +656,18 @@ def test_live_link_follows_reconnects():
     assert live.name == "a"
     state["current"] = b  # the plugin reconnected
     assert live.name == "b"
+
+
+def test_sessions_opened_without_a_run_id_get_folders_of_their_own(game, tmp_path, monkeypatch):
+    from autopilot import codex, memory
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    real = memory.new_run
+    monkeypatch.setattr(memory, "new_run", lambda folder, now=None: real(folder, 1794302662.0))  # (one second)
+    ids = [session.open_session(game, "fake", "Verify that X", timeout=60).run_id for _ in range(2)]
+    assert len(set(ids)) == 2 and ids[1] == ids[0] + "-2"
+    assert all((tmp_path / "fake" / "runs" / i).is_dir() for i in ids)
 
 
 def test_report_needs_an_episode(game, tmp_path, monkeypatch):
@@ -785,12 +942,44 @@ def test_codex_paths_never_leave_the_codex():
     from autopilot.engines.unreal import codex_path
 
     assert codex_path("Source/Game/Door.cpp") == "source/Game/Door.cpp"
+    assert codex_path("Script/Doors/Door.as") == "script/Doors/Door.as"
     assert codex_path("Config/DefaultInput.ini") == "config/DefaultInput.ini"
     assert codex_path("Saved/AutopilotCodex/blueprints/BP_Door.txt") == "blueprints/BP_Door.txt"
     assert codex_path("Game.uproject") == "Game.uproject"
     for bad in ("../x.cpp", "Source/../../x", "/etc/passwd", "C:/Windows/win.ini", "Source\\x.cpp",
-                "Saved/Logs/game.log", "Config/sub/x.ini", ".env", "", None):
+                "Saved/Logs/game.log", "Config/sub/x.ini", ".env", "", None, "Script/../x.as",
+                "Script/PrecompiledScript.Cache",
+                "Script/.vscode/angelscript/unreal-cache.json"):
         assert codex_path(bad) is None, bad
+
+
+def test_angelscript_comes_into_the_codex(tmp_path):
+    from autopilot import codex
+    from autopilot.engines.unreal import copy_source, write_index
+
+    project = tmp_path / "game"
+    (project / "Script" / "Doors").mkdir(parents=True)
+    (project / "Script" / "Doors" / "Door.as").write_text(
+        "UCLASS()\nclass ADoor : AActor\n{\n}\n\nstruct FDoorState\n{\n}\n", encoding="utf-8")
+    (project / "Script" / "Loose.as").write_text("void Open() {}\n", encoding="utf-8")
+    (project / "Script" / "PrecompiledScript.Cache").write_text("no", encoding="utf-8")
+    (project / "Game.uproject").write_text("{}", encoding="utf-8")
+    root = tmp_path / "codex"
+    root.mkdir()
+    assert copy_source(str(project / "Game.uproject"), str(root)) == 2
+    assert sorted(p.relative_to(root).as_posix() for p in (root / "script").rglob("*") if p.is_file()) == [
+        "script/Doors/Door.as", "script/Loose.as"]
+    assert codex.digest(str(root), "script/Doors/Door.as") == "AngelScript: ADoor, FDoorState"
+    assert codex.digest(str(root), "script/Loose.as") == "void Open() {}"
+    write_index(str(root), "Game")
+    assert "| script/ | AngelScript source (Script/) | 2 |" in (root / "README.md").read_text(encoding="utf-8")
+
+
+def test_a_project_without_angelscript_keeps_its_index(tmp_path):
+    from autopilot.engines.unreal import write_index
+
+    write_index(str(tmp_path), "Game")
+    assert "script/" not in (tmp_path / "README.md").read_text(encoding="utf-8")
 
 
 def test_fetch_from_plugin_reads_only_what_changed(tmp_path):
@@ -1412,9 +1601,12 @@ def test_a_codex_change_named_in_lib_py_stays_listed_until_its_helper_is_edited(
     (root / "codex" / "blueprints" / "BP_Door.txt").write_text("var Locked\nvar NeedsKey", encoding="utf-8")
     assert "- changed: codex/blueprints/BP_Door.txt (named in lib.py)" in run("r2", lib.replace("return 2", "return 3"))
     assert "(named in lib.py; changed before runs/r1, not checked since)" in run("r3")  # (another helper was edited)
-    monkeypatch.setattr(session, "BRIEF_CHANGES", 0)  # (a briefing that can't list it: that run wasn't told)
-    run("r4", lib.replace("E within 150", "E with the key"))
-    monkeypatch.setattr(session, "BRIEF_CHANGES", 30)
+    monkeypatch.setattr(session, "BRIEF_LIST", 0)  # (a briefing that can't list it here: that run wasn't told)
+    told = run("r4", lib.replace("E within 150", "E with the key"))
+    assert "(1 changes to the codex since that run, one a line, whole in runs/r4/whole/codex_changes-1.txt: read " \
+           "them there)" in told
+    monkeypatch.undo()
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
     assert "not checked since" in run("r5", lib.replace("E within 150", "E with the key (checked in runs/r5)"))
     assert "Unchanged" in run("r6")
 
@@ -1828,7 +2020,7 @@ def test_wait_counts_real_time_while_the_game_clock_stands_still():
     assert game.t - g0 >= 0.95 and time.monotonic() - t0 < 1.6, (game.t - g0, time.monotonic() - t0)
 
 
-def test_steering_ends_the_episode_and_play_goes_on_without_a_restart(game, tmp_path, monkeypatch):
+def _crate_session(game, tmp_path, monkeypatch):
     from autopilot import codex
     from autopilot.agents import session
 
@@ -1838,20 +2030,80 @@ def test_steering_ends_the_episode_and_play_goes_on_without_a_restart(game, tmp_
     (tmp_path / "fake" / "runs" / "r1" / "harness.py").write_text(
         "from autopilot.kit import *\n\n" + src[src.index("class CrateHarness"):src.index("@pytest.fixture")],
         encoding="utf-8")
-    threading.Timer(1.0, lambda: s.steering.add("go and open the crate now")).start()
+    return s
+
+
+def test_a_redirect_ends_the_episode_and_the_agent_still_decides_on_restarts(game, tmp_path, monkeypatch):
+    s = _crate_session(game, tmp_path, monkeypatch)
+    threading.Timer(1.0, lambda: s.steering.add("go and open the crate now", "redirect")).start()
     t0 = time.monotonic()
     out = s.run_harness(30)
-    assert time.monotonic() - t0 < 6, "the episode didn't end when the user steered"
-    assert "the user steered" in out
+    assert time.monotonic() - t0 < 6, "the episode didn't end when the user redirected"
+    assert "the user redirected" in out
     note = s.steer_note()
-    assert "go and open the crate now" in note and s.steered and not s.steering.pending()
+    assert "go and open the crate now" in note and "stopped the episode to redirect" in note
+    assert "prefer run_harness restart=False" in note and s.steered and not s.steering.pending()
     sessions = []
     real = game.link.request
     monkeypatch.setattr(game.link, "request", lambda op, args=None, timeout=None: (
         sessions.append(args) if op == "session" else None) or real(op, args, timeout))
-    out = s.run_harness(5, restart=True)
-    assert "Not restarted" in out and not sessions  # (the game went on from where it was)
-    assert s.restart_level().startswith("Not restarted") and not sessions
+    out = s.run_harness(5, restart=False)  # (on from where the game was, as the note suggests)
+    assert "Not restarted" not in out and not [a for a in sessions if a.get("action") == "restart"]
+    out = s.run_harness(5, restart=True)  # (the agent may still restart: a steer no longer locks it)
+    assert "Not restarted" not in out and [a for a in sessions if a.get("action") == "restart"]
+    assert s.restart_level().startswith("Restarted")
+
+
+def test_a_hint_lets_the_episode_play_on_and_reaches_the_agent_after_it(game, tmp_path, monkeypatch):
+    s = _crate_session(game, tmp_path, monkeypatch)
+    threading.Timer(1.0, lambda: s.steering.add("the crate opens with E")).start()  # (no mode: a hint)
+    t0 = time.monotonic()
+    out = s.run_harness(4)
+    assert time.monotonic() - t0 >= 3.5, "a hint ended the episode"
+    assert "the user redirected" not in out and s.steering.pending()  # (kept for the next tool result)
+    note = s.steer_note()
+    assert '"the crate opens with E"' in note and "adds a hint (play went on)" in note
+    assert "prefer run_harness restart=False" in note and not s.steering.pending()
+
+
+def test_steering_keeps_each_words_mode_and_an_unknown_mode_is_a_hint():
+    from autopilot.agents.session import Steering
+
+    st = Steering()
+    assert not st.add("   ") and not st.pending()
+    st.add("look left", "sideways")  # (an unknown mode: a hint)
+    assert st.pending() and not st.redirecting()
+    st.add("x" * 5000, "redirect")  # (kept whole)
+    assert st.redirecting()
+    assert st.take() == [("look left", "hint"), ("x" * 5000, "redirect")] and not st.pending()
+
+
+def test_a_redirect_with_hints_quotes_each_as_what_it_was(game, tmp_path, monkeypatch):
+    s = _crate_session(game, tmp_path, monkeypatch)
+    s.steering.add("the key is under the mat")
+    s.steering.add("forget the crate, open the door", "redirect")
+    note = s.steer_note()
+    assert '"the key is under the mat" (a hint)' in note and '"forget the crate, open the door"\n' in note
+    assert "stopped the episode to redirect" in note
+
+
+def test_the_sandbox_watch_ends_the_episode_only_for_a_redirect(game, tmp_path, monkeypatch):
+    from autopilot.agents import session
+
+    s = _crate_session(game, tmp_path, monkeypatch)
+    ended = []
+    s.sandbox = types.SimpleNamespace(end_episode=lambda: ended.append(1))
+    done = session.watch_steering(s)
+    try:
+        s.steering.add("try jumping")
+        time.sleep(0.6)
+        assert not ended  # (a hint: the episode plays on)
+        s.steering.add("stop, go back to the start", "redirect")
+        time.sleep(0.6)
+        assert ended
+    finally:
+        done.set()
+        s.sandbox = None
 
 
 def test_an_exploration_plays_only_its_minutes_then_its_run_ends(game, tmp_path, monkeypatch):
@@ -1919,6 +2171,28 @@ def test_what_the_user_reads_says_the_agent_not_jev():
     assert frame["notes"] == ["The agent did it.", "The agent opened it"]
     frame = cli.result_frame({"outcome": "CONFIRMED", "summary": "Shown by Jev.", "evidence": []}, "Verify that X")
     assert frame["reason"] == "Shown by the agent."
+
+
+def test_a_report_is_kept_in_the_plugins_words_wherever_it_is_read(game, tmp_path, monkeypatch):
+    """The agent's report says "the agent", never Jev, before anything reads it: report.json (and so `autopilot play`'s
+    output, a regression, a later run's briefing), not only the plugin's result frame."""
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    s = session.Session(game, "fake", "Verify that X", "r1")
+    s.episodes, s.most_decisions = 1, 7
+    assert "Reported" in s.do_report({
+        "outcome": "CONFIRMED",
+        "summary": "Jev chose each option itself (7 Jev decisions; Jev's choices were its own).",
+        "evidence": ["Jev hit the tree at t=3.6"], "findings": ["Jev-played episode 1"], "episode": 1})
+    want = {"summary": "The agent chose each option itself (7 decisions; the agent's choices were its own).",
+            "evidence": ["The agent hit the tree at t=3.6"], "findings": ["agent-played episode 1"]}
+    assert {k: s.report[k] for k in want} == want
+    report = session.finish(s, time.time(), None, "done")
+    assert {k: report[k] for k in want} == want
+    saved = json.loads((tmp_path / "fake" / "runs" / "r1" / "report.json").read_text(encoding="utf-8"))
+    assert {k: saved[k] for k in want} == want and saved["outcome"] == "CONFIRMED"
 
 
 def test_jev_client_asks_for_an_exact_version(monkeypatch):
@@ -1995,3 +2269,103 @@ def test_a_roblox_games_network_note_says_the_reads_go_to_the_server(tmp_path, m
     # (the other engines' wording is unchanged)
     assert "another process" in session.network_note({"mode": "client", "server_world": ""})
     assert "listen server" in session.network_note({"mode": "listen_server", "rc_side": "server"})
+
+
+def test_an_unreal_editors_players_are_told_how_to_drive_them():
+    """Unreal's multiplayer Play In Editor (context `net` with `players` above 1): the note says how many players the
+    editor plays, that game.player(n) drives player n, that the others stand idle, and that their number is the
+    user's; one player gets no such line."""
+    from autopilot.agents import session
+
+    host = session.network_note({"mode": "listen_server", "players": 2, "player": 1})
+    assert "listen server" in host and "plays 2 players" in host and "game.player(n)" in host
+    assert "stands idle" in host and "restart(players=N) can't change it" in host and "player 1's only" in host
+    client = session.network_note({"mode": "client", "server_world": "/Game/UEDPIE_0_Map.Map", "clients": 2,
+                                   "players": 2})
+    assert "dedicated server" in client and "plays 2 players" in client and "Play settings" in client
+    for net in ({"mode": "listen_server"}, {"mode": "listen_server", "players": 1},
+                {"mode": "client", "server_world": ""}):
+        assert "game.player(n)" not in session.network_note(net)
+
+
+class PlayersFeatureLink:
+    """A game whose plugin's hello says (or doesn't say) "players"."""
+
+    def __init__(self, features):
+        self.hello = {"project": "fake", "engine": "unreal", "features": list(features)}
+        self.sent = []
+        self.game_time = 1.0
+
+    def request(self, op, args=None, timeout=None):
+        self.sent.append((op, dict(args or {})))
+        if op == "context":
+            n = (args or {}).get("player", 1)
+            return {"character": f"/Game/UEDPIE_{n - 1}_Map.Map:PersistentLevel.Hero_C_{n}", "you": n,
+                    "players": [{"player": 1, "you": n == 1}, {"player": 2, "you": n == 2}]}
+        return {}
+
+    def post(self, op, args=None):
+        self.sent.append((op, dict(args or {})))
+
+
+def test_another_player_needs_a_plugin_that_plays_several():
+    """game.player(n > 1), game.players() and restart(players=N > 1) on a game whose plugin doesn't say "players"
+    (Unity's, Godot's, an older Unreal plugin): a GameError, not player 1 played for player 2 (the plugin would never
+    read the request's "player"). Player 1 is the game itself either way."""
+    link = PlayersFeatureLink(["timed_hold", "levels", "pointer"])
+    game = Game(link)
+    assert game.player(1) is game
+    for call in (lambda: game.player(2), game.players, lambda: game.restart(players=2)):
+        with pytest.raises(GameError, match="one player only"):
+            call()
+    assert not [op for op, _ in link.sent if op == "session"]  # (refused before anything changed)
+
+
+def test_another_players_requests_say_whose_they_are():
+    """With "players" (Unreal's multiplayer Play In Editor): every request and post of game.player(2) carries
+    "player": 2, game's own none, and its context is player 2's."""
+    link = PlayersFeatureLink(["timed_hold", "levels", "pointer", "players"])
+    game = Game(link)
+    two = game.player(2)
+    assert two.pawn.endswith("Hero_C_2") and game.pawn.endswith("Hero_C_1")
+    assert [p["player"] for p in game.players()] == [1, 2]
+    link.sent.clear()
+    two.press("W")
+    two.view()
+    two.screen()
+    game.press("E")
+    sent = [(op, a.get("player")) for op, a in link.sent]
+    assert ("key", 2) in sent and ("view", 2) in sent and ("screen", 2) in sent and ("key", None) in sent
+
+
+def test_a_harness_may_log_its_own_kind_and_wall_fields(tmp_path):
+    from autopilot.runtime import Trace
+
+    trace = Trace(str(tmp_path / "trace1.jsonl"))
+    trace("swing_result", kind="heavy", wall=3, t=1.5, hit=True)
+    trace("plain", t=2)
+    trace.close()
+    first, second = [json.loads(line) for line in (tmp_path / "trace1.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert first["kind"] == "swing_result" and first["kind_"] == "heavy" and first["wall_"] == 3
+    assert first["t"] == 1.5 and first["hit"] is True and isinstance(first["wall"], float)
+    assert second == {"kind": "plain", "wall": second["wall"], "t": 2}
+
+
+def test_a_harness_may_name_the_events_kind_by_name(tmp_path):
+    """game.log(kind="hit", t=...) with no kind first: the kind is that one (a model writes it so as often as not)."""
+    from autopilot.runtime import Trace
+
+    trace = Trace(str(tmp_path / "trace1.jsonl"))
+    trace(kind="tree_swing", t=3.6, health=4)
+    with pytest.raises(TypeError, match="needs the event's kind first"):
+        trace(t=1)
+    with pytest.raises(TypeError, match="not 2 values"):
+        trace("a", "b")
+    trace.close()
+    lines = (tmp_path / "trace1.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line) for line in lines] == [{"kind": "tree_swing", "wall": json.loads(lines[0])["wall"],
+                                                     "t": 3.6, "health": 4}]
+    # (a Game without a trace takes the same calls)
+    silent = Game(types.SimpleNamespace(), engine=types.SimpleNamespace(keys={}))
+    silent.log("x", kind="y")
+    silent.log(kind="y", t=1)

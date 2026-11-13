@@ -342,6 +342,7 @@ namespace Autopilot.Playtest.Tests
         public void TearDown()
         {
             CodexExport.Stop();
+            if (File.Exists(OwnPrefab)) AssetDatabase.DeleteAsset(OwnPrefab);  // (TheIndexIsWrittenInStepsWithItsCount's)
             try
             {
                 Directory.Delete(dir, true);
@@ -352,9 +353,17 @@ namespace Autopilot.Playtest.Tests
             }
         }
 
+        /// <summary>A prefab of the test's own, so the export has an asset to count in any project (the tests may run in
+        /// an empty one: then it counts only its two steps, the input and the build list with the scripts).</summary>
+        const string OwnPrefab = "Assets/AutopilotIndexingTest.prefab";
+
         [UnityTest]
         public IEnumerator TheIndexIsWrittenInStepsWithItsCount()
         {
+            var made = new GameObject("AutopilotIndexingTest");
+            PrefabUtility.SaveAsPrefabAsset(made, OwnPrefab, out var saved);
+            UnityEngine.Object.DestroyImmediate(made);
+            Assert.IsTrue(saved, "the test's prefab saved");
             CodexExport.Job ended = null;
             var counts = new List<(int, int)>();
             var job = CodexExport.Start(dir, j => ended = j);
@@ -369,7 +378,7 @@ namespace Autopilot.Playtest.Tests
             Assert.IsNull(ended.Error);
             Assert.IsTrue(File.Exists(Path.Combine(dir, "summary.txt")));
             Assert.AreEqual(ended.Total, ended.Done, "every file counted");
-            Assert.Greater(ended.Total, 2);
+            Assert.Greater(ended.Total, 2, "the assets counted too (the test's own prefab at least)");
             Assert.IsTrue(counts.Count > 0 && counts.All(c => c.Item1 <= c.Item2 || c.Item2 == 0), string.Join(" ", counts));
             Assert.IsNull(CodexExport.Running);
             Assert.IsFalse(CodexExport.Progress(out _, out _));

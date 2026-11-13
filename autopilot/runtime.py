@@ -7,6 +7,7 @@ import importlib.util
 import inspect
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -38,7 +39,7 @@ WARM_EVERY = 15.0  # seconds Jev may be idle before a keep-warm call
 WARM_POLL = 1.0
 WARM_TIMEOUT = 5.0  # (a server waking takes over a second: longer than a decision may wait)
 MAX_CONSECUTIVE_ERRORS = 25
-OBS_TRACE_EVERY = 1.0  # seconds of game time between observations written to the trace
+TRACE_EVERY = 1.0  # seconds of game time between observations written to the trace (a harness's trace_every)
 STEP_SAMPLES = 4000  # executor step times kept per option (for the summary's median and p90)
 SLOW_WAITS = 3.0  # an option whose steps wait on the game this many times on average is flagged in the summary
 # seconds after the first observation by which a game held paused runs again, an option started or not
@@ -128,6 +129,10 @@ def jsonable(x, depth=0):
     return str(x)
 
 
+# The keys every trace event has: a logged field of the same name is kept as <name>_
+RESERVED = ("kind", "wall")
+
+
 class Trace:
     def __init__(self, path):
         self.path = path
@@ -136,8 +141,22 @@ class Trace:
         self.events = []
         self.lock = threading.Lock()  # (observe runs in its own thread, beside the executor)
 
-    def __call__(self, kind, **fields):
-        e = {"kind": kind, "wall": round(time.time(), 3), **jsonable(fields)}
+    def __call__(self, *kind, **fields):
+        # The event's kind comes first, so a harness's game.log("swing", kind="heavy") keeps its own field "kind": a
+        # field named like an event key (kind, wall) is kept beside it with a _ after its name. Without one,
+        # game.log(kind="swing", t=...) names the event's kind by name
+        if len(kind) > 1:
+            raise TypeError(f"game.log takes the event's kind, then its fields by name (game.log(\"hit\", t=game.t, "
+                            f"damage=3)), not {len(kind)} values")
+        if kind:
+            kind = kind[0]
+        elif "kind" in fields:
+            kind = fields.pop("kind")
+        else:
+            raise TypeError("game.log needs the event's kind first: game.log(\"hit\", t=game.t, damage=3)")
+        fields = jsonable(fields)
+        e = {"kind": kind, "wall": round(time.time(), 3)}
+        e.update({(k + "_" if k in RESERVED else k): v for k, v in fields.items()})
         with self.lock:
             self.events.append(e)
             if not self.f.closed:
@@ -147,6 +166,16 @@ class Trace:
     def close(self):
         with self.lock:
             self.f.close()
+
+
+def trace_every_of(harness):
+    """The harness's trace_every: seconds of game time between the observations written to the trace (0: every
+    observation, each tick's), TRACE_EVERY when it isn't a number of 0 or more."""
+    try:
+        every = float(getattr(harness, "trace_every", TRACE_EVERY))
+    except (TypeError, ValueError):
+        return TRACE_EVERY
+    return every if every >= 0 and every != float("inf") else TRACE_EVERY
 
 
 class Running:
@@ -160,9 +189,16 @@ STILL_GAP = 2.0  # seconds between two stills of findings, at least
 
 class Runtime:
     def __init__(self, game, harness, trace_path, client=None, max_seconds=120.0, say=None, stop=None, resume=None,
-                 telemetry=None, progress=None):
+                 telemetry=None, progress=None, looker=None):
         self.game, self.h = game, harness
         self.trace = Trace(trace_path)
+        # Looking while playing (autopilot/watch.py): a model sees the last seconds of frames now and then and after
+        # a death, a failed option or a stall, and answers the harness's and the default questions; the deaths are
+        # reviewed at the end. looker: a watch.Looker (or the sandbox's RemoteLooker); None: no looks
+        self.looker = looker if (os.environ.get("AUTOPILOT_WATCH") or "1").strip() != "0" else None
+        self.watcher = None
+        self.deaths = 0
+        self.last_obs = None
         # The run's telemetry folder when its data is shared (autopilot/telemetry.py): each decision is kept whole
         # there, decisions<n>.jsonl beside trace<n>.jsonl, and stills of the game are taken (autopilot/media.py)
         self.telemetry = telemetry
@@ -272,8 +308,8 @@ class Runtime:
                 r, latency = fut.result()
             except Exception as e:
                 self.errors[f"jev: {type(e).__name__}"] += 1
-                self.trace("jev_error", error=f"{type(e).__name__}: {e}"[:300], t=self.game.t, call=item[5]["call"])
-                self.keep_call(item, error=f"{type(e).__name__}: {e}"[:1000])
+                self.trace("jev_error", error=f"{type(e).__name__}: {e}", t=self.game.t, call=item[5]["call"])
+                self.keep_call(item, error=f"{type(e).__name__}: {e}")
                 continue
             pick = r.choices.get("pick")
             probs = dict(getattr(pick, "probabilities", None) or {}) if pick else {}
@@ -404,6 +440,8 @@ class Runtime:
         self.stall_tried[option.name][how] += 1
         if worked:
             self.progressed(after)
+        elif worked is False and self.watcher is not None and t_end - t0 >= 0.5:
+            self.watcher.event("fail", t=t_end, option=option.name, why=str(why)[:120])
         self.trace("option_end", t=t_end, option=option.name, seconds=round(t_end - t0, 2), ok=ok,
                    why=why, effect=effect, data=data)
         self.recent.append({"option": option.name, "seconds": round(t_end - t0, 1), "worked": worked,
@@ -423,11 +461,11 @@ class Runtime:
         except StopIteration as stop:
             res = stop.value
             ok = bool(res) if res is not None else True
-            why = getattr(res, "why", None) or ("done" if res is None else str(res)[:120])
+            why = getattr(res, "why", None) or ("done" if res is None else str(res))
             data = getattr(res, "data", None)
         except Exception as e:
             self.error(f"option {r.option.name}", e)
-            ok, why, data = False, f"error: {type(e).__name__}: {e}"[:200], None
+            ok, why, data = False, f"error: {type(e).__name__}: {e}", None
         self.running = None
         self.game.release_all()
         # Whether it worked is judged on the first observation begun after it ended (observe runs on its own: the
@@ -588,24 +626,39 @@ class Runtime:
         key = f"{where}: {type(e).__name__}: {str(e)[:120]}"
         self.errors[key] += 1
         if self.errors[key] <= 3:
-            self.trace("error", t=self.game.t, where=where, error=f"{type(e).__name__}: {e}"[:500],
-                       traceback=traceback.format_exc(limit=6)[-1500:])
+            self.trace("error", t=self.game.t, where=where, error=f"{type(e).__name__}: {e}",
+                       traceback=traceback.format_exc(limit=6))
+
+    def death(self, how, t=None):
+        """The player died (or was sent back): noted in the trace, and the picture of the seconds before it is
+        looked at now and described at the episode's end (autopilot/watch.py)."""
+        t = self.game.t if t is None else t
+        self.deaths += 1
+        self.trace("death", t=t, how=how, n=self.deaths)
+        if self.watcher is not None:
+            self.watcher.event("death", t=t, how=how)
 
     def on_event(self, event):
         """The plugin's events during the episode: its detectors' findings and the engine's error log lines go to the
-        trace (what looked wrong in the game, for verification and exploration)."""
+        trace (what looked wrong in the game, for verification and exploration); a new character (the player's
+        respawned: Roblox's plugin says so) a while into the episode is a death."""
         kind = event.get("kind")
+        if kind == "character":
+            if self.t_start is not None and (self.game.t - self.t_start) > 3.0:
+                self.death("the character respawned", t=event.get("t"))
+            return
         if kind == "finding":
             f = event.get("finding") or {}
             self.trace("finding", t=event.get("t"), detector=f.get("detector"), severity=f.get("severity"),
-                       summary=f.get("summary"), actor=f.get("actor"), signature=f.get("signature"))
+                       summary=f.get("summary"), actor=f.get("actor"), signature=f.get("signature"),
+                       count=f.get("count"))
             key, now = f.get("signature") or f.get("summary"), time.time()
             if key not in self.stills_at and now - self.last_still >= STILL_GAP:
                 self.stills_at[key], self.last_still = now, now
                 self.still("finding", signature=key, detector=f.get("detector"), summary=f.get("summary"))
         elif kind == "log":
             self.trace("game_log", t=event.get("t"), verbosity=event.get("verbosity"), category=event.get("category"),
-                       message=str(event.get("message"))[:300])
+                       message=str(event.get("message")))
 
     def run(self):
         g = self.game
@@ -629,8 +682,9 @@ class Runtime:
 
     def _run(self):
         g, h = self.game, self.h
+        trace_every = trace_every_of(h)
         self.trace("start", harness=type(h).__name__, goal=h.goal, tempo=h.tempo, tick_hz=h.tick_hz,
-                   max_seconds=self.max_seconds)
+                   trace_every=trace_every, max_seconds=self.max_seconds)
         self.still("episode_start")
         end = {"reason": "", "status": None}
         try:
@@ -655,6 +709,12 @@ class Runtime:
                        steps=[{"name": s.name, "what": s.description, "options": s.options} for s in self.plan])
         t_start, wall_start = g.t, time.monotonic()
         self.t_start, self.wall_start = t_start, wall_start
+        if self.looker is not None and self.looker.available() is None:
+            from .watch import Watcher
+
+            self.watcher = Watcher(self.looker, h, g, self.trace)
+        elif self.looker is not None:
+            self.trace("watch_off", t=g.t, why=self.looker.available())
         first_obs = None  # (when the first observation came in: wall clock)
         tick = 1.0 / max(1.0, h.tick_hz)
         consecutive = 0
@@ -713,9 +773,10 @@ class Runtime:
                     self.plan_update(obs)
                     opts = self.plan_offer(opts)
                     names = [o.name for o in opts]
+                    self.noticed(obs, status)
                     if g.t - self.response["t"] >= RESPONSE_EVERY:
                         self.watch_response()
-                    if g.t - last_obs_trace >= OBS_TRACE_EVERY:
+                    if not trace_every or g.t - last_obs_trace >= trace_every:
                         last_obs_trace = g.t
                         step = self.current_step()
                         self.trace("obs", t=g.t, facts=h.facts(obs), status=status.state, note=status.note,
@@ -749,6 +810,8 @@ class Runtime:
                                             tried={k: v for k, v in tried.items() if v})
                     self.trace("stalled", t=g.t,
                                **{("cause" if k == "kind" else k): v for k, v in self.stalled.items()})
+                    if self.watcher is not None:
+                        self.watcher.event("stall", t=g.t, step=self.stalled.get("step"))
                     end["reason"] = "stalled"
                     break
                 if self.ending and not self.running:
@@ -804,8 +867,28 @@ class Runtime:
                 if spent < tick:
                     time.sleep(tick - spent)
         finally:
+            self.loop_seconds = time.monotonic() - wall_start  # (the ticks' time: what ran_hz is counted over)
             observer.shutdown(wait=True)  # (an observe in flight ends before teardown)
         return self.finish(end, status, obs)
+
+    def noticed(self, obs, status):
+        """Every observation: a death since the one before (Harness.died, or a failed status that says the player
+        died) is noted, and the watcher gets the facts and its periodic look."""
+        h = self.h
+        try:
+            if self.last_obs is not None and isinstance(obs, dict) and h.died(self.last_obs, obs):
+                self.death("a death count went up (Harness.died)")
+            elif status.state == "failed" and re.search(r"\b(died|dead|death|killed)\b", status.note or "", re.I):
+                self.death(f"status failed: {status.note}"[:160])
+        except Exception as e:
+            self.error("died", e)
+        self.last_obs = obs if isinstance(obs, dict) else None
+        if self.watcher is not None:
+            try:
+                facts = jsonable(h.facts(obs))
+            except Exception:
+                facts = None
+            self.watcher.observed(obs, facts, self.game.t)
 
     def idle_step(self, obs):
         try:
@@ -831,16 +914,30 @@ class Runtime:
             self.h.teardown(self.game)
         except Exception as e:
             self.error("teardown", e)
+        looks, reviews = 0, []
+        if self.watcher is not None:
+            # (a look due for what just happened, then the episode's deaths reviewed: the summary carries them)
+            try:
+                self.watcher.drain(4.0)
+                self.watcher.stop()
+                reviews = self.watcher.review()
+                looks = self.watcher.looks
+            except Exception as e:
+                self.error("watch", e)
         result = {
             "reason": end["reason"],
             "status": jsonable(status) if status else None,
             "seconds": None,
             "decisions": self.decisions,
+            "deaths": self.deaths,
+            "looks": looks,
+            "reviews": reviews,
             "options": {k: dict(v) for k, v in self.stats.items()},
             "errors": dict(self.errors),
             "steps": self.step_report(),
             "ticks": {"asked_hz": self.h.tick_hz,
-                      "ran_hz": round(self.ticks / max(1e-3, time.monotonic() - self.wall_start), 1)
+                      "ran_hz": round(self.ticks / max(1e-3, getattr(self, "loop_seconds", None)
+                                                       or (time.monotonic() - self.wall_start)), 1)
                       if self.wall_start else None},
             "writes": self.game.writes,
             "last_facts": jsonable(self.h.facts(obs)) if obs is not None else None,
@@ -975,7 +1072,7 @@ def check(game, harness, seconds=CHECK_SECONDS, restart=True, only=None):
     out.append(f"First observation: status={status.state}{f' ({status.note})' if status.note else ''}")
     if status.over:
         out.append("  THE EPISODE WOULD END AT ONCE: status is not running at the start.")
-    out.append("  facts: " + json.dumps(facts_of(obs), default=str)[:1500])
+    out.append("  facts: " + json.dumps(facts_of(obs), default=str))
     out.append(f"  options legal now: {[o.name for o in opts]}"
                + ("" if len(opts) >= 2 else "  (fewer than 2: Jev has nothing to choose between here)"))
     if plan:
@@ -1033,12 +1130,12 @@ def check(game, harness, seconds=CHECK_SECONDS, restart=True, only=None):
         changed = {k: [f0.get(k), f1.get(k)] for k in set(f0) | set(f1)
                    if isinstance(f0, dict) and isinstance(f1, dict) and f0.get(k) != f1.get(k)}
         how = ("error" if error else "ok" if (result is None or bool(result)) else "failed")
-        why = getattr(result, "why", None) or ("" if result is None else str(result)[:160])
+        why = getattr(result, "why", None) or ("" if result is None else str(result))
         out.append(f"\n{name}: {how} in {game.t - t0:.1f} s game time{f': {why}' if why else ''}; "
                    f"effect={effect}")
         if error:
-            out.append("  " + error.strip().replace("\n", "\n  ")[-1200:])
-        out.append("  facts changed: " + (json.dumps(changed, default=str)[:900] if changed else "(none)"))
+            out.append("  " + error.strip().replace("\n", "\n  "))
+        out.append("  facts changed: " + (json.dumps(changed, default=str) if changed else "(none)"))
         if after is None:
             continue
         if plan and then is not step:
@@ -1059,9 +1156,48 @@ def check(game, harness, seconds=CHECK_SECONDS, restart=True, only=None):
     return "\n".join(out)
 
 
-def summarize(trace_path, max_timeline=50, error_log=False):
-    """The trace in brief, for the implementer: how each option fared, the timeline, decisions, errors, findings.
-    error_log: the game's errors were captured in play (Engine.error_log), so an episode without any says so."""
+FINDING_GROUP_AT = 3  # a detector with more kinds (signatures) than this is told under one heading (as the editors do)
+
+
+def _findings_lines(finds, t_first):
+    """The trace's findings and error log lines, every one of them: by detector (the error log's lines as one), the
+    detector with the most first; in each, by signature, the most first. A detector with more than FINDING_GROUP_AT
+    signatures (one out_of_world per class of actor) gets a heading and its signatures under it. A signature's count is
+    the plugin's own (it sends a finding again at its 10th, 100th... time) when it said, else its lines in the trace."""
+    detectors = {}
+    for e in finds:
+        detector = e.get("detector") or ("error log" if e["kind"] == "game_log" else "other")
+        key = e.get("signature") or e.get("summary") or e.get("message")
+        group = detectors.setdefault(detector, {}).setdefault(key, {"lines": 0, "count": 0, "first": e})
+        group["lines"] += 1
+        if isinstance(e.get("count"), (int, float)):
+            group["count"] = max(group["count"], int(e["count"]))
+
+    def n(group):
+        return group["count"] or group["lines"]
+
+    def line(group, indent):
+        e = group["first"]
+        what = e.get("summary") or f"[{e.get('verbosity')}] {e.get('category')}: {e.get('message')}"
+        return f"{indent}x{n(group)} t={(e.get('t') or 0) - t_first:.1f} {e['kind']}: {what}"
+
+    out = []
+    for detector, groups in sorted(detectors.items(), key=lambda kv: -sum(n(g) for g in kv[1].values())):
+        ordered = sorted(groups.values(), key=lambda g: -n(g))
+        if len(ordered) <= FINDING_GROUP_AT:
+            out += [line(g, "  ") for g in ordered]
+            continue
+        out.append(f"  {detector}: {len(ordered)} kinds, x{sum(n(g) for g in ordered)}")
+        out += [line(g, "    ") for g in ordered]
+    return out
+
+
+def summarize(trace_path, error_log=False):
+    """The trace in brief, for the implementer: how each option fared, decisions, errors, findings, then the timeline
+    and the situation over time. Nothing in it is cut: a summary longer than a tool result holds is delivered from
+    the file it is kept in (agents/whole.py), so the long parts (the timeline, the situation) come last and what fits
+    is what matters most. error_log: the game's errors were captured in play (Engine.error_log), so an episode
+    without any says so."""
     events = []
     with open(trace_path, encoding="utf-8") as f:
         for line in f:
@@ -1079,8 +1215,9 @@ def summarize(trace_path, max_timeline=50, error_log=False):
     if end:
         st = end.get("status") or {}
         out.append(f"Ended: {end.get('reason')} at t={end.get('t', 0) - t_first:.1f}s  status={st.get('state')} "
-                   f"note={st.get('note')!r} evidence={json.dumps(st.get('evidence'))[:400]}")
-        out.append(f"Decisions by Jev: {end.get('decisions')}")
+                   f"note={st.get('note')!r} evidence={json.dumps(st.get('evidence'))}")
+        out.append(f"Decisions by Jev: {end.get('decisions')}"
+                   + (f"; deaths: {end.get('deaths')}" if end.get("deaths") else ""))
     else:
         out.append("Ended: (no end event: the run crashed or is still going)")
     spans, since = [], None
@@ -1152,9 +1289,18 @@ def summarize(trace_path, max_timeline=50, error_log=False):
     whys = defaultdict(Counter)
     for e in events:
         if e["kind"] == "option_end":
-            whys[e["option"]][str(e.get("why"))[:80]] += 1
+            whys[e["option"]][str(e.get("why"))] += 1
     for name, c in whys.items():
-        out.append(f"  {name} ended because: " + "; ".join(f"{w} x{n}" for w, n in c.most_common(4)))
+        out.append(f"  {name} ended because: " + "; ".join(f"{w} x{n}" for w, n in c.most_common()))
+    # what the picture showed: the deaths reviewed, the looks made while it played (autopilot/watch.py)
+    from .watch import picture_summary
+
+    out += picture_summary(events)
+    deaths = [e for e in events if e["kind"] == "death"]
+    if deaths and not any(e["kind"] in ("watch", "review") for e in events):
+        out.append(f"\nDeaths: {len(deaths)} (at t=" + ", ".join(
+            f"{(e.get('t') or 0) - t_first:.1f}" for e in deaths[:12]) + ("..." if len(deaths) > 12 else "")
+            + "; each: " + "; ".join(dict.fromkeys(str(e.get("how")) for e in deaths)) + ")")
     # executor steps: how long they take and how many reads they wait on one after another
     steps = (end or {}).get("steps") or {}
     if steps:
@@ -1176,6 +1322,39 @@ def summarize(trace_path, max_timeline=50, error_log=False):
                        "step comes that much later. Gather a step's reads into one game.batch([...]) (one wait) and "
                        "read only what the step needs. A reaction timed to the game (dodging before a hit lands, "
                        "jumping at an edge) must allow for the step time, which changes with the frame rate.")
+    # decisions
+    dec = [e for e in events if e["kind"] == "decision"]
+    if dec:
+        lat = sorted(d["latency"] for d in dec)
+        acts = Counter(d["action"] for d in dec)
+        out.append(f"\nJev: {len(dec)} answers, latency median {lat[len(lat) // 2]:.2f}s; actions {dict(acts)}")
+        first = dec[0]
+        out.append("First decision Jev saw (state): " + json.dumps(first.get("state")))
+        out.append("Its answer: " + json.dumps(first.get("probs")))
+    jerr = [e for e in events if e["kind"] == "jev_error"]
+    if jerr:
+        out.append(f"Jev errors: {len(jerr)}: " + "; ".join(f"{w} x{n}" for w, n in
+                                                         Counter(str(e.get("error")) for e in jerr).most_common()))
+    errs = [e for e in events if e["kind"] == "error"]
+    if errs:
+        out.append("\nErrors in harness code:")
+        seen = set()
+        for e in errs:
+            k = (e.get("where"), e.get("error"))
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(f"  [{e.get('where')}] {e.get('error')}\n    " + (e.get("traceback") or "").strip().replace(
+                "\n", "\n    "))
+    finds = [e for e in events if e["kind"] in ("finding", "game_log")]
+    if finds:
+        out.append("\nWhat the game's own detectors and error log reported (count, first time):")
+        out += _findings_lines(finds, t_first)
+    if error_log and not any(e["kind"] == "game_log" for e in events):
+        out.append("\nThe game's error log: no errors logged during this episode.")
+    writes = [e for e in events if e["kind"] == "write"]
+    if writes:
+        out.append(f"\nState written directly (not player input): {len(writes)}")
     # timeline
     out.append("\nTimeline (t: option, p, how it ended, seconds):")
     lines = []
@@ -1191,23 +1370,8 @@ def summarize(trace_path, max_timeline=50, error_log=False):
             lines.append(f"  t={(s.get('t') or e.get('t') or 0) - t_first:6.1f} {e['option']}"
                          f"{f' p={p:.2f}' if isinstance(p, (int, float)) else ''} -> "
                          f"{ended}"
-                         f" ({str(e.get('why'))[:70]}) {e.get('seconds')}s")
-    if len(lines) > max_timeline:
-        lines = (lines[: max_timeline // 2] + [f"  ... {len(lines) - max_timeline} more ..."]
-                 + lines[-max_timeline // 2:])
+                         f" ({e.get('why')}) {e.get('seconds')}s")
     out += lines
-    # decisions
-    dec = [e for e in events if e["kind"] == "decision"]
-    if dec:
-        lat = sorted(d["latency"] for d in dec)
-        acts = Counter(d["action"] for d in dec)
-        out.append(f"\nJev: {len(dec)} answers, latency median {lat[len(lat) // 2]:.2f}s; actions {dict(acts)}")
-        first = dec[0]
-        out.append("First decision Jev saw (state): " + json.dumps(first.get("state"))[:1500])
-        out.append("Its answer: " + json.dumps(first.get("probs")))
-    jerr = [e for e in events if e["kind"] == "jev_error"]
-    if jerr:
-        out.append(f"Jev errors: {len(jerr)} e.g. {jerr[0].get('error')}")
     # status changes
     obs = [e for e in events if e["kind"] == "obs"]
     if obs:
@@ -1216,36 +1380,6 @@ def summarize(trace_path, max_timeline=50, error_log=False):
         for o in obs:
             if o["t"] - last_t >= 5 or o is obs[-1]:
                 last_t = o["t"]
-                out.append(f"  t={o['t'] - t_first:6.1f} {json.dumps(o.get('facts'))[:300]}  [{o.get('status')}] "
+                out.append(f"  t={o['t'] - t_first:6.1f} {json.dumps(o.get('facts'))}  [{o.get('status')}] "
                            f"options={o.get('options')}" + (f" step={o['step']}" if o.get("step") else ""))
-    errs = [e for e in events if e["kind"] == "error"]
-    if errs:
-        out.append("\nErrors in harness code:")
-        seen = set()
-        for e in errs:
-            k = (e.get("where"), e.get("error"))
-            if k in seen:
-                continue
-            seen.add(k)
-            out.append(f"  [{e.get('where')}] {e.get('error')}\n    " + (e.get("traceback") or "").strip().replace(
-                "\n", "\n    ")[-700:])
-            if len(seen) >= 6:
-                break
-    finds = [e for e in events if e["kind"] in ("finding", "game_log")]
-    if finds:
-        out.append("\nWhat the game's own detectors and error log reported (count, first time):")
-        groups = {}
-        for e in finds:
-            key = e.get("signature") or e.get("summary") or e.get("message")
-            group = groups.setdefault(key, {"n": 0, "first": e})
-            group["n"] += 1
-        for key, group in sorted(groups.items(), key=lambda kv: -kv[1]["n"])[:15]:
-            e = group["first"]
-            what = e.get("summary") or f"[{e.get('verbosity')}] {e.get('category')}: {e.get('message')}"
-            out.append(f"  x{group['n']} t={(e.get('t') or 0) - t_first:.1f} {e['kind']}: {str(what)[:220]}")
-    if error_log and not any(e["kind"] == "game_log" for e in events):
-        out.append("\nThe game's error log: no errors logged during this episode.")
-    writes = [e for e in events if e["kind"] == "write"]
-    if writes:
-        out.append(f"\nState written directly (not player input): {len(writes)}")
     return "\n".join(out)

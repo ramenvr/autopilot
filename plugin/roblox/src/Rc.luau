@@ -377,6 +377,59 @@ local function argv(params: any, info: any): { any }
 	return out
 end
 
+-- Why a call's named arguments are refused for names argv wouldn't read, nil when they aren't: such a value would go
+-- unread and the call be made without it, while the caller believes it was passed. As Unity's, Unreal's and Godot's:
+-- "unknown argument(s) X; it takes A, B". (info: the instance method's reflection; nil for a module's function.)
+local function unknownArguments(params: any, info: any, isModule: boolean): string?
+	if type(params) ~= "table" or #params > 0 then
+		return nil
+	end
+	local takes, named = {}, {}
+	if info and type(info.Parameters) == "table" then
+		for _, p in ipairs(info.Parameters) do
+			table.insert(takes, tostring(p.Name))
+			named[tostring(p.Name)] = true
+		end
+	end
+	local list = type(params.args) == "table"
+	local unknown = {}
+	for k in pairs(params) do
+		local key = tostring(k)
+		local i = tonumber(k)
+		local known
+		if key == "args" and list then
+			known = true
+		elseif isModule and key == "self" then
+			known = true
+		elseif list then
+			known = false -- (with "args" given, nothing else is read)
+		else
+			known = named[key] == true or (i ~= nil and i >= 1)
+		end
+		if not known then
+			table.insert(unknown, key)
+		end
+	end
+	if #unknown == 0 then
+		return nil
+	end
+	table.sort(unknown)
+	local names = table.concat(unknown, ", ")
+	if list then
+		return "unknown argument(s) " .. names .. "; with args=[...] given, the arguments are those in order"
+			.. (if isModule then " (and self=true for a method)" else "")
+	end
+	if isModule then
+		return "unknown argument(s) " .. names .. "; a module's function takes its arguments in order: args=[...]"
+			.. " (and self=true for a method)"
+	end
+	if info == nil then
+		return "unknown argument(s) " .. names .. "; its arguments aren't listed, so give them in order: args=[...]"
+	end
+	return "unknown argument(s) " .. names .. "; it takes " .. (if #takes > 0 then table.concat(takes, ", ")
+		else "no arguments")
+end
+
 local function call(body: any): (boolean, any)
 	local path = tostring(body.objectPath or "")
 	local inst = Paths.resolve(path)
@@ -387,6 +440,10 @@ local function call(body: any): (boolean, any)
 	local params = body.parameters
 	local results
 	if inst:IsA("ModuleScript") then
+		local unknown = unknownArguments(params, nil, true)
+		if unknown then
+			return false, fname .. " on " .. path .. ": " .. unknown
+		end
 		local a = argv(params, nil)
 		;(a :: any).n = (a :: any).n or #a
 		local withSelf = type(params) == "table" and params.self == true
@@ -403,6 +460,10 @@ local function call(body: any): (boolean, any)
 		end)
 		if not okf or type(fn) ~= "function" then
 			return false, "Function: " .. fname .. " does not exist on object: " .. path
+		end
+		local unknown = unknownArguments(params, info, false)
+		if unknown then
+			return false, fname .. " on " .. path .. ": " .. unknown
 		end
 		local a = argv(params, info)
 		local n = (a :: any).n or #a

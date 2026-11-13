@@ -36,7 +36,7 @@ class Game:
         # The game's engine (autopilot.engines, from the plugin's hello): how things are found and read
         self.engine = engine or for_link(link)
         self.codex = codex  # autopilot.codex.Codex or None: resolves class names
-        self.log = log or (lambda kind, **fields: None)  # the runtime's trace
+        self.log = log or (lambda *kind, **fields: None)  # the runtime's trace (runtime.Trace)
         self._pool = futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="game")
         self._ctx, self._ctx_at = None, 0.0
         self._classes = {}
@@ -55,6 +55,15 @@ class Game:
         self._bodies = {}  # n -> Body: the other players of a multiplayer game (player())
         self.index = 1  # which player this is (1: the run's own; a Body is another)
         self._primary = self  # (player 1's game, which a Body shares)
+        self.paused = False  # whether the game is held paused (pause()): its clock stands still then (kit.clock)
+        # Seconds of game time from an input sent until the game shows it (measured by calibrate_look): what a move
+        # timed to the game (a jump at an edge) must be sent ahead by
+        self.lag = 0.0
+        self._sequences = 0  # input sequences started (sequence())
+        self._seq_holds = {}  # sequence id -> {"left": keys it leaves held, "until": when it has surely ended}
+        # What the picture showed lately (autopilot/watch.py): {question id: answer, "t": game time of the look,
+        # "note": words}, {} before the first look. An executor may read it (game.watch.get("blocked", 0) > 0.7)
+        self.watch = {}
 
     # -- low level -------------------------------------------------------------------------------------
 
@@ -79,6 +88,14 @@ class Game:
     def t(self):
         """The game time (seconds) of the latest answer from the game."""
         return self.link.game_time or 0.0
+
+    @property
+    def now(self):
+        """The game time now (seconds): the latest answer's plus the wall time since it came while the game runs
+        (kit.clock.now). Time a move by this, never by the wall clock: it runs as the game does."""
+        from .clock import now
+
+        return now(self)
 
     def batch(self, thunks):
         """Run several reads at once (they resolve in the same game frame): a list of zero-argument callables, e.g.
@@ -187,8 +204,12 @@ class Game:
         """{"Pitch", "Yaw", "Roll"}"""
         return self.engine.rot(self, actor)
 
-    def bounds(self, actor):
-        """(center, half extent) of the actor's box."""
+    def bounds(self, actor, visual=False):
+        """(center, half extent) of the box square to the world round the actor's collision (what blocks or overlaps:
+        trigger volumes too; its whole drawn box when nothing of it collides). visual=True: the box round everything
+        drawn of it. A box: a big, turned, hollow or ring-shaped thing is far from solid all through it (see trace)."""
+        if visual:
+            return self.engine.bounds(self, actor, visual=True)
         return self.engine.bounds(self, actor)
 
     def velocity(self, actor):
@@ -255,6 +276,29 @@ class Game:
                 out[a] = {k: t.get(k) for k in ("distance", "screen_x", "screen_y", "partly_in_view")
                           if t.get(k) is not None}
                 out[a]["crosshair_on"] = bool(t.get("crosshair_on"))
+        return out
+
+    def trace(self, start, end, radius=0.0, sight=False):
+        """The first thing a line from `start` to `end` meets (a ball of `radius` swept along it, when radius > 0: room
+        for a body that wide), by the game's collision: what is solid, whatever its box says. Asked of what stops the
+        player's body (its own collision; sight=True: what stops a line of sight instead). The player's own body and
+        what it carries are never hit. -> None when nothing is in the way, else {"location" (where the line stops: the
+        ball's center when it touches), "point" (where it touches), "normal", "distance" (from start to location),
+        "actor" (its path), "name", "component"?, "inside" (start was already in it: distance 0)}. Positions in the
+        kit's frame."""
+        if "trace" not in self.features:
+            raise GameError("trace: this game's Autopilot plugin can't trace yet (update the plugin)")
+        args = {"start": Vec.of(start).ue(), "end": Vec.of(end).ue(), "radius": max(0.0, float(radius or 0.0))}
+        if sight:
+            args["channel"] = "sight"
+        hit = (self.request("trace", args) or {}).get("hit")
+        if not hit:
+            return None
+        out = dict(hit)
+        for k in ("location", "point", "normal"):
+            if out.get(k) is not None:
+                out[k] = Vec.of(out[k])
+        out["inside"] = bool(out.get("inside"))
         return out
 
     def screen(self):
@@ -332,10 +376,78 @@ class Game:
         self.log("input", key=key, mode="hold", value=value, seconds=seconds)
         return True
 
+    def sequence(self, steps):
+        """Hand the game a sequence of inputs to run itself, frame by frame on its own clock, so a move timed to the
+        game (a jump at an edge, a combo, a dodge a tenth after a tell) lands the same whatever the brain's frame rate
+        and delay. steps: [{"key", "mode": "press"|"hold"|"release", "value"?, and when it fires: "at" (game
+        seconds after the sequence starts) or "after" (seconds after the step before fired; default 0), and/or
+        "when" (a condition read by the game every frame: {"near": {"x","y","z", "within"}} the player within that
+        many cm of a kit point across the floor, {"past": {"x","y","z","dx","dy","dz"}} the player past the plane
+        through the point facing the direction, {"past_of": {"path", "dir", "along"}} the player past the plane
+        carried by a part (a moving platform's edge: through the part's position moved `along` cm in the
+        direction), {"on_ground": bool}, {"falling": bool}, {"vz_below": cm/s} its vertical speed below that (the
+        top of a jump: 0); all given must hold), "timeout" (seconds after the step before fired after which it is
+        skipped; default 3)}, ...].
+        Returns the sequence's id when the plugin runs sequences (its features say "sequence"), else None: then
+        kit.control.moveset runs the steps from here by the game's clock.
+
+        Steps fire in order: one waits for the step before it. Run things that don't wait for each other as
+        sequences side by side (one for the direction held, one for the jumps): each has its own steps and clock.
+        A key a step holds goes down when that step fires, never before, and stays down while the sequence runs
+        and after it (the runtime keeps the sequence alive each tick, as it renews hold()'s keys), until a later
+        step, release(key) or release_all() lets it go; sequence_cancel(id) drops the steps still waiting and
+        lets go of what the sequence holds. No step needs repeating to keep a key down."""
+        if "sequence" not in self.features:
+            return None
+        self._sequences += 1
+        sid = f"seq{self.index}-{self._sequences}"
+        clean = []
+        for s in steps:
+            step = {"key": str(s.get("key") or ""), "mode": str(s.get("mode") or "press")}
+            for k in ("at", "after", "timeout", "value"):
+                if s.get(k) is not None:
+                    step[k] = float(s[k])
+            if isinstance(s.get("when"), dict):
+                step["when"] = _when_native(s["when"])
+            clean.append(step)
+        self.request("sequence", {"action": "start", "id": sid, "steps": clean, "lease": KEY_LEASE})
+        # The keys it holds are the game's to press, each when its step fires: they are not hold()'s keys (renewing
+        # one of those presses it at once, with a value of a step that hasn't come). The sequence itself is kept
+        # alive instead (renew), for as long as it may still run, and on while a key it holds is left down
+        left, holds, budget = set(), False, 2.0
+        for s in clean:
+            budget += s.get("at", 0.0) + s.get("after", 0.0) + s.get("timeout", 3.0)
+            if s["mode"] == "hold":
+                holds = True
+                left.add(s["key"])
+            elif s["mode"] == "release":
+                left.discard(s["key"])
+        if holds:
+            with self._lock:
+                self._seq_holds[sid] = {"left": left, "until": time.monotonic() + 2.0 * budget}
+        self.log("input", key="sequence", mode="start", value={"id": sid, "steps": clean})
+        return sid
+
+    def sequence_status(self, sid):
+        """{"done", "fired" (steps fired so far), "skipped" (steps whose condition never came), "t"} of a sequence
+        the game runs."""
+        return self.request("sequence", {"action": "status", "id": sid}) or {"done": True}
+
+    def sequence_cancel(self, sid):
+        with self._lock:
+            self._seq_holds.pop(sid, None)
+        try:
+            self.request("sequence", {"action": "cancel", "id": sid})
+        except GameError:
+            pass
+
     def release(self, key):
         with self._lock:
             was = self._held.pop(key, "none")
-        if was == "none":
+            mine = [q for q in self._seq_holds.values() if key in q["left"]]
+            for q in mine:  # (a key a sequence left down: let go here as any held key is)
+                q["left"].discard(key)
+        if was == "none" and not mine:
             return
         if key.startswith("/"):
             self.post("input", {"action": key, "mode": "release"})
@@ -353,6 +465,7 @@ class Game:
         with self._lock:
             held = list(self._held)
             self._held.clear()
+            self._seq_holds.clear()  # (the plugin's release_all drops its sequences and what they hold)
         for key in held:
             if key.startswith("/"):
                 self.post("input", {"action": key, "mode": "release"})
@@ -371,6 +484,13 @@ class Game:
             body._renew_own()
 
     def _renew_own(self):
+        with self._lock:  # (sequences that hold keys: alive while they may run, and while a key is left down)
+            now = time.monotonic()
+            for sid in [k for k, q in self._seq_holds.items() if not q["left"] and now > q["until"]]:
+                del self._seq_holds[sid]
+            alive = list(self._seq_holds)
+        if alive:
+            self.post("sequence", {"action": "renew", "ids": alive, "lease": KEY_LEASE})
         for key, value in self.held().items():
             if not key.startswith("/"):
                 args = {"key": key, "mode": "hold", "lease": KEY_LEASE}
@@ -402,22 +522,26 @@ class Game:
         if time.monotonic() - getattr(self, "_calibrated_at", -1e9) < 0.5:
             return self.look
         self._calibrated_at = time.monotonic()
+        from .geom import wrap
+
         for axis in ("x", "y"):
             if self.look[axis]:
                 continue
             y0, p0 = self.view_rotation()
+            sent = self.t
             self.mouse(counts if axis == "x" else 0.0, counts if axis == "y" else 0.0)
-            time.sleep(0.15)
-            y1, p1 = self.view_rotation()
-            from .geom import wrap
-
-            moved = wrap(y1 - y0) if axis == "x" else (p1 - p0)
-            if abs(moved) <= 0.05:
-                # (a turn can come in late: e.g. Roblox's camera turns only once the right button it presses has locked
-                # the mouse, a few frames after the move was sent)
-                time.sleep(0.25)
+            # (the game's lag: polled until the view shows the turn, a frame at a time, up to 0.4 s; a turn can come
+            # in late, e.g. Roblox's camera turns only once the right button it presses has locked the mouse)
+            deadline = time.monotonic() + 0.4
+            moved = 0.0
+            while True:
+                time.sleep(0.03)
                 y1, p1 = self.view_rotation()
                 moved = wrap(y1 - y0) if axis == "x" else (p1 - p0)
+                if abs(moved) > 0.05 or time.monotonic() > deadline:
+                    break
+            if abs(moved) > 0.05 and axis == "x":
+                self.lag = max(0.0, min(0.5, self.t - sent))
             if abs(moved) > 0.05:
                 self.look[axis] = moved / counts
                 # turn back
@@ -433,20 +557,25 @@ class Game:
                     self.look[axis] = -moved / counts
                     self.mouse(0.0, counts)
                     time.sleep(0.1)
-        self.log("calibrated", look=self.look)
+        self.log("calibrated", look=self.look, lag=round(self.lag, 3))
         return self.look
 
     # -- the session -----------------------------------------------------------------------------------
 
     def pause(self, paused=True):
-        return self.request("pause", {"paused": paused})
+        out = self.request("pause", {"paused": paused})
+        self.paused = bool(paused) and not (isinstance(out, dict) and out.get("why"))  # (a game that can't pause)
+        return out
 
     def restart(self, map=None, wait_for_pawn=20.0, players=None):
         """Start the level over (or open `map`, e.g. the gameplay level of a game that boots into a menu) and wait up
         to wait_for_pawn seconds for the player's pawn. Returns whether a pawn is there (False: a menu, or loading).
         Without a map, the run's level (self.level) starts over when it has one. players: how many players the game
-        starts with, for an engine whose plugin plays multiplayer (its hello's features say "players": Roblox); the
-        others are game.player(2), game.player(3)..."""
+        starts with, for an engine whose plugin plays multiplayer (its hello's features say "players"); the others are
+        game.player(2), game.player(3)... Roblox starts that many; Unreal plays the number its editor's Play settings
+        start and refuses another."""
+        if players is not None and int(players) != 1:
+            self._need_players(f"restart(players={int(players)})")
         self.release_all()
         args = {"action": "restart"}
         map = map or self.level
@@ -479,17 +608,28 @@ class Game:
     def player(self, n):
         """Player n of a multiplayer game, as a game of its own (a Body): its pawn, view, screen, keys, UI and every kit
         function (walk_to(game.player(2), ...)) are that player's; reads of the world are the same. 1 is the run's own
-        player: this game. Start a game with more players first: game.restart(players=2)."""
+        player: this game. A game the plugin plays with one player only refuses n > 1 (GameError) rather than play
+        player 1 for it. How many there are: game.players()."""
         n = int(n)
         if n <= 1:
             return self._primary
+        self._need_players(f"player({n})")
         if n not in self._bodies:
             self._bodies[n] = Body(self._primary, n)
         return self._bodies[n]
 
     def players(self):
         """The game's players: [{"player": n, "name", "path", "character", "you"}], 1 the run's own."""
+        self._need_players("players()")
         return list(self.context(fresh=True).get("players") or [])
+
+    def _need_players(self, what):
+        """Several players need a plugin that plays them (its hello's features say "players"): without one a request's
+        "player" would go unread, and player 1 would be played for player 2."""
+        if "players" not in self.features:
+            engine = getattr(self.engine, "title", "") or getattr(self.engine, "name", "") or "engine"
+            raise GameError(f"game.{what}: this game's {engine} plugin plays one player only (its features don't "
+                            "include 'players'): play game itself, player 1")
 
 
 class Body(Game):
@@ -521,6 +661,36 @@ class Body(Game):
 def name_of(path):
     """An object's name from its path: /Game/Map.Map:PersistentLevel.BP_Tree_C_3 -> BP_Tree_C_3."""
     return path.rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+
+
+def _when_native(when):
+    """A sequence step's condition (Game.sequence) with its kit-frame points and directions as the plugin takes
+    them: {"near": {"X","Y","Z","within"}}, {"past": {"X","Y","Z","dX","dY","dZ"}} (kit frame: every plugin converts
+    the kit frame itself, as it does for `move`), and the plain ones as they are."""
+    out = {}
+    for key, value in when.items():
+        if key in ("near", "past") and isinstance(value, dict):
+            point = Vec.of(value["point"]) if "point" in value else Vec.of(
+                {k: value.get(k, value.get(k.upper(), 0.0)) for k in ("x", "y", "z")})
+            entry = {"X": point.x, "Y": point.y, "Z": point.z}
+            if key == "near":
+                entry["within"] = float(value.get("within", 60.0))
+            else:
+                d = Vec.of(value["dir"]) if "dir" in value else Vec(
+                    float(value.get("dx", 1.0)), float(value.get("dy", 0.0)), float(value.get("dz", 0.0)))
+                d = d.unit if d.length > 1e-6 else Vec(1, 0, 0)
+                entry.update(dX=d.x, dY=d.y, dZ=d.z)
+            out[key] = entry
+        elif key == "past_of" and isinstance(value, dict):
+            d = Vec.of(value.get("dir")) if value.get("dir") is not None else Vec(1, 0, 0)
+            d = d.unit if d.length > 1e-6 else Vec(1, 0, 0)
+            out[key] = {"path": str(value.get("path") or "").split(":", 1)[-1], "dX": d.x, "dY": d.y, "dZ": d.z,
+                        "along": float(value.get("along", 0.0))}
+        elif key in ("on_ground", "falling"):
+            out[key] = bool(value)
+        elif key in ("vz_below", "vz_above", "t"):
+            out[key] = float(value)
+    return out
 
 
 def _axis(value):

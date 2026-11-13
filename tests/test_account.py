@@ -79,6 +79,28 @@ def test_a_sign_in_the_plugin_asks_for_is_done_here_and_reported(monkeypatch, ow
     assert not any("token" in json.dumps(f) for f in link.sent)  # (the plugin never sees a token)
 
 
+def test_use_another_account_asks_aura_s_page_for_the_account(monkeypatch, own_preferences):
+    """The plugins' "Use another account" sends another_account: true; a plain sign-in, or a field that isn't true,
+    goes on as before."""
+    monkeypatch.delenv("AUTOPILOT_AURA_URL", raising=False)
+    monkeypatch.setattr(aura, "client_session", lambda *a, **k: (None, None))
+    asked = []
+
+    def sign_in(server, open_browser=None, say=None, cancelled=None, choose_account=False, **k):
+        asked.append(choose_account)
+        return {"access_token": "a", "refresh_token": "r", "expires_at": time.time() + 3600, "email": "b@game.test"}
+
+    monkeypatch.setattr(aura_login, "sign_in", sign_in)
+    for frame in ({"type": "aura_sign_in", "another_account": True}, {"type": "aura_sign_in"},
+                  {"type": "aura_sign_in", "another_account": "yes"}):
+        link = Link()
+        flow = account.SignIn(link)
+        assert account.handle(link, frame, flow)
+        flow.thread.join(5)
+        assert link.frames("aura_sign_in")[-1]["state"] == "signed_in"
+    assert asked == [True, False, False]
+
+
 def test_a_sign_in_cancelled_in_the_editor_or_failing_says_why(monkeypatch):
     monkeypatch.setattr("webbrowser.open", lambda url: True)
     monkeypatch.setattr(aura, "client_session", lambda *a, **k: (None, None))

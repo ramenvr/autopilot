@@ -85,21 +85,56 @@ def test_a_researchers_messages_are_logged_with_a_prefix():
 
 
 def test_what_the_main_agent_is_told_and_how_many_it_may_run(monkeypatch):
-    assert cc.agents_note(0) == ""
-    note = cc.agents_note(4)
+    monkeypatch.delenv("AUTOPILOT_REVIEWER", raising=False)
+    assert cc.agents_note(0, False) == ""
+    note = cc.agents_note(4, False)
     assert note.startswith("Researchers:") and "\n" not in note and 'subagent_type "researcher"' in note
     assert f"up to {min(4, cc.research_calls())} run at once" in note and "leads" in note
     assert "can't act on the game" in note
-    assert cc.AGENTS_NOTE == cc.agents_note(cc.RESEARCHERS)
+    assert cc.AGENTS_NOTE == cc.agents_note(cc.RESEARCHERS, True)
     assert isinstance(cc.RESEARCHERS, int)
     monkeypatch.setenv("AUTOPILOT_RESEARCHERS", "2")
     assert cc.researchers() == 2 and "up to 2 run" in cc.agents_note()
     monkeypatch.setenv("AUTOPILOT_RESEARCHERS", "0")
-    assert cc.researchers() == 0 and cc.agents_note() == ""
+    assert cc.researchers() == 0 and cc.agents_note().startswith("Reviewer:")  # (the reviewer is on by default)
+    monkeypatch.setenv("AUTOPILOT_REVIEWER", "0")
+    assert not cc.reviewers() and cc.agents_note() == ""
     monkeypatch.setenv("AUTOPILOT_RESEARCHERS", "many")
     assert cc.researchers() == cc.RESEARCHERS
     monkeypatch.delenv("AUTOPILOT_RESEARCHERS")
     assert cc.researchers() == cc.RESEARCHERS
+
+
+def test_the_reviewer_reads_the_run_and_may_describe_frames_only(tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTOPILOT_REVIEWER", raising=False)
+    game_tools = [f"mcp__game__{n}" for n in ("probe", "run_harness", "describe_frames", "report")]
+    d = cc.reviewer("claude-opus-5-5", game_tools)
+    assert d.tools == ["Read", "Grep", "Glob", "mcp__game__describe_frames"]
+    assert "mcp__game__probe" in d.disallowedTools and "mcp__game__describe_frames" not in d.disallowedTools
+    assert "one change" in d.prompt and "picture wins" in d.prompt and d.maxTurns == cc.REVIEW_TURNS
+    agents = cc.subagents("claude-opus-5-5", game_tools)
+    assert set(agents) == {"reviewer"}  # (no researchers by default)
+    monkeypatch.setenv("AUTOPILOT_RESEARCHERS", "2")
+    assert set(cc.subagents("claude-opus-5-5", game_tools)) == {"researcher", "reviewer"}
+    # the guard: the main agent may start a reviewer; a reviewer may describe frames and nothing else of the game
+    s = _session(tmp_path)
+    assert _check(s, "Agent", {"subagent_type": "reviewer", "prompt": "episode 2"}) == ("allow", "")
+    inside = {"agent_id": "agent-2", "agent_type": "reviewer"}
+    assert _check(s, "mcp__game__describe_frames", {"questions": ["what moves?"]}, **inside) == ("allow", "")
+    decision, why = _check(s, "mcp__game__probe", {"code": "1"}, **inside)
+    assert decision == "deny" and "can't act on the game" in why
+    decision, why = _check(s, "Write", {"file_path": os.path.join(s.run_dir, "harness.py"), "content": ""}, **inside)
+    assert decision == "deny"
+    # a researcher still may not describe frames
+    decision, _ = _check(s, "mcp__game__describe_frames", {"questions": ["x"]}, agent_id="a", agent_type="researcher")
+    assert decision == "deny"
+    # the reviewer may be started once the time for reading and probing is up (an episode has played by then)
+    s.research_over = lambda: True
+    assert _check(s, "Agent", {"subagent_type": "reviewer", "prompt": "episode 3"}) == ("allow", "")
+    monkeypatch.setenv("AUTOPILOT_REVIEWER", "0")
+    s2 = _session(tmp_path / "another")
+    decision, why = _check(s2, "Agent", {"subagent_type": "reviewer", "prompt": "episode 3"})
+    assert decision == "deny"
 
 
 def test_a_run_has_only_so_many_researcher_questions(tmp_path, monkeypatch):
@@ -118,3 +153,22 @@ def test_a_run_has_only_so_many_researcher_questions(tmp_path, monkeypatch):
     assert decision == "deny" and "2 researcher questions are used" in why
     assert ask("Read", {"file_path": os.path.join(s.root, "codex", "x.txt")}) == ("allow", "")  # (reading goes on)
     assert "this run has 2 questions in all" in cc.agents_note(4)
+
+
+def test_a_game_tool_refuses_an_argument_name_it_doesnt_take(monkeypatch):
+    import claude_agent_sdk
+
+    made = {}
+    monkeypatch.setattr(claude_agent_sdk, "create_sdk_mcp_server", lambda name, tools: made.update(tools=tools) or {})
+    calls = []
+    session = types.SimpleNamespace(tool_seconds=0.0, steer_note=lambda: "", news=lambda: "", clock=lambda: "[clock]",
+                                    result=lambda text: text + "\n[clock]",
+                                    run_harness=lambda *a, **k: calls.append((a, k)) or "episode 1")
+    cc._tools(session)
+    run_harness = next(t for t in made["tools"] if t.name == "run_harness")
+    refused = asyncio.run(run_harness.handler({"seconds": 10, "fps": 30}))
+    assert refused["isError"] and not calls
+    assert refused["content"][0]["text"].startswith("run_harness: unknown argument(s) fps; it takes seconds, restart, "
+                                                    "frames_fps.")
+    done = asyncio.run(run_harness.handler({"seconds": 10, "frames_fps": 30}))
+    assert done["content"][0]["text"].startswith("episode 1") and calls == [((10, True), {"frames_fps": 30})]

@@ -3,17 +3,20 @@
 from typesafe_sdk import Choice, Noul, Score  # noqa: F401 - for harnesses' extra questions
 
 from . import control  # noqa: F401
+from .clock import Clock  # noqa: F401
 from .control import (  # noqa: F401
     Result,
     aim_and_strike,
     face_and_press,
     go_and_press,
     hold_for,
+    jump_at,
     jump_to,
     keep_away,
     look_at,
     melee,
     movement,
+    moveset,
     point_of,
     press,
     run,

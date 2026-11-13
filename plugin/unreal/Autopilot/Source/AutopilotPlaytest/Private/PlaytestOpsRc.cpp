@@ -28,7 +28,58 @@ namespace
 		return FString();
 	}
 
-	void Call(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Body)
+	/** An argument the function takes from a caller: not its return value, nor an out parameter only written. */
+	bool IsInput(const FProperty* Param)
+	{
+		return !Param->HasAnyPropertyFlags(CPF_ReturnParm)
+			&& (!Param->HasAnyPropertyFlags(CPF_OutParm) || Param->HasAnyPropertyFlags(CPF_ReferenceParm | CPF_ConstParm));
+	}
+
+	/** Why a call's arguments are refused for names the function has no parameter for, "" when they aren't: such a
+	 *  value would go unread and the call be made without it, while the caller believes it was passed. Names match
+	 *  as the arguments are found (case-insensitive). The words are Unity's and Godot's: "unknown argument(s) X; it
+	 *  takes A, B". */
+	FString UnknownArguments(UFunction* Function, const TSharedPtr<FJsonObject>& Params)
+	{
+		if (!Params.IsValid())
+		{
+			return FString();
+		}
+		TArray<FString> Unknown;
+		for (const TPair<FString, TSharedPtr<FJsonValue>>& Pair : Params->Values)
+		{
+			bool bKnown = false;
+			for (TFieldIterator<FProperty> It(Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+			{
+				if (!It->HasAnyPropertyFlags(CPF_ReturnParm) && It->GetName().Equals(Pair.Key, ESearchCase::IgnoreCase))
+				{
+					bKnown = true;
+					break;
+				}
+			}
+			if (!bKnown)
+			{
+				Unknown.Add(Pair.Key);
+			}
+		}
+		if (Unknown.Num() == 0)
+		{
+			return FString();
+		}
+		TArray<FString> Takes;
+		for (TFieldIterator<FProperty> It(Function); It && It->HasAnyPropertyFlags(CPF_Parm); ++It)
+		{
+			if (IsInput(*It))
+			{
+				Takes.Add(It->GetName());
+			}
+		}
+		return FString::Printf(TEXT("unknown argument(s) %s; it takes %s"), *FString::Join(Unknown, TEXT(", ")),
+			Takes.Num() > 0 ? *FString::Join(Takes, TEXT(", ")) : TEXT("no arguments"));
+	}
+
+	/** World: the world a function's world context gets when the call doesn't give one (the request's player's). */
+	void Call(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Body, UWorld* World)
 	{
 		const FString Path = StringField(Body, TEXT("objectPath"));
 		UObject* Object = PlaytestJson::ResolveObject(Path);
@@ -51,6 +102,12 @@ namespace
 			return;
 		}
 		const TSharedPtr<FJsonObject> Params = ObjectField(Body, TEXT("parameters"));
+		const FString Unknown = UnknownArguments(Function, Params);
+		if (!Unknown.IsEmpty())
+		{
+			Bridge.RespondError(Id, FString::Printf(TEXT("%s on %s: %s"), *Name, *Path, *Unknown));
+			return;
+		}
 		FStructOnScope Scope(Function);
 		uint8* Parms = Scope.GetStructMemory();
 #if WITH_METADATA
@@ -80,7 +137,7 @@ namespace
 			{
 				if (FObjectPropertyBase* ObjParam = CastField<FObjectPropertyBase>(Param))
 				{
-					ObjParam->SetObjectPropertyValue(ValuePtr, Bridge.GetGameWorld());
+					ObjParam->SetObjectPropertyValue(ValuePtr, World);
 				}
 				continue;
 			}
@@ -91,6 +148,15 @@ namespace
 				Param->ImportText_Direct(*Default, ValuePtr, nullptr, PPF_None, GLog);
 			}
 #endif
+		}
+		// A call that may change the game (not a read: pure, const, Get..., Find...) is the agent's own: a teleport it makes
+		// isn't the game's
+		const bool bRead = Function->HasAnyFunctionFlags(FUNC_BlueprintPure | FUNC_Const)
+			|| Name.StartsWith(TEXT("Get")) || Name.StartsWith(TEXT("K2_Get")) || Name.StartsWith(TEXT("Find"))
+			|| Name.StartsWith(TEXT("Is")) || Name.StartsWith(TEXT("Has")) || Name.StartsWith(TEXT("Can"));
+		if (!bRead)
+		{
+			Bridge.GetDetectors().NoteAgentMove();
 		}
 		Object->ProcessEvent(Function, Parms);
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -169,6 +235,7 @@ namespace
 				Bridge.RespondError(Id, Error);
 				return;
 			}
+			Bridge.GetDetectors().NoteAgentMove();
 			Bridge.Respond(Id, Obj(MakeShared<FJsonObject>()));
 			return;
 		}
@@ -232,9 +299,7 @@ namespace
 			TArray<TSharedPtr<FJsonValue>> Arguments;
 			for (TFieldIterator<FProperty> P(Function); P && P->HasAnyPropertyFlags(CPF_Parm); ++P)
 			{
-				const bool bInput = !P->HasAnyPropertyFlags(CPF_ReturnParm)
-					&& (!P->HasAnyPropertyFlags(CPF_OutParm) || P->HasAnyPropertyFlags(CPF_ReferenceParm | CPF_ConstParm));
-				if (!bInput)
+				if (!IsInput(*P))
 				{
 					continue;
 				}
@@ -261,7 +326,7 @@ namespace
 		}
 		else if (Verb == TEXT("call"))
 		{
-			Call(Bridge, Id, Body);
+			Call(Bridge, Id, Body, PlayerWorld(Bridge, Args));
 		}
 		else if (Verb == TEXT("property"))
 		{

@@ -354,10 +354,24 @@ FString FAutopilotRun::ReportMarkdown() const
 		{
 			Out += FString::Printf(TEXT("- [agent] %s\n"), *Note);
 		}
+		// (a detector with many kinds, as one out_of_world per class of actor: one line naming every kind)
+		const TArray<TArray<TSharedPtr<FAutopilotFinding>>> Groups = EngineFindingGroups();
+		TSet<FString> GroupTold;
 		for (const TSharedPtr<FAutopilotFinding>& F : Findings)
 		{
 			if (!F->IsEngine())
 			{
+				continue;
+			}
+			const TArray<TSharedPtr<FAutopilotFinding>>* Group = Groups.FindByPredicate([&F](const TArray<TSharedPtr<FAutopilotFinding>>& G) { return G[0]->Detector == F->Detector; });
+			if (Group && Group->Num() > FindingGroupAt)
+			{
+				if (!GroupTold.Contains(F->Detector))
+				{
+					GroupTold.Add(F->Detector);
+					Out += FString::Printf(TEXT("- [engine · %s · %s] %d kinds: %s — e.g. %s\n"), *TopSeverity(*Group), *F->Detector, Group->Num(),
+						*KindsLine(*Group, true), *FAutopilotSession::Scrub((*Group)[0]->Summary));
+				}
 				continue;
 			}
 			FString Line = FString::Printf(TEXT("- [engine · %s · %s] %s"), *F->Severity, *F->Detector, *FAutopilotSession::Scrub(F->Summary));
@@ -377,6 +391,92 @@ FString FAutopilotRun::ReportMarkdown() const
 		}
 	}
 	return Out;
+}
+
+TArray<TArray<TSharedPtr<FAutopilotFinding>>> FAutopilotRun::EngineFindingGroups() const
+{
+	TArray<TArray<TSharedPtr<FAutopilotFinding>>> Groups;
+	for (const TSharedPtr<FAutopilotFinding>& F : Findings)
+	{
+		if (!F.IsValid() || !F->IsEngine())
+		{
+			continue;
+		}
+		TArray<TSharedPtr<FAutopilotFinding>>* Group = Groups.FindByPredicate([&F](const TArray<TSharedPtr<FAutopilotFinding>>& G) { return G[0]->Detector == F->Detector; });
+		if (!Group)
+		{
+			Group = &Groups.AddDefaulted_GetRef();
+		}
+		Group->Add(F);
+	}
+	return Groups;
+}
+
+int32 FAutopilotRun::KindIndex(const FAutopilotFinding& Finding) const
+{
+	int32 Index = 0;
+	for (const TSharedPtr<FAutopilotFinding>& F : Findings)
+	{
+		if (!F.IsValid() || F->IsEngine() != Finding.IsEngine() || F->Detector != Finding.Detector)
+		{
+			continue;
+		}
+		if (F->Signature == Finding.Signature)
+		{
+			return Index;
+		}
+		++Index;
+	}
+	return INDEX_NONE;
+}
+
+FString FAutopilotRun::FindingKind(const FAutopilotFinding& Finding)
+{
+	FString Kind = Finding.Signature;
+	const FString Prefix = Finding.Detector + TEXT(":");
+	if (!Finding.Detector.IsEmpty() && Kind.StartsWith(Prefix, ESearchCase::CaseSensitive))
+	{
+		Kind.RightChopInline(Prefix.Len());
+	}
+	return Kind.TrimStartAndEnd().IsEmpty() ? FAutopilotSession::Scrub(Finding.Summary) : Kind;
+}
+
+FString FAutopilotRun::TopSeverity(const TArray<TSharedPtr<FAutopilotFinding>>& Group)
+{
+	auto Rank = [](const FString& Severity)
+	{
+		return Severity == TEXT("error") ? 3 : Severity == TEXT("suspicion") ? 1 : Severity == TEXT("info") ? 0 : 2;
+	};
+	FString Top;
+	int32 TopRank = -1;
+	for (const TSharedPtr<FAutopilotFinding>& F : Group)
+	{
+		if (Rank(F->Severity) > TopRank)
+		{
+			TopRank = Rank(F->Severity);
+			Top = F->Severity;
+		}
+	}
+	return Top;
+}
+
+FString FAutopilotRun::KindsLine(const TArray<TSharedPtr<FAutopilotFinding>>& Group, bool bReport)
+{
+	TArray<FString> Kinds;
+	for (const TSharedPtr<FAutopilotFinding>& F : Group)
+	{
+		FString Kind = FindingKind(*F);
+		if (F->Count > 1)
+		{
+			Kind += bReport ? FString::Printf(TEXT(" (×%d)"), F->Count) : FString::Printf(TEXT(" ×%d"), F->Count);
+		}
+		if (bReport && F->bDismissed)
+		{
+			Kind += TEXT(" (not a bug)");
+		}
+		Kinds.Add(Kind);
+	}
+	return FString::Join(Kinds, bReport ? TEXT(", ") : TEXT(" · "));
 }
 
 // -- FAutopilotSession -----------------------------------------------------------------------------------------------
@@ -1271,7 +1371,13 @@ bool FAutopilotSession::CanSteer() const
 	return B && B->CanSteer() && GetActiveRun().IsValid();
 }
 
-bool FAutopilotSession::SteerRun(const FString& Text)
+bool FAutopilotSession::CanRedirect() const
+{
+	const UPlaytestSubsystem* B = UPlaytestSubsystem::Get();
+	return B && B->CanRedirect() && GetActiveRun().IsValid();
+}
+
+bool FAutopilotSession::SteerRun(const FString& Text, bool bRedirect)
 {
 	const FString Said = Text.TrimStartAndEnd();
 	TSharedPtr<FAutopilotRun> Live = GetActiveRun();
@@ -1280,8 +1386,9 @@ bool FAutopilotSession::SteerRun(const FString& Text)
 	{
 		return false;
 	}
-	B->SteerRun(Said);
-	AddLine(*Live, FString::Printf(TEXT("You: %s"), *Said), EAutopilotFeedKind::Notice);
+	bRedirect = bRedirect && B->CanRedirect();
+	B->SteerRun(Said, bRedirect);
+	AddLine(*Live, FString(bRedirect ? TEXT("You (redirect): ") : TEXT("You: ")) + Said, EAutopilotFeedKind::Notice);
 	Changed(Live.Get());
 	return true;
 }
@@ -1704,10 +1811,23 @@ void FAutopilotSession::OnFinding(const TSharedPtr<FJsonObject>& Finding)
 	{
 		return;
 	}
+	const int32 Before = Run->Findings.Num();
 	if (TSharedPtr<FAutopilotFinding> Item = AddFinding(*Run, Finding))
 	{
-		AddLine(*Run, Item->Count > 1 ? FString::Printf(TEXT("%s (\u00d7%d)"), *Item->Summary, Item->Count) : Item->Summary,
-			EAutopilotFeedKind::Finding, Item);
+		// A detector's first kinds each get their line; the next says there are more (all in the result), and the rest
+		// none: one out_of_world per class of actor would fill the feed
+		const int32 Kind = Run->KindIndex(*Item);
+		const bool bNew = Run->Findings.Num() > Before;
+		if (Kind < FAutopilotRun::FindingGroupAt)
+		{
+			AddLine(*Run, Item->Count > 1 ? FString::Printf(TEXT("%s (\u00d7%d)"), *Item->Summary, Item->Count) : Item->Summary,
+				EAutopilotFeedKind::Finding, Item);
+		}
+		else if (Kind == FAutopilotRun::FindingGroupAt && bNew)
+		{
+			AddLine(*Run, FString::Printf(TEXT("%s (and more %s findings: all of them are in the result)"), *Item->Summary, *Item->Detector),
+				EAutopilotFeedKind::Finding, Item);
+		}
 		Changed(Run.Get());
 	}
 }

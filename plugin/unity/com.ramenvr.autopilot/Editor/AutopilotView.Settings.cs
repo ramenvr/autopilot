@@ -1,7 +1,7 @@
 // The Autopilot window's Settings page: how Autopilot runs (the account card: Aura, the Aura app, BYOK, or not set up,
 // from the agent service's account frame and preferences.json), this project's runs and, for runs through Aura, what
 // Autopilot billed (the project's total and run by run), whether runs' data is shared, whether runs use the research
-// agent, how to run Autopilot from the user's own Claude Code or Codex, and Remove Autopilot (AutopilotView.Remove.cs;
+// agent, whether the game's bug detectors run for this project, how to run Autopilot from the user's own Claude Code or Codex, and Remove Autopilot (AutopilotView.Remove.cs;
 // AutopilotView.cs has the rest of the window).
 
 using System;
@@ -28,7 +28,7 @@ namespace Autopilot.Playtest.Editor
             var prefs = Preferences.Current;
             return $"settings|{Wide}|{AutopilotUsage.Version}|{SelectedId}|{share}|{research}|{client != null && client.Connected}|{client != null && client.RunActive}|" +
                    $"{client?.AccountVersion}|{client != null && client.CanSignIn}|{SigningIn}|{signOutConfirm}|{setupProblem}|{prefs.Access}|{PlaytestSettings.Get().UseWithAura}|{removeConfirm}|" +
-                   $"{AgentService.Current}|{AgentService.Version}|{PlaytestSettings.Get().ShowPolicyLog}";
+                   $"{AgentService.Current}|{AgentService.Version}|{PlaytestSettings.Get().ShowPolicyLog}|{client == null || client.BugDetectors}|{client != null && client.CanSetBugDetectors}";
         }
 
         void BuildSettings()
@@ -44,6 +44,7 @@ namespace Autopilot.Playtest.Editor
             box.Add(UsageCard());
             box.Add(SharingCard());
             box.Add(ResearchCard());
+            box.Add(DetectorsCard());
             box.Add(BriefCard());
             box.Add(PolicyLogCard());
             box.Add(AssistantsCard());
@@ -122,7 +123,7 @@ namespace Autopilot.Playtest.Editor
         /// <summary>The words beside the sharing switch, as it is now: "Data sharing on" / "Data sharing off".</summary>
         public static string ShareState(bool on) => on ? "Data sharing on" : "Data sharing off";
 
-        /// <summary>A setting's card (Share runs, Research agent, Autopilot in Claude Code &amp; Codex): its title
+        /// <summary>A setting's card (Share runs, Research agent, Bug detectors, Autopilot in Claude Code &amp; Codex): its title
         /// (mono capitals), the line under it (as the sharing text: small, t-sec2), then its control (the box
         /// returned), the same gaps in each (.setting in Autopilot.uss).</summary>
         static VisualElement SettingCard(string title, string line, string classes, out VisualElement control)
@@ -190,6 +191,57 @@ namespace Autopilot.Playtest.Editor
             toggle.RegisterValueChangedCallback(e =>
             {
                 toggle.text = ResearchState(e.newValue);
+                changed(e.newValue);
+            });
+            return toggle;
+        }
+
+        public const string DetectorsTitle = "Bug detectors";
+        public const string DetectorsLine = "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.";
+
+        /// <summary>The words beside the bug detectors switch, as it is now: "Bug detectors on" / "Bug detectors
+        /// off".</summary>
+        public static string DetectorsState(bool on) => on ? "Bug detectors on" : "Bug detectors off";
+
+        /// <summary>Whether the game's detectors run for this project: the sharing card's look, its switch, showing what
+        /// the agent service's last memory_state said (PlaytestClient.BugDetectors; on until one says otherwise). The
+        /// agent service keeps it (the project's detectors.json), so it is greyed while not connected, still showing
+        /// the last one said; flipped, it is sent at once, a run going on included. Connected to an agent service older
+        /// than this plugin, which can't turn them off (PlaytestClient.BugDetectorsFixedOn): greyed and on (it runs
+        /// them), a line under it saying why. Flipped while it can't be, it goes back to what it showed.</summary>
+        static VisualElement DetectorsCard()
+        {
+            var card = SettingCard(DetectorsTitle, DetectorsLine, "detectors", out var control);
+            var client = EditorHost.Client;
+            Toggle toggle = null;
+            toggle = DetectorsSwitch(client == null || client.BugDetectors, on =>
+            {
+                var c = EditorHost.Client;
+                c?.SetBugDetectors(on);
+                var shown = c == null || c.BugDetectors;
+                if (toggle.value != shown)
+                {
+                    toggle.SetValueWithoutNotify(shown);
+                    toggle.text = DetectorsState(shown);
+                }
+            });
+            toggle.SetEnabled(client != null && client.CanSetBugDetectors);
+            control.Add(toggle);
+            if (client != null && client.BugDetectorsFixedOn)
+                control.Add(Para(PlaytestClient.BugDetectorsFixedOnWhy, "small t-sec2 detectors-why"));
+            return card;
+        }
+
+        /// <summary>The bug detectors switch, as the sharing one: its words (DetectorsState) right of the pill;
+        /// <paramref name="changed"/> gets each new value.</summary>
+        public static Toggle DetectorsSwitch(bool on, Action<bool> changed)
+        {
+            var toggle = Switch(DetectorsState(on), on);
+            toggle.AddToClassList("detectors-toggle");
+            toggle.tooltip = DetectorsTitle;
+            toggle.RegisterValueChangedCallback(e =>
+            {
+                toggle.text = DetectorsState(e.newValue);
                 changed(e.newValue);
             });
             return toggle;

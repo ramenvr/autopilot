@@ -139,18 +139,26 @@ namespace
 	/** How the game being played is networked (docs/protocol.md, `context`): "standalone", "listen_server" (the player
 	 *  hosts it) or "client". A client's says where the server's world is (in this process, the editor's dedicated
 	 *  server; "" when it runs elsewhere) and the server's own copies of the player's controller and pawn: what holds
-	 *  the truth about health, damage and deaths, and the copies a change sticks on. */
-	TSharedRef<FJsonObject> Net(UPlaytestSubsystem& Bridge, UWorld* World, APlayerController* PC)
+	 *  the truth about health, damage and deaths, and the copies a change sticks on. `players`: how many players the
+	 *  editor plays in this process (more than one: a request's "player" n plays player n), and `player`: whose this
+	 *  is. */
+	TSharedRef<FJsonObject> Net(UPlaytestSubsystem& Bridge, UWorld* World, APlayerController* PC, int32 Player)
 	{
 		TSharedRef<FJsonObject> Out = MakeShared<FJsonObject>();
 		const ENetMode Mode = World ? World->GetNetMode() : NM_Standalone;
 		Out->SetStringField(TEXT("mode"), Mode == NM_Client ? TEXT("client") : Mode == NM_ListenServer ? TEXT("listen_server")
 			: Mode == NM_DedicatedServer ? TEXT("dedicated_server") : TEXT("standalone"));
+		const int32 Players = Bridge.GetPlayerWorlds().Num();
+		if (Players > 1)
+		{
+			Out->SetNumberField(TEXT("players"), Players);
+			Out->SetNumberField(TEXT("player"), Player);
+		}
 		if (Mode != NM_Client)
 		{
 			return Out;
 		}
-		UWorld* Server = Bridge.GetServerWorld();
+		UWorld* Server = Bridge.GetServerWorld(World);
 		APlayerController* ServerPC = ServerController(Server, PC);
 		int32 Clients = 0;
 		for (const FWorldContext& Context : GEngine->GetWorldContexts())
@@ -164,6 +172,32 @@ namespace
 		Out->SetStringField(TEXT("server_controller"), PathOf(ServerPC));
 		Out->SetStringField(TEXT("server_character"), PathOf(ServerPC ? ServerPC->GetPawn() : nullptr));
 		Out->SetNumberField(TEXT("clients"), Clients);
+		return Out;
+	}
+
+	/** The players the editor plays (as Roblox's context lists them): [{"player": n, "name": its player state's name,
+	 *  "path": its controller, "character": its pawn, "world", "net_mode", "you": whether it is the request's player}],
+	 *  player 1 first. */
+	TArray<TSharedPtr<FJsonValue>> Players(UPlaytestSubsystem& Bridge, int32 You)
+	{
+		TArray<TSharedPtr<FJsonValue>> Out;
+		const TArray<UWorld*> Worlds = Bridge.GetPlayerWorlds();
+		for (int32 Index = 0; Index < Worlds.Num(); ++Index)
+		{
+			UWorld* World = Worlds[Index];
+			APlayerController* PC = PlayerController(World);
+			const ENetMode Mode = World->GetNetMode();
+			TSharedRef<FJsonObject> Item = MakeShared<FJsonObject>();
+			Item->SetNumberField(TEXT("player"), Index + 1);
+			Item->SetStringField(TEXT("name"), PC && PC->PlayerState ? PC->PlayerState->GetPlayerName() : FString());
+			Item->SetStringField(TEXT("path"), PathOf(PC));
+			Item->SetStringField(TEXT("character"), PathOf(PC ? PC->GetPawn() : nullptr));
+			Item->SetStringField(TEXT("world"), PathOf(World));
+			Item->SetStringField(TEXT("net_mode"), Mode == NM_Client ? TEXT("client") : Mode == NM_ListenServer
+				? TEXT("listen_server") : TEXT("standalone"));
+			Item->SetBoolField(TEXT("you"), Index + 1 == You);
+			Out.Add(Obj(Item));
+		}
 		return Out;
 	}
 }
@@ -183,9 +217,11 @@ namespace
 		return Input;
 	}
 
-	void Context(UPlaytestSubsystem& Bridge, int64 Id)
+	void Context(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args)
 	{
-		UWorld* World = Bridge.GetGameWorld();
+		// The request's player's (game.player(n).context()): its world, pawn, controller, controls; `players` lists them all
+		const int32 Player = PlayerOf(Args);
+		UWorld* World = PlayerWorld(Bridge, Args);
 		APlayerController* PC = PlayerController(World);
 		APawn* Pawn = PC ? PC->GetPawn() : nullptr;
 		TSharedRef<FJsonObject> Result = MakeShared<FJsonObject>();
@@ -200,8 +236,10 @@ namespace
 		Result->SetBoolField(TEXT("paused"), World && World->IsPaused());
 		Result->SetField(TEXT("game_time"), PlaytestJson::Number(World ? World->GetTimeSeconds() : 0.0));
 		Result->SetArrayField(TEXT("controls"), Controls(PC));
-		Result->SetObjectField(TEXT("net"), Net(Bridge, World, PC));
+		Result->SetObjectField(TEXT("net"), Net(Bridge, World, PC, Player));
 		Result->SetObjectField(TEXT("input"), InputInfo());
+		Result->SetArrayField(TEXT("players"), Players(Bridge, Player));
+		Result->SetNumberField(TEXT("you"), Player);
 		if (!World)
 		{
 			const FString Problem = Bridge.GetPlayProblem();
@@ -296,6 +334,29 @@ namespace
 			Bridge.RespondError(Id, Error, 404);
 			return;
 		}
+		// A start asking for another level than the one playing goes there, as a restart in it
+		const bool bSwitch = Action == TEXT("start") && World && !Package.IsEmpty() && Package != PlaytestLevels::PackageOf(World);
+		// How many players play is the editor's Play settings' (Number of Players, run under one process; the net mode
+		// with it): the run plays the game as the user set it up, so a start or restart asking for another number is
+		// refused before anything changes (Roblox's plugin starts that many; Unreal's never changes the user's settings)
+		double AskedPlayers = 0.0;
+		if (Args.IsValid() && Args->TryGetNumberField(TEXT("players"), AskedPlayers) && (Action == TEXT("start") || Action == TEXT("restart")))
+		{
+			// Checked against the session the action leaves running: a start of a running game keeps it (the players
+			// playing now); a start of a stopped game, and the editor's restart or level switch (it stops play and starts
+			// it again), play as many as the Play settings start now; a game build's restart reopens the level with the
+			// players it has
+			const bool bNewSession = !World || (Bridge.SessionHandler && (Action == TEXT("restart") || bSwitch));
+			const int32 Playing = Bridge.GetPlayerWorlds().Num();
+			const int32 Count = !bNewSession ? Playing : Bridge.PlaySettingsPlayers ? Bridge.PlaySettingsPlayers() : 1;
+			if (FMath::FloorToInt32(AskedPlayers) != Count)
+			{
+				Bridge.RespondError(Id, FString::Printf(TEXT("This game plays %d player%s, as the editor's Play settings start it "
+					"(Number of Players, run under one process): the number of players can't be changed from here. Play "
+					"with the players there are (game.players())"), Count, Count == 1 ? TEXT("") : TEXT("s")), 400);
+				return;
+			}
+		}
 		if (Bridge.SessionHandler)
 		{
 			TWeakObjectPtr<UPlaytestSubsystem> Weak(&Bridge);
@@ -317,9 +378,8 @@ namespace
 		}
 		// A game build: there is always a session; restarting reopens the map the game was launched with (or the one
 		// asked for: "map"), never the one it travelled to since (a match that ended moves the server on to the next
-		// map), with what the game put on the viewport taken off first (see RemoveGameWidgets). A start asking for
-		// another level than the one playing goes there, as a restart in it
-		const bool bSwitch = Action == TEXT("start") && World && !Package.IsEmpty() && Package != PlaytestLevels::PackageOf(World);
+		// map), with what the game put on the viewport taken off first (see RemoveGameWidgets); a level switch (bSwitch)
+		// goes there the same way
 		if ((Action != TEXT("restart") && !bSwitch) || !World)
 		{
 			Bridge.Respond(Id, Running(World != nullptr, World));

@@ -10,6 +10,7 @@
 //   PlaytestOpsSonar.cpp      view's `sonar`
 //   PlaytestOpsLook.cpp       how a thing is drawn, and its visible body: for `view` and `watch`
 //   PlaytestOpsWatch.cpp      `watch`: what changes over a stretch of game time
+//   PlaytestOpsTrace.cpp      `trace`: the first thing a line or a swept ball meets, by the world's collision
 //   PlaytestMedia.cpp         `record` and `capture`: the game's picture (FPlaytestMedia, PlaytestInternal.h)
 //
 // Handle and TickKeys, which the subsystem calls, are declared in PlaytestInternal.h.
@@ -51,11 +52,16 @@ namespace PlaytestOps
 	UEnhancedInputLocalPlayerSubsystem* InputSubsystem(UWorld* World);
 	/** {"X", "Y", "Z"}, each scaled and rounded to a whole number. */
 	TSharedRef<FJsonObject> Vec(const FVector& V, double Scale = 1.0);
+	/** The player a request is for: its "player" (1-based), 1 when it says none. Handle has checked that the player is
+	 *  there (when it isn't 1). */
+	int32 PlayerOf(const TSharedPtr<FJsonObject>& Args);
+	/** That player's world (Bridge.GetPlayerWorld): what the player's ops (keys, view, screen, UI, watch...) act on. */
+	UWorld* PlayerWorld(UPlaytestSubsystem& Bridge, const TSharedPtr<FJsonObject>& Args);
 
 	// --- the ops' handlers ---------------------------------------------------------------------------------------
 
 	void Rc(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
-	void Context(UPlaytestSubsystem& Bridge, int64 Id);
+	void Context(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void Session(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void Levels(UPlaytestSubsystem& Bridge, int64 Id);
 	void Pause(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
@@ -64,6 +70,8 @@ namespace PlaytestOps
 	void Input(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void Move(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void KeyOp(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** A held key this tick, as the player's input reads it: whether to press it again. See PlaytestOpsInput.cpp. */
+	bool HeldKeyGoesDownAgain(bool bDown, bool& bSeenDown, int32& UpTicks);
 	/** `pointer` (PlaytestOpsPointer.cpp): the mouse to a place on the game's view; the buttons pressed after click there. */
 	void PointerOp(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	/** A mouse button going down or up while the pointer is set: true when it went to the game's UI under the pointer
@@ -72,10 +80,12 @@ namespace PlaytestOps
 	/** Every frame: the pointer kept where it was put (forgotten once the brain or the session is gone). */
 	void TickPointer(UPlaytestSubsystem& Bridge);
 	void Screen(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
-	void UiList(UPlaytestSubsystem& Bridge, int64 Id);
+	void UiList(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void UiAct(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void View(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	void Watch(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** `trace` (PlaytestOpsTrace.cpp): the first thing a line or a swept ball meets, by the world's collision. */
+	void Trace(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 
 	// --- how a thing looks (PlaytestOpsLook.cpp; see the comments there) ----------------------------------------
 

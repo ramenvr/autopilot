@@ -77,8 +77,30 @@ public:
 	int32 GetMemoryRuns() const { return MemoryRuns; }
 	bool HasMemoryNotes() const { return bMemoryNotes; }
 	bool HasMemoryLib() const { return bMemoryLib; }
+	/** Whether the game's detectors run for this project (the Settings page's Bug detectors switch): the last memory_state's
+	 *  "detectors" (one without it, from an older agent service: on), or what the switch was flipped to since. Kept when
+	 *  the connection closes: the switch shows what it last knew. Always on with an agent service that can't turn them
+	 *  off (AreDetectorsFixedOn): it runs them. */
+	bool AreDetectorsEnabled() const { return bDetectorsEnabled || AreDetectorsFixedOn(); }
+	/** Whether the Bug detectors switch can be flipped: the agent service on this connection takes the `detectors`
+	 *  message (its welcome's features had "detectors"). */
+	bool CanSetDetectors() const { return IsWelcomed() && bBrainDetectors; }
+	/** Connected to an agent service older than this plugin, whose welcome's features don't have "detectors": it would
+	 *  ignore the switch and the game's detectors would go on running, so the switch shows them on, greyed, and says why
+	 *  (DetectorsFixedOnWhy). */
+	bool AreDetectorsFixedOn() const { return IsWelcomed() && !bBrainDetectors; }
+	/** Why the Bug detectors switch can't be flipped with an agent service that can't turn them off (the card and the
+	 *  status line say it; the same words in every plugin). */
+	static const TCHAR* DetectorsFixedOnWhy() { return TEXT("The agent service in use is older than this plugin and can't turn them off."); }
+	/** The Bug detectors switch flipped: `{"type": "detectors", "enabled"}` to the agent service (docs/protocol.md), shown
+	 *  at once; the memory_state it answers with says what the project's setting is now. Not connected, or connected to
+	 *  an agent service that can't turn them off: nothing is sent or changes, and the status line says why. */
+	void SetDetectorsEnabled(bool bOn);
 	/** Whether the user can steer the run going now (the agent service takes `steer`: its welcome said so). */
 	bool CanSteer() const { return bConnected && bRunActive && bBrainSteers; }
+	/** And whether a steer can say how it lands (its welcome's features had "steer_mode"): a hint that lets play go on
+	 *  (the default), or a redirect that ends the attempt playing now. Without it a steer goes without a mode. */
+	bool CanRedirect() const { return CanSteer() && bBrainSteerModes; }
 	/**
 	 * Why there is no connection, in words for the user ("" when connected or not trying): the agent service
 	 * refused it (its `error` frame's message), or it can't be reached.
@@ -114,8 +136,13 @@ public:
 	int32 GetAccountRevision() const { return AccountRevision; }
 	/** Ask for the account frame again. */
 	void RequestAccount();
-	/** Ask the agent service to sign in to Aura in the browser (bSignOutFirst: "Use another account"). False when it can't. */
-	bool SignInWithAura(bool bSignOutFirst = false);
+	/**
+	 * Ask the agent service to sign in to Aura in the browser. False when it can't. bAnotherAccount: "Use another account",
+	 * the sign-in kept is ended first and Aura's page is asked to let the user pick the account ("another_account").
+	 */
+	bool SignInWithAura(bool bAnotherAccount = false);
+	/** The sign-in going on is "Use another account"'s (the tab says what to do if the page shows the wrong account). */
+	bool IsSignInForAnotherAccount() const { return bSignInAnotherAccount; }
 	/** Stop waiting for the browser. */
 	void CancelAuraSignIn();
 	/** Sign out of Aura on this computer (every editor here). */
@@ -130,8 +157,9 @@ public:
 	/** Whether the Blueprint export (the AutopilotCodex commandlet, run for the brain's `codex_manifest`) is running,
 	 *  and how far it is: files exported, of all it exports (both 0 until it has counted them). */
 	bool GetExportProgress(int32& OutDone, int32& OutTotal) const;
-	/** What the user types to steer the run going now: it goes on from where the game is (see docs/protocol.md). */
-	void SteerRun(const FString& Text);
+	/** What the user types to steer the run going now: a hint (play goes on), or with bRedirect a redirect that ends the
+	 *  attempt playing now (sent as the frame's "mode" only when CanRedirect; see docs/protocol.md). */
+	void SteerRun(const FString& Text, bool bRedirect = false);
 	/** The run the connection dropped under is still played by the agent service (its events came again once
 	 *  connected): it counts as going again, so Stop and Steer work. */
 	void ResumeRun() { if (bConnected) { bRunActive = true; } }
@@ -144,10 +172,26 @@ public:
 	 *  has no local player, no viewport, and its player controllers only stand in for remote players. */
 	UWorld* GetGameWorld() const;
 
+	/** The worlds of the players being played, player 1's first (GetGameWorld's): in Play In Editor each world with a
+	 *  local player that runs in this process (never a dedicated server's), by PIE instance, so the listen server's host
+	 *  or the first client is player 1 and the editor's further clients ("Number of Players" in its Play settings, run
+	 *  under one process) are players 2, 3...; outside it the game's own world. Empty when nothing is played. */
+	TArray<UWorld*> GetPlayerWorlds() const;
+
+	/** Player N's world (1-based, as GetPlayerWorlds lists them); nullptr when there is no such player. */
+	UWorld* GetPlayerWorld(int32 Player) const;
+
 	/** The world with authority over the game being played: GetGameWorld's own unless that is a client, then the
 	 *  server's when it runs in this process (the editor's dedicated server, or a listen server); nullptr when the server
 	 *  is in another process. */
 	UWorld* GetServerWorld() const;
+
+	/** The same for the world a player plays (Played, one of GetPlayerWorlds). */
+	UWorld* GetServerWorld(const UWorld* Played) const;
+
+	/** Set by the editor module: how many players the editor's Play settings start in this process (Number of Players
+	 *  when run under one process, else 1). Unset (a game build): 1. */
+	TFunction<int32()> PlaySettingsPlayers;
 
 	/** Why no game world is being played although the editor is in Play In Editor (the client hasn't joined its
 	 *  dedicated server yet, or never will), "" otherwise. */
@@ -292,21 +336,29 @@ private:
 	double LastRequestAt = -1.0;  // when the agent service's last request came (FPlatformTime::Seconds; -1: none on this connection)
 	bool bDetectorsOn = false;  // the detectors worked on the last tick (IsRunUsingGame): they start afresh when on again
 	bool bBrainSteers = false;  // the welcome's features had "steer"
+	bool bBrainSteerModes = false;  // and "steer_mode": a steer says "hint" or "redirect"
 	bool bBrainAccount = false;  // ... "account"
+	bool bBrainDetectors = false;  // ... "detectors": the Bug detectors switch can turn them off (CanSetDetectors)
 	bool bWelcomedHere = false;  // a welcome came on this connection
 	FPlaytestAccount Account;
 	FPlaytestSignIn SignIn;
 	int32 SignInSerial = 0;  // the connection the sign-in going on was asked on
+	bool bSignInAnotherAccount = false;  // the sign-in going on is "Use another account"'s
 	int32 AccountRevision = 0;
 	TSharedPtr<FPlaytestAgentService> AgentService;
 	void SendType(const TCHAR* Type);
+	void SendSignIn();
 	bool bMemoryKnown = false;  // a memory_state came on this connection
 	int32 MemoryRuns = 0;
 	bool bMemoryNotes = false;
 	bool bMemoryLib = false;
+	bool bDetectorsEnabled = true;  // see AreDetectorsEnabled (not bDetectorsOn: whether they worked on the last tick)
 	/** The connection closed: its memory_state isn't true any more (the agent service removed from this computer,
-	 *  say). The next connection's says again. */
+	 *  say). The next connection's says again. (The Bug detectors switch keeps what it showed.) */
 	void ForgetMemoryState();
+	/** The tests' socket: what Send would send, written out, instead (AutopilotPanelTests.cpp). */
+	TFunction<void(const FString&)> TestSent;
+	friend class FAutopilotDetectorsSwitchTest;  // (feeds a subsystem of its own memory_state, flips the switch: AutopilotPanelTests.cpp)
 	double NextReconnect = 0;
 	double Backoff = 1.0;
 	double LastHeartbeat = 0;

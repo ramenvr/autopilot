@@ -21,7 +21,8 @@
 --  - `record` and `capture` go to the client when Studio gives the plugin pictures (StudioCaptureService: Media.luau,
 --    the hello then says "media"; a recording asked for between play sessions starts with the next one); else they get
 --    409, and the agent service answers them itself from Studio's MCP server (autopilot/studio_mcp.py).
--- The dock (Dock.luau) drives runs through it (start, stop, steer, clear_memory, the account) and shows what comes.
+-- The dock (Dock.luau) drives runs through it (start, stop, steer, clear_memory, detectors, the account) and shows what
+-- comes.
 local RunService = game:GetService("RunService")
 local StudioTestService = game:GetService("StudioTestService")
 
@@ -78,10 +79,15 @@ function Editor.new(plugin: Plugin)
 	self.session = nil -- the brain's session for this connection: the pipe's key
 	self.runActive = false
 	self.brainSteers = false
+	self.brainSteerModes = false -- ("steer_mode": a steer says whether it is a hint or a redirect)
 	self.brainAccount = false
 	self.brainSetup = false
+	self.brainDetectors = false -- ("detectors": the Bug detectors switch's frame is taken: detectorsFixedOn)
 	self.privacyReady = false
 	self.memory = { known = false, runs = 0, notes = false, lib = false }
+	-- the game's bug detectors for this project (memory_state's "detectors": the Settings' Bug detectors switch), on
+	-- until an agent service says otherwise; kept as last told while not connected
+	self.detectors = true
 	self.account = {}
 	self.sides = {} -- side -> {ready = bool, seen = os.clock()}
 	self.playing = false -- a play session runs (its client is attached)
@@ -175,9 +181,10 @@ function Editor:_hello()
 	local h: any = { type = "hello", protocol = Link.PROTOCOL, plugin_version = Editor.VERSION, engine = "roblox",
 		engine_version = version(), project = self:projectName(), host = "editor",
 		inspect = Settings.get(self.plugin, "show_policy_log") ~= false,
-		-- `levels`, `timed_hold`, `pointer`, `touch`, `gamepad`, `device`, `players` (multiplayer); `media` when
-		-- Studio gives the plugin pictures
-		features = { "levels", "timed_hold", "pointer", "touch", "gamepad", "device", "players" },
+		-- `levels`, `timed_hold`, `pointer`, `touch`, `gamepad`, `device`, `players` (multiplayer), `sequence` (input
+		-- sequences the game runs itself, frame by frame: Client.luau), `trace`; `media` when Studio gives the plugin
+		-- pictures
+		features = { "levels", "timed_hold", "pointer", "touch", "gamepad", "device", "players", "sequence", "trace" },
 		-- (how input reaches the games it plays, as the other plugins' hellos say: the client's context says it for
 		-- the game playing)
 		input = Ui.inputCaps({ playing = false }),
@@ -260,11 +267,22 @@ function Editor:canSteer(): boolean
 	return self:connected() and self.runActive and self.brainSteers
 end
 
-function Editor:steer(text: string)
+-- And whether a steer can be a hint (play goes on) or a redirect (the attempt playing now ends): "steer_mode".
+function Editor:canRedirect(): boolean
+	return self:canSteer() and self.brainSteerModes
+end
+
+-- What the user types to steer the run going now: a hint, or with redirect a redirect. The frame says its "mode" only
+-- to an agent service with "steer_mode" (an older one gets it as before).
+function Editor:steer(text: string, redirect: boolean?)
 	local said = string.gsub(text, "^%s+", "")
 	said = string.gsub(said, "%s+$", "")
 	if self:canSteer() and said ~= "" then
-		self:_send({ type = "steer", text = said })
+		local frame: any = { type = "steer", text = said }
+		if self:canRedirect() then
+			frame.mode = if redirect then "redirect" else "hint"
+		end
+		self:_send(frame)
 	end
 end
 
@@ -291,9 +309,14 @@ function Editor:askAccount()
 	end
 end
 
-function Editor:signIn(): boolean
+-- anotherAccount: "Use another account", Aura's page asked to let the user pick the account (an older agent service
+-- ignores it).
+function Editor:signIn(anotherAccount: boolean?): boolean
 	if not (self:connected() and self.brainAccount) then
 		return false
+	end
+	if anotherAccount then
+		return self.link:send({ type = "aura_sign_in", another_account = true })
 	end
 	return self.link:send({ type = "aura_sign_in" })
 end
@@ -324,6 +347,27 @@ function Editor:setSharing(share: boolean): boolean
 	return self.link:send({ type = "save_preferences", share = share })
 end
 
+-- The Settings' Bug detectors switch: the agent service saves it for this project (its detectors.json) and tells the
+-- game's detectors at once, then answers with a memory_state, which says it as saved. Shown as flipped meanwhile. Not
+-- with an agent service that can't turn them off (detectorsFixedOn: the Settings page says why).
+function Editor:setDetectors(on: boolean): boolean
+	if not self:connected() then
+		self:status("Not connected: connect first")
+		return false
+	end
+	if self:detectorsFixedOn() then
+		return false
+	end
+	self.detectors = on
+	return self.link:send({ type = "detectors", enabled = on })
+end
+
+-- Connected to an agent service older than this plugin, whose welcome's features don't have "detectors": it would
+-- ignore the switch and the game's detectors would go on running, so the switch shows them on, greyed, and says why.
+function Editor:detectorsFixedOn(): boolean
+	return self:connected() and not self.brainDetectors
+end
+
 -- A dock setting the hello carries changed (Show Policy Log's `inspect`, Research agent's `research`): the hello again,
 -- as on a privacy change, without interrupting a run (`inspect` applies at once, `research` from the next run).
 function Editor:helloChanged()
@@ -342,13 +386,18 @@ function Editor:_onBrainFrame(frame: any)
 		self.link.role = tostring(frame.role or "")
 		self.connection += 1
 		self.brainSteers, self.brainAccount, self.brainSetup = false, false, false
+		self.brainSteerModes, self.brainDetectors = false, false
 		for _, f in ipairs(frame.features or {}) do
 			if f == "steer" then
 				self.brainSteers = true
+			elseif f == "steer_mode" then
+				self.brainSteerModes = true
 			elseif f == "account" then
 				self.brainAccount = true
 			elseif f == "setup" then
 				self.brainSetup = true
+			elseif f == "detectors" then
+				self.brainDetectors = true
 			end
 		end
 		if self.link.role == "cli" then
@@ -395,6 +444,7 @@ function Editor:_onBrainFrame(frame: any)
 		self:_restoreDevice()
 	elseif kind == "memory_state" then
 		self.memory = { known = true, runs = tonumber(frame.runs) or 0, notes = frame.notes == true, lib = frame.lib == true }
+		self.detectors = frame.detectors ~= false -- (an older agent service says nothing: on)
 		self:_fire("memory")
 	elseif kind == "memory_cleared" then
 		if frame.ok == true then
@@ -459,6 +509,33 @@ function Editor:_forward(frame: any, side: string, fallback: boolean)
 	self.forwarded[frame.id] = now()
 	self:_pipeSend({ to = side, type = "request", id = frame.id, op = frame.op, args = frame.args or Json.object(),
 		fallback = fallback or nil })
+end
+
+-- What a request does to the game, as the server's teleport detector takes it (Detectors:noteActed): {what = "input",
+-- key, mode} for a key, an action or a UI element pressed, {what = "move"} for an rc write or call; nil for the rest
+-- (reads, looks, the pointer put somewhere). The editor tells the server as it passes the request on: the server sees
+-- the characters, the client gets the keys, and the note comes before what the key makes the game do.
+function Editor.acted(op: string, args: any): any
+	if op == "key" then
+		return { what = "input", key = tostring(args.key or ""), mode = tostring(args.mode or "press") }
+	elseif op == "input" then
+		return { what = "input", key = tostring(args.action or ""), mode = tostring(args.mode or "press") }
+	elseif op == "ui_act" then
+		local id = tostring(args.id or "")
+		return { what = "input", key = string.match(id, "([^/%.]+)$") or id, mode = "press" }
+	elseif op == "rc" then
+		local verb = tostring(args.verb or "")
+		local body = if type(args.body) == "table" then args.body else {}
+		-- (a call that reads, GetChildren, FindFirstChild, IsA..., moves nothing: the kit makes them every step)
+		local fn = tostring(body.functionName or "")
+		local read = string.match(fn, "^Get") or string.match(fn, "^Find") or string.match(fn, "^Is")
+			or string.match(fn, "^Has") or string.match(fn, "^Can")
+		if (verb == "call" and not read) or (verb == "property" and (type(body.propertyValue) == "table"
+			or string.sub(tostring(body.access or ""), 1, 5) == "WRITE")) then
+			return { what = "move" }
+		end
+	end
+	return nil
 end
 
 function Editor:_onRequest(frame: any)
@@ -556,6 +633,12 @@ function Editor:_onRequest(frame: any)
 	if n > 1 and self.sides[client] == nil then
 		self:_respondError(id, "No player " .. tostring(n) .. " in the game: " .. self:_playersSaid(), 404)
 		return
+	end
+	local acted = Editor.acted(op, args)
+	if acted then
+		acted.to = "server"
+		acted.type = "acted"
+		self:_pipeSend(acted)
 	end
 	if op == "rc" then
 		local body = if type(args.body) == "table" then args.body else {}

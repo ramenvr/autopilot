@@ -222,7 +222,7 @@ def test_frames_are_described_with_the_questions_only(upstream, monkeypatch, tmp
     assert base64.b64decode(images[-1]["source"]["data"]) == b"jpeg15"  # (t 8.0)
     asked = parts[-1]["text"]
     assert "1. What does the left arm do?" in asked and vision.SWEEP in asked
-    assert "Frame 2: game time 6.60 s (0.60 s after the one before)" in [p.get("text") for p in parts]
+    assert "Frame 2: time 6.60 s (0.60 s after the one before)" in [p.get("text") for p in parts]
     assert usage.totals()["llm"]["input"] == 900  # (not through the run's proxy: counted here)
     line = json.loads((tmp_path / vision.LOG).read_text(encoding="utf-8"))
     assert line["questions"] == ["What does the left arm do?"] and [f["t"] for f in line["frames"]][0] == 6.0
@@ -287,7 +287,7 @@ def test_google_is_asked_on_geminis_own_api(upstream, monkeypatch):
     assert body["systemInstruction"] == {"parts": [{"text": vision.SYSTEM}]}
     assert body["generationConfig"] == {"maxOutputTokens": vision.MAX_TOKENS}
     (content,) = body["contents"]
-    assert content["role"] == "user" and content["parts"][1] == {"text": "Frame 1: game time 5.00 s"}
+    assert content["role"] == "user" and content["parts"][1] == {"text": "Frame 1: time 5.00 s"}
     pictures = [p["inline_data"] for p in content["parts"] if "inline_data" in p]
     assert len(pictures) == 3
     assert pictures[0] == {"mime_type": "image/jpeg", "data": base64.b64encode(b"jpeg0").decode()}
@@ -365,7 +365,7 @@ def test_what_isnt_there_is_said_not_described(monkeypatch):
     frames(rec)
     d = vision.Describer(rec, "anthropic")
     text, ok = d.describe(100.0, 104.0, ["?"], t0=50, t1=60, label="episode 1")
-    assert not ok and "show game times 5.00 to 8.80" in text
+    assert not ok and "show t=5.00 to 8.80 s" in text
     text, ok = d.describe(500.0, 600.0, ["?"], label="episode 9")
     assert not ok and "No frames of episode 9" in text
     rec.frames.dropped_before = 700.0
@@ -386,10 +386,12 @@ def test_the_call_log_keeps_no_pictures():
 
 # -- the agent's tool, the report and the user's alert ----------------------------------------------------------------
 
-def trace(run_dir, n, wall0, wall1):
+def trace(run_dir, n, wall0, wall1, t0=5.0):
+    """Episode n's trace, from wall0 to wall1: its first game time t0 is its summary's t=0."""
     with open(os.path.join(run_dir, f"trace{n}.jsonl"), "w", encoding="utf-8") as f:
-        f.write(json.dumps({"kind": "start", "wall": wall0}) + "\n")
-        f.write(json.dumps({"kind": "end", "wall": wall1, "t": 9.0, "reason": "time"}) + "\n")
+        f.write(json.dumps({"kind": "start", "wall": wall0}) + "\n")  # (no game time yet, as the runtime's)
+        f.write(json.dumps({"kind": "obs", "wall": wall0, "t": t0}) + "\n")
+        f.write(json.dumps({"kind": "end", "wall": wall1, "t": t0 + wall1 - wall0, "reason": "time"}) + "\n")
 
 
 def played(game, tmp_path, monkeypatch, describer):
@@ -410,17 +412,58 @@ def test_describe_frames_looks_at_the_episode_asked_for(game, tmp_path, monkeypa
     frames(rec)  # (episode 2's frames)
     s = played(game, tmp_path, monkeypatch, vision.Describer(rec, "anthropic"))
     assert "Not reported" in s.do_report({"outcome": "CONFIRMED", "summary": "x", "evidence": [], "visual": True})
-    text = s.describe_frames(["How does the guard's hand move?"], start=6.0, end=7.0)
-    assert "frames of 6 (episode 2), at game times 6.00, " in text and s.described == 1
+    # Times are seconds from the episode's start, as its summary's t= (its first game time, 5.0, is t=0)
+    text = s.describe_frames(["How does the guard's hand move?"], start=1.0, end=2.0)
+    assert "frames of 6 (episode 2), at t= 1.00, " in text and s.described == 1
+    told = [p.get("text") for p in upstream.seen[-1][2]["messages"][0]["content"]]
+    assert "Frame 1: time 1.00 s" in told  # (the vision model is told the same times)
     # Times or episodes the agent got wrong are the agent's to fix: no alert
     wrong_times = s.describe_frames(["?"], start=50, end=60)
-    assert wrong_times == "No frames of episode 2 show game times 50 to 60 (its frames show game times 5.00 to 8.80 s)."
+    assert wrong_times == ("No frames of episode 2 show t=50 to 60 s (seconds from the episode's start) (its frames "
+                           "show t=0.00 to 3.80 s).")
     assert "No episode 5" in s.describe_frames(["?"], episode=5)
     assert not s.alerts
     assert "No frames of episode 1" in s.describe_frames(["?"], episode=1)
     assert "Reported" in s.do_report({"outcome": "CONFIRMED", "summary": "x", "evidence": [], "visual": True})
     # Episode 1 had no picture at all (its window minimized or hidden while it played): the user is told
     assert len(s.alerts) == 1 and "minimized or hidden" in s.alerts[0] and "window shown" in s.alerts[0]
+
+
+def test_frames_after_the_run_read_what_it_kept_and_say_nothing(game, tmp_path, monkeypatch):
+    rec = FakeRecorder()
+    frames(rec)  # (episode 2's)
+    s = played(game, tmp_path, monkeypatch, vision.Describer(rec, "deepseek"))
+    s.looks_itself = True
+    events = len(s.events)
+    text, jpegs = s.frames(2, start=0.0, end=1.0, count=3, live=False)
+    assert len(jpegs) == 3 and jpegs[0] == b"jpeg0" and "at t= 0.00, 0.40, 1.00 s" in text
+    # Episode 1 had no picture: after the run nobody is alerted, no feed line is written
+    assert "No frames of episode 1" in s.frames(1, live=False)[0]
+    assert len(s.events) == events and not s.alerts
+    # Frames no longer in memory can't be played again once the run is over: its video has them
+    rec.frames.items.clear()
+    rec.frames.dropped_before = 200.0
+    assert "its video in the run's media folder" in s.frames(2, live=False)[0]
+    assert "play it again" in s.frames(2)[0]
+
+
+def test_the_report_names_the_episode_whose_recording_is_the_runs(game, tmp_path, monkeypatch):
+    s = played(game, tmp_path, monkeypatch, None)  # (2 episodes played)
+    report = {"outcome": "CONFIRMED", "summary": "x", "evidence": []}
+    for wrong in (0, 3, -1, "two", 1.5, True, [1]):
+        refused = s.do_report({**report, "episode": wrong})
+        assert refused.startswith("Not reported: episode must be") and "1 to 2" in refused and s.report is None
+    assert s.do_report({**report, "episode": "1"}) == "Reported. You can stop now."
+    assert s.report["episode"] == 1  # (as a number)
+    with open(os.path.join(s.run_dir, "report.json"), encoding="utf-8") as f:
+        assert json.load(f)["episode"] == 1
+    assert session.finish(s, s.started, None, "")["episode"] == 1
+    # None named: as before (the last episode's recording); no episode played: none can be named
+    s.report = None
+    assert s.do_report({**report, "episode": None}).startswith("Reported") and "episode" not in s.report
+    s.report, s.episodes = None, 0
+    refused = s.do_report({"outcome": "INCONCLUSIVE", "summary": "x", "evidence": [], "episode": 1})
+    assert refused.startswith("Not reported") and "none has been played" in refused
 
 
 def test_a_run_that_cant_look_alerts_the_user_and_stays_inconclusive(game, tmp_path, monkeypatch):

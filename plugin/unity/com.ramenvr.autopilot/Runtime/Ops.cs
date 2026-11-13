@@ -45,7 +45,6 @@ namespace Autopilot.Playtest
                     client.Respond(id, View.Look(args));
                     break;
                 case "rc":
-                    Detectors.BridgeActedFrame = Time.frameCount;  // (what it moves isn't the game teleporting it)
                     Rc(client, id, args);
                     break;
                 case "context":
@@ -78,6 +77,8 @@ namespace Autopilot.Playtest
                     break;
                 case "ui_act":
                 {
+                    var element = Json.Str(args, "id");
+                    Detectors.NoteAgentInput(element.Substring(element.LastIndexOf('/') + 1));  // (a press, as a key's)
                     var error = ScreenUI.Act(args);
                     if (string.IsNullOrEmpty(error)) client.Respond(id, new Dictionary<string, object>());
                     else client.RespondError(id, error);
@@ -113,6 +114,9 @@ namespace Autopilot.Playtest
                 case "transforms":
                     client.Respond(id, Transforms(args));
                     break;
+                case "trace":
+                    Trace.Handle(client, id, args);
+                    break;
                 case "pose":
                     client.Respond(id, Player.Pose());
                     break;
@@ -140,6 +144,13 @@ namespace Autopilot.Playtest
                 client.RespondError(id, "rc needs a body");
                 return;
             }
+            // (a write, or a call that isn't a read, is the agent changing the game itself: what it moves isn't the game
+            // teleporting it. Get*/Find*/Is*/Has*/Can* calls, which the kit makes every step, read)
+            var function = Json.Str(body, "functionName");
+            var read = new[] { "Get", "Find", "Is", "Has", "Can" }.Any(p => function.StartsWith(p, StringComparison.Ordinal));
+            if (verb == "call" && !read || verb == "property" && (Json.Obj(body, "propertyValue") != null
+                                                                 || Json.Str(body, "access").StartsWith("WRITE", StringComparison.Ordinal)))
+                Detectors.NoteAgentMove();
             switch (verb)
             {
                 case "call":
@@ -465,8 +476,32 @@ namespace Autopilot.Playtest
             return box;
         }
 
+        /// <summary>The world box round an object's enabled colliders, triggers too (what of it blocks or overlaps:
+        /// Unreal's colliding components), or null when it has none.</summary>
+        public static Bounds? CollisionBoundsOf(GameObject go)
+        {
+            Bounds? box = null;
+#if AUTOPILOT_PHYSICS
+            foreach (var c in go.GetComponentsInChildren<Collider>())
+            {
+                if (!c.enabled) continue;
+                if (box == null) box = c.bounds;
+                else
+                {
+                    var b = box.Value;
+                    b.Encapsulate(c.bounds);
+                    box = b;
+                }
+            }
+#endif
+            return box;
+        }
+
         static Dictionary<string, object> Transforms(Dictionary<string, object> args)
         {
+            // center/extent: the box round the object's colliders (round what is drawn of it when nothing collides);
+            // "visual": the box round what is drawn of it and its colliders
+            var visual = Json.Bool(args, "visual", false);
             var result = new Dictionary<string, object>();
             foreach (var o in Json.List(args, "objects") ?? new List<object>())
             {
@@ -486,7 +521,7 @@ namespace Autopilot.Playtest
                 if (cc != null && cc.enabled) velocity = cc.velocity;
                 else if (rb != null) velocity = rb.linearVelocity;
 #endif
-                var box = BoundsOf(go);
+                var box = (visual ? null : CollisionBoundsOf(go)) ?? BoundsOf(go);
                 result[path] = new Dictionary<string, object>
                 {
                     ["location"] = Frame.Point(t.position),

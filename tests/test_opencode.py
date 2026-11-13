@@ -268,7 +268,7 @@ def test_a_run_ends_when_the_turn_does_and_steering_after_it_is_sent_on(session,
                                 "Request: open the crate", dict(os.environ), events, session, time.time() + 60, err,
                                 cwd=str(tmp_path))
     assert why is None and events.model == "m" and events.turns == 2
-    assert events.last_text.startswith("got: The user, watching the game, steers")
+    assert events.last_text.startswith("got: The user, watching the game, adds a hint")
     assert events.cost == 0.25 and json.loads(seen.read_text())["model"] == "m"
 
 

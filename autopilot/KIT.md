@@ -9,17 +9,27 @@ Reads (privileged: any object, any property, protected and Blueprint variables i
 - `game.actors("BP_Door")` / `game.actors("Door")` / `game.actors("/Game/X/BP_Door.BP_Door_C")`: actor paths of a class (subclasses too). A Blueprint's name is resolved from the codex, a C++ class name from the project's modules.
 - `game.named("Door")`: actors whose object name contains the text. `game.all_actors()`.
 - `game.get(path, "Health")`: one property. `game.props(path)`: all of them. Components: `f"{actor}.MeshComp"`.
-- `game.call(path, "FunctionName", Param=value, ...)` -> dict (`ReturnValue` and out params); `game.ret(...)` -> its ReturnValue.
+- `game.call(path, "FunctionName", Param=value, ...)` -> dict (`ReturnValue` and out params); `game.ret(...)` -> its ReturnValue. An argument name the function doesn't take is refused (a GameError naming the ones it takes).
   Static library functions go to class default objects, e.g. `game.ret(GAMEPLAY, "GetPlayerCharacter", WorldContextObject=game.world, PlayerIndex=0)`.
 - `game.describe(path)`: its class, properties, Blueprint-callable functions (with their arguments).
 - `game.exists(path)`: whether it is in the level now. An actor the game destroyed (picked up, broken, killed) is gone
   at once, though `game.get` can still read it for a moment: ask `exists`, don't wait for a read to fail.
 - `game.loc(path)` -> Vec; `game.locs(paths)` -> {path: Vec}; `game.bounds(path)` -> (center, half extent); `game.velocity(path)`; `game.rot(path)`.
+  `bounds` is a box square to the world round what of the thing collides (blocks or overlaps, trigger volumes too;
+  round all it draws when nothing of it collides; `bounds(path, visual=True)`: round all it draws). A box, not its
+  shape: a big, turned, hollow or arched thing is solid in only part of it (a prop whose box is 20 m wide may block
+  a few metres of it), so never judge a lane, a gap or clearance by boxes. Ask the collision (`game.trace`, sonar).
 - `game.pose()` -> {"at", "eye", "yaw", "pitch", "velocity"} of the player (one frame).
 - `game.aim_error(point)` -> (right, up) degrees from the view to a point.
 - `game.view(**args)`: what the player sees (visible things with distance/screen position, held items, camera, body:
   on_ground, falling, touching...). `game.view(sonar=True)` adds `body.sonar.ways`: how far the body could walk each way
   (`turn` right of the view, `clear` distance, `by` wall/drop/steep/reach). Costs part of a frame: not every tick.
+- `game.trace(start, end, radius=0, sight=False)`: the first thing in the way from any point to any other, by the
+  game's collision (what stops the player's body; `sight=True`: what stops a line of sight); `radius` sweeps a ball
+  that wide (room for a body: its capsule's radius). -> None when the way is clear, else {"location" (where it stops),
+  "point", "normal", "distance", "actor", "name", "inside"}. The player's own body is never hit. Each is one read: put
+  several in one `game.batch`. Is a lane clear ahead: trace from the body (a little above the feet) to where it is going, at the body's
+  radius; is there floor: trace down. Sonar answers from the player only, at angles from the view; trace from anywhere.
 - `game.sees(paths)` -> {path: {"distance", "screen_x", "screen_y", "crosshair_on" (a bool)}} for those of the actors the player
   can see now (in view, line of sight; screen_x/screen_y -1..1 from the view's center, right/up +): cheap enough for every tick (reflex play: is the enemy visible, is the crosshair on it).
 - `game.screen()` -> {widget key: text} of every text on screen (HUD, menus, prompts; UMG keyed
@@ -38,6 +48,10 @@ Inputs (the player's hands; the only way to act in play):
   Escape, Enter, One..Nine, LeftMouseButton, RightMouseButton, MiddleMouseButton...) or of an Enhanced Input action path
   (`/Game/Input/IA_Jump.IA_Jump`, value optional).
 - `game.hold("W")` ... `game.release("W")`; `game.release_all()`. Holds are leased: the runtime renews them every tick.
+- Analog input: axis keys take a value, `game.hold("Gamepad_LeftY", 0.4)` (a stick: `Gamepad_LeftX` right,
+  `Gamepad_LeftY` forward, -1..1, when the game reads the gamepad's stick), and so do move actions,
+  `game.hold(move_action, Vec(x, y, 0))` (which axis is which: the action's handler in the code). Holding it again
+  with a new value changes it. Use it to move by less than full speed (see "What makes a harness play well").
 - `game.pointer(screen_x, screen_y)` / `game.pointer(world=point)` / `game.pointer(object=path)`: puts the mouse at a place
   on the view without moving across to it (-1..1 from the middle, y up, the numbers `view` gives a thing); the mouse
   buttons pressed after it click there, in the world as on the UI (`game.press("LeftMouseButton")`). A drag (a selection
@@ -59,6 +73,10 @@ Inputs (the player's hands; the only way to act in play):
   `press`/`hold`, `ui_act`, and every controller: `walk_to(game.player(2), ...)`), `game.players()` lists them.
   `game` itself is player 1. The runtime renews and lets go of every player's held keys. Use it when the request is
   about players together (handing things over, one seeing another, shared state); a request about one player needs one.
+  Without "players" in `game.features`, `game.player(2)` and `game.players()` raise GameError.
+  Unreal's players are the editor's multiplayer Play In Editor (Number of Players in its Play settings, run under one
+  process: a listen server's host or the first client is player 1): `game.restart(players=N)` can't change how many,
+  and `game.pointer` is player 1's only (another player's UI: its `ui_act`).
 
 ## Controllers (kit.control): generators, `yield from` them inside executors
 
@@ -100,6 +118,22 @@ Each does one tick of control per step and returns a `Result` (truthy when it wo
 - `aim_and_strike(game, target, key, strikes=1, cooldown=0.5)`: look at the target and press `key` `strikes` times: one
   volley, for tactics of your own that choose when to be in reach.
 - `hold_for(game, key, seconds)`, `press(game, key, times=1, every=0.15)`, `wait(game, seconds)`, `until(game, cond, timeout)`.
+- `moveset(game, steps, timeout=None)`: a sequence of inputs the game runs itself, frame by frame on its own clock
+  (`game.sequence`): `steps` = `[{"key", "mode": "press"|"hold"|"release", "at": s | "after": s, "when": {...},
+  "timeout": s}, ...]`; a step fires at its time once its `when` holds, read by the game every frame: `{"near":
+  {"point": Vec, "within": cm}}`, `{"past": {"point": Vec, "dir": Vec}}` (the player past the plane through the
+  point facing dir), `{"past_of": {"path": a part, "dir": Vec, "along": cm}}` (the plane carried by a moving part:
+  its edge, `along` = its half size that way less a margin; a deck drifting back brings its edge to the body),
+  `{"on_ground": bool}`, `{"falling": bool}`, `{"vz_below": cm/s}` (the top of a jump: 0). For a
+  move that must land on a frame (a jump at an edge, a dodge a tenth after a tell, a combo): the brain's delay is
+  out of it. Where the plugin runs no sequences it runs from here by the game's clock.
+  Steps fire in order (one waits for the step before it): run what doesn't wait for each other as sequences side
+  by side (`game.sequence(steps)` returns at once with an id: one for the direction held, one for the jumps). A key
+  a step holds goes down when its step fires and stays down, during the sequence and after it, until a later step,
+  `game.release(key)` or `release_all()` lets it go (never repeat a hold to keep it down);
+  `game.sequence_cancel(id)` drops the steps still waiting and lets go of what that sequence holds.
+- `jump_at(game, edge, direction, hold=0.6)`: run along `direction` and jump the frame the player passes `edge` (a
+  point on the take-off line), forward held `hold` s more: a gap jump that lands the same on every machine.
 - `run(gen, timeout=15)`: drive a controller to its end from plain code (`setup()`, `teardown()`), as in probes;
   inside executors `yield from` it instead.
 - `sonar(game, turns=(...), reach=1500)`: the sonar ways (see view).
@@ -111,6 +145,30 @@ Each does one tick of control per step and returns a `Result` (truthy when it wo
 (degrees right), `clock(bearing)` (ahead / ahead-left / left / behind...), `forward(yaw, pitch)`, `right_of(yaw)`,
 `wrap`, `yaw_of`, `pitch_of`, `where(pose, point)` -> {"distance", "direction", "bearing", "height"} (facts for Jev).
 
+## Time (the game's, never the wall clock's)
+
+Every controller above times itself by the game's own clock: `game.t` is the game time of the latest answer and
+`game.now` the game time at this moment (the answer's plus the wall time since it came, while the game runs); a
+`Clock(game)` is a stopwatch in game seconds (`elapsed()`, `step()`: the game seconds since the last step, the pace
+your loop runs at) that counts real time only while the game's clock stands still (a pause menu, a loading screen).
+Write your own loops the same way: `clock = Clock(game)` ... `while clock.elapsed() < timeout:`, never
+`time.monotonic()` or `time.sleep`. On a machine that runs the game slowly every read waits a frame and a tick covers
+less of the game; timed by the game a move lasts the same wherever it plays, and a harness tuned here plays the same
+there. `game.lag` is the game seconds from an input sent to its effect, measured (calibrate_look): what a move timed
+to the game must be sent ahead by, when the game can't do the timing itself (moveset, jump_at: then it can).
+
+## Looking while playing (the picture)
+
+While an episode plays, a model that sees the last 5 s of the recording answers questions about it: every few
+seconds, and right after a death, a failed option or a stall. By default: `blocked` (the player is stuck), `cause`
+(what happened to it: nothing / hazard / fall / enemy / moving_object / died_unseen) and `menu` (a screen covers the
+view). The answers reach `on_watch(answers, obs)` and `game.watch` (`game.watch.get("blocked", 0) > 0.7` in an
+executor: stop pushing and try another way), and the trace: the summary's "What the picture showed" gives each
+death's cause and a sentence on what the picture showed before it. Add your own in `watch_questions(obs)`: what the
+numbers can't tell and the picture can (`{"beam_across_way": "A beam, laser or fire crosses the player's way
+ahead"}`, `{"clear_shot": True}` for the built-in line-of-sight question when the player aims at something), and
+tell the runtime what a death is when it isn't a count named deaths/falls (`died(before, obs)`).
+
 ## The harness (kit.harness: read its docstrings)
 
 ```python
@@ -119,6 +177,7 @@ class MyHarness(Harness):
     tempo = 2.0             # decisions/second while an option runs (reflex play: 4-8; deliberate: 0.5-2)
     tick_hz = 15.0          # observe + one executor step per tick
     switch_margin = 0.25    # how much more Jev must prefer another option to interrupt the running one
+    trace_every = 1.0       # seconds between the observations kept in the trace (0: every one, each tick's)
 
     def setup(self, game): ...                 # find things, set game.keys, calibrate
     def observe(self, game) -> dict: ...       # cheap reads each tick; "_"-keys hidden from Jev
@@ -131,6 +190,15 @@ class MyHarness(Harness):
 
 `Option(name, description, run, facts={}, interruptible=True, urgent=False, effect=None, max_seconds=30)`.
 `Status(state="running"|"done"|"failed", note="", evidence={})`.
+
+The trace (traceN.jsonl beside harness.py) keeps the observation (its facts, status, options, step: an `obs` event)
+once every `trace_every` seconds of game time, 1 by default: coarse for something fast (at 20 m/s the player moves 20 m
+between two). Set `trace_every = 0` to keep every observation (each tick's, `tick_hz` a second), or e.g. 0.1. Options,
+decisions, inputs and findings are kept as they happen, whatever trace_every says. `game.log("kind", t=game.t,
+**fields)` in harness code writes an event of your own to the trace at once, never sampled: the moment that matters (a
+landing, a hit, the speed at an edge) with the numbers to check it by; give it `t=game.t`, as the trace's other events
+have, so it lines up with their times (the summary's t= counts from the episode's first). The event's kind comes first
+(`game.log(kind="hit", ...)` works too); a field of your own named `kind` or `wall` after it is kept as `kind_`/`wall_`.
 
 ## The plan (a request of more than one step)
 
@@ -255,10 +323,23 @@ class EscortHarness(Harness):
 - Reflex games: higher tempo, short executors that aim/steer in code every tick, urgent options for threats; a hit
   to dodge or block is a reflex in code (see Reacting in time).
 - Every option gets an `effect`, so the trace shows which ones don't work and why.
+- Space by collision, not boxes: whether a lane, a gap or a doorway is open, how close an obstacle really is, comes
+  from `game.trace` (at the body's radius) or sonar. An actor's box (`bounds`) is only roughly where it is: a big or
+  turned mesh's box covers lots of open space, and some actors' boxes are huge.
+- Stopping on a spot: keys are all or nothing, so a controller that toggles them overshoots (the body slides on after
+  release) and then oscillates round the spot. Move with analog input instead (a stick axis or the move action with a
+  value) and scale it by the distance left: full input far off, then down in proportion inside a slow-down radius
+  (about the distance the body slides at full speed), e.g. `value = max(0.15, min(1, left / slow_radius))`, and let go
+  inside the tolerance. Same for turning onto a heading: a turn rate in proportion to the angle left.
 - Using a thing by the crosshair (pick up, open, talk to): walk to inside the game's use range but not on top of it
   (a thing on the floor needs 1-2.5 m: standing over it, a third-person camera can't see it), `look_at` it with the
   default tolerance, check the game's own sign that it is targeted (`game.sees([thing])[thing]["crosshair_on"]`, or
-  the game's focus/target property from the code) and only then press.
+  the game's focus/target property from the code) and only then press. `game.sees` tells line of sight to a thing's
+  centre, not whether a shot gets through: when shots keep missing something "visible", ask the picture
+  (`watch_questions`: `{"clear_shot": True}`) and move for a clear one when it says no.
+- When a death's cause repeats in the summary's "What the picture showed" (a beam, a press, a fall at one gap),
+  the next harness handles that cause (a wait for its clear moment, a jump timed by the game, another way round)
+  before the episode plays again: the same failure twice is a fact, not bad luck.
 
 ## Reacting in time (dodging, blocking, jumping)
 
@@ -272,8 +353,10 @@ fraction of a second after it shows. Reactions like that go in executor code, wh
 - Read the player's own move in the code: how long it protects (invincibility frames, a guard window) and from when,
   how long it lasts, what it costs (stamina, a cooldown), whether it cancels an attack of the player's own.
 - Every tick, read the tell (one `game.batch`) and make the move once the hit is less than a lead away: the time from
-  the press until the protection starts, plus the step time (the summary's "Executor steps"). Measure the lead in
-  play (hits taken against moves made), don't guess it: it changes with the frame rate.
+  the press until the protection starts (`game.lag` plus the move's own start-up, from the code), plus the step time
+  (`Clock.step()`, the summary's "Executor steps"). Measure the lead in play (hits taken against moves made), don't
+  guess it. Better: hand the timing to the game with `moveset` when the tell is a time (a hit lands 0.4 s after the
+  wind-up starts: `{"key": dodge, "at": 0.4 - protection_start}`): then the brain's delay doesn't count.
 - React once per hit (remember which hit it was) and not again before the move's recovery ends: a reflex that fires
   for as long as a threat lasts leaves the player dodging and never attacking. Attack in the openings, when the next
   hit is further off than an attack takes.

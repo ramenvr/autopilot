@@ -1,10 +1,11 @@
 """The Unreal plugin on one engine, live: the engine's own third-person template played headless (-nullrhi: nothing
 is drawn) with an Autopilot build in its Plugins/, driven through the bridge the way a brain drives it. Checks the ops
-whose code differs between engine versions: `rc` reads (sets and maps), `key` (the input path), an Enhanced Input
-action, `move`, `view` and `screen`.
+whose code differs between engine versions: `rc` reads (sets and maps) and its refusal of an unknown argument or
+struct field, `key` (the input path), an Enhanced Input action, `move`, `view` and `screen`; and boxes
+(`GetActorBounds` of the colliding components), `trace` and a gamepad stick held part way.
 
     python tools/engine_smoke.py --engine "C:/Program Files/Epic Games/UE_5.3" --plugin <an Autopilot build>
-        [--port 8790]
+        [--port 8790] [--templates <an engine with Templates/, for one installed without them>]
 
 The build must keep its runtime module (a BuildPlugin package; not the editor-only one Aura ships). Exits 1 when a
 check fails.
@@ -28,6 +29,7 @@ TEMPLATE = os.path.join("Templates", "TP_ThirdPersonBP")
 
 
 def make_project(engine, plugin, root):
+    """engine: the install whose Templates/ the project is made from."""
     project = os.path.join(root, "Smoke")
     template = os.path.join(engine, TEMPLATE)
     shutil.copytree(os.path.join(template, "Content"), os.path.join(project, "Content"))
@@ -77,15 +79,62 @@ def yaw(link, controller):
     return r["ReturnValue"]["Yaw"]
 
 
+def boxes_and_traces(link, character, check):
+    """`game.bounds` (the colliding components' box, the drawn one asked for) and `trace` (the world's collision as the
+    player's body meets it, never the body itself)."""
+    from autopilot.kit.game import Game
+    from autopilot.kit.geom import Vec
+
+    game = Game(link)
+    check("hello: trace", "trace" in game.features, sorted(game.features))
+    (c_solid, e_solid), (c_drawn, e_drawn) = game.bounds(character), game.bounds(character, visual=True)
+    check("bounds: the capsule's box, no wider than the drawn one", 0 < e_solid.x <= e_drawn.x + 1,
+          f"colliding {e_solid.rounded()} at {c_solid.rounded()}, drawn {e_drawn.rounded()} at {c_drawn.rounded()}")
+    at = Vec(*location(link, character))
+    half = e_solid.z
+    # Down through the player's own capsule: the floor under it (a slope, maybe, after the walks), not the capsule's top
+    down = game.trace(at + Vec(0, 0, 300), at - Vec(0, 0, 1000))
+    check("trace: a line down meets the floor, not the player",
+          bool(down) and down["point"].z < at.z - half * 0.5 and down["normal"].z > 0.5 and bool(down.get("actor")),
+          down and f"{down.get('label') or down.get('name')} at z {down['point'].z:.0f} (player at {at.z:.0f}, half "
+          f"height {half:.0f}), normal z {down['normal'].z:.2f}, distance {down['distance']}")
+    ball = game.trace(at, at - Vec(0, 0, 1000), radius=30)
+    check("trace: a ball down stops a radius above the floor",
+          bool(ball) and bool(down) and abs((ball["location"].z - 30) - down["point"].z) < 15,
+          ball and f"center stops at z {ball['location'].z:.0f}, touches at {ball['point'].z:.0f}")
+    sky = game.trace(at + Vec(0, 0, 50000), at + Vec(0, 0, 60000))
+    check("trace: nothing in an empty sky", sky is None, sky)
+    sight = game.trace(at + Vec(0, 0, 300), at - Vec(0, 0, 1000), sight=True)
+    check("trace: a line of sight down meets the floor too",
+          bool(sight) and bool(down) and abs(sight["point"].z - down["point"].z) < 5, sight and sight["point"])
+
+
+def analog_stick(link, character, check):
+    """An axis key held at a value walks the character by that much of its speed (a gamepad stick held part way)."""
+    walked = {}
+    for value in (1.0, 0.4):
+        time.sleep(0.5)
+        before = location(link, character)
+        for _ in range(3):  # (renewed within its lease, as the runtime does)
+            link.request("key", {"key": "Gamepad_LeftY", "mode": "hold", "value": value, "lease": 0.6})
+            time.sleep(0.3)
+        link.request("key", {"key": "Gamepad_LeftY", "mode": "release"})
+        after = location(link, character)
+        walked[value] = ((after[0] - before[0]) ** 2 + (after[1] - before[1]) ** 2) ** 0.5
+    check("key: Gamepad_LeftY held part way walks slower than full",
+          walked[1.0] > 50 and 5 < walked[0.4] < walked[1.0] * 0.8, f"full {walked[1.0]:.0f}, 0.4: {walked[0.4]:.0f}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--engine", required=True)
     ap.add_argument("--plugin", required=True)
     ap.add_argument("--port", type=int, default=8790)
+    ap.add_argument("--templates", help="the engine install to take the template from (default: --engine)")
     ap.add_argument("--keep", action="store_true", help="keep the project folder")
     args = ap.parse_args()
     root = tempfile.mkdtemp(prefix="rg-smoke-")
-    uproject, actions = make_project(args.engine, args.plugin, root)
+    uproject, actions = make_project(args.templates or args.engine, args.plugin, root)
     jump = actions.get("jump")
     log = os.path.join(root, "game.log")
     exe = os.path.join(args.engine, "Engine", "Binaries", *(
@@ -132,6 +181,40 @@ def main():
                 package = value.get("AssetPath", {}).get("PackageName") if isinstance(value, dict) else value
                 same = list(read) == ["Hand"] and str(package).startswith("/Game/Smoke/Cursor")
             check(f"rc: a {'set' if isinstance(written, list) else 'map'} written and read back", same, read)
+
+        # An argument name the function doesn't take, or a struct field the struct doesn't have, is refused (the call
+        # not made), never dropped unread; names are still found case-insensitively
+        def call(obj, fn, params):
+            return link.request("rc", {"verb": "call", "body": {"objectPath": obj, "functionName": fn,
+                                                                 "parameters": params}})
+
+        def refusal(obj, fn, params):
+            try:
+                call(obj, fn, params)
+                return None
+            except bridge.BridgeError as e:
+                return e.error
+
+        math_lib = "/Script/Engine.Default__KismetMathLibrary"
+        length = call(math_lib, "VSize", {"a": {"x": 3, "y": 4, "z": 0}}).get("ReturnValue")
+        check("rc: arguments and struct fields found case-insensitively", length == 5, length)
+        for fn, params, needle in (
+                ("VSize", {"V": {"X": 3, "Y": 4, "Z": 0}}, "VSize on /Script/Engine.Default__KismetMathLibrary: "
+                                                          "unknown argument(s) V; it takes A"),
+                ("VSize", {"A": {"X": 3, "Y": 4, "Zed": 0}}, "A: unknown field(s) Zed for Vector; it has X, Y, Z"),
+                ("Vector_Distance", {"V1": {}, "V2": {}, "V3": {}}, "unknown argument(s) V3; it takes V1, V2")):
+            got = refusal(math_lib, fn, params)
+            check(f"rc: refused {fn} {list(params)}", bool(got) and got.endswith(needle), got)
+        got = refusal(character, "K2_GetActorLocation", {"Relative": True})
+        check("rc: refused an argument of a function that takes none", bool(got) and got.endswith(
+            "unknown argument(s) Relative; it takes no arguments"), got)
+        # (a call that would change the game: not made when a struct argument has an unknown field)
+        before = call(character, "K2_GetActorLocation", {})["ReturnValue"]
+        got = refusal(character, "K2_SetActorLocation", {"NewLocation": {"X": 0, "Y": 0, "Z": 5000, "W": 1},
+                                                         "bSweep": False, "bTeleport": True})
+        after = call(character, "K2_GetActorLocation", {})["ReturnValue"]
+        check("rc: a struct with an unknown field refused, nothing moved", bool(got) and "unknown field(s) W" in got
+              and after == before, f"{got}; {before} -> {after}")
 
         start = location(link, character)
         moved = link.request("move", {"direction": {"X": 1, "Y": 0, "Z": 0}, "scale": 1.0, "seconds": 0.6},
@@ -181,6 +264,8 @@ def main():
         check("screen: answers", isinstance(screen.get("texts"), dict))
         start2 = location(link, character)
         check("the character is where moving left it", abs(start2[0] - start[0]) > 10)
+        boxes_and_traces(link, character, check)
+        analog_stick(link, character, check)
     except Exception as e:
         check("smoke", False, f"{type(e).__name__}: {e}")
     finally:

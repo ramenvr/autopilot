@@ -145,6 +145,11 @@ namespace AutopilotCodex
 		return P;
 	}
 
+	bool IsScriptedClass(const UClass* C)
+	{
+		return C && (Cast<UBlueprintGeneratedClass>(C) || C->GetOutermost()->GetFName() == TEXT("/Script/Angelscript"));
+	}
+
 	// ---------------------------------------------------------------- types
 
 	FString ObjName(const UObject* O)
@@ -324,7 +329,7 @@ namespace AutopilotCodex
 			{
 				continue;
 			}
-			if (Opt.bBlueprintDeclaredOnly && !Cast<UBlueprintGeneratedClass>(Owner))
+			if (Opt.bBlueprintDeclaredOnly && !IsScriptedClass(Owner))
 			{
 				continue;
 			}

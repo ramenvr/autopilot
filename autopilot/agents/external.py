@@ -33,17 +33,20 @@ import time
 import traceback
 
 from .. import engines, transcripts
-from .files import FILE_TOOLS, FileTools
+from . import whole
+from .files import FILE_TOOL_SPECS, FILE_TOOLS, FileTools
 from .session import (
     PACKAGE,
     PROBING,
     READING,
     REPORT_FIELDS,
+    TOOL_SPECS,
     WRITING,
     finish,
     first_message,
     open_session,
     system_prompt,
+    unknown_args,
     watch_steering,
 )
 
@@ -70,16 +73,17 @@ only through the game's tools.
 Call the game's tools one at a time: the game runs only inside a call and is paused between them. A call that takes
 long (an episode, starting the game) answers "still going": call wait until it gives the result. Once report says
 "Reported", the run is over: tell the user its outcome in a few lines (the Autopilot tab in their editor shows the
-whole result).
+whole result). Only `frames` still answers then, on the frames the run kept (a describer still looking).
 
 ## Looking at the picture here
 
 Here describe_frames above means a describer subagent of yours, not a model of Autopilot's: hand it the moment, it
 looks at the episode's frames (the `frames` tool) and answers your open questions. Don't call `frames` yourself:
 reading frames while you know what you hope to see colours what you see. Brief it with this, filled in, and nothing
-else (never the request, the claim, the harness or what you expect):
+else (never the request, the claim, the harness or what you expect); each <t> is seconds from the episode's start, as
+its run_harness summary's t= gives them:
 
-    Call the autopilot tool `frames` with episode=<n>, start=<game time>, end=<game time>, count=<up to {max_frames}>.
+    Call the autopilot tool `frames` with episode=<n>, start=<t>, end=<t>, count=<up to {max_frames}>.
     Then describe the frames. {describer}
     Questions:
     1. <an open question: what moves and how, what is at a spot, what the text says; never yes/no>
@@ -91,6 +95,15 @@ this conversation forked into it. Hold its description against what true and fal
 before you asked; a request about how something looks is CONFIRMED or DENIED only on such a description (report it
 with visual: true). describe_frames, Autopilot's own describer, is a fallback for when no subagent of yours can take
 pictures: it works only where the user has a key (or Aura) for one.
+
+## Reviewing an episode with a subagent
+
+After an episode with deaths, failed options or a stall whose causes the summary doesn't settle, hand it to the
+`episode-reviewer` subagent (Claude Code; `episode_reviewer` in Codex) in the same turn as you read the summary
+yourself: tell it the run's folder ({run}) and the episode's number, nothing else. It reads the trace summary, "What
+the picture showed" and the harness with Autopilot's file tools, looks at the frames where a cause is unclear, and
+answers with each death's cause and the one change to make first. Check its proposal against the code (and a probe)
+before the harness takes it. Not needed for an episode the summary explains: then make the change yourself.
 """
 
 START = """Autopilot run {marker} started on {project}: the game is open in the user's editor and paused between your
@@ -99,11 +112,24 @@ is. The request and its briefing follow (also in {request}).
 
 {message}"""
 
+# The start call's answer when the request message is longer than one tool result holds (whole.RESULT_CHARS): it is
+# whole in REQUEST.md, and the agent reads both files with read_file
+START_LONG = """Autopilot run {marker} started on {project}: the game is open in the user's editor and paused between
+your calls. The request: {prompt}
+
+Its briefing (what you would read first: notes.md, lib.py, earlier runs, what changed in the codex, where the request's
+words are, what the live game shows now) is {size:,} characters, more than one tool result holds, so it is in a file.
+Read, with read_file and all of each (in parts: a call says where to read on):
+1. {instructions}: how to work and what the kit is;
+2. then {request}: the request and its briefing, whole.
+Then work on the request."""
+
 FRAMES_SPEC = (
     "frames",
     "For a describer subagent only (not the agent working on the request): up to 12 of an episode's frames, as "
-    "images, spread over game times start-end. episode: its number (default: the latest); start, end: game times in "
-    "it, in seconds (default: all of it); count: how many (default 8).",
+    "images, spread over times start-end of it. episode: its number (default: the latest); start, end: times in it, "
+    "in seconds from its start, as its summary's t= gives them (default: all of it); count: how many (default 8). "
+    "It works after the run has ended too, on the frames the run kept.",
     {"type": "object", "properties": {"episode": {"type": "integer"}, "start": {"type": "number"},
                                       "end": {"type": "number"}, "count": {"type": "integer"}}})
 
@@ -127,6 +153,12 @@ def text_result(text, error=False):
     return {"content": [{"type": "text", "text": text}], "isError": bool(error)}
 
 
+def image_content(images):
+    """JPEG bytes as an MCP result's image parts."""
+    return [{"type": "image", "data": base64.standard_b64encode(jpeg).decode("ascii"), "mimeType": "image/jpeg"}
+            for jpeg in images]
+
+
 class Desk:
     """One run's tool calls (autopilot/mcp.py's client: its name, e.g. claude-code or codex)."""
 
@@ -140,7 +172,7 @@ class Desk:
         self.lock = threading.Lock()  # one call at a time
         self.last_call = time.time()
         self.busy = False
-        self.ended = None  # why the run ended: no call is taken after it
+        self.ended = None  # why the run ended: no call is taken after it but frames (read only)
         self.reported_at = None
 
     def open(self, session, files, opening):
@@ -169,19 +201,30 @@ class Desk:
         if self.session is None:
             return text_result("No run has started: call start_run first.", error=True)
         if self.ended is not None:
+            if tool == "frames":  # (a describer still looking: the frames the run kept, read only)
+                refused = unknown_args(tool, args, (FRAMES_SPEC,))
+                return text_result(refused, error=True) if refused else self._frames_after(args)
+            if tool == "describe_frames":
+                return text_result(f"This run has ended ({self.ended}): describe_frames, Autopilot's own describer, "
+                                   "worked only while it went. Its frames are still there: a describer subagent of "
+                                   "yours can look at them with `frames`.", error=True)
             return text_result(f"This run has ended ({self.ended}). Tell the user its outcome; start_run starts "
                                "another.", error=True)
         s = self.session
+        refused = unknown_args(tool, args, TOOL_SPECS + (FRAMES_SPEC,) + FILE_TOOL_SPECS)
+        if refused:
+            self.last_call = time.time()
+            return text_result(refused, error=True)
         if tool in FILE_TOOLS:
             self.last_call = time.time()
-            s.tool_call(tool, args, log=f"{tool}: {json.dumps(args)[:600]}")
+            s.tool_call(tool, args, log=f"{tool}: {json.dumps(args)}")
             s.say(WRITING if tool in ("write_file", "edit_file") else READING)
             return text_result(self.files.call(tool, args))  # (no clock: file tools take no game time)
         if tool not in GAME_TOOLS:
             return text_result(f"No tool {tool!r} here.", error=True)
         with self.lock:
             self.busy, self.last_call = True, time.time()
-            s.tool_call(tool, args, log=f"tool {tool}: {json.dumps(args)[:600]}")
+            s.tool_call(tool, args, log=f"tool {tool}: {json.dumps(args)}")
             if tool in ("probe", "describe_frames"):
                 s.say(PROBING)
             t0 = time.time()
@@ -200,10 +243,22 @@ class Desk:
                 text += f" (run {self.marker})"  # (every answer names the run: the describer's transcript is found)
             if tool == "report" and s.report is not None:
                 self.reported_at = time.time()
-            content = [{"type": "text", "text": text + s.steer_note() + s.news() + "\n" + s.clock()}]
-            content += [{"type": "image", "data": base64.standard_b64encode(jpeg).decode("ascii"),
-                         "mimeType": "image/jpeg"} for jpeg in images]
-            return {"content": content, "isError": False}
+            content = [{"type": "text", "text": s.result(text)}]
+            return {"content": content + image_content(images), "isError": False}
+
+    def _frames_after(self, args):
+        """frames once the run has ended (reported, stopped, timed out): the frames it kept, read and nothing else (no
+        feed line, no status, no clock: the run is over). Refused only when the run's files are gone."""
+        with self.lock:
+            try:
+                text, images = self.session.frames(args.get("episode"), args.get("start"), args.get("end"),
+                                                   args.get("count"), live=False)
+            except Exception:
+                text, images = "Tool failed:\n" + traceback.format_exc(limit=5), []
+        if self.marker and self.marker not in text:
+            text += f" (run {self.marker})"  # (every answer names the run: the describer's transcript is found)
+        text += f"\n(The run has ended: {self.ended}. These are the frames it kept.)"
+        return {"content": [{"type": "text", "text": text}] + image_content(images), "isError": False}
 
     def _game_tool(self, tool, args):
         s = self.session
@@ -311,6 +366,21 @@ def instructions_text(engine, run_rel):
             .replace("{sweep}", vision.SWEEP))
 
 
+def start_text(marker, project, prompt, message, run_rel):
+    """The start call's answer: the request message inline (START) when the answer fits one tool result, else
+    START_LONG, which points to REQUEST.md (the message, whole) and to INSTRUCTIONS.md."""
+    paths = {"instructions": f"{run_rel}/{INSTRUCTIONS}", "request": f"{run_rel}/{REQUEST}"}
+    text = START.format(marker=marker, project=project, message=message, **paths)
+    if len(text) <= whole.RESULT_CHARS:
+        return text
+    text = START_LONG.format(marker=marker, project=project, prompt=prompt, size=len(message), **paths)
+    if len(text) <= whole.RESULT_CHARS:
+        return text
+    # (the request itself is that long: it is in REQUEST.md too)
+    return START_LONG.format(marker=marker, project=project, size=len(message), **paths,
+                             prompt=f"{len(prompt):,} characters, at the top of {paths['request']}")
+
+
 def implement(game, project, prompt, run_id=None, say=None, client=None, model=None, timeout=None, stop=None,
               steering=None, play_seconds=None, describer=None, desk=None, activity=None):
     """The run, worked on by the user's own agent through desk (a Desk, from the start call); returns the report, as
@@ -336,9 +406,7 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
         message = first_message(session)
         with open(os.path.join(session.run_dir, REQUEST), "w", encoding="utf-8", newline="\n") as f:
             f.write(message)
-        desk.open(session, files, START.format(marker=desk.marker, project=project, message=message,
-                                               instructions=f"{session.run_rel}/{INSTRUCTIONS}",
-                                               request=f"{session.run_rel}/{REQUEST}"))
+        desk.open(session, files, start_text(desk.marker, project, prompt, message, session.run_rel))
         while True:
             if session.report is not None:
                 break

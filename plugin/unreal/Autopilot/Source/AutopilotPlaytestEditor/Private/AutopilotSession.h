@@ -220,6 +220,22 @@ struct FAutopilotRun
 	FString OriginLine() const;
 	/** The report as Markdown: the prompt, the verdict, the reason, the evidence, the direct changes and the findings. */
 	FString ReportMarkdown() const;
+
+	/** A detector with more than this many kinds of engine finding (signatures) in a run is told once, every kind listed:
+	 *  one report line, one card, few feed lines (the same in Unity's, Godot's and Roblox's). */
+	static constexpr int32 FindingGroupAt = 3;
+	/** The engine findings by detector, each detector where its first finding is, its findings in the order they came. */
+	TArray<TArray<TSharedPtr<FAutopilotFinding>>> EngineFindingGroups() const;
+	/** Where a finding's signature is among its detector's in this run (0: the first kind), -1 when not there. */
+	int32 KindIndex(const FAutopilotFinding& Finding) const;
+	/** What a finding is a kind of, for a group's list: its signature without the detector in front ("out_of_world:Cone":
+	 *  Cone), else its summary. */
+	static FString FindingKind(const FAutopilotFinding& Finding);
+	/** A group's severity: its highest (error, warning, suspicion, info). */
+	static FString TopSeverity(const TArray<TSharedPtr<FAutopilotFinding>>& Group);
+	/** A group's kinds, every one, with how many times when more than once. bReport: the report's "Cone (×12), Rail, Sign
+	 *  (not a bug)"; else the card's "Cone ×12 · Rail · Sign". */
+	static FString KindsLine(const TArray<TSharedPtr<FAutopilotFinding>>& Group, bool bReport);
 };
 
 class FAutopilotSession
@@ -261,9 +277,12 @@ public:
 	void StopRun();
 	/** The user's words to the live run, sent and shown in its feed; false when the run can't be steered now (not
 	 *  connected, the agent service doesn't take steer, or the run isn't at its Rollout: SteersAt). */
-	bool SteerRun(const FString& Text);
+	bool SteerRun(const FString& Text, bool bRedirect = false);
 	/** A run is going, connected, and the agent service takes steer (whatever its stage: the steer row shows). */
 	bool CanSteer() const;
+	/** And the agent service tells a hint (play goes on) from a redirect (the attempt playing now ends): its
+	 *  "steer_mode" feature. Without it the steer row has one Steer button, as before. */
+	bool CanRedirect() const;
 	/** Whether a run takes the user's words now: only while it plays an episode (its Rollout), never before, after
 	 *  or once done. The one rule for the steer box, its button and SteerRun. */
 	static bool SteersAt(const FAutopilotRun& Run) { return !Run.bDone && Run.Stage == EAutopilotStage::Rollout; }

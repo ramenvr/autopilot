@@ -58,6 +58,59 @@ def test_the_file_tools_read_the_games_folder_and_the_kit_and_write_only_the_run
     assert files.call("edit_file", {"path": "lib.py", "old": "a", "new": "b", "replace_all": True}).startswith("Wrote")
 
 
+
+def test_the_file_tools_find_the_kit_by_its_name_and_say_when_a_path_is_not_there(root):
+    files = FileTools(str(root), "runs/r1", sessionmod.PACKAGE)
+    # autopilot/KIT.md and autopilot/kit/ (as the tools' texts name them) are the kit's own
+    assert "Refused" not in files.call("read_file", {"path": "autopilot/KIT.md"})
+    assert files.call("search", {"pattern": r"^class Game\b", "path": "autopilot/kit"}).startswith(
+        "autopilot/kit/game.py:")
+    assert "autopilot/kit/game.py" in files.call("list_files", {"pattern": "autopilot/kit/*.py"}).splitlines()
+    assert files.call("list_files", {"pattern": "**/*.py"}) == "No files match **/*.py."  # (not the kit's, unasked)
+    # a path that isn't there is said to be missing, not searched and found to have no match
+    for tool, args in (("search", {"pattern": "x", "path": "Source/Nope"}), ("read_file", {"path": "codex/nope.md"}),
+                       ("search", {"pattern": "x", "path": "autopilot/kit/nope"})):
+        text = files.call(tool, args)
+        assert text.startswith("Refused") and "no such file or folder" in text, (tool, args, text)
+    # a game's folder of its own named autopilot/kit is its own
+    (root / "autopilot" / "kit").mkdir(parents=True)
+    (root / "autopilot" / "kit" / "mine.txt").write_text("the game's own\n", encoding="utf-8")
+    found = files.call("search", {"pattern": "own", "path": "autopilot/kit"})
+    assert found == "autopilot/kit/mine.txt:1: the game's own"
+    assert files.call("search", {"pattern": "^class Game", "path": "autopilot/kit"}).startswith("No match")
+
+
+def test_the_file_tools_leave_out_autopilots_own_records_unless_named(root):
+    """codex/.fetched.json, .codex-seen.json.gz, .indexing/...: one-line records of tens of thousands of characters a
+    search of the whole folder would return whole, never what the agent looks for. Named, they are searched."""
+    (root / "codex" / ".fetched.json").write_text('{"Source/Crate.cpp": "abc"}\n', encoding="utf-8")
+    (root / ".indexing").mkdir()
+    (root / ".indexing" / "state.json").write_text('{"Crate": 1}\n', encoding="utf-8")
+    files = FileTools(str(root), "runs/r1", sessionmod.PACKAGE)
+    assert files.call("search", {"pattern": "Crate"}) == "codex/README.md:1: Crate: open it with E"
+    assert files.call("search", {"pattern": "Crate", "path": "codex"}) == "codex/README.md:1: Crate: open it with E"
+    assert ".fetched" not in files.call("list_files", {"pattern": "**/*"})
+    assert ".indexing" not in files.call("list_files", {"pattern": "**/*.json"})
+    # named: by its path, a glob or a pattern that names a dot-name
+    named = files.call("search", {"pattern": "Crate", "path": "codex/.fetched.json"})
+    assert named.startswith("codex/.fetched.json:1:")
+    assert files.call("search", {"pattern": "Crate", "path": ".indexing"}).startswith(".indexing/state.json:1:")
+    assert "codex/.fetched.json:1:" in files.call("search", {"pattern": "Crate", "glob": "codex/.*"})
+    assert files.call("list_files", {"pattern": "codex/.*"}) == "codex/.fetched.json"
+    assert "Refused" not in files.call("read_file", {"path": "codex/.fetched.json"})
+
+
+def test_globs_take_braces():
+    from autopilot.agents.files import _glob_rx
+
+    rx = _glob_rx("codex/**/*.{cpp,h}")
+    assert rx.fullmatch("codex/a/b.cpp") and rx.fullmatch("codex/b.h") and not rx.fullmatch("codex/b.hpp")
+    assert _glob_rx("{Source,Plugins/*}/**/*.{as,txt}").fullmatch("Plugins/Foo/x/y.as")
+    assert _glob_rx("a{b,{c,d}e}").fullmatch("ade") and not _glob_rx("a{b,{c,d}e}").fullmatch("ad")
+    assert _glob_rx("{x}.txt").fullmatch("{x}.txt") and _glob_rx("a{b.txt").fullmatch("a{b.txt")  # (no comma, no })
+    assert _glob_rx("{,old/}notes.md").fullmatch("notes.md") and _glob_rx("{,old/}notes.md").fullmatch("old/notes.md")
+
+
 def test_the_mcp_server_lists_the_tools_and_passes_calls_on(root):
     calls = []
 

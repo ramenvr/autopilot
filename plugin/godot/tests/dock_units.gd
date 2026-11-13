@@ -2,7 +2,7 @@
 ## (its stepper; BYOK keys to autopilot.env; the agent service started, installed or missing, with a stand-in launcher that
 ## runs nothing; the Aura sign-in driven by aura_sign_in frames; the Aura app; Finish to preferences.json), usage and bill frames
 ## kept on the run going on, the Settings page with its Account corner (account frames, the Aura bill, out of Aura credits), Data sharing
-## box and Research agent switch, the footer, and the settings. The link to the agent service is a stand-in that keeps what is sent (no socket). The editor bridge is the
+## box, Research agent and Bug detectors switches, the footer, and the settings. The link to the agent service is a stand-in that keeps what is sent (no socket). The editor bridge is the
 ## real one, over a stand-in debugger; the user settings folder is
 ## UNITS_DIR (a temporary folder).
 extends SceneTree
@@ -463,6 +463,7 @@ func run_checks() -> void:
 	check("waiting: finish in the browser, the url, Open again, Copy link, Cancel", "Finish signing in in your browser…" in t
 		and "https://aura.example/auth/cli?c=1" in t and "Open again" in t and "Copy link" in t and "Cancel" in t and "IN YOUR BROWSER" in t
 		and not "then choose Allow" in t and _no_keys_card() and not "Use my keys" in t, t)
+	check("waiting for a plain sign-in: nothing about the wrong account", not "wrong account" in t, t)
 	check("Cancel", press(dock._setup, "Cancel") and fake.types()[-1] == "aura_sign_in_cancel" and dock.sign_in.is_empty())
 	bridge._on_brain_frame({"type": "aura_sign_in", "state": "error", "reason": "cancelled", "message": "x"})
 	t = setup_text()
@@ -524,8 +525,13 @@ func run_checks() -> void:
 	check("signed in: the keys card folded, Bring your own keys (BYOK) [Show]", "BRING YOUR OWN KEYS (BYOK)" in t
 		and "Show" in t and not "Use my keys" in t, t)
 	fake.sent.clear()
-	check("Use another account: signed out, then signed in again", press(dock._setup, "Use another account")
-		and fake.types() == ["aura_sign_out", "aura_sign_in"], fake.sent)
+	check("Use another account: signed out, then signed in again, asking for the account", press(dock._setup, "Use another account")
+		and fake.sent == [{"type": "aura_sign_out"}, {"type": "aura_sign_in", "another_account": true}], fake.sent)
+	bridge._on_brain_frame({"type": "aura_sign_in", "state": "waiting", "url": "https://aura.example/auth/cli?c=3"})
+	t = setup_text()
+	check("waiting for another account: what to do if the page shows the wrong account",
+		"If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in page again." in t
+		and "Open again" in t, t)
 	bridge._on_brain_frame({"type": "aura_sign_in", "state": "signed_in", "email": "dev@example.org"})
 	dock.service.state = "ready"
 	dock.service.url = url
@@ -1283,6 +1289,7 @@ func run_checks() -> void:
 	round3_checks()
 	fixes_checks()
 	assistants_checks()
+	detectors_checks()
 	history_checks()
 	parity_checks()
 	await flash_checks()
@@ -1649,6 +1656,8 @@ func steer_checks() -> void:
 	box.text_submitted.emit(box.text)
 	check("steer: sent at Rollout (Enter)", fake.sent.size() == 1 and fake.sent[0].get("type") == "steer"
 		and fake.sent[0].get("text") == "go round the rocks to the left first" and box.text == "", fake.sent)
+	check("steer: no mode for an agent service without steer_mode, one Steer button", not fake.sent[0].has("mode")
+		and btn.text == "Steer" and not dock._l_redirect_btn.visible, fake.sent)
 	box.text = "now jump on the hay bale"
 	dock._on_status("Looking at the results")
 	dock._on_steer()
@@ -1670,6 +1679,51 @@ func steer_checks() -> void:
 	bridge.run_active = false
 	dock._on_result({"kind": "goal", "reached": true}, "")
 	check("steer: the run done, not steerable", not r.steerable())
+	box.text = ""
+	dock.active = null
+	steer_mode_checks()
+
+
+## With an agent service that tells hints from redirects ("steer_mode"): the box says play goes on, Send sends a hint
+## (Enter too), Redirect beside it a redirect (the attempt playing now ends), both only at the Rollout.
+func steer_mode_checks() -> void:
+	var fake := FakeLink.new()
+	bridge.link = fake
+	welcome(["steer", "steer_mode", "usage", "account"])
+	_plain_view()
+	var r = dock._new_run("goal", "Reach the gate")
+	bridge.run_active = true
+	dock._render()
+	var box: LineEdit = dock._l_steer
+	var send: Button = dock._l_steer_btn
+	var redirect: Button = dock._l_redirect_btn
+	dock._on_status("Writing the harness")
+	check("steer modes: the box's words, Send and Redirect shown, both off before the game plays",
+		box.placeholder_text == "Add a hint; Autopilot keeps playing" and send.text == "Send" and redirect.visible
+		and send.disabled and redirect.disabled and redirect.tooltip_text == "You can steer once the game is playing",
+		[box.placeholder_text, send.text, redirect.visible, send.disabled, redirect.disabled])
+	box.text = "the gate opens with the lever"
+	redirect.pressed.emit()
+	check("steer modes: nothing sent before Rollout", not "steer" in fake.types() and box.text == "the gate opens with the lever")
+	dock._on_status("Trying the harness (run 1)")
+	check("steer modes: at Rollout both on, with what each does", not send.disabled and not redirect.disabled
+		and send.tooltip_text == "Autopilot reads your hint and keeps playing"
+		and redirect.tooltip_text == "End the current attempt now and play on from your words", [send.tooltip_text, redirect.tooltip_text])
+	box.text_submitted.emit(box.text)
+	check("steer modes: Enter sends a hint", fake.sent.size() == 1 and fake.sent[0].get("mode") == "hint"
+		and fake.sent[0].get("text") == "the gate opens with the lever" and box.text == "" and r.feed[-1].get("text") == "You: the gate opens with the lever",
+		[fake.sent, r.feed[-1]])
+	box.text = "forget the gate, climb the tower"
+	redirect.pressed.emit()
+	check("steer modes: Redirect sends a redirect", fake.sent.size() == 2 and fake.sent[1].get("mode") == "redirect"
+		and fake.sent[1].get("text") == "forget the gate, climb the tower" and box.text == ""
+		and r.feed[-1].get("text") == "You (redirect): forget the gate, climb the tower", [fake.sent, r.feed[-1]])
+	box.text = "look left"
+	send.pressed.emit()
+	check("steer modes: Send sends a hint", fake.sent.size() == 3 and fake.sent[2].get("mode") == "hint", fake.sent)
+	bridge.run_active = false
+	dock._on_result({"kind": "goal", "reached": true}, "")
+	bridge.brain_steer_modes = false
 	box.text = ""
 	dock.active = null
 
@@ -2027,9 +2081,9 @@ func assistants_checks() -> void:
 		var caps: Array = p.find_children("*", "Label", true, false).filter(func(l): return l.theme_type_variation == "AutopilotCaps")
 		titles.append(caps[0].text if not caps.is_empty() else "")
 	var at_sharing := titles.find("SHARE RUNS TO IMPROVE AUTOPILOT")
-	check("Settings: the plates in order, Research agent right after Data sharing, then Design brief and Show Policy Log",
-		at_sharing >= 0 and titles.slice(at_sharing) == ["SHARE RUNS TO IMPROVE AUTOPILOT", "RESEARCH AGENT", "DESIGN BRIEF",
-			"SHOW POLICY LOG", "AUTOPILOT IN CLAUDE CODE & CODEX", "UNINSTALL AUTOPILOT"], titles)
+	check("Settings: the plates in order, Research agent right after Data sharing, Bug detectors, then Design brief and Show Policy Log",
+		at_sharing >= 0 and titles.slice(at_sharing) == ["SHARE RUNS TO IMPROVE AUTOPILOT", "RESEARCH AGENT", "BUG DETECTORS",
+			"DESIGN BRIEF", "SHOW POLICY LOG", "AUTOPILOT IN CLAUDE CODE & CODEX", "UNINSTALL AUTOPILOT"], titles)
 	check("Settings: no other words about it (no MCP, no Jev)", not "MCP" in t and not "Jev" in t)
 	var copies := []
 	for b in dock._settings_page.find_children("*", "Button", true, false):
@@ -2047,6 +2101,143 @@ func assistants_checks() -> void:
 	dock._setup._go(3)
 	check("setup's Privacy settings: the same text", CONSENT in setup_text(), setup_text())
 	finish("own_keys", true)
+	dock._render()
+
+
+## The Settings page's Bug detectors switch: its plate (title, words, the switch as the others are), what the agent
+## service's memory_state says ("detectors"; on when it doesn't say, or says something else), set in place (the page not
+## built again), flipped: {"type": "detectors", "enabled": ...} sent and shown at once, the next memory_state confirming
+## or putting it back, a run going on included; not connected: disabled, the last known value shown, nothing sent;
+## connected to an agent service older than this plugin (its welcome's features without "detectors"), which can't turn
+## them off: disabled and on, a line under it and its tooltip saying why, flipped anyway nothing sent, put back.
+func detectors_checks() -> void:
+	var fake := FakeLink.new()
+	bridge.link = fake
+	_plain_view()
+	_end_run()
+	if bridge.is_connected_to_brain():
+		unwelcome()
+	welcome(["steer", "usage", "account", "detectors"])  # (this plugin's agent service: it takes the switch)
+	fake.sent.clear()
+	bridge.detectors_on = true
+	dock.settings_open = true
+	dock._render()
+	var page = dock._settings_page
+	var t := _texts(page)
+	check("Bug detectors plate: its title in mono caps, its words", "BUG DETECTORS" in t
+		and SettingsPage.DETECTORS == ("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "
+			+ "per-project.")
+		and SettingsPage.DETECTORS in t, t)
+	check("Bug detectors plate: title, subtitle, then the control", _setting_plate(page, "Bug detectors", SettingsPage.DETECTORS, "CheckBox"))
+	var sw: CheckBox = page.detectors_switch
+	check("Bug detectors switch: the switch the other settings have, on before any memory_state says, Bug detectors on, 8 px to its right, its tooltip the plate's title",
+		sw != null and sw.is_visible_in_tree() and sw.theme_type_variation == "AutopilotSwitch" and sw.button_pressed
+		and sw.text == "Bug detectors on" and sw.get_theme_constant("h_separation") == HT.px(8)
+		and sw.tooltip_text == "Bug detectors" and not sw.disabled, [sw.text, sw.tooltip_text, sw.disabled] if sw else null)
+	check("Bug detectors: no words about how it works (no Jev, brain, RL, detectors.json)", not "Jev" in t
+		and not "brain" in t.to_lower() and not " RL" in t and not "detectors.json" in t)
+	page.brief_box.text = "typed, the caret in it"
+	var brief: TextEdit = page.brief_box
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": false})
+	check("memory_state detectors false: the switch off, Bug detectors off, nothing sent", not sw.button_pressed
+		and sw.text == "Bug detectors off" and bridge.detectors_on == false and fake.sent.is_empty(), [sw.text, fake.sent])
+	check("memory_state: the switch set in place (the same switch, the Design brief not built again)", page.detectors_switch == sw
+		and page.brief_box == brief and is_instance_valid(sw) and brief.text == "typed, the caret in it")
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false})
+	check("memory_state without detectors (an older agent service): on", sw.button_pressed and sw.text == "Bug detectors on"
+		and bridge.detectors_on == true, sw.text)
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": false})
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": "no"})
+	check("memory_state detectors not true/false: on", sw.button_pressed and bridge.detectors_on == true, sw.text)
+	# flipped: sent at once, shown at once; the agent service's answer confirms it, or puts it back
+	sw.button_pressed = false
+	check("flipped off: the detectors frame sent, enabled false", fake.sent == [{"type": "detectors", "enabled": false}], fake.sent)
+	check("flipped off: shown at once (Bug detectors off), before the agent service answers", not sw.button_pressed
+		and sw.text == "Bug detectors off" and bridge.detectors_on == false, sw.text)
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": false})
+	check("the answer's memory_state says off: still off", not sw.button_pressed and sw.text == "Bug detectors off")
+	fake.sent.clear()
+	sw.button_pressed = true
+	check("flipped on: the detectors frame sent, enabled true; shown on", fake.sent == [{"type": "detectors", "enabled": true}]
+		and sw.button_pressed and sw.text == "Bug detectors on", fake.sent)
+	bridge._on_brain_frame({"type": "memory_state", "runs": 2, "notes": true, "lib": false, "detectors": false})
+	check("the answer's memory_state says off (the setting couldn't be kept): put back off", not sw.button_pressed
+		and sw.text == "Bug detectors off" and bridge.detectors_on == false, sw.text)
+	check("the switch's flips and memory_states sent nothing else", fake.types() == ["detectors"], fake.types())
+	# a run going on: it can still be flipped (the game's detectors are told at once)
+	bridge._on_brain_frame({"type": "run_started", "run": {"kind": "explore", "prompt": "Explore the orchard", "by": "claude-code"}})
+	dock.settings_open = true  # (the run started elsewhere shows itself: the page opened again over it)
+	dock._render()
+	sw = page.detectors_switch
+	fake.sent.clear()
+	check("a run going: the switch still enabled, as last said (off)", dock.active != null and sw.is_visible_in_tree()
+		and not sw.disabled and not sw.button_pressed, [sw.is_visible_in_tree(), sw.disabled, sw.button_pressed])
+	sw.button_pressed = true
+	check("a run going: flipped on, sent", fake.sent == [{"type": "detectors", "enabled": true}], fake.sent)
+	_end_run()
+	# not connected: disabled, the last known value, its tooltip saying why; flipped anyway, nothing sent, put back
+	unwelcome()
+	dock.settings_open = true
+	dock._render()
+	sw = page.detectors_switch
+	check("not connected: the switch disabled, showing the last known value (on), its tooltip saying why", sw != null
+		and sw.is_visible_in_tree() and sw.disabled and sw.button_pressed and sw.text == "Bug detectors on"
+		and sw.tooltip_text == "Connect to the agent service to turn the bug detectors on or off",
+		[sw.disabled, sw.text, sw.tooltip_text] if sw else null)
+	fake.sent.clear()
+	sw.button_pressed = false
+	check("not connected, flipped anyway: nothing sent, the switch back on", fake.sent.is_empty() and sw.button_pressed
+		and sw.text == "Bug detectors on" and bridge.detectors_on == true, [fake.sent, sw.text])
+	check("not connected, flipped anyway: the status line says why", dock._status.text
+		== "Not connected: connect first to turn the bug detectors on or off", dock._status.text)
+	check("not connected: the bridge sends nothing", not bridge.set_detectors(false) and fake.sent.is_empty()
+		and bridge.detectors_on == true)
+	check("not connected: no line about an older agent service", not page.detectors_older.visible)
+	# connected again: enabled, as the new connection's memory_state says
+	welcome(["steer", "usage", "account", "detectors"])
+	dock._render()
+	sw = page.detectors_switch
+	check("connected again: enabled", sw.is_visible_in_tree() and not sw.disabled and sw.tooltip_text == "Bug detectors"
+		and not page.detectors_older.visible)
+	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false, "detectors": false})
+	check("connected again: the new memory_state sets it (off)", not sw.button_pressed and sw.text == "Bug detectors off")
+	# an agent service older than this plugin: it would ignore the frame and run them, so on and disabled, saying why
+	unwelcome()
+	welcome(["steer", "steer_mode", "usage", "account", "setup"])
+	check("older agent service: the words", SettingsPage.DETECTORS_OLDER
+		== "The agent service in use is older than this plugin and can't turn them off.")
+	sw = page.detectors_switch
+	check("older agent service: the switch disabled and on (it runs them), Bug detectors on, before its memory_state too",
+		sw.is_visible_in_tree() and sw.disabled and sw.button_pressed and sw.text == "Bug detectors on"
+		and bridge.shown_detectors() and not bridge.can_set_detectors() and bridge.detectors_fixed_on(),
+		[sw.disabled, sw.button_pressed, sw.text])
+	check("older agent service: the line under the switch and its tooltip say why", page.detectors_older.is_visible_in_tree()
+		and page.detectors_older.text == SettingsPage.DETECTORS_OLDER and SettingsPage.DETECTORS_OLDER in _texts(page)
+		and sw.tooltip_text == SettingsPage.DETECTORS_OLDER, sw.tooltip_text)
+	check("older agent service: the line under the switch, in the plate's small words",
+		page.detectors_older.theme_type_variation == "AutopilotSmall"
+		and page.detectors_older.get_parent() == sw.get_parent() and page.detectors_older.get_index() > sw.get_index()
+		and page.detectors_older.autowrap_mode != TextServer.AUTOWRAP_OFF,
+		[page.detectors_older.theme_type_variation, page.detectors_older.get_index(), sw.get_index()])
+	fake.sent.clear()
+	sw.button_pressed = false
+	check("older agent service, flipped anyway: nothing sent, the switch back on", fake.sent.is_empty() and sw.button_pressed
+		and sw.text == "Bug detectors on", [fake.sent, sw.text])
+	check("older agent service, flipped anyway: the status line says why", dock._status.text == SettingsPage.DETECTORS_OLDER,
+		dock._status.text)
+	check("older agent service: the bridge sends nothing", not bridge.set_detectors(false) and fake.sent.is_empty())
+	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false})
+	check("older agent service: its memory_state, on", sw.button_pressed and sw.disabled and page.detectors_older.visible)
+	# this plugin's agent service again
+	unwelcome()
+	welcome(["steer", "usage", "account", "detectors"])
+	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false, "detectors": false})
+	sw = page.detectors_switch
+	check("this plugin's agent service again: enabled, as it says (off), no line", not sw.disabled and not sw.button_pressed
+		and not page.detectors_older.visible, [sw.disabled, sw.button_pressed])
+	bridge._on_brain_frame({"type": "memory_state", "runs": 0, "notes": false, "lib": false, "detectors": true})
+	fake.sent.clear()
+	dock.settings_open = false
 	dock._render()
 
 
@@ -2088,6 +2279,20 @@ func fixes_checks() -> void:
 		["error", "critical", "fatal", "bug"].all(func(x): return dock.severity_kind(x) == "bad")
 		and dock.severity_kind("Warning") == "warn" and dock.severity_kind("warn") == "warn" and dock.severity_kind("") == "info"
 		and dock.severity_kind("note") == "info")
+	# a detector's many kinds: lines for the first three, one saying there are more, then none (repeats of those neither)
+	var before: int = r.feed.size()
+	for k in ["Cone", "Rail", "Bench", "Sign", "Lamp"]:
+		dock._on_finding({"detector": "out_of_world", "severity": "warning", "summary": "%s is below the world's KillZ (-1000)" % k,
+			"signature": "out_of_world:" + k})
+	dock._on_finding({"detector": "out_of_world", "severity": "warning", "summary": "Lamp is below the world's KillZ (-1000)",
+		"signature": "out_of_world:Lamp", "count": 10})
+	dock._on_finding({"detector": "out_of_world", "severity": "warning", "summary": "Cone is below the world's KillZ (-1000)",
+		"signature": "out_of_world:Cone", "count": 10})
+	var said: Array = r.feed.slice(before).map(func(e): return e.text)
+	check("feed: a detector's first 3 kinds, then one line saying there are more, then none; repeats of the first 3 still",
+		said == ["Cone is below the world's KillZ (-1000)", "Rail is below the world's KillZ (-1000)", "Bench is below the world's KillZ (-1000)",
+			"Sign is below the world's KillZ (-1000) (and more out_of_world findings: all of them are in the result)",
+			"Cone is below the world's KillZ (-1000) (×10)"], said)
 	var card = dock._engine_card(r, {"detector": "slow", "summary": "slow frame", "signature": "s1"})
 	check("engine card: no severity: an INFO tag (blue)", "INFO" in _texts(card) and not "WARNING" in _texts(card) and not "ALERT" in _texts(card),
 		_texts(card))
@@ -2148,6 +2353,37 @@ func fixes_checks() -> void:
 		and "**Alerts:** 1" in md and "## Reason" in md and "## Findings" in md and "- [agent] The fruit floats" in md
 		and "- [agent] The fruit can be picked up" in md and "- [engine · error · script_error_detector_with_a_long_name] " in md
 		and " (×3) at 1200.5, -30.25, 455 cm (not a bug)" in md and not "## Agent findings" in md and not "## Engine findings" in md, md)
+	# a detector with more than 3 kinds: one line naming every kind, where its first was; 3 kinds stay lines of their own
+	var gr = _make_run(false)
+	for k in ["Cone", "Rail", "Bench", "Sign"]:
+		gr.findings.append({"source": "engine", "detector": "out_of_world", "severity": "suspicion" if k == "Rail" else "warning",
+			"summary": "%s is below the world's KillZ (-1000)" % k, "signature": "out_of_world:" + k, "count": 12 if k == "Cone" else (3 if k == "Bench" else 1)})
+	for k in ["A", "B", "C"]:
+		gr.findings.append({"source": "engine", "detector": "teleport", "severity": "suspicion", "summary": "%s moved" % k, "signature": "teleport:" + k})
+	gr.not_a_bug["out_of_world:Sign"] = true
+	var gmd: String = Model.report_markdown(gr)
+	check("report: a detector with 4 kinds is one line listing every kind (count, not a bug), its highest severity, e.g. the first",
+		"- [engine · warning · out_of_world] 4 kinds: Cone (×12), Rail, Bench (×3), Sign (not a bug) — e.g. Cone is below the world's KillZ (-1000)\n" in gmd
+		and gmd.count("out_of_world") == 1 and "- [engine · suspicion · teleport] A moved\n" in gmd and "- [engine · suspicion · teleport] C moved\n" in gmd
+		and gmd.find("script_error_detector_with_a_long_name") < gmd.find("out_of_world") and gmd.find("out_of_world") < gmd.find("A moved"), gmd)
+	check("finding_kind: the signature without its detector, else the summary",
+		Model.finding_kind({"detector": "nan", "signature": "nan:Crate"}) == "Crate" and Model.finding_kind({"detector": "x", "signature": "other"}) == "other"
+		and Model.finding_kind({"detector": "x", "summary": "words"}) == "words")
+	check("group severity: error > warning > suspicion > info", Model.group_severity([{"severity": "info"}, {"severity": "suspicion"}]) == "suspicion"
+		and Model.group_severity([{"severity": "warning"}, {"severity": "error"}, {"severity": "info"}]) == "error")
+	# the result's cards: one group card (every kind, Show each), the detector's own cards only when opened
+	dock.shown = gr
+	dock.tab = "main"
+	dock._render()
+	var page: String = _texts(dock)
+	check("result: a group card (4 kinds, every kind, Show each), not the kinds' own cards",
+		"4 kinds" in page and "Cone ×12 · Rail · Bench ×3 · Sign (not a bug)" in page and "Show each" in page
+		and not "Rail is below the world's KillZ" in page, page)
+	dock._groups_open["%s|out_of_world" % gr.id] = true
+	dock._render()
+	page = _texts(dock)
+	check("result: Show each opens the kinds' own cards under it (Hide)", "Rail is below the world's KillZ" in page and "Hide" in page, page)
+	dock._groups_open.clear()
 	# the times and numbers
 	check("times: mm:ss, h:mm:ss; feed and player position m:ss, h:mm:ss", Model.clock(83) == "01:23" and Model.clock(3725) == "1:02:05"
 		and Model.short_clock(48) == "0:48" and Model.short_clock(3725) == "1:02:05")
@@ -2796,6 +3032,7 @@ func _make_run(live: bool):
 func _run_view(t: String, live: bool) -> void:
 	_plain_view()
 	_online()
+	bridge.brain_steer_modes = false  # (one Steer button, unless the state asks for steer modes)
 	if _lay_run == null or _lay_run.live() != live:
 		_lay_run = _make_run(live)
 	dock.shown = _lay_run
@@ -2878,6 +3115,11 @@ func _layout_states() -> Array:
 			dock._render()],
 		["live: playing again", func():
 			_run_view("main", true)
+			_lay_run.stage = 4
+			dock._render()],
+		["live: playing, a hint or a redirect (steer_mode)", func():
+			_run_view("main", true)
+			bridge.brain_steer_modes = true
 			_lay_run.stage = 4
 			dock._render()],
 		["feed", func(): _run_view("feed", true)],
@@ -3025,7 +3267,7 @@ func _steer_fits() -> Array:
 		return []
 	_steers_checked += 1
 	var bad := []
-	var hint := "Send a steering prompt to Autopilot"
+	var hint := "Add a hint; Autopilot keeps playing" if bridge.can_redirect() else "Send a steering prompt to Autopilot"
 	var room: float = e.size.x - e.get_theme_stylebox("normal").get_minimum_size().x
 	var text_w: float = e.get_theme_font("font").get_string_size(hint, HORIZONTAL_ALIGNMENT_LEFT, -1,
 		e.get_theme_font_size("font_size")).x

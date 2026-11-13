@@ -78,6 +78,11 @@
   mouse (first person, shift lock, its own camera) it moves the mouse alone. `game.calibrate_look()` measures either.
   `game.context()["camera_type"]` and `["mouse_behavior"]` say which. A game with a Scriptable camera turns the view in
   its own code: read it.
+- **Timing the game does**: the plugin runs input sequences itself (`moveset`, `jump_at`, `game.sequence`): each step
+  at its game time, or the frame its condition holds (the player past a point, within reach of one, on the ground,
+  past the top of a jump), checked every Heartbeat on the client. A jump at a platform's edge, a hop over a sweeping
+  bar as it arrives, a press on the beat of a hazard: hand them to the game, and the brain's delay (a frame or more
+  between a read and a press, more while Studio is slow) is out of the move.
 - **Moving without the keys**: `game.request("move", {"direction": kit vector, "seconds": s})` walks the character
   that way as an analog stick would (the player's Move, after the PlayerModule's: `"via": "stick"`, the default;
   `"keys"` for W/A/S/D; `"controller"` for the Humanoid's own Move, for a game whose controls don't go through the
@@ -120,7 +125,24 @@
   warnings the game's scripts print (server and client), NaN positions, parts falling out of the world, long falls,
   hitches, on-screen counts above their maximum,
   and on the server teleports (a character, the player's or an NPC's, jumping farther in a frame than its speed allows;
-  a suspicion, and your own `set` of a position is one too), actor growth (the Workspace's things of one kind, by tag
+  a suspicion; never what your own `set`, `call` or `teleport` moved; right after your key, action or `ui_act` press,
+  `info` with `details.after_input` `{key, seconds}`: that key may be meant to teleport, a reset), actor growth (the Workspace's things of one kind, by tag
   or name, still growing after 120 s) and numbers over their maximum (an attribute or IntValue/NumberValue above its
   sibling `Max<Name>`, `max_<name>`, `<Name>Max`, `<name>_max`..., leaderstats too).  No `clamp`: Roblox declares no
   ranges.
+
+**Boxes and traces.** `game.bounds(path)` is a part's box, or a model's bounding box (all its parts, colliding or
+not: Roblox draws and collides the same parts). `game.trace` is a `workspace:Raycast` (with a radius, `Spherecast`)
+on the player's client: what stops the body is parts with CanCollide in the character's CollisionGroup, a line of
+sight any part a query meets (CanQuery). Roblox's casts never meet a part they start in (`inside` is always false).
+
+**Frame rate.** Roblox Studio draws 60 frames a second while its window is the one in front and 15 while it is behind
+another (a frame is then 67 ms: a running character moves 30 cm between two, and input is read once a frame). On
+Windows the agent service keeps Studio at full rate while a game plays without bringing it in front
+(autopilot/wincap.py; AUTOPILOT_STUDIO_AWAKE=0 turns that off); elsewhere, or if the briefing says
+`frames_a_second` is low, keep Studio's window in front or write for a slow game: every move by the game's clock,
+frame-exact presses handed to the game (`jump_at`, `moveset`, `Game.sequence`).
+
+**Pictures.** On Windows the recording's frames are grabbed from Studio's window itself (about 5 a second, as asked);
+through Studio's own `screen_capture` they come about one a second, so a look at the last seconds of play has
+three or four frames and can miss what killed the player.

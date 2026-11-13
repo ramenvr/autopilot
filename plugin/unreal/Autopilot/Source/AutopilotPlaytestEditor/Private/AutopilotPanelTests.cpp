@@ -3,7 +3,8 @@
 // a fixed width too wide), no stage name is given less room than it needs, and the composer's hint fits its box. Pages
 // taller than the tab are fine: they scroll. Also: the kind of run the composer's words ask for (Editor.RunKind), and the
 // end of a run: the memory line, the recording kept and copied, or why there is none (Editor.RunEnd); steering only while the game plays, its
-// Rollout (Editor.Steer, and the Live page's steer row in Editor.Layout).
+// Rollout (Editor.Steer, and the Live page's steer row in Editor.Layout); the Settings page's Bug detectors switch
+// (Editor.DetectorsSwitch).
 
 #include "Settings/EditorExperimentalSettings.h"
 #include "Editor.h"
@@ -24,11 +25,14 @@
 #include "PlaytestJson.h"
 #include "PlaytestPreferences.h"
 #include "PlaytestSettings.h"
+#include "PlaytestSubsystem.h"
 #include "AutopilotSession.h"
 #include "AutopilotStyle.h"
 #include "AutopilotWidgets.h"
 #include "Rendering/SlateRenderer.h"
 #include "SPlaytestPanel.h"
+#include "Types/SlateAttributeMetaData.h"
+#include "UObject/StrongObjectPtr.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
@@ -683,10 +687,11 @@ bool FAutopilotPanelLayoutTest::RunTest(const FString& Parameters)
 					Attempting->Attempt = WasAttempt;
 				}
 			}
-			// The steer row (as when the agent service takes steer): words can be typed at every stage, in the same place,
-			// its one hint fitting the box (every word within its width, its lines within its height); Steer pressable at
-			// the Rollout only; words typed are kept from stage to stage
+			// The steer row (as when the agent service takes steer and tells hints from redirects): words can be typed at
+			// every stage, in the same place, its one hint fitting the box (every word within its width, its lines within
+			// its height); Send and Redirect pressable at the Rollout only; words typed are kept from stage to stage
 			Panel->TestSteers = true;
+			Panel->TestSteerModes = true;
 			struct FSteerCase { EAutopilotStage Stage; const TCHAR* Name; bool bOpen; };
 			const FSteerCase SteerCases[] = { { EAutopilotStage::Rollout, TEXT("Rollout"), true }, { EAutopilotStage::Launch, TEXT("Launch"), false },
 				{ EAutopilotStage::Analyze, TEXT("Analyze"), false }, { EAutopilotStage::Probe, TEXT("Probe"), false },
@@ -712,7 +717,10 @@ bool FAutopilotPanelLayoutTest::RunTest(const FString& Parameters)
 				TestTrue(*FString::Printf(TEXT("%.0f %s: the steer box in the same place"), Size.Width, Case.Name), At.Equals(SteerAtFirst.GetValue(), 0.5));
 				TestTrue(*FString::Printf(TEXT("%.0f %s: the steer box takes words"), Size.Width, Case.Name), Panel->SteerBox->IsEnabled());
 				const FString Hint = Panel->SteerBox->GetHintText().ToString();
-				TestEqual(*FString::Printf(TEXT("%.0f %s: the steer hint"), Size.Width, Case.Name), Hint, FString(TEXT("Send a steering prompt to Autopilot")));
+				TestEqual(*FString::Printf(TEXT("%.0f %s: the steer hint"), Size.Width, Case.Name), Hint, FString(TEXT("Add a hint; Autopilot keeps playing")));
+				FGeometry RedirectAt;
+				TestTrue(*FString::Printf(TEXT("%.0f %s: Redirect shown beside Send"), Size.Width, Case.Name),
+					Find(Live, LiveRoot, Panel->RedirectButton.Get(), RedirectAt) && RedirectAt.GetAbsolutePosition().X > BoxAt.GetAbsolutePosition().X);
 				const FEditableTextBoxStyle& BoxStyle = FAutopilotStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("Autopilot.TextBox.Bare");
 				const TSharedRef<FSlateFontMeasure> Measure = FSlateApplication::Get().GetRenderer()->GetFontMeasureService();
 				const FSlateFontInfo& Font = BoxStyle.TextStyle.Font;
@@ -742,11 +750,13 @@ bool FAutopilotPanelLayoutTest::RunTest(const FString& Parameters)
 				// Words typed: Steer pressable at the Rollout only, and kept (never sent, never cleared) at the other stages
 				Panel->SteerBox->SetText(FText::FromString(TEXT("go round the rocks to the left first")));
 				LayOut(Live, Main, Size.Height);  // (a widget's enabled state is read again as it is laid out)
-				TestEqual(*FString::Printf(TEXT("%.0f %s: Steer pressable"), Size.Width, Case.Name), Panel->SteerButton->IsEnabled(), Case.bOpen);
+				TestEqual(*FString::Printf(TEXT("%.0f %s: Send pressable"), Size.Width, Case.Name), Panel->SteerButton->IsEnabled(), Case.bOpen);
+				TestEqual(*FString::Printf(TEXT("%.0f %s: Redirect pressable"), Size.Width, Case.Name), Panel->RedirectButton->IsEnabled(), Case.bOpen);
 				if (!Case.bOpen)
 				{
 					const int32 Lines0 = Going->Feed.Num();
 					Panel->OnSteer();
+					Panel->OnSteer(true);
 					TestEqual(*FString::Printf(TEXT("%.0f %s: the words kept"), Size.Width, Case.Name), Panel->SteerBox->GetText().ToString(),
 						FString(TEXT("go round the rocks to the left first")));
 					TestEqual(*FString::Printf(TEXT("%.0f %s: nothing sent"), Size.Width, Case.Name), Going->Feed.Num(), Lines0);
@@ -754,6 +764,7 @@ bool FAutopilotPanelLayoutTest::RunTest(const FString& Parameters)
 			}
 			Panel->SteerBox->SetText(FText::GetEmpty());
 			Panel->TestSteers.Reset();
+			Panel->TestSteerModes.Reset();
 			LiveSession.Runs.Remove(Going);
 			Panel->SelectedId = INDEX_NONE;
 		}
@@ -1413,6 +1424,8 @@ bool FAutopilotCodingAgentTest::RunTest(const FString& Parameters)
 		Panel->SetupStep = SPlaytestPanel::StepAccount;
 		Panel->SlatePrepass(1.f);
 		Panel->SlatePrepass(1.f);  // (twice: the page shown is picked on the first)
+		// (a bound IsEnabled is read again only in Slate's attribute update, which a prepass doesn't run: run it here)
+		FSlateAttributeMetaData::UpdateAllAttributes(*Panel->LlmProviderCombo, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
 		return !Panel->LlmProviderCombo->IsEnabled();
 	};
 	auto Item = [](const TArray<TSharedPtr<FString>>& Items, const TCHAR* Id)
@@ -1830,6 +1843,37 @@ bool FAutopilotRunEndTest::RunTest(const FString& Parameters)
 		TestTrue(TEXT("report: an agent finding, with the agent's"), Report.Contains(TEXT("- [agent] The orb falls through the floor\n"))
 			&& Report.Find(TEXT("[agent] The orb")) < Report.Find(TEXT("[engine")));
 		TestTrue(TEXT("report: an engine finding"), Report.Contains(TEXT("- [engine · error · log_error] Accessed None (×3) (not a bug)\n")));
+
+		// A detector with more than three kinds is one line naming every kind (in the order they came), its highest
+		// severity; one with three or fewer keeps a line each
+		auto Add = [&Found](const TCHAR* Detector, const TCHAR* Severity, const FString& Kind, int32 Count, bool bDismissed)
+		{
+			const TSharedRef<FAutopilotFinding> F = MakeShared<FAutopilotFinding>();
+			F->Source = TEXT("engine");
+			F->Detector = Detector;
+			F->Severity = Severity;
+			F->Signature = FString::Printf(TEXT("%s:%s"), Detector, *Kind);
+			F->Summary = FString::Printf(TEXT("%s is below the world's KillZ (-1000)"), *Kind);
+			F->Count = Count;
+			F->bDismissed = bDismissed;
+			Found.Findings.Add(F);
+			return F;
+		};
+		Add(TEXT("out_of_world"), TEXT("warning"), TEXT("Cone"), 12, false);
+		Add(TEXT("teleport"), TEXT("info"), TEXT("Skater after R"), 1, false);
+		Add(TEXT("out_of_world"), TEXT("warning"), TEXT("Rail"), 1, false);
+		Add(TEXT("out_of_world"), TEXT("error"), TEXT("Bench"), 3, false);
+		const TSharedRef<FAutopilotFinding> Sign = Add(TEXT("out_of_world"), TEXT("warning"), TEXT("Sign"), 1, true);
+		const FString Grouped = Found.ReportMarkdown();
+		TestTrue(TEXT("report: a detector's many kinds on one line"), Grouped.Contains(
+			TEXT("- [engine · error · out_of_world] 4 kinds: Cone (×12), Rail, Bench (×3), Sign (not a bug) — e.g. Cone is below the world's KillZ (-1000)\n")));
+		TestEqual(TEXT("report: one out_of_world line"), Grouped.Find(TEXT("Rail is below")), (int32)INDEX_NONE);
+		TestTrue(TEXT("report: a detector with one kind keeps its line, after the group (where its first came)"),
+			Grouped.Contains(TEXT("- [engine · info · teleport] Skater after R is below the world's KillZ (-1000)\n"))
+			&& Grouped.Find(TEXT("· out_of_world]")) < Grouped.Find(TEXT("· teleport]")));
+		TestEqual(TEXT("kind index: the fourth out_of_world kind"), Found.KindIndex(*Sign), 3);
+		TestEqual(TEXT("kind: the signature without its detector"), FAutopilotRun::FindingKind(*Sign), FString(TEXT("Sign")));
+		TestEqual(TEXT("groups: by detector, in the order they came"), Found.EngineFindingGroups().Num(), 3);
 	}
 	TestTrue(TEXT("no alerts: none"), Older1->Alerts.IsEmpty());
 	TestFalse(TEXT("no alerts: none saved"), FAutopilotSession::RunToJson(*Older1)->HasField(TEXT("alerts")));
@@ -2297,9 +2341,21 @@ bool FAutopilotStatusLineTest::RunTest(const FString& Parameters)
 	TestTrue(TEXT("both steer boxes"), Panel->SteerBox.IsValid() && Panel->FeedSteerBox.IsValid());
 	if (Panel->SteerBox.IsValid() && Panel->FeedSteerBox.IsValid())
 	{
+		Panel->TestSteerModes = false;  // (an agent service without steer_mode: the test's own, not this editor's)
 		Panel->FeedSteerBox->SetText(FText::FromString(TEXT("go left")));
 		TestEqual(TEXT("the words, whichever box"), Panel->SteerText(), FString(TEXT("go left")));
 		TestEqual(TEXT("the steer hint, at any stage"), Panel->FeedSteerBox->GetHintText().ToString(), FString(TEXT("Send a steering prompt to Autopilot")));
+		// (the Redirect's visibility is bound: read again in Slate's attribute update, run here after each change)
+		auto RedirectShown = [&Panel]()
+		{
+			FSlateAttributeMetaData::UpdateAllAttributes(*Panel->FeedRedirectButton, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
+			return Panel->FeedRedirectButton->GetVisibility() == EVisibility::Visible;
+		};
+		TestFalse(TEXT("no Redirect without the agent service's steer_mode"), RedirectShown());
+		Panel->TestSteerModes = true;  // (an agent service that tells hints from redirects)
+		TestEqual(TEXT("the hint's words, with steer modes"), Panel->FeedSteerBox->GetHintText().ToString(), FString(TEXT("Add a hint; Autopilot keeps playing")));
+		TestTrue(TEXT("Redirect, with steer modes"), RedirectShown());
+		Panel->TestSteerModes.Reset();
 	}
 
 	// Back to the last run: the connect card, disconnected, after a run was shown
@@ -2479,7 +2535,7 @@ bool FAutopilotRunStartedTest::RunTest(const FString& Parameters)
 	TestEqual(TEXT("the session's runs as they were"), Session.Runs.Num(), RunsBefore);
 	Session.AgentStartedRunId = AgentRunBefore;
 
-	// The Settings page: the card after Data sharing and the Research agent, before Uninstall
+	// The Settings page: the card after Data sharing, the Research agent and Bug detectors, before Uninstall
 	TSharedRef<SWidget> SettingsPage = Panel->MakeSettings();
 	Panel->RebuildSettings();
 	const FString Words = Shown(SettingsPage, 600.f, 3000.f);
@@ -2488,7 +2544,10 @@ bool FAutopilotRunStartedTest::RunTest(const FString& Parameters)
 	const int32 Title = Words.Find(TEXT("Autopilot in Claude Code & Codex"), ESearchCase::IgnoreCase);
 	const int32 Uninstall = Words.Find(TEXT("Uninstall Autopilot"));
 	TestTrue(TEXT("settings: Data sharing, then the Research agent"), Share != INDEX_NONE && Research > Share);
-	TestTrue(TEXT("settings: the card, after the Research agent and before Uninstall"), Title > Research && Uninstall > Title);
+	const int32 Detectors = Words.Find(TEXT("Bug detectors"), ESearchCase::CaseSensitive);
+	TestTrue(TEXT("settings: Bug detectors, after the Research agent"), Detectors != INDEX_NONE && Detectors > Research);
+	TestTrue(TEXT("settings: the card, after Bug detectors and before Uninstall"), Title > Detectors && Uninstall > Title);
+	TestTrue(TEXT("settings: what the bug detectors do, for this project"), Words.Contains(TEXT("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.")));
 	TestTrue(TEXT("settings: what the research agent does, and its cost"), Words.Contains(TEXT("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.")));
 	TestTrue(TEXT("settings: what sharing sends, and for these runs"), Words.Contains(TEXT("Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot. For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.")));
 	const TCHAR* CardWords[] = {
@@ -2549,7 +2608,7 @@ namespace
 	}
 }
 
-// The Settings page's sharing, research agent and Claude Code & Codex plates are built alike: the name (the mono
+// The Settings page's sharing, research agent, bug detectors and Claude Code & Codex plates are built alike: the name (the mono
 // micro-label), what it does (in the sharing text's font: Body 12), then what changes it (the switch alone, its name
 // the tooltip; the two commands with Copy), 6 px under the name and 10 px under the words
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotSettingCardsTest, "AutopilotPlaytest.Editor.SettingCards",
@@ -2567,6 +2626,8 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 	Panel->Prefs.bOnboarded = true;
 	Panel->Prefs.bShareData = false;
 	Panel->Prefs.ResearchChoice = false;
+	TStrongObjectPtr<UPlaytestSubsystem> Bridge(NewObject<UPlaytestSubsystem>());  // (the Bug detectors switch's: on, as before any memory_state)
+	Panel->TestBridge = Bridge.Get();
 	struct FCase
 	{
 		const TCHAR* Name;
@@ -2582,6 +2643,9 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 		{ TEXT("research agent"), Panel->MakeResearchAgent(), TEXT("Research agent"),
 			TEXT("Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost."),
 			TEXT("Research agent off") },
+		{ TEXT("bug detectors"), Panel->MakeBugDetectors(), TEXT("Bug detectors"),
+			TEXT("During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project."),
+			TEXT("Bug detectors on") },
 		{ TEXT("Claude Code & Codex"), Panel->MakeCodingAgents(), TEXT("Autopilot in Claude Code & Codex"),
 			TEXT("One-time CLI setup to run Autopilot through Claude Code or Codex using your Claude or ChatGPT subscriptions, respectively."),
 			TEXT("autopilot connect claude | Copy | autopilot connect codex | Copy") },
@@ -2683,6 +2747,207 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("research agent: the choice beats the Aura app's default"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
 		Settings->bUseWithAura = bWasAura;
 	}
+	// The bug detectors' switch: its name is its tooltip too (what it shows and sends: the DetectorsSwitch test)
+	const TSharedPtr<SWidget> DetectorsToggle = FirstOfType(Cases[2].Card, TEXT("SCheckBox"));
+	if (TestTrue(TEXT("bug detectors: a switch"), DetectorsToggle.IsValid()))
+	{
+		const TSharedPtr<IToolTip> Tip = DetectorsToggle->GetToolTip();
+		TestTrue(TEXT("bug detectors: the switch's tooltip, its name"), Tip.IsValid() && AllWords(Tip->AsWidget()).Contains(TEXT("Bug detectors")));
+	}
+	Panel->TestBridge.Reset();
+	return true;
+}
+
+// The Settings page's Bug detectors switch (docs/protocol.md: memory_state's "detectors", the `detectors` message): what
+// each memory_state says (one without it, an older agent service's: on); flipped, it sends {"type": "detectors",
+// "enabled"} and shows the new value at once, the next memory_state confirming it or putting it back; not connected,
+// greyed, and flipped it sends nothing and keeps what it last showed (also once the connection closed); connected to an
+// agent service older than this plugin (its welcome's features without "detectors": it would ignore the message and run
+// them), on and greyed, a line under it saying why, and flipped it sends nothing, shows the same and the status line
+// says why
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(FAutopilotDetectorsSwitchTest, "AutopilotPlaytest.Editor.DetectorsSwitch",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FAutopilotDetectorsSwitchTest::RunTest(const FString& Parameters)
+{
+	// A subsystem of its own (never the engine's: its connection is left alone), what it sends kept here
+	TStrongObjectPtr<UPlaytestSubsystem> Bridge(NewObject<UPlaytestSubsystem>());
+	TArray<FString> Sent;
+	Bridge->TestSent = [&Sent](const FString& Text) { Sent.Add(Text); };
+	auto Says = [&Bridge](bool bConnected, const FString& Text)
+	{
+		Bridge->bConnected = bConnected;
+		Bridge->HandleMessage(Text);
+	};
+	const FString Off = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+	const FString On = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": true}");
+	const FString Older = TEXT("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false}");
+	// The welcomes: this agent service's (it takes the `detectors` message) and an older one's (it doesn't)
+	const FString Welcome = TEXT("{\"type\": \"welcome\", \"role\": \"service\", \"session\": \"s1\", \"features\": [\"steer\", \"steer_mode\", \"usage\", \"detectors\"]}");
+	const FString OlderWelcome = TEXT("{\"type\": \"welcome\", \"role\": \"service\", \"session\": \"s2\", \"features\": [\"steer\", \"steer_mode\", \"usage\"]}");
+	// The message sent last: {"type": "detectors", "enabled"} and nothing else, its "enabled" in OutOn
+	auto LastSent = [&Sent](bool& OutOn)
+	{
+		const TSharedPtr<FJsonObject> Message = Sent.Num() ? PlaytestJson::Parse(Sent.Last()) : nullptr;
+		return Message.IsValid() && Message->Values.Num() == 2 && Message->GetStringField(TEXT("type")) == TEXT("detectors")
+			&& Message->TryGetBoolField(TEXT("enabled"), OutOn);
+	};
+	FString Said;  // (the status line's last words)
+	Bridge->OnStatus.AddLambda([&Said](const FString& Text) { Said = Text; });
+	const FString Why = TEXT("The agent service in use is older than this plugin and can't turn them off.");
+	TestEqual(TEXT("the words for an older agent service"), FString(UPlaytestSubsystem::DetectorsFixedOnWhy()), Why);
+
+	// What each memory_state says
+	TestTrue(TEXT("before any memory_state: on"), Bridge->AreDetectorsEnabled());
+	TestFalse(TEXT("before any welcome: can't be flipped"), Bridge->CanSetDetectors() || Bridge->AreDetectorsFixedOn());
+	Says(true, Welcome);
+	Sent.Reset();  // (what a welcome asks for besides)
+	TestTrue(TEXT("this agent service's welcome: can be flipped"), Bridge->CanSetDetectors() && !Bridge->AreDetectorsFixedOn());
+	Says(true, Off);
+	TestFalse(TEXT("\"detectors\": false: off"), Bridge->AreDetectorsEnabled());
+	TestTrue(TEXT("... and the memory as before"), Bridge->IsMemoryKnown() && Bridge->GetMemoryRuns() == 3 && Bridge->HasMemoryNotes());
+	Says(true, On);
+	TestTrue(TEXT("\"detectors\": true: on"), Bridge->AreDetectorsEnabled());
+	Says(true, Off);
+	Says(true, Older);
+	TestTrue(TEXT("an older agent service's, without it: on"), Bridge->AreDetectorsEnabled());
+	TestEqual(TEXT("memory_state sends nothing"), Sent.Num(), 0);
+
+	// Flipped: the message, the new value at once; the memory_state it answers with confirms it, or puts it back
+	Says(true, Off);
+	Bridge->SetDetectorsEnabled(true);
+	bool bSentOn = false;
+	TestTrue(TEXT("turned on: {\"type\": \"detectors\", \"enabled\": true}"), Sent.Num() == 1 && LastSent(bSentOn) && bSentOn);
+	TestTrue(TEXT("turned on: on at once"), Bridge->AreDetectorsEnabled());
+	Says(true, On);
+	TestTrue(TEXT("turned on, its answer: on"), Bridge->AreDetectorsEnabled());
+	Bridge->SetDetectorsEnabled(false);
+	TestTrue(TEXT("turned off: {\"type\": \"detectors\", \"enabled\": false}"), Sent.Num() == 2 && LastSent(bSentOn) && !bSentOn);
+	TestFalse(TEXT("turned off: off at once"), Bridge->AreDetectorsEnabled());
+	Says(true, On);
+	TestTrue(TEXT("turned off, its answer still on (not saved): on again"), Bridge->AreDetectorsEnabled());
+
+	// Not connected: nothing sent, nothing changes; what it showed kept once the connection closed
+	Says(true, Off);
+	Bridge->bConnected = false;
+	Bridge->ForgetMemoryState();
+	TestFalse(TEXT("the connection closed: still off"), Bridge->AreDetectorsEnabled());
+	Bridge->SetDetectorsEnabled(true);
+	TestEqual(TEXT("not connected: nothing sent"), Sent.Num(), 2);
+	TestFalse(TEXT("not connected: still off"), Bridge->AreDetectorsEnabled());
+	TestFalse(TEXT("not connected: can't be flipped, and not for an older agent service"), Bridge->CanSetDetectors() || Bridge->AreDetectorsFixedOn());
+
+	// An older agent service (its welcome's features without "detectors"): on at once (it runs them), before its
+	// memory_state too; flipped, nothing sent, still on, the status line saying why
+	Says(true, OlderWelcome);
+	Sent.Reset();
+	TestTrue(TEXT("older: can't be flipped"), !Bridge->CanSetDetectors() && Bridge->AreDetectorsFixedOn());
+	TestTrue(TEXT("older: on, whatever was shown before"), Bridge->AreDetectorsEnabled());
+	Bridge->SetDetectorsEnabled(false);
+	TestEqual(TEXT("older, flipped: nothing sent"), Sent.Num(), 0);
+	TestTrue(TEXT("older, flipped: still on"), Bridge->AreDetectorsEnabled());
+	TestEqual(TEXT("older, flipped: the status line says why"), Said, Why);
+	Says(true, Off);  // (not what an older agent service says, but even so)
+	TestTrue(TEXT("older: on, whatever a memory_state says"), Bridge->AreDetectorsEnabled());
+	// ... and this agent service again: what it says, flipped as before
+	Says(true, Welcome);
+	Says(true, Off);
+	Sent.Reset();
+	TestTrue(TEXT("this agent service again: off, as it says"), Bridge->CanSetDetectors() && !Bridge->AreDetectorsEnabled());
+	Bridge->SetDetectorsEnabled(true);
+	TestTrue(TEXT("this agent service again: flipped, sent"), Sent.Num() == 1 && LastSent(bSentOn) && bSentOn && Bridge->AreDetectorsEnabled());
+	Says(true, Off);
+	Sent.Reset();
+
+	// The card's switch: the subsystem's value in its words, flipping it through the subsystem, greyed while not connected
+	if (!FSlateApplication::IsInitialized())
+	{
+		AddWarning(TEXT("No Slate here: the switch part of the DetectorsSwitch test is skipped"));
+		Bridge->TestSent = nullptr;
+		return true;
+	}
+	FScratchDir Dir;
+	TSharedRef<SPlaytestPanel> Panel = SNew(SPlaytestPanel).KeysDir(Dir.Path);
+	Panel->Prefs.bOnboarded = true;
+	Panel->TestBridge = Bridge.Get();
+	const TSharedRef<SWidget> Card = Panel->MakeBugDetectors();
+	const TSharedPtr<SWidget> Found = FirstOfType(Card, TEXT("SCheckBox"));
+	if (TestTrue(TEXT("card: a switch"), Found.IsValid()))
+	{
+		const TSharedRef<SCheckBox> Toggle = StaticCastSharedRef<SCheckBox>(Found.ToSharedRef());
+		const TSharedPtr<SWidget> Wrap = Toggle->GetParentWidget();
+		auto Alpha = [&Wrap]()
+		{
+			if (!Wrap.IsValid())
+			{
+				return -1.f;
+			}
+			// (its colour is read again as a paint would: not drawn here)
+			FSlateAttributeMetaData::UpdateAllAttributes(*Wrap, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
+			return StaticCastSharedPtr<SCompoundWidget>(Wrap)->GetColorAndOpacity().A;
+		};
+		// The line under the switch, why it can't be flipped: shown only with an older agent service
+		TSharedPtr<SWidget> WhyLine;
+		TFunction<void(const TSharedRef<SWidget>&)> Look = [&WhyLine, &Why, &Look](const TSharedRef<SWidget>& W)
+		{
+			if (W->GetType() == FName(TEXT("STextBlock")) && StaticCastSharedRef<STextBlock>(W)->GetText().ToString() == Why)
+			{
+				WhyLine = W;
+			}
+			FChildren* Children = W->GetChildren();
+			for (int32 i = 0; Children && i < Children->Num(); ++i)
+			{
+				Look(Children->GetChildAt(i));
+			}
+		};
+		Look(Card);
+		auto WhyShown = [&WhyLine]()
+		{
+			if (!WhyLine.IsValid())
+			{
+				return false;
+			}
+			FSlateAttributeMetaData::UpdateAllAttributes(*WhyLine, FSlateAttributeMetaData::EInvalidationPermission::DenyInvalidation);
+			return WhyLine->GetVisibility().IsVisible();
+		};
+		TestTrue(TEXT("card: the switch in its grey-out"), Wrap.IsValid() && Wrap->GetType() == FName(TEXT("SBorder")));
+		TestTrue(TEXT("card: the line saying why it can't be flipped, under the switch"), WhyLine.IsValid());
+		Says(true, Off);
+		TestFalse(TEXT("card: off"), Toggle->IsChecked());
+		TestEqual(TEXT("card: off, its words"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
+		TestTrue(TEXT("card: connected, not greyed"), FMath::IsNearlyEqual(Alpha(), 1.f));
+		TestFalse(TEXT("card: connected, no line saying why"), WhyShown());
+		Toggle->ToggleCheckedState();
+		TestTrue(TEXT("card: flipped, it sends enabled true"), Sent.Num() == 1 && LastSent(bSentOn) && bSentOn);
+		TestTrue(TEXT("card: flipped, on at once"), Toggle->IsChecked());
+		TestEqual(TEXT("card: on, its words"), AllWords(Toggle), FString(TEXT("Bug detectors on")));
+		Says(true, Off);
+		TestEqual(TEXT("card: the answer said off: off"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
+		Bridge->bConnected = false;
+		TestTrue(TEXT("card: not connected, greyed"), FMath::IsNearlyEqual(Alpha(), 0.45f));
+		TestFalse(TEXT("card: not connected, no line saying why"), WhyShown());
+		Toggle->ToggleCheckedState();
+		TestEqual(TEXT("card: not connected, flipped: nothing sent"), Sent.Num(), 1);
+		TestEqual(TEXT("card: not connected, flipped: still off"), AllWords(Toggle), FString(TEXT("Bug detectors off")));
+		// An older agent service: on, greyed, the line saying why; flipped, nothing sent and still on
+		Says(true, OlderWelcome);
+		Sent.Reset();
+		TestTrue(TEXT("card: older, on"), Toggle->IsChecked());
+		TestEqual(TEXT("card: older, on, its words"), AllWords(Toggle), FString(TEXT("Bug detectors on")));
+		TestTrue(TEXT("card: older, greyed"), FMath::IsNearlyEqual(Alpha(), 0.45f));
+		TestTrue(TEXT("card: older, the line saying why"), WhyShown());
+		Said.Empty();
+		Toggle->ToggleCheckedState();
+		TestEqual(TEXT("card: older, flipped: nothing sent"), Sent.Num(), 0);
+		TestEqual(TEXT("card: older, flipped: still on"), AllWords(Toggle), FString(TEXT("Bug detectors on")));
+		TestEqual(TEXT("card: older, flipped: the status line says why"), Said, Why);
+		// ... and this agent service again: not greyed, no line
+		Says(true, Welcome);
+		TestTrue(TEXT("card: this agent service again, not greyed"), FMath::IsNearlyEqual(Alpha(), 1.f));
+		TestFalse(TEXT("card: this agent service again, no line saying why"), WhyShown());
+	}
+	Panel->TestBridge.Reset();
+	Bridge->TestSent = nullptr;
 	return true;
 }
 

@@ -16,7 +16,7 @@ import shutil
 import threading
 import time
 
-from . import bridge, engines
+from . import bridge, engines, memory
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -63,9 +63,7 @@ def project_of(hello):
         if owner == pid:
             return folder
         if not owner:  # (a new folder, or one from before ids were recorded: this project's from now on)
-            os.makedirs(project_dir(folder), exist_ok=True)
-            with open(file, "w", encoding="utf-8") as f:
-                json.dump({**info, "project_id": pid}, f, indent=1)
+            memory.write_atomic(file, json.dumps({**info, "project_id": pid}, indent=1))
             return folder
     return f"{name}-{digits}"  # (unreachable unless the full id's folder is another id's)
 
@@ -245,7 +243,8 @@ ASIDE_RETRY_SECONDS = 20.0
 
 def digest(codex_root, rel):
     """One line on what a codex file is, from its text (no model): a Blueprint's parent, events and functions; a data
-    table's rows and columns; a C++ file's classes; else its first line. Every name the file has is in it."""
+    table's rows and columns; a C++ or AngelScript file's classes; else its first line. Every name the file has is in
+    it."""
     try:
         with open(os.path.join(codex_root, rel), encoding="utf-8", errors="replace") as f:
             text = f.read()
@@ -268,10 +267,11 @@ def digest(codex_root, rel):
         lines = text.splitlines()
         columns = lines[0].split(",")[1:] if lines else []
         return f"data table, {max(0, len(lines) - 1)} rows; columns: {', '.join(columns)}"
-    if rel.startswith("source/"):
+    if rel.startswith(("source/", "script/")):
         classes = re.findall(r"^\s*(?:class|struct)\s+(?:\w+_API\s+)?(\w+)\s*(?::|\{|$)", text, re.M)
         if classes:
-            return "C++: " + ", ".join(dict.fromkeys(classes))
+            language = "AngelScript" if rel.startswith("script/") else "C++"
+            return f"{language}: " + ", ".join(dict.fromkeys(classes))
     if rel == "maps.txt":
         maps = re.findall(r"^Map (\S+)", text, re.M)
         return f"{len(maps)} maps so far: " + ", ".join(m.rsplit("/", 1)[-1] for m in maps)
@@ -630,11 +630,9 @@ def seen(project_root):
 def record_seen(project_root, run_id, files, pending=None):
     """Note `files` (a fingerprint()) as the codex run_id worked from, and the changes still to check (`pending`): the
     next run's changes are counted from it."""
-    tmp = os.path.join(project_root, SEEN_FILE + ".tmp")
-    with gzip.open(tmp, "wt", encoding="utf-8") as f:
-        json.dump({"run": run_id, "at": round(time.time()), "files": files, "pending": pending or {}}, f,
-                  separators=(",", ":"))
-    os.replace(tmp, os.path.join(project_root, SEEN_FILE))
+    record = json.dumps({"run": run_id, "at": round(time.time()), "files": files, "pending": pending or {}},
+                        separators=(",", ":"))
+    memory.write_atomic(os.path.join(project_root, SEEN_FILE), gzip.compress(record.encode("utf-8")))
 
 
 def changes(before, now):

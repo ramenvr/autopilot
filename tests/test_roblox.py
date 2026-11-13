@@ -430,6 +430,54 @@ def test_the_detectors_as_godots_teleport_actor_growth_over_max():
     assert "teleports" in guide and "actor growth" in guide and "No `clamp`" in guide
 
 
+def test_a_teleport_the_agent_made_is_not_the_games():
+    """The edit side tells the server what the agent did as it passes a request on (the server sees the characters,
+    the client gets the keys): a teleport right after the agent's own rc write or call is not told; right after its key,
+    action or UI press it is info, saying the key (a reset key may be meant to teleport), with details.after_input."""
+    sources = _sources()
+    detectors, editor = sources["Detectors"], sources["Editor"]
+    assert "teleport_after_input_seconds = 1.0" in detectors and "MOVE_GRACE = 0.5" in detectors
+    assert "function Detectors:noteActed(note: any)" in detectors
+    assert 'if moved > allowed and not agentMoved then' in detectors
+    assert 'detector = "teleport", severity = "info"' in detectors
+    assert 'summary .. " right after the agent pressed " .. input.key' in detectors
+    assert '"teleport:" .. kind .. " after " .. input.key' in detectors
+    assert "details.after_input = { key = input.key, seconds = Frame.r2(since) }" in detectors
+    assert "self.heldKeys[key] then" in detectors  # (a hold renewed isn't a press)
+    assert "function Editor.acted(op: string, args: any): any" in editor
+    assert 'acted.to = "server"' in editor and 'acted.type = "acted"' in editor
+    request = editor[editor.index("function Editor:_onRequest("):]
+    # the agent's act is noted before the request goes on
+    assert request.index("local acted = Editor.acted(op, args)") < request.index('if op == "rc" then')
+    assert 'kind == "acted"' in sources["Host"] and "detectors:noteActed(frame)" in sources["Server"]
+    readme = open(os.path.join(ROOT, "plugin", "roblox", "README.md"), encoding="utf-8").read()
+    row = next(line for line in readme.splitlines() if line.startswith("| `detectors` |"))
+    for word in ("`teleport_after_input_seconds`", "`details.after_input`", "right after the agent pressed"):
+        assert word in row, word
+    assert "counts too" not in row
+    guide = open(os.path.join(ROOT, "autopilot", "engines", "roblox.md"), encoding="utf-8").read()
+    assert "after_input" in guide and "is one too" not in guide
+
+
+def test_a_detectors_many_kinds_are_told_once():
+    """A detector with more than 3 kinds of finding in a run (an out_of_world for each of 33 classes) is one report
+    line listing every kind, one result card (its own cards on Show each), and a feed line for its first 3 kinds and
+    one saying there are more, as the other engines' docks."""
+    sources = _sources()
+    model, page, dock = sources["RunModel"], sources["RunPage"], sources["Dock"]
+    assert "M.GROUP_AT = 3" in model and "#list <= M.GROUP_AT" in model
+    assert '"- [engine · %s · %s] %d kinds: %s — e.g. %s"' in model
+    assert '" (not a bug)"' in model and 'string.format(" (×%d)", count)' in model
+    assert "error = 3, warning = 2, suspicion = 1, info = 0" in model
+    assert '" (and more " .. det .. " findings: all of them are in the result)"' in model
+    assert "index < M.GROUP_AT" in model and "index == M.GROUP_AT and fresh" in model
+    assert "local line = r:findingLine(f, fresh)" in dock
+    assert "function RunPage:_groupCard(" in page and '"Show each"' in page and '"Hide"' in page
+    assert "M.findingGroups(engine)" in page and '"%d kinds"' in page
+    for text in (model, page):
+        assert "more)" not in text.replace("(and more", "")  # (no "+N more" that hides kinds)
+
+
 class PlacelessLink(ThingsLink):
     """transforms as the plugin answers an instance with no place in the world (a script, a value, a GUI object):
     its fields null, `active` still there."""
@@ -638,6 +686,34 @@ def test_the_dock_is_mirrored_in_the_playtests_client():
         assert "_act(" not in body[:body.index("end")], method
 
 
+def test_a_steer_is_a_hint_or_a_redirect_when_the_agent_service_tells_them_apart():
+    """As in the other plugins: with "steer_mode" in the welcome the steer box says play goes on, Send sends a hint and
+    Redirect beside it a redirect (the frame's "mode"); without it one Steer button and no mode, as before. The mirror's
+    dock passes which one back to the edit side."""
+    sources = _sources()
+    editor, mirror, run, dock = (sources[m] for m in ("Editor", "Mirror", "RunPage", "Dock"))
+    assert 'elseif f == "steer_mode" then\n\t\t\t\tself.brainSteerModes = true' in editor
+    steer = _function_body(editor, "function Editor:steer(")
+    assert 'local frame: any = { type = "steer", text = said }' in steer
+    assert 'if self:canRedirect() then\n\t\t\tframe.mode = if redirect then "redirect" else "hint"' in steer
+    assert "return self:canSteer() and self.brainSteerModes" in _function_body(editor, "function Editor:canRedirect(")
+    assert 'local STEER_HINT_MODES = "Add a hint; Autopilot keeps playing"' in run
+    assert 'T.button(well, "Redirect", "default", function()\n\t\tself:_onSteer(true)' in run
+    update = _function_body(run, "function RunPage:_updateSteer(")
+    assert "self.steerBox.PlaceholderText = if modes then STEER_HINT_MODES else STEER_HINT" in update
+    assert 'if modes then "Send" else "Steer"' in update and "self.redirectBtn.Visible = modes" in update
+    assert "T.disable(self.redirectBtn, not now or not typed)" in update
+    send = _function_body(run, "function RunPage:_onSteer(")
+    assert "ed:steer(said, redirecting)" in send and '"You (redirect): "' in send
+    # the mirror: its state carries steer_mode, its Redirect goes back to the edit side as such
+    assert "brainSteerModes = ed.brainSteerModes" in dock
+    assert "self.brainSteerModes = s.brainSteerModes == true" in mirror
+    assert 'self:_act({ action = "steer", text = text, redirect = redirect == true })' in mirror
+    act = _function_body(mirror, "function Mirror.act(")
+    assert "local redirect = f.redirect == true and editor:canRedirect()" in act
+    assert "editor:steer(text, redirect)" in act
+
+
 def test_the_edit_dock_always_comes_back_after_play():
     """The edit dock is hidden only while a mirror says it is drawing (dock_mirror, said every second): stale or gone,
     the edit dock shows again as it was, a stopped mirror clears it at once, the edit mirror's stop shows the dock, and
@@ -662,3 +738,207 @@ def test_the_edit_dock_always_comes_back_after_play():
     assert 'Settings.set(self.plugin, "dock_hidden", { was = w.Enabled })' in hide
     assert 'Settings.set(self.plugin, "dock_hidden", nil)' in hide and "w.Enabled = was" in hide
     assert "require(script.Parent.Mirror).edit(plugin, editor, dock)" in main  # (stopped with the plugin)
+
+
+def test_the_settings_have_a_bug_detectors_switch():
+    """As the other plugins' Settings: Bug detectors, this project's, shown as memory_state's "detectors" says (on when
+    an older agent service says nothing), flipped through the editor's link as Reset memory and Not a bug go (so over
+    the WebSocket or HTTP alike), not changed while not connected or mid-play; the mirror's dock shows it too."""
+    sources = _sources()
+    page, editor, mirror, dock = (sources[m] for m in ("SettingsPage", "Editor", "Mirror", "Dock"))
+    assert 'settingCard(v, "Bug detectors", DETECTORS)' in page
+    assert ('"During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this "\n'
+            '\t.. "per-project."') in page
+    assert ('T.switch(dc, fixedOn or d.editor.detectors ~= false, "Bug detectors on", "Bug detectors off"') in page
+    assert "elseif d.editor:setDetectors(on) then" in page
+    assert "{ disabled = d.mirror or not d.editor:connected() or fixedOn }" in page
+    # (after the Research agent, before the Design brief, as in the other plugins)
+    assert page.index('"Research agent", RESEARCH') < page.index('"Bug detectors", DETECTORS') < \
+        page.index('"Design brief", BRIEF_TEXT')
+    assert "\tself.detectors = true\n" in editor
+    assert "self.detectors = frame.detectors ~= false" in editor
+    flip = _function_body(editor, "function Editor:setDetectors(on: boolean): boolean")
+    assert "if not self:connected() then" in flip and "self.detectors = on" in flip
+    assert 'return self.link:send({ type = "detectors", enabled = on })' in flip
+    # (the same way as the other control messages: the link's send, which takes the WebSocket or HTTP)
+    assert 'self:_send({ type = "clear_memory" })' in editor
+    assert "function Editor:_send(frame: any)\n\tself.link:send(" in editor
+    # every memory_state redraws the Settings page
+    memory = dock[dock.index('on("memory", function()'):]
+    assert "self:renderPages()" in memory[:memory.index("end)")]
+    # the mirror's dock: shown as the edit side's, never flipped
+    assert "detectors = ed.detectors, brainDetectors = ed.brainDetectors }" in dock
+    assert "self.detectors = s.detectors ~= false" in mirror
+    body = mirror[mirror.index("function MirrorEditor:setDetectors("):]
+    assert "_act(" not in body[:body.index("end")]
+    readme = open(os.path.join(ROOT, "plugin", "roblox", "README.md"), encoding="utf-8").read()
+    row = next(line for line in readme.splitlines() if line.startswith("| **Bug detectors** |"))
+    for word in ("`memory_state`", '`{"type": "detectors", "enabled": ...}`', "`detectors.json`",
+                 "only while connected"):
+        assert word in row, word
+
+
+def test_an_older_agent_service_greys_the_bug_detectors_switch_on():
+    """As the other plugins: an agent service older than this plugin (its welcome's features without "detectors")
+    ignores the switch's frame and the game's detectors go on running, so the switch shows them on and can't be flipped,
+    and a line under it says why in the same words as every plugin's; the mirror's dock shows it as the edit side's."""
+    sources = _sources()
+    page, editor, mirror, dock = (sources[m] for m in ("SettingsPage", "Editor", "Mirror", "Dock"))
+    why = "The agent service in use is older than this plugin and can't turn them off."
+    assert f'local DETECTORS_OLDER = "{why}"' in page
+    assert "T.label(dc, DETECTORS_OLDER, \"small\")" in page and "d.editor:status(DETECTORS_OLDER)" in page
+    # the welcome's features say it, each welcome afresh
+    welcome = editor[editor.index('elseif kind == "welcome" then'):]
+    welcome = welcome[:welcome.index("self:_startPipe(")]
+    assert "self.brainSteerModes, self.brainDetectors = false, false" in welcome
+    assert 'elseif f == "detectors" then\n\t\t\t\tself.brainDetectors = true' in welcome
+    assert "\tself.brainDetectors = false" in editor
+    fixed = _function_body(editor, "function Editor:detectorsFixedOn(): boolean")
+    assert "return self:connected() and not self.brainDetectors" in fixed
+    flip = _function_body(editor, "function Editor:setDetectors(on: boolean): boolean")
+    assert flip.index("if self:detectorsFixedOn() then\n\t\treturn false") < flip.index("self.detectors = on")
+    # the mirror: the edit side's, the same check
+    assert "self.brainDetectors = s.brainDetectors == true" in mirror
+    assert "return self:connected() and not self.brainDetectors" in \
+        _function_body(mirror, "function MirrorEditor:detectorsFixedOn(): boolean")
+    assert "brainDetectors = ed.brainDetectors" in dock
+    readme = open(os.path.join(ROOT, "plugin", "roblox", "README.md"), encoding="utf-8").read()
+    row = next(line for line in readme.splitlines() if line.startswith("| **Bug detectors** |"))
+    assert '"detectors"' in row and why in row
+
+
+# Enough of Roblox for the Editor's and the Settings page's modules to load and draw in Luau's own CLI: every service,
+# instance and other module a stand-in that takes anything, the Theme's switch and labels written down, the plugin's
+# settings empty.
+_LUAU_PRELUDE = r"""
+local function any(): any
+	return setmetatable({}, { __index = function() return any() end, __call = function() return any() end,
+		__newindex = function() end })
+end
+local game = any()
+local script = { Parent = setmetatable({}, { __index = function(_, k) return k end }) }
+local Instance, UDim2, Color3, Vector2, Enum, DateTime = any(), any(), any(), any(), any(), any()
+local task = { defer = function() end, spawn = function() end, delay = function() end }
+local function warn(...) end
+local switches, labels = {}, {}
+local Theme = setmetatable({ focused = false, C = any(),
+	switch = function(parent, on, onWords, offWords, onToggle, opts)
+		table.insert(switches, { on = on, onWords = onWords, offWords = offWords, onToggle = onToggle,
+			opts = opts or {} })
+		return any()
+	end,
+	label = function(parent, text) table.insert(labels, text) return any() end },
+	{ __index = function() return any() end })
+local modules = { Theme = Theme }
+local function require(name: any): any
+	return modules[name] or any()
+end
+"""
+
+_LUAU_CHECKS = r"""
+local plugin = { GetSetting = function() return nil end, SetSetting = function() end }
+local sent = {}
+local link = { connected = true, role = "editor", url = "ws://127.0.0.1:8765/v1/bridge", problem = "",
+	send = function(_, frame) table.insert(sent, frame) return true end }
+local ed = setmetatable({ plugin = plugin, link = link, listeners = {}, memory = {}, detectors = true,
+	runActive = false, account = {}, connection = 0, sides = {} }, Editor)
+local WHY = "The agent service in use is older than this plugin and can't turn them off."
+-- this plugin's agent service: its welcome's features say "detectors"
+ed:_onBrainFrame({ type = "welcome", role = "editor", session = "s1", features = { "steer", "detectors" } })
+assert(ed.brainDetectors == true and not ed:detectorsFixedOn(), "this agent service's welcome: it can be flipped")
+local memoryEvents = 0
+ed:on("memory", function() memoryEvents += 1 end)
+-- an older agent service's memory_state: on
+ed:_onBrainFrame({ type = "memory_state", runs = 2 })
+assert(ed.detectors == true and memoryEvents == 1, "no detectors field: on")
+ed:_onBrainFrame({ type = "memory_state", runs = 2, detectors = false })
+assert(ed.detectors == false and memoryEvents == 2, "memory_state's detectors false: off")
+local function card(d)
+	table.clear(switches)
+	table.clear(labels)
+	SettingsPage.render(d, any())
+	for _, s in ipairs(switches) do
+		if s.onWords == "Bug detectors on" then
+			return s
+		end
+	end
+	error("no Bug detectors switch")
+end
+local d = { editor = ed, plugin = plugin, runs = {}, mirror = false, SERVE_COMMAND = "autopilot serve" }
+local s = card(d)
+assert(s.on == false and s.offWords == "Bug detectors off" and not s.opts.disabled, "shows off, can be flipped")
+assert(table.find(labels, "Bug detectors"), "its title")
+assert(table.find(labels, "During gameplay, Autopilot watches for potential bugs and reports them. "
+	.. "You can enable/disable this per-project."), "its words")
+-- flipped: sent at once over the link, shown flipped until the next memory_state
+s.onToggle(true)
+local f = sent[#sent]
+assert(f.type == "detectors" and f.enabled == true and ed.detectors == true, "flipping sends detectors")
+-- (the same link as Reset memory's and Not a bug's)
+ed:clearMemory()
+assert(sent[#sent].type == "clear_memory", "clear_memory over the same link")
+ed:feedback("teleport:Player", "not_a_bug")
+assert(sent[#sent].type == "feedback", "feedback over the same link")
+-- the agent service says it as saved: the memory_state sets it
+ed:_onBrainFrame({ type = "memory_state", runs = 2, detectors = false })
+assert(ed.detectors == false and card(d).on == false, "the memory_state corrects it")
+ed:_onBrainFrame({ type = "memory_state", runs = 2, detectors = true })
+assert(card(d).on == true, "and every memory_state sets it")
+-- not connected: the last value, and it can't be changed
+link.connected = false
+local n = #sent
+s = card(d)
+assert(s.on == true and s.opts.disabled == true, "not connected: disabled, the last value")
+assert(not table.find(labels, WHY), "not connected: no line about an older agent service")
+assert(ed:setDetectors(false) == false and #sent == n and ed.detectors == true, "not connected: nothing sent")
+-- mid-play (the mirror's dock): disabled
+link.connected = true
+d.mirror = true
+assert(card(d).opts.disabled == true, "the mirror: disabled")
+d.mirror = false
+-- an agent service older than this plugin (its welcome's features without "detectors"): it would ignore the frame and
+-- run them, so on and disabled, a line under it saying why; flipped anyway, nothing sent, the status line says why
+ed:_onBrainFrame({ type = "memory_state", runs = 2, detectors = false })
+ed:_onBrainFrame({ type = "welcome", role = "editor", session = "s2",
+	features = { "steer", "steer_mode", "usage", "account", "setup" } })
+assert(ed:detectorsFixedOn(), "older: it can't turn them off")
+local said = {}
+ed:on("status", function(text) table.insert(said, text) end)
+n = #sent
+s = card(d)
+assert(s.on == true and s.opts.disabled == true, "older: on and disabled")
+assert(table.find(labels, WHY), "older: the line saying why")
+assert(table.find(labels, WHY) > table.find(labels, "Bug detectors"), "older: the line in the Bug detectors card")
+s.onToggle(false)
+assert(#sent == n and said[#said] == WHY, "older, flipped: nothing sent, the status line says why")
+assert(card(d).on == true, "older, flipped: still on")
+assert(ed:setDetectors(false) == false and #sent == n, "older: the editor sends nothing")
+-- this plugin's agent service again: as it says, and flipped as before
+ed:_onBrainFrame({ type = "welcome", role = "editor", session = "s3", features = { "detectors" } })
+s = card(d)
+assert(s.on == false and not s.opts.disabled and not table.find(labels, WHY), "this agent service again: as it says")
+s.onToggle(true)
+assert(sent[#sent].type == "detectors" and sent[#sent].enabled == true, "this agent service again: flipped, sent")
+print("ok")
+"""
+
+
+def _wrapped(name, source):
+    return f"local {name} = (function()\n{source}\nend)()\nmodules.{name} = {name}\n"
+
+
+def test_the_bug_detectors_switch_in_luau(tmp_path):
+    """The Editor and the Settings page themselves, run in Luau's CLI (when `luau` is on PATH, as in CI's Luau step):
+    memory_state's "detectors" sets the switch (on without it), flipping it sends {"type": "detectors"} over the link
+    as clear_memory and feedback go, the next memory_state corrects it, and it is disabled while not connected or
+    mid-play."""
+    exe = shutil.which("luau")
+    if not exe:
+        pytest.skip("no luau on PATH")
+    sources = _sources()
+    chunk = _LUAU_PRELUDE + _wrapped("Settings", sources["Settings"]) + _wrapped("Editor", sources["Editor"]) \
+        + _wrapped("SettingsPage", sources["SettingsPage"]) + _LUAU_CHECKS
+    path = tmp_path / "detectors_switch.luau"
+    path.write_text(chunk, encoding="utf-8")
+    r = subprocess.run([exe, str(path)], capture_output=True, text=True, timeout=60)
+    assert r.returncode == 0 and r.stdout.strip().endswith("ok"), f"{r.stdout[-2000:]}{r.stderr[-2000:]}"

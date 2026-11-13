@@ -9,7 +9,6 @@ import re
 from dataclasses import dataclass, field
 
 FILE_ENDINGS = (".umap", ".unity", ".tscn", ".scn")
-BRIEF_LEVELS = 200  # levels the agent's briefing lists
 
 
 @dataclass
@@ -71,9 +70,11 @@ def listing(answer):
     return levels, str(answer.get("open") or ""), str(answer.get("playing") or "")
 
 
-def briefing(level):
+def briefing(level, keep=None, budget=None):
     """The agent's briefing on the level (cli.prepare's Level): which plays, the project's others, and that the agent
-    decides whether the request means another."""
+    decides whether the request means another. keep(stem, text) -> its path: where the whole list of the project's
+    levels is written when it is longer than budget characters (the briefing lists those that fit, and says where all
+    of them are); without them every level is listed."""
     if not level or not (level.levels or level.playing):
         return None
     own = "the editor's own level (the one its Play button plays)"
@@ -85,9 +86,19 @@ def briefing(level):
         why = own
     out = [f"This run plays {level.playing or level.open or own}: {why}."]
     if level.levels:
-        shown = level.levels[:BRIEF_LEVELS]
-        more = f" (and {len(level.levels) - len(shown)} more)" if len(level.levels) > len(shown) else ""
-        out.append(f"The project's levels ({len(level.levels)}): " + ", ".join(shown) + more + ".")
+        listed = ", ".join(level.levels)
+        if keep is None or budget is None or len(listed) <= budget:
+            out.append(f"The project's levels ({len(level.levels)}): {listed}.")
+        else:
+            where = keep("levels", "\n".join(level.levels) + "\n")
+            size, k = 0, 0
+            for path in level.levels:
+                size += len(path) + 2
+                if size > budget:
+                    break
+                k += 1
+            out.append(f"The project's levels ({len(level.levels)}; all of them, one a line, in {where}; the first "
+                       f"{k} here): " + ", ".join(level.levels[:k]) + ".")
     if level.hint:
         out.append(f"The run asked for the level \"{level.hint}\", which is none of the list's by that name: it "
                    "means one of them (or, if none fits, play on in this one and say so in the report).")

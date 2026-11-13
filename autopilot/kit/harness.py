@@ -112,6 +112,10 @@ class Harness:
     goal: str = ""  # the goal as Jev should see it, in the game's own terms
     tempo: float = 2.0  # decisions a second while an option runs (0: only when it ends or the options change)
     tick_hz: float = 15.0  # runtime ticks a second (observe + one executor step)
+    # Seconds of game time between the observations written to the trace (traceN.jsonl's "obs" events: the facts,
+    # status, options, step). 0: every observation (each tick's), for something fast (a 20 m/s move, a reflex) that
+    # one a second can't show. game.log(...) events are written at once, never sampled
+    trace_every: float = 1.0
     switch_margin: float = 0.25  # how much more Jev must prefer another option to stop the running one
     instructions: Optional[str] = None  # the Choice's instructions (default: see runtime.DEFAULT_INSTRUCTIONS)
     recent_kept: int = 6  # how many recent option outcomes Jev sees
@@ -129,6 +133,10 @@ class Harness:
     # as stalled: options that keep working without the step getting done (what they gather is lost again, the wrong
     # thing is counted, done() reads the wrong state) are a loop too. 0: never
     step_seconds: float = 150.0
+    # Seconds of game time between looks at the picture while nothing happens (autopilot/watch.py: a model sees the
+    # last 5 s of frames and answers the default questions and watch_questions; a look is also made right after a
+    # death, a failed option or a stall). 0: only after those. None: the runtime's default
+    watch_every: Optional[float] = None
 
     def setup(self, game):
         """Once, before the episode (the level is fresh): find the things the harness works with, calibrate. When play
@@ -165,6 +173,30 @@ class Harness:
 
     def on_answers(self, answers, obs):
         """answers: {id: probability (Noul) or {option: probability} (Choice/Score)} of questions()."""
+
+    def watch_questions(self, obs) -> dict:
+        """Questions about the picture, asked with every look (autopilot/watch.py) beside the defaults (`blocked`:
+        the player is stuck; `cause`: what happened to it: nothing / hazard / fall / enemy / moving_object /
+        died_unseen; `menu`: a screen covers the view): {id: a question in words (a yes/no), or a Noul/Choice/Score;
+        an optional default by name with True (`clear_shot`: the thing aimed at is in plain sight; `target_in_view`;
+        `moving`); a default with None to drop it}. Ask what the numbers can't tell and the picture can: is a beam
+        across the way, is the door open, does an effect play. Their answers come to on_watch and game.watch."""
+        return {}
+
+    def on_watch(self, answers, obs):
+        """A look's answers: {id: probability (a yes/no) | {label: probability} (a choice) | score, "note": a
+        sentence about what happened (when the model gives one)}. The same are in game.watch (with "t", the game
+        time of the look, and "trigger": "time", "death", "fail" or "stall") for executors to read."""
+
+    def died(self, before, obs) -> bool:
+        """Whether the player died (or was sent back) between two observations: by default a count named deaths,
+        falls, death_count or lives_lost went up, or `dead` turned true. The runtime notes each death in the trace
+        and has the picture of the seconds before it looked at and, at the episode's end, described."""
+        for key in ("deaths", "falls", "death_count", "lives_lost"):
+            a, b = before.get(key), obs.get(key)
+            if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b > a:
+                return True
+        return bool(obs.get("dead")) and not bool(before.get("dead"))
 
     def status(self, obs) -> Status:
         return Status()

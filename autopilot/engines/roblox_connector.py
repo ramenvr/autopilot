@@ -9,7 +9,8 @@ as engine "roblox-mcp", and answers the protocol's requests (docs/protocol.md) b
 - inputs: user_keyboard_input (keys), user_mouse_input (clicks, the pointer, the wheel), character_navigation (`move`);
   camera turns are the `turn` Luau op in the player's client (Studio's synthetic right-drag doesn't turn the camera);
 - the session: start_stop_play (restart is stop, then start); `capture` is screen_capture (stills, no video);
-- the errors the game logs: get_console_output, polled while the game plays, as `log` events and log_error findings;
+- the errors the game logs: get_console_output, polled while the game plays, as `log` events and log_error findings
+  (the findings only while the project's Bug detectors are on: the `detectors` op);
 - the codex: a Rojo project's files from disk when there is one, else every script read with script_read; and the
   place's instance tree (search_game_tree) and its CollectionService tags.
 
@@ -34,6 +35,7 @@ import threading
 import time
 import uuid
 
+from ..detectors import is_muted
 from ..kit.game import GameError
 from ..kit.geom import Vec, wrap
 from . import roblox_mcp as mcp
@@ -500,6 +502,10 @@ class StudioBackend:
         self.console_text = ""
         self.console_seen = []
         self.findings_seen = set()
+        # The project's detector settings (op_detectors): whether the game's errors are log_error findings too (the
+        # Bug detectors switch), and the detector names and signatures muted
+        self.detectors_on = True
+        self.detectors_muted = frozenset()
         self.lock = threading.Lock()
         self.stopped = threading.Event()
         self.input_thread = threading.Thread(target=self._input_worker, name="roblox-inputs", daemon=True)
@@ -818,8 +824,16 @@ class StudioBackend:
         if verb == "call":
             params = dict(body.get("parameters") or {})
             given = params.pop("args", None)
-            positional = list(given) if isinstance(given, (list, tuple)) else list(params.values())
-            return self.luau("call", {"path": path, "fn": body.get("functionName"), "args": positional},
+            fn = body.get("functionName")
+            if params:
+                # (no parameter names to match them by here: a named value went in by its place among the others, a
+                # misnamed one unnoticed. Refused, as the plugin refuses a name its function doesn't take)
+                raise OpFailed(400, f"{fn} on {path}: unknown argument(s) {', '.join(params)}; here a function takes "
+                                    "its arguments in order: args=[...]")
+            if given is not None and not isinstance(given, (list, tuple)):
+                raise OpFailed(400, f"{fn} on {path}: args is a list of the arguments, in order: args=[...]")
+            positional = list(given or [])
+            return self.luau("call", {"path": path, "fn": fn, "args": positional},
                              model or self.datamodel(write=True))
         raise OpFailed(400, f"rc: unknown verb {verb}")
 
@@ -1051,9 +1065,20 @@ class StudioBackend:
 
     # -- the errors the game logs ------------------------------------------------------------------------
 
+    def op_detectors(self, args):
+        """The project's detector settings (autopilot/detectors.py), as the other plugins take them. This connector's
+        one detector is the game's errors as log_error findings: "enabled" false (the Bug detectors switch off) stops
+        those findings, never the `log` events (the game's error log the agent reads isn't a detector); "mute" drops
+        the findings it names. The other keys are the other plugins' detectors' and ignored."""
+        if isinstance(args.get("enabled"), bool):
+            self.detectors_on = args["enabled"]
+        if isinstance(args.get("mute"), list):
+            self.detectors_muted = frozenset(str(m).strip() for m in args["mute"])
+        return {}
+
     def poll_console(self):
         """Read Studio's console; send the errors and warnings it has since the last read (`log` events, and a
-        log_error finding per error). Returns how many lines were new."""
+        log_error finding per error while the detectors are on: op_detectors). Returns how many lines were new."""
         text = self.studio.console_output() or ""
         if self.console_text and text.startswith(self.console_text):
             new = text[len(self.console_text):].splitlines()
@@ -1077,13 +1102,13 @@ class StudioBackend:
             if not level:
                 continue
             self.emit({"kind": "log", "t": self.t, "verbosity": level, "category": "Luau", "message": line[:2000]})
-            if level == "Error":
+            if level == "Error" and self.detectors_on:
                 sig = "log_error:" + re.sub(r"\d+", "#", line)[:200]
-                if sig not in self.findings_seen:
+                finding = {"detector": "log_error", "severity": "error", "summary": f"Luau error: {line[:300]}",
+                           "signature": sig}
+                if sig not in self.findings_seen and not is_muted(finding, self.detectors_muted):
                     self.findings_seen.add(sig)
-                    self.emit({"kind": "finding", "t": self.t, "finding": {
-                        "detector": "log_error", "severity": "error", "summary": f"Luau error: {line[:300]}",
-                        "signature": sig}})
+                    self.emit({"kind": "finding", "t": self.t, "finding": finding})
         return n
 
     # -- the codex -----------------------------------------------------------------------------------------

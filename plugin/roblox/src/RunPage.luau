@@ -21,6 +21,10 @@ local FEED_TAIL = 10 -- the Live page's feed: its latest lines (the Feed tab sho
 local FEED_ROWS = 600 -- the Feed tab's rows drawn at most (the latest)
 local STEER_HINT = "Send a steering prompt to Autopilot"
 local STEER_WAIT = "You can steer once the game is playing"
+-- With an agent service that tells hints from redirects ("steer_mode"): the box's placeholder, Send (a hint: play goes
+-- on) and Redirect beside it (the attempt playing now ends), with what each does once there are words to send
+local STEER_HINT_MODES = "Add a hint; Autopilot keeps playing"
+local STEER_MODES_NOTE = "Send: Autopilot reads your hint and keeps playing. Redirect: end the current attempt now and play on from your words."
 local HANDS_OFF = "Hands off the game view while Autopilot plays: your clicks and keys there reach the game too."
 
 function RunPage.new(d: any, frame: Frame): any
@@ -180,6 +184,10 @@ function RunPage:_buildSteer()
 	self.steerBtn = T.button(well, "Steer", "primary", function()
 		self:_onSteer()
 	end)
+	self.redirectBtn = T.button(well, "Redirect", "default", function()
+		self:_onSteer(true)
+	end)
+	self.redirectBtn.Visible = false
 	self.steerNote = T.label(inner, "", "small", { color = C.muted })
 	self.steerRow = row
 	row.Visible = false
@@ -202,18 +210,30 @@ function RunPage:_updateSteer()
 	self.steerBox.TextEditable = editable
 	self.steerRow.BackgroundTransparency = 0
 	local now = self:_canSteerNow() and not stopping
-	T.disable(self.steerBtn, not now or M.trim(self.steerBox.Text) == "")
-	self.steerNote.Text = if not now and not stopping and M.trim(self.steerBox.Text) ~= "" then STEER_WAIT else ""
+	local typed = M.trim(self.steerBox.Text) ~= ""
+	local modes = self:_canSteerShown() and self.d.editor:canRedirect()
+	self.steerBox.PlaceholderText = if modes then STEER_HINT_MODES else STEER_HINT
+	self.steerBtn.Text = T.text(if modes then "Send" else "Steer", self.steerBtn.FontFace)
+	self.redirectBtn.Visible = modes
+	T.disable(self.steerBtn, not now or not typed)
+	T.disable(self.redirectBtn, not now or not typed)
+	-- (Roblox draws no tooltips: what the buttons do is the note under the box)
+	self.steerNote.Text = if not now and not stopping and typed then STEER_WAIT
+		elseif now and modes and typed then STEER_MODES_NOTE
+		else ""
 	self.steerNote.Visible = self.steerNote.Text ~= ""
 end
 
-function RunPage:_onSteer()
+-- Sends the box's words: a hint (Send, Steer, Enter), or with redirect a redirect (Redirect: the attempt playing now ends).
+function RunPage:_onSteer(redirect: boolean?)
 	local said = M.trim(self.steerBox.Text)
 	if said == "" or not self:_canSteerNow() then
 		return
 	end
-	self.d.editor:steer(said)
-	self.d.active:addFeed("You: " .. said, "status")
+	local ed = self.d.editor
+	local redirecting = redirect == true and ed:canRedirect()
+	ed:steer(said, redirecting)
+	self.d.active:addFeed((if redirecting then "You (redirect): " else "You: ") .. said, "status")
 	self.steerBox.Text = ""
 	self:_updateSteer()
 	self:liveChanged()
@@ -519,7 +539,7 @@ function RunPage:_fold(parent: Instance, e: any, label: string, detail: string, 
 	b.LayoutOrder = T.nextOrder()
 	T.pad(b, 44, 0, 0, 0)
 	b.Parent = v
-	local box = T.selectable(v, string.sub(detail, 1, 16000), { multiline = true, size = 11, radius = 4 })
+	local box = T.selectable(v, M.shownDetail(detail), { multiline = true, size = 11, radius = 4 })
 	local indent = Instance.new("UISizeConstraint")
 	indent.MaxSize = Vector2.new(math.huge, 320)
 	indent.Parent = box
@@ -714,9 +734,44 @@ function RunPage:_renderResult()
 		end
 		if #engine > 0 then
 			T.label(fv, string.format("Engine findings · %d", #engine), "caps", { wrap = false })
-			for _, f in ipairs(engine) do
-				self:_engineCard(fv, r, f)
+			for _, g in ipairs(M.findingGroups(engine)) do
+				if g.finding then
+					self:_engineCard(fv, r, g.finding)
+				else
+					self:_groupCard(fv, r, g)
+				end
 			end
+		end
+	end
+end
+
+-- A detector with many kinds of finding (M.findingGroups): one card, every kind listed, its own cards under it on
+-- Show each (kept open per run and detector while the dock lives).
+function RunPage:_groupCard(parent: Instance, r: any, g: any)
+	self.openGroups = self.openGroups or {}
+	local key = tostring(r.id) .. "\0" .. g.detector
+	local v = T.plate(parent, { pad = { 12, 11, 12, 11 }, gap = 6, name = "EngineFindingGroup" })
+	local h = T.row(v, 8)
+	local sev = M.trim(g.severity)
+	T.tag(h, if sev ~= "" then sev else "info", T.severityKind(sev))
+	T.label(h, g.detector, "monoDim", { wrap = false, fill = true })
+	T.label(h, string.format("%d kinds", #g.findings), "mono", { wrap = false, font = T.F.monoMedium, color = C.text })
+	T.label(v, M.scrub(tostring(g.findings[1].summary or "")), "strong")
+	local kinds = {}
+	for _, f in ipairs(g.findings) do
+		local count = tonumber(f.count) or 1
+		table.insert(kinds, M.scrub(M.kindOf(f)) .. (if count > 1 then string.format(" ×%d", count) else ""))
+	end
+	T.label(v, table.concat(kinds, " · "), "monoDim")
+	local open = self.openGroups[key] == true
+	local b = T.row(v, 6, true)
+	T.button(b, if open then "Hide" else "Show each", "quiet", function()
+		self.openGroups[key] = not open or nil
+		self:render()
+	end, true)
+	if open then
+		for _, f in ipairs(g.findings) do
+			self:_engineCard(parent, r, f)
 		end
 	end
 end

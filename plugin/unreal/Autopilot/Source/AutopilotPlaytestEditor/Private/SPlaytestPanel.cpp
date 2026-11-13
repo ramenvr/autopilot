@@ -2363,17 +2363,36 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSteerBar(bool bFeed)
 {
 	// Steer: the user's words to the run while it plays (it goes on from where the game is). Shown while the run goes, on
 	// the Live page and under the Feed tab (one box: what is typed in one shows in the other). Words can be typed at any
-	// stage and are kept; Steer only at the Rollout; both locked while it stops
-	TSharedRef<SButton> Steer = AutopilotUI::Button(LOCTEXT("Steer", "Steer"), "Autopilot.Button.Primary", FOnClicked::CreateSP(this, &SPlaytestPanel::OnSteer),
-		TAttribute<bool>::CreateLambda([this]()
+	// stage and are kept; sent only at the Rollout; both locked while it stops. With an agent service that tells hints
+	// from redirects (HasSteerModes) the words go as a hint (Send, Enter: play goes on) or a redirect (Redirect: the
+	// attempt playing now ends); else as one steer (Steer), as before
+	const TAttribute<bool> CanSend = TAttribute<bool>::CreateLambda([this]()
+	{
+		return IsSteerOpen() && !IsStopping() && !SteerText().TrimStartAndEnd().IsEmpty();
+	});
+	TSharedRef<SButton> Steer = AutopilotUI::Button(TAttribute<FText>::CreateLambda([this]()
 		{
-			return IsSteerOpen() && !IsStopping() && !SteerText().TrimStartAndEnd().IsEmpty();
-		}));
+			return HasSteerModes() ? LOCTEXT("SteerSend", "Send") : LOCTEXT("Steer", "Steer");
+		}),
+		"Autopilot.Button.Primary", FOnClicked::CreateSP(this, &SPlaytestPanel::OnSteer, false), CanSend);
 	Steer->SetToolTip(AutopilotUI::Tip(TAttribute<FText>::CreateLambda([this]()
 	{
-		return IsSteerOpen() || IsStopping() ? FText::GetEmpty() : LOCTEXT("SteerLater", "You can steer once the game is playing");
+		return IsStopping() ? FText::GetEmpty()
+			: !IsSteerOpen() ? LOCTEXT("SteerLater", "You can steer once the game is playing")
+			: HasSteerModes() ? LOCTEXT("SteerSendTip", "Autopilot reads your hint and keeps playing")
+			: FText::GetEmpty();
 	})));
 	(bFeed ? FeedSteerButton : SteerButton) = Steer;
+	TSharedRef<SButton> Redirect = AutopilotUI::Button(LOCTEXT("SteerRedirect", "Redirect"), "Autopilot.Button",
+		FOnClicked::CreateSP(this, &SPlaytestPanel::OnSteer, true), CanSend);
+	Redirect->SetToolTip(AutopilotUI::Tip(TAttribute<FText>::CreateLambda([this]()
+	{
+		return IsStopping() ? FText::GetEmpty()
+			: !IsSteerOpen() ? LOCTEXT("SteerLater", "You can steer once the game is playing")
+			: LOCTEXT("SteerRedirectTip", "End the current attempt now and play on from your words");
+	})));
+	Redirect->SetVisibility(TAttribute<EVisibility>::CreateLambda([this]() { return HasSteerModes() ? EVisibility::Visible : EVisibility::Collapsed; }));
+	(bFeed ? FeedRedirectButton : RedirectButton) = Redirect;
 	TSharedPtr<SMultiLineEditableTextBox>& Box = bFeed ? FeedSteerBox : SteerBox;
 	return SNew(SVerticalBox)
 		.Visibility_Lambda([this]() { return IsSteerShown() ? EVisibility::Visible : EVisibility::Collapsed; })
@@ -2395,7 +2414,11 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSteerBar(bool bFeed)
 					[
 						SAssignNew(Box, SMultiLineEditableTextBox)
 						.Style(&FAutopilotStyle::Get().GetWidgetStyle<FEditableTextBoxStyle>("Autopilot.TextBox.Bare"))
-						.HintText(LOCTEXT("SteerHint", "Send a steering prompt to Autopilot"))
+						.HintText_Lambda([this]()
+						{
+							return HasSteerModes() ? LOCTEXT("SteerHintModes", "Add a hint; Autopilot keeps playing")
+								: LOCTEXT("SteerHint", "Send a steering prompt to Autopilot");
+						})
 						.IsEnabled_Lambda([this]() { return !IsStopping(); })
 						.AutoWrapText(true)
 						.OnKeyDownHandler(this, &SPlaytestPanel::OnSteerKey)
@@ -2413,6 +2436,10 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSteerBar(bool bFeed)
 				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
 				[
 					Steer
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(6.f, 0.f, 0.f, 0.f)
+				[
+					Redirect
 				])
 			]
 		];
@@ -2759,10 +2786,15 @@ bool SPlaytestPanel::IsSteerOpen() const
 	return IsSteerShown() && FAutopilotSession::SteersAt(*Selected());
 }
 
-FReply SPlaytestPanel::OnSteer()
+bool SPlaytestPanel::HasSteerModes() const
+{
+	return TestSteerModes.IsSet() ? TestSteerModes.GetValue() : FAutopilotSession::Get().CanRedirect();
+}
+
+FReply SPlaytestPanel::OnSteer(bool bRedirect)
 {
 	// (outside the Rollout nothing is sent and the words stay for the next one: SteerRun refuses too)
-	if (IsSteerOpen() && !IsStopping() && FAutopilotSession::Get().SteerRun(SteerText()))
+	if (IsSteerOpen() && !IsStopping() && FAutopilotSession::Get().SteerRun(SteerText(), bRedirect))
 	{
 		for (const TSharedPtr<SMultiLineEditableTextBox>& Box : { SteerBox, FeedSteerBox })
 		{
@@ -3124,12 +3156,102 @@ void SPlaytestPanel::RebuildResult(TSharedPtr<FAutopilotRun> Shown)
 		[
 			AutopilotUI::Label(FText::Format(LOCTEXT("EngineFindings", "Engine findings · {0}"), EngineFindings.Num()))
 		];
+		// (a detector with many kinds, as one out_of_world per class of actor: one card naming every kind, its own cards
+		// under it when asked)
+		const TArray<TArray<TSharedPtr<FAutopilotFinding>>> Groups = Run->EngineFindingGroups();
+		TSet<FString> GroupShown;
 		for (const TSharedPtr<FAutopilotFinding>& F : EngineFindings)
 		{
-			ResultBox->AddSlot().AutoHeight().Padding(0.f, 8.f, 0.f, 0.f)[MakeEngineCard(Run, F)];
+			const TArray<TSharedPtr<FAutopilotFinding>>* Group = Groups.FindByPredicate([&F](const TArray<TSharedPtr<FAutopilotFinding>>& G) { return G[0]->Detector == F->Detector; });
+			if (!Group || Group->Num() <= FAutopilotRun::FindingGroupAt)
+			{
+				ResultBox->AddSlot().AutoHeight().Padding(0.f, 8.f, 0.f, 0.f)[MakeEngineCard(Run, F)];
+				continue;
+			}
+			if (GroupShown.Contains(F->Detector))
+			{
+				continue;
+			}
+			GroupShown.Add(F->Detector);
+			ResultBox->AddSlot().AutoHeight().Padding(0.f, 8.f, 0.f, 0.f)[MakeEngineGroupCard(Run, *Group)];
+			if (OpenGroups.Contains(GroupKey(*Run, F->Detector)))
+			{
+				for (const TSharedPtr<FAutopilotFinding>& Each : *Group)
+				{
+					ResultBox->AddSlot().AutoHeight().Padding(16.f, 8.f, 0.f, 0.f)[MakeEngineCard(Run, Each)];
+				}
+			}
 		}
 	}
 }
+
+FString SPlaytestPanel::GroupKey(const FAutopilotRun& Run, const FString& Detector)
+{
+	return FString::Printf(TEXT("%d/%s"), Run.Id, *Detector);
+}
+
+TSharedRef<SWidget> SPlaytestPanel::MakeEngineGroupCard(const TSharedPtr<FAutopilotRun>& Run, const TArray<TSharedPtr<FAutopilotFinding>>& Group)
+{
+	// A detector's many kinds on one card: its highest severity, the detector, how many kinds, the first's words, every
+	// kind (mono, wrapped) and Show each / Hide (its own cards under it)
+	const FString Detector = Group[0]->Detector;
+	const FString Severity = FAutopilotRun::TopSeverity(Group);
+	const FString Key = GroupKey(*Run, Detector);
+	const bool bOpen = OpenGroups.Contains(Key);
+	TSharedRef<SVerticalBox> Body = SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SHorizontalBox)
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(0.f, 0.f, 8.f, 0.f)
+			[
+				AutopilotUI::Tag(Str(SeverityWord(Severity)), AutopilotUI::SeverityTone(Severity))
+			]
+			+ SHorizontalBox::Slot().FillWidth(1.f).VAlign(VAlign_Center)
+			[
+				AutopilotUI::Mono(Str(Detector), 10.f, FSlateColor(AutopilotColor::Muted()))
+			]
+			+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center).Padding(8.f, 0.f, 0.f, 0.f)
+			[
+				AutopilotUI::Mono(FText::Format(LOCTEXT("GroupKinds", "{0} kinds"), Group.Num()), 12.f, FSlateColor(AutopilotColor::Text()), true)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)
+		[
+			SNew(STextBlock)
+			.Text(Str(Group[0]->Summary))
+			.Font(FAutopilotStyle::Font(EAutopilotFont::BodyMedium, 13.f))
+			.LineHeightPercentage(AutopilotUI::BodyLineHeight)
+			.AutoWrapText(true)
+			.ColorAndOpacity(FSlateColor(AutopilotColor::Text()))
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)
+		[
+			SNew(STextBlock)
+			.Text(Str(FAutopilotRun::KindsLine(Group, false)))
+			.Font(FAutopilotStyle::Font(EAutopilotFont::Mono, 10.f))
+			.ColorAndOpacity(FSlateColor(AutopilotColor::Muted()))
+			.AutoWrapText(true)
+		];
+	TSharedRef<SWrapBox> Row = ButtonRow();
+	TWeakPtr<FAutopilotRun> WeakRun = Run;
+	AddTo(Row, SmallButton(bOpen ? LOCTEXT("GroupHide", "Hide") : LOCTEXT("GroupShowEach", "Show each"), "Autopilot.Button.Quiet",
+		FOnClicked::CreateLambda([this, WeakRun, Key]()
+		{
+			if (OpenGroups.Contains(Key))
+			{
+				OpenGroups.Remove(Key);
+			}
+			else
+			{
+				OpenGroups.Add(Key);
+			}
+			RebuildResult(WeakRun.Pin());
+			return FReply::Handled();
+		})));
+	Body->AddSlot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)[Row];
+	return AutopilotUI::Plate(FMargin(12.f, 11.f), Body);
+}
+
 FReply SPlaytestPanel::OnRunAgain(TSharedPtr<FAutopilotRun> Run)
 {
 	if (!Run.IsValid() || !Run->Frame.IsValid())
@@ -3353,6 +3475,63 @@ bool SPlaytestPanel::ResearchShown() const
 	return !GetDefault<UPlaytestSettings>()->bUseWithAura;
 }
 
+TSharedRef<SWidget> SPlaytestPanel::MakeBugDetectors()
+{
+	// (as the sharing card: the switch under its name, and beside it "Bug detectors on" / "Bug detectors off". The agent
+	// service keeps it for the project: flipped, it shows the new value at once and the memory_state it answers with
+	// confirms it. Not connected: greyed, showing what it last said, and flipped the status line says why. Connected to
+	// an agent service older than this plugin, which can't turn them off: greyed and on (it runs them), a line under it
+	// saying why, and flipped the status line says it too)
+	const FText Name = LOCTEXT("BugDetectors", "Bug detectors");
+	TSharedRef<SCheckBox> Toggle = AutopilotUI::Switch([this]()
+		{
+			const UPlaytestSubsystem* B = DetectorsBridge();
+			return !B || B->AreDetectorsEnabled();
+		},
+		[this](bool bOn)
+		{
+			if (UPlaytestSubsystem* B = DetectorsBridge())
+			{
+				B->SetDetectorsEnabled(bOn);
+			}
+		},
+		AutopilotUI::Body(TAttribute<FText>::CreateLambda([this]()
+		{
+			const UPlaytestSubsystem* B = DetectorsBridge();
+			return !B || B->AreDetectorsEnabled() ? LOCTEXT("DetectorsOn", "Bug detectors on") : LOCTEXT("DetectorsOff", "Bug detectors off");
+		}), 13.f, AutopilotColor::Text(), false, EAutopilotFont::BodyMedium), 8.f);
+	Toggle->SetToolTipText(Name);
+	TSharedRef<STextBlock> Why = AutopilotUI::Body(FText::FromString(UPlaytestSubsystem::DetectorsFixedOnWhy()), 12.f, AutopilotColor::Text3());
+	Why->SetVisibility(TAttribute<EVisibility>::CreateLambda([this]()
+	{
+		const UPlaytestSubsystem* B = DetectorsBridge();
+		return B && B->AreDetectorsFixedOn() ? EVisibility::Visible : EVisibility::Collapsed;
+	}));
+	return SettingCard(Name,
+		LOCTEXT("BugDetectorsWhat", "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project."),
+		SNew(SVerticalBox)
+		+ SVerticalBox::Slot().AutoHeight()
+		[
+			SNew(SHorizontalBox) + SHorizontalBox::Slot().AutoWidth()
+			[
+				AutopilotUI::Greyed(TAttribute<bool>::CreateLambda([this]()
+				{
+					const UPlaytestSubsystem* B = DetectorsBridge();
+					return !(B && B->CanSetDetectors());
+				}), Toggle)
+			]
+		]
+		+ SVerticalBox::Slot().AutoHeight().Padding(0.f, 6.f, 0.f, 0.f)
+		[
+			Why
+		]);
+}
+
+UPlaytestSubsystem* SPlaytestPanel::DetectorsBridge() const
+{
+	return TestBridge.IsValid() ? TestBridge.Get() : UPlaytestSubsystem::Get();
+}
+
 TSharedRef<SWidget> SPlaytestPanel::MakeCodingAgents()
 {
 	// Its name, what it is for, each command with Copy (in a well, as a link is)
@@ -3443,6 +3622,7 @@ void SPlaytestPanel::RebuildSettings()
 	];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeDataSharing()];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeResearchAgent()];
+	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeBugDetectors()];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeCodingAgents()];
 	SettingsBox->AddSlot().AutoHeight().Padding(0.f, 12.f, 0.f, 0.f)[MakeRemoveSection()];
 }
@@ -3643,11 +3823,11 @@ FString SPlaytestPanel::SignInLine() const
 	return TEXT("Connecting to the agent service…");
 }
 
-void SPlaytestPanel::BeginSignIn(bool bOutFirst)
+void SPlaytestPanel::BeginSignIn(bool bAnother)
 {
 	bSignInWanted = true;
 	bKeysShown = false;
-	bSignOutFirst = bOutFirst;
+	bAnotherAccount = bAnother;
 	bCreatingAccount = false;
 	bSignInSent = false;
 	bSignInConnectTried = false;
@@ -3673,7 +3853,7 @@ void SPlaytestPanel::CancelSignIn()
 		}
 	}
 	bSignInWanted = false;
-	bSignOutFirst = false;
+	bAnotherAccount = false;
 	bSignInSent = false;
 	SignInProblem.Empty();
 }
@@ -3717,9 +3897,9 @@ void SPlaytestPanel::TickSignIn()
 		SignInProblem = TEXT("This agent service can’t sign in to Aura: install it again, then try again.");
 		return;
 	}
-	B->SignInWithAura(bSignOutFirst);
+	B->SignInWithAura(bAnotherAccount);
 	bSignInWanted = false;
-	bSignOutFirst = false;
+	bAnotherAccount = false;
 	bSignInSent = true;
 }
 
@@ -3776,6 +3956,15 @@ TSharedRef<SWidget> SPlaytestPanel::MakeSignInBody(bool bCompact)
 	{
 		const FString Url = B ? B->GetSignIn().Url : FString();
 		Box->AddSlot().AutoHeight()[Progress(TEXT("Finish signing in in your browser…"), bCompact ? 13.f : 15.f)];
+		if (B && B->IsSignInForAnotherAccount())
+		{
+			// ("Use another account": Aura's page may still go on with the account the browser is signed in to)
+			Box->AddSlot().AutoHeight().Padding(0.f, Gap, 0.f, 0.f)
+			[
+				AutopilotUI::Body(Str(TEXT("If the page shows the wrong account, sign out of Aura in your browser, then open the sign-in page again.")),
+					12.f, AutopilotColor::Muted())
+			];
+		}
 		Box->AddSlot().AutoHeight().Padding(0.f, Gap, 0.f, 0.f)
 		[
 			Well(Url, SmallButton(LOCTEXT("S_CopyLink", "Copy link"), "Autopilot.Button.Quiet", FOnClicked::CreateSP(this, &SPlaytestPanel::OnCopy, Url)))

@@ -227,6 +227,16 @@ def test_reads_writes_and_calls(playing):
     assert game.get("Workspace/Door", "Open") is True and game.writes[-1]["why"] == "test"
     r = game.call("ServerScriptService/Debug", "GiveCoin", args=[2])
     assert r["ReturnValue"] == 2 and game.get("Players/Hero/leaderstats", "Coins") == 2
+    # A named argument has no parameter name to match here: refused (the call not made), never passed by its place
+    sent = len(place.luau_calls())
+    with pytest.raises(GameError, match=r"GiveCoin on ServerScriptService/Debug: unknown argument\(s\) amount; here a "
+                                        r"function takes its arguments in order: args=\[\.\.\.\]"):
+        game.call("ServerScriptService/Debug", "GiveCoin", amount=2)
+    with pytest.raises(GameError, match=r"unknown argument\(s\) times"):
+        game.call("ServerScriptService/Debug", "GiveCoin", args=[2], times=3)
+    with pytest.raises(GameError, match="args is a list"):
+        game.call("ServerScriptService/Debug", "GiveCoin", args=2)
+    assert len(place.luau_calls()) == sent and game.get("Players/Hero/leaderstats", "Coins") == 2
     assert game.screen() == {"Hud.Coins": "Coins: 2"}
     with pytest.raises(GameError, match="does not exist"):
         game.loc("Workspace/Gone")
@@ -434,6 +444,35 @@ def test_console_errors_are_log_events_and_findings(playing):
     assert roblox.console_level("Hero joined the game") is None
     assert roblox.console_level("Workspace.Door.Script:12: Stack Begin") == "Error"
     assert engines.get("roblox-mcp").error_log is True
+
+
+def test_console_errors_are_findings_only_while_the_bug_detectors_are_on(playing):
+    # The `detectors` op (the project's detectors.json, sent by the agent service: autopilot/detectors.py) as the other
+    # plugins take it: "enabled": false (the Bug detectors switch off) stops the log_error findings, never the `log`
+    # events (the game's error log isn't a detector); "mute" drops the findings it names
+    game, link, backend, place = playing
+    seen = []
+    link.listeners.append(seen.append)
+    assert link.request("detectors", {"mute": [], "enabled": False}) == {}
+    assert backend.poll_console() == 2
+    assert [e["verbosity"] for e in seen if e["kind"] == "log"] == ["Error"]
+    assert not link.findings and not [e for e in seen if e["kind"] == "finding"]
+    # on again: the next error is a finding (the one before isn't told again: it is past)
+    link.request("detectors", {"enabled": True})
+    place.console.append("Workspace.Door.Script:12: attempt to call a nil value")
+    assert backend.poll_console() == 1
+    assert [f["detector"] for f in link.findings] == ["log_error"] and "Door.Script:12" in link.findings[0]["summary"]
+    # muted (Not a bug): that error's finding no more, another's still; a key for other plugins' detectors is ignored
+    link.request("detectors", {"mute": ["log_error:Workspace.Gate.Script:#: attempt to index nil"], "kill_y": -500})
+    place.console.append("Workspace.Gate.Script:7: attempt to index nil")
+    place.console.append("Workspace.Bell.Script:3: attempt to index nil")
+    assert backend.poll_console() == 2
+    assert [f["signature"] for f in link.findings][1:] == ["log_error:Workspace.Bell.Script:#: attempt to index nil"]
+    assert backend.detectors_on is True
+    link.request("detectors", {"mute": ["log_error"]})  # (a detector's name: all its findings)
+    place.console.append("Workspace.Lamp.Script:9: attempt to index nil")
+    assert backend.poll_console() == 1 and len(link.findings) == 2
+    assert [e["verbosity"] for e in seen if e["kind"] == "log"] == ["Error"] * 5
 
 
 def test_the_runtime_traces_console_errors(playing, tmp_path):

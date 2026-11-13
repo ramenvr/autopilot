@@ -120,8 +120,12 @@ namespace Autopilot.Playtest
         public bool RunActive { get; private set; }
         // The welcome's features had "steer": the brain takes the user's words to the run going now
         public bool BrainSteers { get; private set; }
+        // And "steer_mode": a steer says whether it is a hint (play goes on) or a redirect (the attempt playing now ends)
+        public bool BrainSteerModes { get; private set; }
         // Whether the user can steer the run going now
         public bool CanSteer => Connected && RunActive && BrainSteers;
+        // And whether a steer can be a hint or a redirect
+        public bool CanRedirect => CanSteer && BrainSteerModes;
         /// <summary>Whether a run is using the game now: one is going, or the brain asked the game something in the
         /// last <see cref="RunUseSeconds"/> (a run this side didn't hear start). Only then do the detectors and the log
         /// events work: when nothing would read what they find, the user's own play sessions don't pay for them.</summary>
@@ -149,6 +153,27 @@ namespace Autopilot.Playtest
         public int MemoryRuns { get; private set; }
         public bool MemoryNotes { get; private set; }
         public bool MemoryLib { get; private set; }
+        // Whether the game's detectors run for this project (the Settings page's Bug detectors switch): what the agent
+        // service's last memory_state said ("detectors"; one without it, an older agent service's, means on). Kept when
+        // the connection closes (the switch shows the last one said, greyed), and set at once when the switch is flipped.
+        // Always on with an agent service that can't turn them off (BugDetectorsFixedOn): it runs them
+        public bool BugDetectors
+        {
+            get => bugDetectors || BugDetectorsFixedOn;
+            private set => bugDetectors = value;
+        }
+        bool bugDetectors = true;
+        // The welcome's features had "detectors": the brain takes the Bug detectors switch's `detectors` frame
+        public bool BrainDetectors { get; private set; }
+        // Whether the Bug detectors switch can be flipped: connected to an agent service that takes it
+        public bool CanSetBugDetectors => Connected && BrainRole != null && BrainDetectors;
+        // Connected to an agent service older than this plugin, whose welcome's features don't have "detectors": it would
+        // ignore the switch and the game's detectors would go on running, so the switch shows them on, greyed, and says
+        // why (BugDetectorsFixedOnWhy)
+        public bool BugDetectorsFixedOn => Connected && BrainRole != null && !BrainDetectors;
+        // Why the Bug detectors switch can't be flipped with an agent service that can't turn them off (the card and the
+        // status line say it; the same words in every plugin)
+        public const string BugDetectorsFixedOnWhy = "The agent service in use is older than this plugin and can't turn them off.";
         public string Problem { get; private set; } = "";
         public int ProblemCode { get; private set; }
         public string LastStatus { get; private set; } = "";
@@ -636,6 +661,17 @@ namespace Autopilot.Playtest
             MainThread.Post(() => SendOrHoldText(text));
         }
 
+        /// <summary>The hello's features: `trace` with 3D physics, `media` when the capture code is compiled in.</summary>
+        static List<object> Features()
+        {
+            var features = new List<object> { "timed_hold", "pointer", "levels" };
+#if AUTOPILOT_PHYSICS
+            features.Add("trace");
+#endif
+            if (Media.Compiled) features.Add("media");
+            return features;
+        }
+
         void SendHello()
         {
             var hello = new Dictionary<string, object>
@@ -649,7 +685,7 @@ namespace Autopilot.Playtest
                 ["host"] = Host.HostName,
                 ["input"] = Hands.Capabilities(),
                 // what this plugin does beyond the protocol's first version: the brain falls back for one without them
-                ["features"] = Media.Compiled ? new List<object> { "timed_hold", "pointer", "levels", "media" } : new List<object> { "timed_hold", "pointer", "levels" },
+                ["features"] = Features(),
                 // whether the user shares runs' data (preferences.json's share_data; -PlaytestShare overrides it)
                 ["share"] = Preferences.Share(),
             };
@@ -766,12 +802,15 @@ namespace Autopilot.Playtest
             Status("Stopping…");
         }
 
-        // What the user types to steer the run going now: it goes on from where the game is (see docs/protocol.md)
-        public void SteerRun(string text)
+        // What the user types to steer the run going now: a hint (play goes on), or with redirect a redirect that ends the
+        // attempt playing now. The frame says its "mode" only to an agent service with "steer_mode" (see docs/protocol.md)
+        public void SteerRun(string text, bool redirect = false)
         {
             var said = (text ?? "").Trim();
             if (!CanSteer || said.Length == 0) return;
-            Send(new Dictionary<string, object> { ["type"] = "steer", ["text"] = said });
+            var frame = new Dictionary<string, object> { ["type"] = "steer", ["text"] = said };
+            if (CanRedirect) frame["mode"] = redirect ? "redirect" : "hint";
+            Send(frame);
         }
 
         public void SendFeedback(string signature, string verdict, string note = "")
@@ -797,6 +836,22 @@ namespace Autopilot.Playtest
             Status("Resetting memory…");
         }
 
+        // The Bug detectors switch flipped: the agent service keeps it for the project (detectors.json), tells the game's
+        // detectors at once (a run going on included) and answers with a memory_state, which the switch then shows; the
+        // new value is shown meanwhile. Not connected: nothing (the switch is greyed then). An agent service that can't
+        // turn them off: nothing sent or changed (greyed too, saying why), and the status line says why
+        public void SetBugDetectors(bool on)
+        {
+            if (!Connected) return;
+            if (!CanSetBugDetectors)
+            {
+                Status(BugDetectorsFixedOnWhy);
+                return;
+            }
+            BugDetectors = on;
+            Send(new Dictionary<string, object> { ["type"] = "detectors", ["enabled"] = on });
+        }
+
         // -- the account (docs/protocol.md, Account) ------------------------------------------------------------
 
         void AccountChanged()
@@ -809,15 +864,23 @@ namespace Autopilot.Playtest
         public bool CanSignIn => Connected && BrainRole != null && BrainHasAccount;
 
         /// <summary>Ask the brain to sign in to Aura (it opens the browser on Aura's sign-in). Returns false when it
-        /// can't be asked (not connected, or a brain without the account feature).</summary>
-        public bool AskAuraSignIn()
+        /// can't be asked (not connected, or a brain without the account feature). anotherAccount: "Use another
+        /// account", Aura's page asked to let the user pick the account (an older agent service ignores it).</summary>
+        public bool AskAuraSignIn(bool anotherAccount = false)
         {
             if (!CanSignIn) return false;
-            SignIn.Ask();
+            SignIn.Ask(anotherAccount);
             signInSerial = connectionSerial;
             AccountChanged();
-            Send(new Dictionary<string, object> { ["type"] = "aura_sign_in" });
+            SendSignIn();
             return true;
+        }
+
+        void SendSignIn()
+        {
+            var frame = new Dictionary<string, object> { ["type"] = "aura_sign_in" };
+            if (SignIn.AnotherAccount) frame["another_account"] = true;
+            Send(frame);
         }
 
         /// <summary>A sign-in asked on a connection that closed since: the agent service kept it going, but what it said
@@ -831,7 +894,7 @@ namespace Autopilot.Playtest
             if (Account != null && Account.SignedIn && !string.IsNullOrEmpty(Account.Email))
                 SignIn.SignedInAs(Account.Email);
             else if (CanSignIn)
-                Send(new Dictionary<string, object> { ["type"] = "aura_sign_in" });
+                SendSignIn();
         }
 
         /// <summary>Stop waiting for the browser (the brain answers with a cancelled error, which shows nothing).</summary>
@@ -980,7 +1043,9 @@ namespace Autopilot.Playtest
                         SetConnected(false);
                         BrainRole = null;
                         BrainSteers = false;
+                        BrainSteerModes = false;
                         BrainHasAccount = false;
+                        BrainDetectors = false;
                         // (a sign-in going on stays: the agent service keeps it, and it's asked again on the next
                         // connection, ResumeSignIn)
                         if (SignIn.Going) AccountChanged();
@@ -1064,13 +1129,17 @@ namespace Autopilot.Playtest
                 case "welcome":
                     BrainRole = Json.Str(m, "role");
                     BrainSteers = false;
+                    BrainSteerModes = false;
                     BrainHasAccount = false;
+                    BrainDetectors = false;
                     var features = Json.List(m, "features");
                     if (features != null)
                         foreach (var feature in features)
                         {
                             BrainSteers |= feature is string name && name == "steer";
+                            BrainSteerModes |= feature is string mode && mode == "steer_mode";
                             BrainHasAccount |= feature is string acc && acc == "account";
+                            BrainDetectors |= feature is string det && det == "detectors";
                         }
                     var session = Json.Str(m, "session");
                     // (a resume the brain didn't take is a new connection: no recording goes on)
@@ -1119,10 +1188,12 @@ namespace Autopilot.Playtest
                     OnRunKind?.Invoke(Json.Str(m, "kind"), Json.Bool(m, "tested", false));
                     break;
                 case "memory_state":
-                    // What the brain remembers about this project (docs/protocol.md): the save data the window shows
+                    // What the brain remembers about this project (docs/protocol.md): the save data the window shows, and
+                    // whether the game's detectors run for it (the Bug detectors switch)
                     MemoryRuns = Math.Max(0, (int)Json.Num(m, "runs", 0));
                     MemoryNotes = Json.Bool(m, "notes", false);
                     MemoryLib = Json.Bool(m, "lib", false);
+                    BugDetectors = Json.Bool(m, "detectors", true);
                     MemoryKnown = true;
                     OnMemoryState?.Invoke();
                     break;

@@ -83,7 +83,7 @@ def run(c, brain, link):
             ctx and ctx.get("project_dir"))
     controls = {x["name"]: x for x in ctx["controls"]}
     c.check("context controls: the game's actions (no built-in ui_*)", sorted(controls) == ["interact", "jump", "move_back", "move_forward",
-            "move_left", "move_right", "pause_menu", "sprint"], str(sorted(controls)))
+            "move_left", "move_right", "pause_menu", "reset", "sprint"], str(sorted(controls)))
     c.check("context controls (Unreal key names)", controls.get("move_forward", {}).get("keys") == ["W", "Up"]
             and controls.get("jump", {}).get("keys") == ["SpaceBar"], str(controls.get("move_forward")))
 
@@ -221,6 +221,31 @@ def run(c, brain, link):
     c.check("transforms gate extent (half size, kit axes)", _near(gate["extent"], (15, 150, 150), 0.6) and _near(gate["center"], (1600, 0, 150)),
             f"{gate['extent']} {gate['center']}")
     c.check("transforms missing -> null", tr["/root/Nope"] is None)
+    # An apple's box is its collision (the Area's reach sphere, 0.5 m), its drawn box when asked (the 0.25 m mesh)
+    vis = req("transforms", {"objects": ["/root/Level/Apple1"], "visual": True})["objects"]["/root/Level/Apple1"]
+    c.check("transforms: the collision box, the drawn one with visual", _near(a1["extent"], (50, 50, 50))
+            and abs(vis["extent"]["Z"] - 25) <= 1 and vis["extent"]["X"] < 40, f"{a1['extent']} {vis['extent']}")
+
+    # --- trace -----------------------------------------------------------------------------------------
+    c.check("hello features: trace", "trace" in h.get("features", []), str(h.get("features")))
+    # Ahead from the player's middle (its own capsule left out, the apples' Areas never hit): the gate's near face
+    t = req("trace", {"start": {"X": 0, "Y": 0, "Z": 90}, "end": {"X": 3000, "Y": 0, "Z": 90}})
+    hit = t.get("hit") or {}
+    c.check("trace: a line meets the gate's face", t.get("channel") == "body" and hit.get("actor") == "/root/Level/Gate"
+            and _near(hit["location"], (1585, 0, 90)) and _near(hit["normal"], (-1, 0, 0), 0.01)
+            and abs(hit["distance"] - 1585) < 1 and hit["inside"] is False, str(t))
+    t = req("trace", {"start": {"X": 0, "Y": 0, "Z": 90}, "end": {"X": 3000, "Y": 0, "Z": 90}, "radius": 50})
+    hit = t.get("hit") or {}
+    c.check("trace: a ball stops its radius short, touching the face", hit.get("actor") == "/root/Level/Gate"
+            and _near(hit["location"], (1535, 0, 90), 2) and _near(hit["point"], (1585, 0, 90), 2), str(t))
+    t = req("trace", {"start": {"X": 400, "Y": 0, "Z": 200}, "end": {"X": 400, "Y": 0, "Z": -100}, "channel": "sight"})
+    hit = t.get("hit") or {}
+    c.check("trace: down through an apple's Area onto the floor", t.get("channel") == "sight"
+            and hit.get("actor") == "/root/Level/Floor" and _near(hit["point"], (400, 0, 0)), str(t))
+    t = req("trace", {"start": {"X": 0, "Y": 0, "Z": 90}, "end": {"X": -3000, "Y": 0, "Z": 90}})
+    c.check("trace: nothing behind", t.get("hit") is None, str(t))
+    t = req("trace", {"start": {"X": 1600, "Y": 0, "Z": 150}, "end": {"X": 1600, "Y": 500, "Z": 150}, "radius": 10})
+    c.check("trace: a ball that starts in the gate is inside it", (t.get("hit") or {}).get("inside") is True, str(t))
     pose = req("pose")
     c.check("pose at = body middle", _near(pose["at"], (0, 0, 90), 2) and _near(pose["feet"], (0, 0, 0), 2) and _near(pose["eye"], (0, 0, 160), 2),
             f"at {pose['at']} feet {pose['feet']} eye {pose['eye']}")
@@ -272,6 +297,16 @@ def run(c, brain, link):
         c.check("rc missing function error", False)
     except BridgeError as e:
         c.check("rc missing function error", "does not exist" in e.error, e.error)
+    # An argument name the method has no parameter for is refused (the call not made), never dropped unread
+    for fn, params, needle in (("tire", {"amout": 7}, "tire on /root/GameState: unknown argument(s) amout; it takes amount"),
+                               ("tire", {"amount": 7, "times": 2}, "unknown argument(s) times; it takes amount"),
+                               ("basket_full", {"which": 1}, "unknown argument(s) which; it takes no arguments")):
+        try:
+            rc("call", objectPath="/root/GameState", functionName=fn, parameters=params)
+            c.check(f"rc unknown argument error ({fn} {params})", False)
+        except BridgeError as e:
+            c.check(f"rc unknown argument error ({fn} {params})", e.error.endswith(needle), e.error)
+    c.check("rc refused call not made", gs("stamina") == 100, str(gs("stamina")))
 
     # --- mouse look, keys, move ------------------------------------------------------------------
     p0 = req("pose")
@@ -491,11 +526,27 @@ def run(c, brain, link):
             and om[0]["details"] == {"property": "health", "value": 130, "max_property": "max_health", "max": 100}
             and om[0]["summary"] == "game_state health is 130, above max_health 100", str(om and om[0]))
     rc("property", objectPath="/root/GameState", propertyName="health", propertyValue={"health": 50}, access="WRITE_ACCESS")
-    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": 0, "y": 0, "z": 0}}, access="WRITE_ACCESS")
-    tp = until(lambda: [f for f in link.findings if f.get("detector") == "teleport"], 3)
-    c.check("detector teleport (a body moved too far in one frame)", tp and tp[0]["signature"] == "teleport:player"
+    # teleport: not what the agent moved itself (an rc write); right after the agent's key (R: the game's reset, back
+    # to the start) info, naming the key; the game's own (a fall below -20 m respawns the player) a suspicion
+    def teleports():
+        return [f for f in link.findings if f.get("detector") == "teleport"]
+
+    before = len(teleports())
+    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": 0, "y": 0.1, "z": -15}}, access="WRITE_ACCESS")
+    time.sleep(1.5)
+    c.check("no teleport for the agent's own move (an rc write of the player's position)", len(teleports()) == before, str(teleports()[before:]))
+    req("key", {"key": "R", "mode": "press"})
+    tp = until(lambda: teleports()[before:], 3)
+    c.check("detector teleport right after the agent's key: info, the key named, details.after_input", tp and tp[0]["signature"] == "teleport:player after R"
+            and tp[0]["severity"] == "info" and tp[0]["summary"].endswith(" right after the agent pressed R")
+            and tp[0]["details"]["after_input"]["key"] == "R" and 0 <= tp[0]["details"]["after_input"]["seconds"] <= 1
+            and tp[0]["details"]["moved"] > 1000 and _near(tp[0]["details"]["to"], (0, 0, 0), 2), str(tp and tp[0]))
+    before = len(teleports())
+    rc("property", objectPath="/root/Level/Player", propertyName="position", propertyValue={"position": {"x": 50, "y": 0, "z": 0}}, access="WRITE_ACCESS")
+    tp = until(lambda: teleports()[before:], 6)
+    c.check("detector teleport (the game's own: a fall respawns the player): a suspicion", tp and tp[0]["signature"] == "teleport:player"
             and tp[0]["severity"] == "suspicion" and tp[0]["details"]["moved"] > 1000 and tp[0]["details"]["allowed"] >= 1000
-            and _near(tp[0]["details"]["to"], (0, 0, 0), 2), str(tp and tp[0]))
+            and "after_input" not in tp[0]["details"] and _near(tp[0]["details"]["to"], (0, 0, 0), 2), str(tp and tp[0]))
     walk_to(req, "/root/Level/Lever", stop_short=150)
     result = {}
     th = threading.Thread(target=lambda: result.update(req("watch", {"objects": ["/root/Level/Gate"], "seconds": 0.6})))
@@ -548,10 +599,14 @@ def run(c, brain, link):
     c.check("detectors op", req("detectors", {"enabled": True, "hitch_seconds": 1.0}) == {})
     # actor_growth: 60 nodes of one kind more within growth_seconds (10 here)
     req("detectors", {"growth_seconds": 10})
+    # (and a part of the level streamed in at the same time: 60 bodies saved inside its scene, not a leak)
+    rc("call", objectPath="/root/GameState", functionName="stream_chunk", parameters={"n": 60})
     rc("call", objectPath="/root/GameState", functionName="leak", parameters={"n": 60})
     ag = until(lambda: [f for f in link.findings if f.get("detector") == "actor_growth"], 25, 0.2)
     c.check("detector actor_growth (a leak)", ag and ag[0]["signature"] == "actor_growth:Area3D" and ag[0]["details"]["to"] >= 60
             and ag[0]["details"]["seconds"] == 10, str(ag and ag[0]))
+    c.check("actor_growth: not what a streamed level part brought (its saved bodies)",
+            not [f for f in link.findings if f.get("signature") == "actor_growth:StaticBody3D"], str(ag))
     req("detectors", {"growth_seconds": 120})
     c.check("timestep op", "note" in req("timestep", {"fixed": True, "fps": 30}) and req("timestep", {"fixed": False}) == {})
 

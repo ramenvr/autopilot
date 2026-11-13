@@ -587,6 +587,8 @@
     padding: 6px 6px 6px 12px;
 }
 .autopilot .steer-box > .unity-base-text-field { margin-right: 8px; }
+/* (Redirect beside Send, when the agent service tells hints from redirects) */
+.autopilot .steer-box > .steer-redirect { margin-left: 6px; }
 /* (stopping: the box and Steer locked, the whole box at 55 %) */
 .autopilot .steer-box.locked { opacity: 0.55; }
 .autopilot .steer-box.locked > .unity-base-text-field:disabled,
@@ -843,22 +845,27 @@
 .autopilot .bill-row { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
 .autopilot .bill-row > .bill-amount { margin-left: 4px; }
 .autopilot .keys-line { -unity-font-definition: url("Fonts/IBMPlexMono-Regular.ttf"); font-size: 11px; color: #a4a8b0; }
-/* a setting's card (Share runs, Research agent, Autopilot in Claude Code & Codex): its title, the line under it (as
-   the sharing text), its control; the same gaps in each (AutopilotView.SettingCard) */
+/* a setting's card (Share runs, Research agent, Bug detectors, Autopilot in Claude Code & Codex): its title, the line
+   under it (as the sharing text), its control; the same gaps in each (AutopilotView.SettingCard) */
 .autopilot .setting > .setting-title { margin-bottom: 6px; }
 .autopilot .setting > .setting-line { margin-bottom: 10px; }
 .autopilot .setting-control { align-items: flex-start; }
 .autopilot .setting-control > .connect-command { align-self: stretch; }
 .autopilot .setting-control > .brief-field { align-self: stretch; margin: 0; }
 .autopilot .setting-control > .next { margin-top: 6px; }
-/* the sharing and research agent switches: their words (Data sharing on/off, Research agent on/off) 8 px from the
-   pill, checked or not */
+/* under the bug detectors switch, why it can't be flipped (an agent service older than the plugin) */
+.autopilot .setting-control > .detectors-why { align-self: stretch; margin-top: 6px; white-space: normal; }
+/* the sharing, research agent and bug detectors switches: their words (Data sharing on/off, Research agent on/off,
+   Bug detectors on/off) 8 px from the pill, checked or not */
 .autopilot .switch.share-toggle .unity-toggle__checkmark,
 .autopilot .switch.share-toggle .unity-toggle__input:checked > .unity-toggle__checkmark,
 .autopilot .switch.share-toggle:checked .unity-toggle__checkmark,
 .autopilot .switch.research-toggle .unity-toggle__checkmark,
 .autopilot .switch.research-toggle .unity-toggle__input:checked > .unity-toggle__checkmark,
-.autopilot .switch.research-toggle:checked .unity-toggle__checkmark { margin-right: 8px; }
+.autopilot .switch.research-toggle:checked .unity-toggle__checkmark,
+.autopilot .switch.detectors-toggle .unity-toggle__checkmark,
+.autopilot .switch.detectors-toggle .unity-toggle__input:checked > .unity-toggle__checkmark,
+.autopilot .switch.detectors-toggle:checked .unity-toggle__checkmark { margin-right: 8px; }
 /* the first-run setup's Minutes */
 .autopilot .time-limit-field { width: 56px; }
 

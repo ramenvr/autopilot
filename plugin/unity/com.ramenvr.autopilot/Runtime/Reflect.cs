@@ -713,7 +713,7 @@ namespace Autopilot.Playtest
             if (used < given.Count)
             {
                 why = "unknown argument(s) " + string.Join(", ", given.Keys.Where(k => !ps.Any(p => string.Equals(p.Name, k, StringComparison.OrdinalIgnoreCase))))
-                      + "; it takes " + string.Join(", ", ps.Select(p => p.Name));
+                      + "; it takes " + (ps.Length > 0 ? string.Join(", ", ps.Select(p => p.Name)) : "no arguments");
                 return false;
             }
             return true;

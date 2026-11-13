@@ -22,7 +22,8 @@
 --aura signs in with Aura: runs are billed to your Aura plan (autopilot/aura.py), instead of using your own keys. So
 does choosing Aura in a plugin's first-run setup (read before every run: autopilot/account.py), whose sign-in the plugin
 asks this agent service for. Without the Aura app, a run with no sign-in opens Aura's sign-in in the browser; `autopilot
-login` signs in ahead of time and `autopilot logout` signs out (autopilot/aura_login.py).
+login` signs in ahead of time (`--another-account`: pick the account on Aura's page rather than go on with the one the
+browser is signed in to) and `autopilot logout` signs out (autopilot/aura_login.py).
 
 PATH is any engine's project: an Unreal .uproject (or its folder), a Unity project folder (the one with
 ProjectSettings/), or a Godot project.godot (or its folder).
@@ -52,8 +53,9 @@ from . import (
     training,
 )
 from . import codex as codexmod
+from . import detectors as detectorsmod
 from . import levels as levelsmod
-from .agents.session import Steering, cut_off, default_timeout, go_on, scrub
+from .agents.session import HINT, REDIRECT, STEER_MODES, Steering, cut_off, default_timeout, go_on, scrub
 from .agents.session import model as agent_model
 from .kit.game import Game
 from .words import change_text, plain_words  # noqa: F401 (what the user reads; also cli.plain_words)
@@ -178,8 +180,7 @@ def remember_project(project, path, engine=None):
         info["project"] = os.path.abspath(canonical or path)
         if engine or found:
             info["engine"] = (engine or found).name
-        with open(file, "w", encoding="utf-8") as f:
-            json.dump(info, f, indent=1)
+        memory.write_atomic(file, json.dumps(info, indent=1))
     return info.get("project")
 
 
@@ -287,6 +288,10 @@ def prepare(link, path=None, level=None):
     game = Game(link, codexmod.Codex.for_project(project))
     name = (link.hello or {}).get("project") or "game"
     path = remember_project(project, path or find_project(game, project, name), game.engine)
+    # The project's detector settings (what it muted: autopilot/detectors.py), before the game starts, so its first
+    # findings are filtered too: every plugin keeps them for its play sessions, and they are sent again after a reload
+    detectorsmod.send(link, codexmod.project_dir(project))
+    detectorsmod.watch(link, codexmod.project_dir(project))
     # In the editor the game may not be running yet (Unreal's Play In Editor, Unity's play mode, Godot's scene)
     game.level_info = choose_level(link, level)
     try:
@@ -329,6 +334,20 @@ def prepare(link, path=None, level=None):
 
 # -- what the user reads ------------------------------------------------------------------------------------------
 
+def shown_recording(tel, report):
+    """(the result's `recording`, the report): the video of the episode the report named (its `episode`: the one that
+    shows the result best), else the last episode's. When the one named has no video, the last one's is shown and
+    the report's alerts say so."""
+    episode = report.get("episode") if isinstance(report, dict) else None
+    recording = tel.recording(episode)
+    instead = recording.pop("instead_of", None) if recording else None
+    if instead is not None:
+        report = dict(report, alerts=list(report.get("alerts") or []) + [
+            f"The report named episode {instead} as the one that shows the result, but it has no recording: the "
+            f"recording shown is episode {recording['episode']}'s, the last one recorded."])
+    return recording, report
+
+
 def result_frame(report, prompt, kind=None):
     """The `result` the plugin is sent for a report (docs/protocol.md, Runs): a verdict for a claim, else a goal's.
     kind: the run's (verify, goal or explore), which decides the result's shape: a goal worded as a claim ("Confirm
@@ -351,7 +370,7 @@ def result_frame(report, prompt, kind=None):
         return {"verdict": verdict, "reason": summary, "claim": prompt, "evidence": evidence, "changes": changes,
                 "exit_code": EXIT[verdict], **alerts}
     return {"kind": "goal", "reached": outcome in ("achieved", "CONFIRMED"), "goal": prompt,
-            "notes": [summary] + evidence[:8] + findings[:8], "changes": changes, "exit_code": code, **alerts}
+            "notes": [summary] + evidence + findings, "changes": changes, "exit_code": code, **alerts}
 
 
 def prompt_of(run):
@@ -485,12 +504,13 @@ def as_claim(prompt):
 
 
 def start_aura_run(link, kind, project, path=None, trace=None, model=None, disable_premium_models=False,
-                   thinking_level=None):
+                   thinking_level=None, client=None):
     """With AUTOPILOT_AURA_URL set: the run, started with Aura (autopilot/aura.py), to play inside of; project: the
     project's name; trace: the start frame's run "trace" (where in Aura the run was asked for), passed on to Aura;
     model: its run "model" (the model picked in Aura's chat), which Aura answers with the agent and model to play,
     disable_premium_models its run "disable_premium_models" (Aura's chat's "Disable Premium Models", for Auto), and
-    thinking_level its run "thinking_level" (the level picked in Aura's chat for that model).
+    thinking_level its run "thinking_level" (the level picked in Aura's chat for that model); client: the MCP client
+    whose own agent works on the run (a Desk's: codex, claude-code), None for a run an agent of Autopilot's plays.
     Its memory is kept in the project's own folder (codex.project_of). Raises aura.Refused, with what to tell the
     user, when Aura won't start it (a signed-out user signs in on Aura's website)."""
     hello = getattr(link, "hello", None) or {}
@@ -502,7 +522,7 @@ def start_aura_run(link, kind, project, path=None, trace=None, model=None, disab
             return aura.Run(token, kind, getattr(link, "mode", None), project,
                             say=lambda text: link.status(text), project_key=hello.get("project_id") or project,
                             trace=trace, model=model, disable_premium_models=disable_premium_models,
-                            thinking_level=thinking_level).start()
+                            thinking_level=thinking_level, client=client).start()
         except aura.Refused as e:
             print(f"Aura refused the run: HTTP {e.status} {e.code} {e.message}")
             raise
@@ -669,7 +689,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             # (a kind not known yet is told to Aura as a goal: Aura bills every kind the same)
             run = start_aura_run(link, kind or "goal", (link.hello or {}).get("project") or "game", path,
                                  trace=trace, model=aura_model, disable_premium_models=disable_premium_models,
-                                 thinking_level=thinking_level)
+                                 thinking_level=thinking_level,
+                                 client=(desk.client or "mcp") if desk is not None else None)
             account.note_credits(None)  # (Aura started it: the team has credits)
     except aura.Refused as e:
         report = {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
@@ -694,8 +715,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 from .agents import external as agent
             else:
                 agent = agents.select(run.agent_name if run else None)
-            run_id = time.strftime("%Y%m%d-%H%M%S")
             root = codexmod.project_dir(project)
+            run_id = memory.new_run(root)  # (its own folder, even beside another service's run of this second)
             share = telemetry.sharing(getattr(link, "hello", None)) and (run is None or bool(run.training))
             hello = getattr(link, "hello", None) or {}
             key = hello.get("project_id") or hello.get("project") or project  # (the project's key, as Aura keeps it)
@@ -738,7 +759,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 if learned["updated"]:
                     with contextlib.suppress(Exception):
                         link.status(SAVING_MEMORY)
-            recording = tel.recording()
+            recording, report = shown_recording(tel, report)
             missing = None if recording else tel.no_recording()
             close_game(link)  # (every harness has run, and the recording has stopped)
             if share:
@@ -786,12 +807,32 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
 
 
 def send_memory_state(link, hello=None):
-    """Tell the plugin what is remembered about its project (memory_state, docs/protocol.md)."""
+    """Tell the plugin what is remembered about its project (memory_state, docs/protocol.md), and whether the game's
+    detectors run for it ("detectors": the Bug detectors switch, detectors.json's "enabled")."""
     project = codexmod.project_of(hello or link.hello)
+    folder = codexmod.project_dir(project)
     try:
-        link.send({"type": "memory_state", **memory.state(codexmod.project_dir(project))})
+        link.send({"type": "memory_state", **memory.state(folder), "detectors": detectorsmod.enabled(folder)})
     except Exception:
         pass
+
+
+def set_detectors(link, msg):
+    """The editor's Bug detectors switch ({"type": "detectors", "enabled": true/false}): the project's detectors.json
+    says so from now on, and the game's detectors are told at once, a run's going on included. Whether it was set
+    (False: no true/false given, or the file couldn't be written)."""
+    on = msg.get("enabled")
+    if not isinstance(on, bool):
+        return False
+    folder = codexmod.project_dir(codexmod.project_of(link.hello))
+    try:
+        detectorsmod.set_enabled(folder, on)
+    except OSError as e:
+        print(f"note: couldn't turn the detectors {'on' if on else 'off'}: {e}")
+        return False
+    print(f"Bug detectors {'on' if on else 'off'} for this project ({detectorsmod.path(folder)})")
+    detectorsmod.send(link, folder, wait=False)
+    return True
 
 
 def reset_memory(link, sleep=time.sleep):
@@ -812,12 +853,36 @@ def reset_memory(link, sleep=time.sleep):
             if attempt + 1 < RESET_TRIES:
                 sleep(1.0)
                 continue
+            if e.path == memory.LOCK:  # (another run's memory sync, in this agent service or another one)
+                return {"type": "memory_cleared", "ok": False,
+                        "message": "another run is saving or fetching this game's memory, so nothing was moved. Try "
+                                   "again in a moment."}
             return {"type": "memory_cleared", "ok": False,
                     "message": f"a file of an earlier run is in use ({e.path}), so nothing was moved. Try again in a "
                                "moment."}
         except Exception as e:  # noqa: BLE001 - told to the plugin, which waits for the answer
             print(f"Memory not reset: {type(e).__name__}: {e}")
             return {"type": "memory_cleared", "ok": False, "message": f"the agent service couldn't move the files: {e}"}
+
+
+def take_feedback(link, msg):
+    """The editor's feedback on a finding ({"type": "feedback", "signature", "verdict"}: its Not a bug button). A
+    finding that is "not_a_bug" is muted for the project from now on (its signature in detectors.json:
+    autopilot/detectors.py), and the game's detectors are told at once, a run's going on included. Whether it was
+    added (False: no signature, already muted, another verdict, or the file couldn't be written)."""
+    signature = str(msg.get("signature") or "").strip()
+    if msg.get("verdict") != "not_a_bug" or not signature:
+        return False
+    folder = codexmod.project_dir(codexmod.project_of(link.hello))
+    try:
+        added = detectorsmod.mute(folder, signature)
+    except OSError as e:
+        print(f"note: couldn't mute {signature}: {e}")
+        return False
+    if added:
+        print(f"Muted for this project: {signature} ({detectorsmod.path(folder)})")
+    detectorsmod.send(link, folder, wait=False)
+    return added
 
 
 def same_run(a, b):
@@ -1024,6 +1089,8 @@ def external_run(params):
         run["time_limit_minutes"] = params["minutes"]
     if str(params.get("level") or "").strip():
         run["level"] = str(params["level"]).strip()
+    if isinstance(params.get("trace"), dict):  # (where the run was asked for, as its MCP server was told)
+        run["trace"] = params["trace"]
     return run
 
 
@@ -1124,6 +1191,10 @@ def cmd_serve(link, args):
             send_memory_state(link, msg)
             account.send_state(link)
             feed.watch_rebind(link)
+            if going is not None:  # (the run goes on through the new link: what the project muted, there too)
+                folder = codexmod.project_dir(codexmod.project_of(link.hello))
+                detectorsmod.send(link, folder, wait=False)
+                detectorsmod.watch(link, folder)
             if msg.get("activity_since") is not None:  # (the tab asks for the run's feed, from where it was)
                 print(f"hello: activity since {msg.get('activity_since')}")
                 try:
@@ -1141,8 +1212,15 @@ def cmd_serve(link, args):
             going[1].set()
             link.status("Stopping")
         elif kind == "steer" and going is not None:
-            if going[2].add(msg.get("text")):
-                link.status("Steering: " + str(msg.get("text")).strip()[:120])
+            # (mode: "hint", the default, or "redirect", which ends the episode playing now; see bridge.BRAIN_FEATURES)
+            mode = msg.get("mode") if msg.get("mode") in STEER_MODES else HINT
+            if going[2].add(msg.get("text"), mode):
+                link.status(("Redirecting: " if mode == REDIRECT else "Hint: ") + str(msg.get("text")).strip())
+        elif kind == "feedback":
+            take_feedback(link, msg)
+        elif kind == "detectors":
+            set_detectors(link, msg)
+            send_memory_state(link)  # (the switch shows what the file says now)
         elif kind == "clear_memory":
             with lock:  # (a start call of the user's own agent waits while the memory moves)
                 if going is not None and going[0].is_alive():
@@ -1217,6 +1295,10 @@ def parser():
     rg.add_argument("--no-launch", action="store_true", help="don't start the game: wait for the editor's plugin")
     li = sub.add_parser("login", help="sign in to Aura on its website (for runs with Aura without the Aura app)")
     li.add_argument("--server", help=SERVER_HELP)
+    li.add_argument("--another-account", action="store_true",
+                    help="sign in with another account: Aura's page lets you pick it rather than going on with the one "
+                         "your browser is signed in to (if it still shows that one, sign out of Aura in the browser "
+                         "and try again); the sign-in kept before is ended")
     lo = sub.add_parser("logout", help="sign out of Aura (the sign-in `autopilot login` kept)")
     lo.add_argument("--server", help=SERVER_HELP)
     u = sub.add_parser("uninstall", help="remove Autopilot from this computer (shared run data already sent stays)")
@@ -1272,7 +1354,9 @@ def main(argv=None):
     account.follow_preferences()
     if args.cmd in ("login", "logout"):
         server = (args.server or "").rstrip("/") or account.server()
-        return aura_login.main_login(server) if args.cmd == "login" else aura_login.main_logout(server)
+        if args.cmd == "logout":
+            return aura_login.main_logout(server)
+        return aura_login.main_login(server, choose_account=args.another_account)
     if args.cmd == "codex":
         return cmd_codex(args)
     if args.cmd == "connect":

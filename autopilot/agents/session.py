@@ -20,12 +20,12 @@ import time
 import traceback
 
 from .. import codex as codexmod
-from .. import engines, media, runtime, vision
+from .. import engines, media, memory, runtime, vision
 from .. import levels as levelsmod
 from ..kit import control
 from ..telemetry import episode_spans
-from ..words import plain_words
-from . import feed
+from ..words import plain_words, report_words
+from . import feed, whole
 
 # Settings shared by every agent (environment variables override them)
 # The agent's language model when AUTOPILOT_MODEL names none: its provider's (model() reads them before each run: the
@@ -62,10 +62,14 @@ RESULTS = "Looking at the results"  # an episode ended: the implementer works on
 # the harness (run N)" and "report" the accepted report. The one place that maps them: stage_of()
 STAGES = {READING: "analyze", PROBING: "probe", WRITING: "build", RESULTS: "results"}
 PLAYING = "Trying the harness"  # (how the progress line of an episode starts)
-PROBE_RESULT = 30000  # the most characters an activity event's detail carries (a probe's output, a file's head)
-# The most characters of news (Session.news) one tool result carries: what a tool result holds in the agent's context.
-# Past it the news is written whole to a file of the run, and the result says where
-NEWS_INLINE = PROBE_RESULT
+# The most characters an activity event's detail carries (a probe's output, an episode's summary): what the plugins'
+# tabs show of one (Unity's and Roblox's text boxes stop at 16,000). A longer one is written whole to a file of the run
+# (whole.FOLDER), and the detail says where and gives the lines that fit
+DETAIL_CHARS = 16000
+# The most characters of one part of the news (Session.news) a tool result carries: what a tool's answer may. Past it
+# that part is written whole to a file of the run, and the result says where (Session.result keeps the whole result
+# within whole.RESULT_CHARS)
+NEWS_INLINE = whole.ANSWER_CHARS
 # The kinds of activity event whose call the agent makes and whose result the tool's body sends later, with `ends`
 # naming the call's id (Session.activity)
 CALL_KINDS = ("probe", "episode", "look")
@@ -94,6 +98,9 @@ Your working directory is this game's folder:
   notes.md     what earlier requests on this game learned (verified facts, controls, pitfalls), if any
   lib.py       harness code earlier requests found reusable for this game (importable as `import lib`), if any
   runs/        earlier runs: their harness.py, trace summaries and reports (reuse what worked)
+  detectors.json  the game's detector findings the user muted, if any ({"mute": [a signature as the trace has it,
+               out_of_world:BP_Tree, or a detector's name]}): suggest one the game is meant to have in the report; edit
+               it only when asked
   {run}/  this request's folder: write harness.py here
 
 How to work:
@@ -157,11 +164,21 @@ How to work:
    run on. Before the first run_harness, `check_harness()` in a probe: it loads the harness, runs setup, the first
    observation (facts, status, the plan's step, the options) and each option's executor once without Jev, and says
    what failed. Then `run_harness`, and read the summary: which options worked, which failed and why, errors, how
-   the situation went, where the plan got. Fix and run again. Small, checked steps beat a big untested harness. When
+   the situation went, where the plan got, and "What the picture showed": while the episode played a model watched
+   the recording (every few seconds, and right after each death, failed option and stall) and the summary gives
+   each death's cause as the picture showed it (a beam, a fall, a press, an enemy) with a sentence on the moment,
+   and when the player looked stuck. Read it with the numbers: a cause that shows twice is what the next harness
+   handles (a wait for the hazard's clear moment, a jump the game times with `jump_at`/`moveset`, another way round),
+   before the episode plays again, never a retry of the same move. Give the watcher your own questions in
+   `watch_questions` (what the numbers can't tell and the picture can) and read `game.watch` in executors (stuck:
+   try another way). Fix and run again. Small, checked steps beat a big untested harness. When
    the game seemed to do something wrong in the episode (an input with no effect, a value that wouldn't change) and
    this run can look at the picture, describe_frames that moment before you probe: one look often shows a cause in
    the scene (something in the way, a menu open, the player not where the numbers put it) that rounds of probes
    would only circle.
+   Time every move by the game's clock (the kit's controllers do; your own loops use `Clock(game)`, never the wall
+   clock), and hand a move that must land on a frame to the game (`moveset`, `jump_at`): what the harness learns
+   here then plays the same on a slow machine.
 4. Steer yourself instead of starting over. An episode that ends STALLED (or that you see is going nowhere) leaves
    the game paused where play is. Don't rebuild the harness or restart the level: find out what blocked it
    (describe_frames the last seconds; a probe of where the player is and what is around it), revise the plan's
@@ -173,6 +190,8 @@ How to work:
    change to the play in the report.
 5. When the request is settled (the goal reached; a claim shown true or false; the exploration done) or more tries
    won't help, call `report` right away: an episode that settles it is enough (don't polish the harness after it).
+   Name that episode in the report's `episode` (the one in which the goal was reached, the claim shown, the bug
+   seen): its recording is the one the developer watches with the report, not the last episode's.
    You aren't told the run's time, because it isn't yours to manage: when it is up, the run closes play and probes and
    asks you for the report, and an episode still playing ends there. So time is never a reason to stop or to hurry, and
    never the reason a report gives. Go on until one of those two holds, and a report that stops before the request is
@@ -221,16 +240,17 @@ Rules:
   wrote. Such a request is CONFIRMED or DENIED only on a description (report it with visual: true). A description in
   which the thing isn't seen (off screen, covered, too small, too dark) is not a contradiction: get it in view
   (look_at it, come closer) and play it again. Film a fast motion closely (run_harness frames_fps, up to 20) and
-  narrow start and end to it.
+  narrow start and end to it (seconds from the episode's start, as its summary's t= gives them).
 - Keep the first run_harness short (20-60 s) unless check_harness showed every option working; then make an episode
   long enough for the plan to reach the goal: a stalled or failed one ends by itself. A one-step request's first
   episode is as long as its step takes to show.
 - Errors in the game's log: each run_harness summary lists the errors the game logged during its episode, or says
   none were. That is the log to report from (it can't be read once play has stopped). A summary that says nothing
   about the game's error log means this game's log isn't captured: say so in the report.
-- The user watches and may steer while you work: a tool result then says what they typed. It changes the request
-  from then on; the game goes on from where it is (the level is never restarted after that, so harness code must
-  work from the state play is in).
+- The user watches and may write to you while you work: a tool result then says what they typed. A hint leaves the
+  episode playing (use it where it bears on the request); a redirect ended the episode there and changes the request
+  from then on. After either the user likely wants play to go on from where it is: prefer run_harness restart=False
+  (harness code must work from the state play is in) unless what they said asks for a restart or nothing else works.
 - The game keeps running during run_harness and probe: enemies attack, timers run. `restart_level` starts over.
 
 {kit}
@@ -283,10 +303,10 @@ The game: {project}. This run's folder: {run}/. Write {run}/harness.py, run it, 
 {briefing}"""
 
 # What the request message carries, so the first turns go to this request rather than to reading what every run reads
-BRIEF_FILE = 12000  # characters of notes.md, lib.py or the codex README
-BRIEF_RUNS = 8  # earlier runs listed (the latest)
-BRIEF_HITS = 24  # codex files listed for the request's words
-BRIEF_CHANGES = 30  # codex files listed as changed since the last run
+#  Nothing in it is cut: a part longer than its budget is quoted as far as it fits, in whole lines or items, and the
+#  briefing says where all of it is (the file itself, or a file of the run it was written to whole)
+BRIEF_PART = 12000  # characters of one file it quotes: notes.md, lib.py, the codex README, what the live game shows
+BRIEF_LIST = 6000  # characters of one list: earlier runs, codex changes, where the request's words are, the levels
 STOP_WORDS = set("""verify that this those these there their they them then than when what where which while with
 without from into onto over under after before about does doesn't should would could must will have has been being
 player player's players game games level levels make makes made keep keeps goes going still stays same each every
@@ -322,10 +342,10 @@ TOOL_SPECS = (
      f"How the game looked in an episode, in words: up to {vision.MAX_FRAMES} of its frames (spread over start-end) "
      "go with your questions to a vision model that sees only the frames and the questions, never the request. For "
      "what only the picture shows: an animation's motion, an effect, a material or light, the UI's layout. episode: "
-     "its number (default: the latest); start, end: game times in it, in seconds (default: all of it; narrow them to "
-     f"the moment); questions: 1-{vision.MAX_QUESTIONS} open questions (what moves and how, what is at a spot, what "
-     "the text says), never yes/no and never what you hope to see; frames: how many (default "
-     f"{vision.DEFAULT_FRAMES}).",
+     "its number (default: the latest); start, end: times in it, in seconds from its start, as its summary's t= "
+     "gives them (default: all of it; narrow them to the moment); questions: "
+     f"1-{vision.MAX_QUESTIONS} open questions (what moves and how, what is at a spot, what the text says), never "
+     f"yes/no and never what you hope to see; frames: how many (default {vision.DEFAULT_FRAMES}).",
      {"type": "object", "properties": {
          "episode": {"type": "integer"}, "start": {"type": "number"}, "end": {"type": "number"},
          "questions": {"type": "array", "items": {"type": "string"}}, "frames": {"type": "integer"}},
@@ -338,17 +358,40 @@ TOOL_SPECS = (
     ("report",
      "The final answer to the request. outcome: for a goal 'achieved' or 'not_achieved'; for a claim 'CONFIRMED', "
      "'DENIED' or 'INCONCLUSIVE'; for an exploration 'explored'. summary: what happened, in a few sentences. "
-     "evidence: the observations from play it rests on (with trace file and game times; a description with its "
-     "episode and times). findings: for an exploration, each suspected bug with its observation. visual: true when "
-     "the outcome rests on how something looks (an animation, an effect, a material or light, the UI). The game's "
-     "developer reads it: call the player \"the agent\" (never Jev).",
+     "evidence: the observations from play it rests on (with trace file and times, as its summary's t= gives them; "
+     "a description with its episode and times). findings: for an exploration, each suspected bug with its "
+     "observation. visual: true when the outcome rests on how something looks (an animation, an effect, a material "
+     "or light, the UI). episode: the number of the episode that shows the result best; its recording is the run's "
+     "recording, the one the developer watches (default: the last one played). The game's developer reads it: call "
+     "the player \"the agent\" (never Jev).",
      {"type": "object", "properties": {
          "outcome": {"type": "string"}, "summary": {"type": "string"},
          "evidence": {"type": "array", "items": {"type": "string"}},
-         "findings": {"type": "array", "items": {"type": "string"}}, "visual": {"type": "boolean"}},
+         "findings": {"type": "array", "items": {"type": "string"}}, "visual": {"type": "boolean"},
+         "episode": {"type": "integer"}},
       "required": ["outcome", "summary", "evidence"]}),
 )
-REPORT_FIELDS = ("outcome", "summary", "evidence", "findings", "visual")
+REPORT_FIELDS = ("outcome", "summary", "evidence", "findings", "visual", "episode")
+
+
+def unknown_args(tool, args, specs=TOOL_SPECS):
+    """Why a call of `tool` is refused for argument names its schema (in specs: (name, description, schema)) doesn't
+    take, else None: a name it doesn't know would go unread, and the agent believe it was passed. Worded as the engine
+    plugins refuse a game function's ("unknown argument(s) X; it takes A, B"); an argument another tool in specs takes
+    is named with that tool (start_run's frames_fps is run_harness's)."""
+    schemas = {name: schema or {} for name, _, schema in specs}
+    if tool not in schemas or not isinstance(args, dict):
+        return None
+    takes = list(schemas[tool].get("properties") or {})
+    unknown = [k for k in args if k not in takes]
+    if not unknown:
+        return None
+    why = f"{tool}: unknown argument(s) {', '.join(unknown)}; it takes {', '.join(takes) or 'no arguments'}."
+    for k in unknown:
+        owners = [name for name, schema in schemas.items() if name != tool and k in (schema.get("properties") or {})]
+        if owners:
+            why += f" {k} is an argument of {' and '.join(owners)}."
+    return why + " Nothing was done: call it again with only the arguments it takes."
 
 
 def model(provider="anthropic"):
@@ -432,24 +475,35 @@ def system_prompt(engine, run_rel, agents=""):
             .replace("{contract}", _contract()).replace("{min_decisions}", str(MIN_JEV_DECISIONS)))
 
 
+# A steer's mode (the `steer` frame's "mode"): a hint is a note the agent reads with its next tool result while play
+# goes on; a redirect also ends the episode playing now. A frame without one (an older plugin) is a hint.
+HINT, REDIRECT = "hint", "redirect"
+STEER_MODES = (HINT, REDIRECT)
+
+
 class Steering:
-    """What the user types while a run plays, to steer it (the plugin's `steer` frames): taken in order by the
-    implementer (with its next tool result, or as a message of its own once it has stopped). Thread-safe: the
-    frames arrive on another thread."""
+    """What the user types while a run plays, to steer it (the plugin's `steer` frames): (text, mode) pairs taken in
+    order by the implementer (with its next tool result, or as a message of its own once it has stopped). Thread-safe:
+    the frames arrive on another thread."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._items = []
 
-    def add(self, text):
-        text = str(text or "").strip()[:2000]
+    def add(self, text, mode=HINT):
+        text = str(text or "").strip()
         if text:
             with self._lock:
-                self._items.append(text)
+                self._items.append((text, mode if mode in STEER_MODES else HINT))
         return bool(text)
 
     def pending(self):
         return bool(self._items)
+
+    def redirecting(self):
+        """Whether a redirect waits to be read: the episode playing now ends for it (a hint lets it play on)."""
+        with self._lock:
+            return any(mode == REDIRECT for _, mode in self._items)
 
     def take(self):
         with self._lock:
@@ -461,10 +515,18 @@ class Steering:
 TIME_UP = ("Time is up: play and probes are closed. Call report now with what the episodes so far show (INCONCLUSIVE "
            "if the request isn't settled).")
 
-STEER_NOTE = """The user, watching the game, steers: {said}
-Take it as a change to the request from now on (what to do next, how, what to stop doing). Revise the harness for it
-and go on from the game as it is now: the level is not restarted any more in this run (run_harness continues where
-play is; setup() must work from wherever things are now). Then report on the request as steered."""
+# What the agent is told the user typed (Session.steer_note): a hint while play went on, or a redirect that ended the
+# episode. {after} is the same for both: where play goes on from.
+HINT_NOTE = """The user, watching the game, adds a hint (play went on): {said}
+Use it from now on where it bears on the request: something about the game, what to try, what to look at. It doesn't
+end the episode or change what the request is unless it says so."""
+
+REDIRECT_NOTE = """The user, watching the game, stopped the episode to redirect the run: {said}
+Take it as a change to the request from now on (what to do next, how, what to stop doing). Revise the harness for it,
+then report on the request as steered."""
+
+STEER_AFTER = """The user likely wants play to go on from where it is now: prefer run_harness restart=False (setup()
+must work from wherever things are now) unless what they said asks for a restart, or nothing else gets play going."""
 
 
 class Session:
@@ -529,9 +591,13 @@ class Session:
         self.steering = Steering()
         self.play_seconds = None  # an exploration's minutes of play, in seconds (None: only the budget bounds play)
         self.play_started = None  # time.time() when the run first played (its minutes of play count from there)
-        self.steered = False  # the user has steered this run: the level isn't restarted any more
-        self.end_episode = threading.Event()  # (set to end the episode running now: the user steered)
+        self.steered = False  # the user has steered this run (a hint or a redirect)
+        self.end_episode = threading.Event()  # (set to end the episode running now: the user redirected)
         self.describer = None  # autopilot.vision.Describer: describe_frames (None: not in this run)
+        # Looking while a harness plays (autopilot/watch.py): the recording's last seconds answered as questions
+        # (Jev with the frames, else the describer's vision model) for the harness and the trace; a watch.Looker, in
+        # the sandbox's child a RemoteLooker (the parent looks). None: no looks in this run
+        self.looker = None
         # each episode's video (media.Recorder's begin/end): the describer's recorder, or in the sandbox the parent's
         # (autopilot.sandbox.RemoteRecorder)
         self.recorder = None
@@ -651,6 +717,36 @@ class Session:
         with open(os.path.join(folder, name), "w", encoding="utf-8") as f:
             f.write(text)
         return f"{self.run_rel}/news/{name}"
+
+    def deliver(self, text, stem, what="This", budget=None):
+        """text as a tool's answer: whole when it fits budget (default whole.ANSWER_CHARS); else written whole to
+        runs/<id>/whole/<stem>-<k>.txt, and the answer says where, with the lines from the start that fit."""
+        budget = whole.ANSWER_CHARS if budget is None else budget
+        if len(text) <= budget:
+            return text
+        return whole.deliver(text, budget, whole.kept(self.run_dir, self.run_rel, stem, text)[1], what=what)
+
+    def result(self, text, clock=True, steer=True):
+        """A tool result as every agent gets it: the tool's answer (its body delivered it within whole.ANSWER_CHARS),
+        what the user typed since (steer), the news and (clock) the clock, in at most whole.RESULT_CHARS. News that
+        doesn't fit beside the answer is written whole to a file of the run, and the result says where, with what
+        fits. (The file tools' results take no clock and leave what the user typed to the game tools'.)"""
+        steer = self.steer_note() if steer else ""
+        news = self.news()
+        tail = ("\n" + self.clock()) if clock else ""
+        out = text + steer + self.news_within(news, whole.RESULT_CHARS - len(text + steer + tail)) + tail
+        if len(out) > whole.RESULT_CHARS:  # (what the user typed is that long)
+            return self.deliver(out, "result", "This result", whole.RESULT_CHARS)
+        return out
+
+    def news_within(self, news, room):
+        """news (Session.news) in at most room characters: as it is when it fits, else written whole to
+        runs/<id>/news/news-<k>.txt, with the lines that fit and where all of it is."""
+        if len(news) <= room:
+            return news
+        body = news.strip()
+        path = self._kept(whole.next_name(os.path.join(self.run_dir, "news"), "news"), body + "\n")
+        return "\n\n" + whole.deliver(body, max(room - 2, 0), path, what="The news with this result")
 
     def _arrivals_text(self, batches, status):
         files = [f for b in batches for f in b["files"]]
@@ -779,25 +875,34 @@ class Session:
                       "the harness")
         return True
 
-    def activity(self, kind, text, detail=None, ends=None, stage=None, log=None):
+    def activity(self, kind, text, detail=None, ends=None, stage=None, log=None, whole_at=None):
         """One event of the run's activity feed (docs/protocol.md, `activity`): the next id (from 1), `t` seconds
         since the run started, the feed's stage now (or `stage`), kind, text (one line in plain words for the user)
-        and detail (what opens under it: code, a path, an output; at most PROBE_RESULT characters). ends: the id of
-        the call this is the result of, or its kind (one of CALL_KINDS: the latest call of that kind still open).
-        Writes the implementer.log line `log` (default "<kind>: <text>") as note() does, appends the event to
-        runs/<id>/activity.jsonl and sends the frame. Returns the event's id."""
+        and detail (what opens under it: code, a path, an output). A detail longer than DETAIL_CHARS is written whole
+        to runs/<id>/whole/activity-<id>.txt (or is already whole, line for line, at whole_at: a full path), and the
+        event's detail says where and gives the lines that fit. ends: the id of the call this is the result of, or
+        its kind (one of CALL_KINDS: the latest call of that kind still open). Writes the implementer.log line `log`
+        (default "<kind>: <text>") as note() does, appends the event to runs/<id>/activity.jsonl and sends the frame.
+        Returns the event's id."""
         if log is None:
             log = f"{kind}: {text}"
         if self.forward is not None:
-            self.forward({"kind": kind, "text": text, "detail": detail, "ends": ends, "stage": stage, "log": log})
+            self.forward({"kind": kind, "text": text, "detail": detail, "ends": ends, "stage": stage, "log": log,
+                          **({"whole_at": whole_at} if whole_at else {})})
             return None
         text = plain_words(scrub(str(text)))
         if detail is not None:
-            detail = _cut_lines(plain_words(scrub(str(detail))), PROBE_RESULT)
+            detail = plain_words(scrub(str(detail)))
         with self.event_lock:
             if isinstance(ends, str):
                 ends = self.calls.pop(ends, None)
-            event = {"id": len(self.events) + 1, "t": round(time.time() - self.started, 1),
+            n = len(self.events) + 1
+            if detail is not None and len(detail) > DETAIL_CHARS:
+                if whole_at is None:
+                    whole_at = os.path.join(self.run_dir, whole.FOLDER, f"activity-{n}.txt")
+                    whole.write(whole_at, detail)
+                detail = whole.deliver(detail, DETAIL_CHARS, whole_at, ui=True)
+            event = {"id": n, "t": round(time.time() - self.started, 1),
                      "stage": stage or self.stage, "kind": kind, "text": text, "detail": detail, "ends": ends}
             if ends is None and kind in CALL_KINDS:
                 self.calls[kind] = event["id"]
@@ -826,10 +931,10 @@ class Session:
         """What the agent said (a text block): a `text` event whose text is its first line and whose detail is the
         whole when there is more than one."""
         if SPENT.search(str(text)):  # (Aura's relay stopped the agent's model calls: logged, never shown)
-            return self.note(f"says: {str(text)[:1500]}")
+            return self.note(f"says: {text}")
         lines = [line for line in str(text).splitlines() if line.strip()]
         first = lines[0].strip() if lines else str(text).strip()
-        return self.activity("text", first, detail=text if len(lines) > 1 else None, log=f"says: {text[:1500]}")
+        return self.activity("text", first, detail=text if len(lines) > 1 else None, log=f"says: {text}")
 
     def steer_note(self):
         """What the user typed since the last tool result, as the implementer is told it ("" when nothing)."""
@@ -837,11 +942,16 @@ class Session:
         if not said:
             return ""
         self.steered = True
-        self.activity("steer", "Steered: " + " | ".join(s.strip() for s in said), detail="\n".join(said),
-                      log=f"steered: {said}")
-        self.say("Revising the play for what you said")
-        quoted = "\n".join(f'"{s}"' for s in said)
-        return "\n\n" + STEER_NOTE.format(said=quoted)
+        texts = [text for text, _ in said]
+        redirect = any(mode == REDIRECT for _, mode in said)
+        self.activity("steer", ("Redirected: " if redirect else "Hint: ") + " | ".join(texts), detail="\n".join(texts),
+                      log=f"steered ({REDIRECT if redirect else HINT}): {texts}")
+        self.say("Revising the play for what you said" if redirect else "Taking in your hint")
+        if redirect and len(said) > 1:  # (hints sent with it are quoted as such)
+            quoted = "\n".join(f'"{text}"' + ("" if mode == REDIRECT else " (a hint)") for text, mode in said)
+        else:
+            quoted = "\n".join(f'"{text}"' for text in texts)
+        return "\n\n" + (REDIRECT_NOTE if redirect else HINT_NOTE).format(said=quoted) + "\n" + STEER_AFTER
 
     def next_message(self):
         """What the agent is sent once it has stopped: what the user typed, or, once the run's time is up and it hasn't
@@ -1070,17 +1180,23 @@ class Session:
         text = out.getvalue()
         if value[0] is not None:
             text += ("" if text.endswith("\n") or not text else "\n") + _show(value[0])
-        text += late
         dt = time.time() - t0
         lines = len(text.splitlines())
         what = (f"Cut off after {seconds:.0f} s" if late else
                 f"Failed after {dt:.1f} s" if "Traceback (most recent call last)" in text else
                 f"Got {lines} line{'s' if lines != 1 else ''} back in {dt:.1f} s")
-        self.activity("probe", what, detail=text or "(no output)", ends="probe",
-                      log=f"probe ({dt:.1f}s):\n{code}\n-> {text[:2000]}")
+        text = text or ("" if late else "(no output)")
+        # Longer than an answer holds: whole in a file of the run (the feed's detail points to it too); the note on
+        # a probe cut off by the time stays in sight, after what fits
+        where = (whole.kept(self.run_dir, self.run_rel, "probe", text) if len(text) > whole.ANSWER_CHARS - len(late)
+                 else None)
+        self.activity("probe", what, detail=text + late, ends="probe", whole_at=None if late or not where
+                      else where[0], log=f"probe ({dt:.1f}s):\n{code}\n-> {text}{late}")
         over = self.started_over()  # (a probe's game.restart or check_harness)
         self.touched = True
-        return _cut(text or "(no output)", 12000) + ("\n" + over if over else "")
+        if where:
+            text = whole.deliver(text, whole.ANSWER_CHARS - len(late), where[1], what="This probe's output")
+        return text + late + ("\n" + over if over else "")
 
     def started_over(self):
         """STARTED_OVER when the level has started over since the agent was last told, "" when it hasn't or when
@@ -1096,11 +1212,6 @@ class Session:
             # (the recording is the run's, here: the episode, in the sandbox or not, is filmed closer)
             with self.describer.filming(frames_fps):
                 return self.run_harness(seconds, restart, file, until)
-        kept = ""
-        if restart and (self.steered or self.steering.pending()):
-            # (the user is steering live play: it goes on from where it is, never from a restarted level or game)
-            restart = False
-            kept = "(Not restarted: the user is steering live play, so the episode went on from where the game was.)\n"
         played = self.played
         t0 = time.time()
         left = self.play_left()
@@ -1132,12 +1243,12 @@ class Session:
             if self.researcher is not None:  # (what the episode raised, answered from the code for the next harness)
                 summary = _whole(os.path.join(self.run_dir, f"trace{self.episodes}_summary.txt"))
                 self.researcher.episode(self.episodes, summary)
-        return kept + text
+        return text
 
     def _episode_over(self, until=None):
-        """Whether the episode running now must end: the run stops, the user steered, or (until: a time.time()) the
-        run's time for play is up."""
-        return (bool(self.stop()) or self.end_episode.is_set() or self.steering.pending()
+        """Whether the episode running now must end: the run stops, the user redirected (a hint lets it play on), or
+        (until: a time.time()) the run's time for play is up."""
+        return (bool(self.stop()) or self.end_episode.is_set() or self.steering.redirecting()
                 or (until is not None and time.time() >= until))
 
     def _run_harness(self, seconds, restart, file, until=None):
@@ -1202,7 +1313,7 @@ class Session:
                         w["in_play"] = True
             rt = runtime.Runtime(self.game, harness, trace_path, client=self.client, max_seconds=seconds,
                                  stop=lambda: self._episode_over(until), say=self.say, resume=resume,
-                                 telemetry=self.telemetry(), progress=progress)
+                                 telemetry=self.telemetry(), progress=progress, looker=self.looker)
             # The episode's own video (media.Recorder): from here to its end, which it ends on (before the game pauses)
             recorder = self.recorder or getattr(self.describer, "recorder", None)
             if recorder is not None:
@@ -1215,8 +1326,8 @@ class Session:
             if result.get("reason") == "stopped" and until is not None and time.time() >= until:
                 note += "Note: the run's minutes of play are up: the episode ended there.\n"
             elif result.get("reason") == "stopped" and not self.stop():
-                note += ("Note: the user steered while Jev played: the episode ended there, and the game is paused "
-                         "where it was.\n")
+                note += ("Note: the user redirected the run while Jev played: the episode ended there, and the game "
+                         "is paused where it was.\n")
         except Exception:
             return self._no_episode("The runtime failed:\n" + traceback.format_exc(limit=8))
         finally:
@@ -1247,7 +1358,7 @@ class Session:
         if played_for is None:
             played_for = time.time() - wall0
         self.activity("episode", f"Episode {n}: {played_for:.0f} s of play ({result.get('reason') or 'ended'})",
-                      detail=summary, ends="episode",
+                      detail=summary, ends="episode", whole_at=os.path.join(self.run_dir, f"trace{n}_summary.txt"),
                       log=f"run_harness {n} ({seconds:.0f}s): {result.get('reason')}, {result.get('decisions')} Jev "
                           "decisions" + (" (continued from episode %s)" % progress.get("episode") if progress else ""))
         if self.most_decisions < MIN_JEV_DECISIONS:
@@ -1255,8 +1366,11 @@ class Session:
                      f"{MIN_JEV_DECISIONS} (decisions among 2+ options), so this one can't settle the request.\n")
         over = self.started_over()  # (first: it says how to read all below it)
         self.touched = True
-        return (over + note + f"Episode {n} ({self.run_rel}/trace{n}.jsonl; harness saved as harness{n}.py)\n"
-                + _cut(summary, 14000))
+        head = (over + note + f"Episode {n} ({self.run_rel}/trace{n}.jsonl; harness saved as harness{n}.py; this "
+                f"summary also in trace{n}_summary.txt)\n")
+        # The whole summary is in trace{n}_summary.txt: one longer than an answer holds points there
+        return head + whole.deliver(summary, whole.ANSWER_CHARS - len(head), f"{self.run_rel}/trace{n}_summary.txt",
+                                    what=f"Episode {n}'s summary")
 
     def _no_episode(self, text):
         """run_harness played nothing (text says why): the feed's episode row ends on it; the agent reads text."""
@@ -1301,7 +1415,7 @@ class Session:
                 g.pause(True)
             except Exception:
                 pass
-        return _cut(json.dumps(out, indent=1, default=str), 10000)
+        return self.deliver(json.dumps(out, indent=1, default=str), "snapshot", "The snapshot")
 
     def opening(self):
         """What the live game shows as the run starts, for the request message: the level, the player (or none: a
@@ -1326,6 +1440,12 @@ class Session:
             out["level"] = c.get("world")
             out["player"] = c.get("character") or "(no player pawn: a menu, a loading screen, dead?)"
             out["game_time"] = round(float(c.get("game_time") or 0.0), 1)
+            fps = getattr(getattr(g, "link", None), "fps", None)
+            if fps:  # (a slow game is played differently: said, so the harness is written for it)
+                out["frames_a_second"] = fps if fps >= SLOW_FPS else (
+                    f"{fps:g}: SLOW (a frame is {1000 / fps:.0f} ms: the player moves far between two). Time every "
+                    "move by the game's clock and hand jumps and other frame-exact presses to the game "
+                    "(jump_at, moveset, Game.sequence); keep tick_hz near the frame rate; batch reads.")
             out["controls"] = {x.get("name"): x.get("keys") for x in c.get("controls") or []}
             # (the plugin's notes on how input reaches the game, e.g. Unity's: point before clicking, or keys can't)
             notes = c["input"].get("notes") if isinstance(c.get("input"), dict) else None
@@ -1345,9 +1465,9 @@ class Session:
                             "body": {k: v.get("body", {}).get(k) for k in ("on_ground", "falling", "crouched")}}
                 part("pose", player)
                 part("sees", seen)
-            part("screen_texts", lambda: dict(list(g.screen().items())[:60]))
+            part("screen_texts", g.screen)
             part("ui", lambda: [{k: e.get(k) for k in ("id", "kind", "label", "enabled") if e.get(k) not in (None, "")}
-                                for e in g.ui()[:40]])
+                                for e in g.ui()])
         except Exception as e:
             out["error"] = f"{type(e).__name__}: {e}"
         finally:
@@ -1359,7 +1479,8 @@ class Session:
         if net.get("mode") in ("client", "listen_server"):
             out["network"] = network_note(net, paused)
         out = runtime.jsonable(out)
-        return _cut("\n".join(f"{k}: {json.dumps(v, default=str)}" for k, v in out.items()), 10000)
+        # (whole: the briefing quotes what fits of it and keeps all of it in a file of the run)
+        return "\n".join(f"{k}: {json.dumps(v, default=str)}" for k, v in out.items())
 
     def alert(self, text):
         """Tell the user text with the result (once)."""
@@ -1387,7 +1508,8 @@ class Session:
                 "an episode's frames.")
 
     def describe_frames(self, questions, episode=None, start=None, end=None, frames=None):
-        """describe_frames: an episode's frames (between game times start and end), described with questions."""
+        """describe_frames: an episode's frames (between times start and end of it: seconds from its start, as its
+        summary's t=), described with questions."""
         if self.describer is None:
             return "describe_frames isn't available in this run."
         if self.looks_itself and self.describer.route is None:
@@ -1410,7 +1532,8 @@ class Session:
         label = f"episode {n}"
         self.say(RESULTS)
         text, ok = self.describer.describe(span["wall_start"] - 0.5, wall1 + 0.5, questions, frames or
-                                           vision.DEFAULT_FRAMES, t0=start, t1=end, label=label)
+                                           vision.DEFAULT_FRAMES, t0=start, t1=end, label=label,
+                                           base=span.get("t_start") or 0.0)
         if ok:
             self.described += 1
             self.look_failed = None
@@ -1420,59 +1543,69 @@ class Session:
                 self.alert(self.describer.alert("no picture came from the game while it played (its window was "
                                                 "minimized or hidden)"))
         self.activity("look", f"Looked at {label}'s frames" if ok else f"Couldn't look at {label}'s frames",
-                      detail=text, ends="look", log=f"describe_frames ({label}): {questions} -> {text[:3000]}")
+                      detail=text, ends="look", log=f"describe_frames ({label}): {questions} -> {text}")
         return text
 
     def _episode_span(self, episode=None):
         """(its number, the span episode_spans() has of it) for an episode (default: the latest), or (why there is
-        none, None)."""
+        none, None). The span's t_start is the episode's first game time: its summary's t=0."""
         n = int(episode or self.episodes or 0)
+        if not os.path.isdir(self.run_dir):
+            return (f"This run's files are gone ({self.run_rel} is no longer there): its episodes can't be looked at "
+                    "any more."), None
         span = next((s for s in episode_spans(self.run_dir) if s["episode"] == f"trace{n}"), None)
         if span is None or span.get("wall_start") is None:
             return (f"No episode {n} has been played in this run." if n else
                     "No episode has been played yet: run_harness first (its frames are what can be looked at)."), None
         return n, span
 
-    def frames(self, episode=None, start=None, end=None, count=None):
+    def frames(self, episode=None, start=None, end=None, count=None, live=True):
         """frames, for the user's own agent (autopilot/agents/external.py), whose describer subagent looks at them
-        itself: (text, [JPEG bytes]) of up to vision.MAX_FRAMES of an episode's frames (between game times start and
-        end), or (why there are none, []). Frames had count as a description for report's visual rule."""
+        itself: (text, [JPEG bytes]) of up to vision.MAX_FRAMES of an episode's frames (between times start and end of
+        it: seconds from its start, as its summary's t=), or (why there are none, []). Frames had count as a
+        description for report's visual rule. live False: the run has ended (reported, stopped): the frames it kept
+        are read and nothing else happens (no feed line, no alert, no status for the tab)."""
         if self.describer is None:
             return "The game isn't filmed in this run.", []
         why = self.describer.unfilmed()
         if why:
             self.look_failed = why
-            self.alert(self.describer.alert(why, filming=True))
+            if live:
+                self.alert(self.describer.alert(why, filming=True))
             return (f"Can't look at the game's picture in this run: {why}. A request about how something looks is "
-                    "INCONCLUSIVE here (report visual: true); the user is told why."), []
+                    "INCONCLUSIVE here (report visual: true)" + ("; the user is told why." if live else ".")), []
         n, span = self._episode_span(episode)
         if span is None:
             return n, []
         label = f"episode {n}"
-        self.say(RESULTS)
+        base = span.get("t_start") or 0.0
+        if live:
+            self.say(RESULTS)
         chosen, frames, why = self.describer.frames_of(span["wall_start"] - 0.5, (span.get("wall_end") or time.time())
-                                                       + 0.5, count or vision.DEFAULT_FRAMES, start, end, label)
+                                                       + 0.5, count or vision.DEFAULT_FRAMES, start, end, label,
+                                                       base, live)
         if why:
             self.look_failed = why
-            if self.describer.no_picture:
+            if live and self.describer.no_picture:
                 self.alert(self.describer.alert("no picture came from the game while it played (its window was "
                                                 "minimized or hidden)", filming=True))
-            self.activity("look", f"No frames of {label}", detail=why, ends="look", log=f"frames ({label}): {why}")
+            if live:
+                self.activity("look", f"No frames of {label}", detail=why, ends="look", log=f"frames ({label}): {why}")
             return why, []
         self.described += 1
         self.look_failed = None
-        times = ", ".join(f"{f['t']:.2f}" if f["t"] is not None else "?" for f in chosen)
-        self.activity("look", f"Took {len(chosen)} frames of {label}", detail=f"At game times {times} s",
-                      ends="look", log=f"frames ({label}): {len(chosen)} of {len(frames)}, at game times {times}")
-        return (f"{len(chosen)} frames of {len(frames)} ({label}), in order, at game times {times} s "
-                f"(run {self.marker or self.run_id}):"), [f["jpeg"] for f in chosen]
+        times = vision.times_of(chosen, base)
+        if live:
+            self.activity("look", f"Took {len(chosen)} frames of {label}", detail=f"At t= {times} s of it",
+                          ends="look", log=f"frames ({label}): {len(chosen)} of {len(frames)}, at t= {times} "
+                                           f"(game time - {base})")
+        return (f"{len(chosen)} frames of {len(frames)} ({label}), in order, at t= {times} s (seconds from the "
+                f"episode's start, as its summary's t=) (run {self.marker or self.run_id}):"), \
+            [f["jpeg"] for f in chosen]
 
     def restart_level(self, level=None):
         if self.time_up():
             return f"Not restarted. {TIME_UP}"
-        if self.steered or self.steering.pending():
-            return ("Not restarted: the user is steering live play. Go on from where the game is (run_harness "
-                    "continues it).")
         info = getattr(self.game, "level_info", None)
         target = levelsmod.resolve(level, info.levels if info else None) if level else None
         if level and not target:
@@ -1539,9 +1672,20 @@ class Session:
                            + " backs it" + (f" (the last one failed: {self.look_failed})" if self.look_failed else "")
                            + ". Describe the episode's moment (open questions), hold the description against what "
                            "true and false would look like, then report.")
+        if not refused and args.get("episode") is not None:
+            n = self._report_episode(args["episode"])
+            if isinstance(n, str):
+                refused = n
+            else:
+                args = {**args, "episode": n}
+        elif "episode" in args:  # (none named: the last episode's recording is shown)
+            args = {k: v for k, v in args.items() if k != "episode"}
         if refused:
             self.note(refused)  # (the log shows why the run went on after a report)
             return refused
+        # (the developer reads it: "the agent", never Jev, whatever the agent wrote; report.json and the run's
+        # regression keep it so too)
+        args = report_words(args)
         self.report = args
         self.reported_at_time_up = self.time_up()
         self.to_stage("report")
@@ -1555,14 +1699,35 @@ class Session:
             json.dump(args, f, indent=1)
         return "Reported. You can stop now."
 
+    def _report_episode(self, episode):
+        """The report's `episode` (the one whose recording is the run's) as a number 1..episodes played, or why it
+        can't be taken (the report is refused: the agent reports again with one that was played, or none)."""
+        n = None
+        if not isinstance(episode, bool):
+            try:
+                n = int(episode) if float(episode) == int(float(episode)) else None
+            except (TypeError, ValueError, OverflowError):
+                n = None
+        if not self.episodes:
+            return (f"Not reported: episode {episode!r} names an episode, and none has been played in this run. "
+                    "Report without episode.")
+        if n is None or not 1 <= n <= self.episodes:
+            return (f"Not reported: episode must be the number of an episode played in this run, 1 to "
+                    f"{self.episodes} (you gave {episode!r}): the one that shows the result best, whose recording "
+                    "becomes the run's. Report again with one of them, or without episode (the last one's recording "
+                    "is shown).")
+        return n
+
 
 def network_note(net, paused=None):
     """The opening's line on a multiplayer game (the plugin's context `net`): whose player the run plays, where the
     truth is kept, and whether the game pauses. A single-player game has none; a Roblox game (`rc_side` "server": a
-    client of the game's server, its reads made on the server) has its own, one player or several."""
+    client of the game's server, its reads made on the server) has its own, one player or several. Several players in
+    one editor (Unreal's `players`: its Play settings' Number of Players) get a line on driving them."""
     if net.get("mode") == "listen_server":
-        return ("Multiplayer: the game is hosted by the player you play (a listen server), so this world has "
-                "authority: what you read is the game's truth and a change from a probe sticks.")
+        return " ".join(n for n in ["Multiplayer: the game is hosted by the player you play (a listen server), so this "
+                                    "world has authority: what you read is the game's truth and a change from a probe "
+                                    "sticks.", players_note(net)] if n)
     if net.get("rc_side") == "server":
         # (Roblox: every play session is a client of the game's server, and the plugin's reads go to the server)
         clients = int(net.get("clients") or 1)
@@ -1593,9 +1758,27 @@ def network_note(net, paused=None):
                     "client.")
     if isinstance(paused, dict) and paused.get("why"):
         note.append(f"The game can't be paused ({paused['why']}): it runs on while you read or think.")
+    if players_note(net):
+        note.append(players_note(net))
     note.append("Play the game as the editor is set up to play it: don't change the editor's Play settings (the net "
                 "mode is the user's).")
     return " ".join(note)
+
+
+def players_note(net):
+    """The opening's line on the other players an editor plays (the plugin's context `net` with `players` above 1:
+    Unreal's multiplayer Play In Editor, every player in one process): how to drive them; "" for one player."""
+    players = int(net.get("players") or 1)
+    if players <= 1:
+        return ""
+    return (f"The editor plays {players} players, as its Play settings start them: you are player 1 (game), "
+            "and game.player(n) is player n as a game of its own: its pawn, pose, view, screen, keys, ui_act and every "
+            "controller (walk_to(game.player(2), ...)); game.players() lists them. A player nobody drives stands idle "
+            "where it is. Drive the others when the request is about players together (co-op, handing things over, one "
+            "seeing another) or when the game needs every player to go on (a door for two, a revive); otherwise play "
+            "player 1 and leave them be. The pointer (a click at a place on the view) is player 1's only: another "
+            "player's UI takes game.player(n).ui_act. The number of players is the user's: game.restart(players=N) "
+            "can't change it.")
 
 
 def _whole(path):
@@ -1607,13 +1790,31 @@ def _whole(path):
         return ""
 
 
-def _read(path, n=BRIEF_FILE):
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            text = f.read().strip()
-    except OSError:
+def _quoted(session, rel, title, fence=None, why=""):
+    """A file of the game's folder (rel: its path there) as a part of the briefing under title: whole when it fits
+    BRIEF_PART, else its first lines, with how long it is and from where to read on (why: what reading the rest is
+    for). fence: a code block's language, or None. None when the file is missing or empty."""
+    text = _whole(os.path.join(session.root, *rel.split("/"))).rstrip()
+    if not text.strip():
         return None
-    return text if len(text) <= n else text[:n] + f"\n... ({len(text) - n} more characters: Read the file for them)"
+    note, shown = whole.split(text, BRIEF_PART, rel, what=rel, holds="the briefing quotes")
+    if fence is not None and shown:
+        shown = f"```{fence}\n{shown}\n```"
+    return "\n".join(filter(None, [title, note + (f" {why}" if note and why else ""), shown]))
+
+
+def _listing(session, title, items, stem, what, latest=False):
+    """(a list of the briefing under title, the items it shows): items one a line when they fit BRIEF_LIST, else all
+    of them written whole to a file of the run (stem) and those that fit (the first, or the latest), saying where
+    the rest are."""
+    k = whole.listed(items, BRIEF_LIST, latest)
+    if k == len(items):
+        return "\n".join([title, *items]), items
+    rel = whole.kept(session.run_dir, session.run_rel, stem, "\n".join(items) + "\n")[1]
+    shown = items[len(items) - k:] if latest else items[:k]
+    said = (f"({len(items)} {what}, one a line, whole in {rel}"
+            + (f"; the {'latest' if latest else 'first'} {k} follow)" if k else ": read them there)"))
+    return "\n".join([title, said, *shown]), shown
 
 
 def _stem(word):
@@ -1626,9 +1827,10 @@ def _stem(word):
     return word
 
 
-def word_hits(codex_root, prompt, limit=BRIEF_HITS):
+def word_hits(codex_root, prompt, limit=None):
     """Where the request's words appear in the codex: its files (not the top-level lists) ranked by how many of the
-    words they have, rarer words counting more and a word in the file's name most. Lines, or None."""
+    words they have, rarer words counting more and a word in the file's name most (all of them, or the first
+    limit). Lines, or None."""
     words = []
     for w in re.findall(r"[A-Za-z][A-Za-z']+", prompt):
         w = w.lower().removesuffix("'s").strip("'")
@@ -1665,7 +1867,7 @@ def word_hits(codex_root, prompt, limit=BRIEF_HITS):
     lines = [f"- codex/{rel} ({', '.join(f'{w}: {n[w]}' for w in rare if n[w])})" for *_, rel, n in scored[:limit]]
     if common:
         lines.append(f"(in most files, so not ranked: {', '.join(common)})")
-    if len(scored) > limit:
+    if limit is not None and len(scored) > limit:
         lines.append(f"({len(scored) - limit} more files have some of them: grep for the rest)")
     missing = [w for w in rare if not any(n[w] for _, n, _ in files)]
     if missing:
@@ -1677,14 +1879,14 @@ def briefing(session, opening=None):
     """The request message's second half: what every run used to read in its first turns."""
     root = session.root
     out = []
-    level = levelsmod.briefing(getattr(session.game, "level_info", None))
+    level = levelsmod.briefing(getattr(session.game, "level_info", None), budget=BRIEF_LIST,
+                               keep=lambda stem, text: whole.kept(session.run_dir, session.run_rel, stem, text)[1])
     if level:  # (first: which level to play is the first decision)
         out.append(level)
-    notes, lib = _read(os.path.join(root, "notes.md")), _read(os.path.join(root, "lib.py"))
-    if notes:
-        out.append(f"## notes.md (what earlier requests on this game verified)\n{notes}")
-    if lib:
-        out.append(f"## lib.py (importable as `import lib`)\n```python\n{lib}\n```")
+    read_whole = "Read the rest of it before you rely on what it says."
+    notes = _quoted(session, "notes.md", "## notes.md (what earlier requests on this game verified)", why=read_whole)
+    lib = _quoted(session, "lib.py", "## lib.py (importable as `import lib`)", fence="python", why=read_whole)
+    out += [part for part in (notes, lib) if part]
     if not notes and not lib:
         out.append("## notes.md, lib.py\nNone yet: the first request on this game.")
     runs = []
@@ -1692,18 +1894,17 @@ def briefing(session, opening=None):
     for rid in sorted(os.listdir(runs_dir)) if os.path.isdir(runs_dir) else []:
         if rid == session.run_id:
             continue
-        prompt = _read(os.path.join(runs_dir, rid, "prompt.txt"), 300)
+        prompt = _whole(os.path.join(runs_dir, rid, "prompt.txt")).strip()
         try:
             with open(os.path.join(runs_dir, rid, "report.json"), encoding="utf-8") as f:
                 rep = json.load(f)
         except (OSError, ValueError):
             rep = {}
         if prompt:
-            runs.append(f"- runs/{rid}: {prompt} -> {rep.get('outcome', 'no report')}: "
-                        f"{str(rep.get('summary', ''))[:300]}")
+            runs.append(f"- runs/{rid}: {prompt} -> {rep.get('outcome', 'no report')}: {rep.get('summary', '')}")
     if runs:
-        out.append("## Earlier runs (each folder keeps its harness versions, traces and report)\n"
-                   + "\n".join(runs[-BRIEF_RUNS:]))
+        out.append(_listing(session, "## Earlier runs (each folder keeps its harness versions, traces and report)",
+                            runs, "earlier_runs", "earlier runs", latest=True)[0])
     codex_root = os.path.join(root, "codex")
     try:
         since = codex_since(session, codex_root)
@@ -1730,17 +1931,34 @@ def briefing(session, opening=None):
                 f"one (all of them also in {codexmod.INDEXING}/batch-N.txt), and says when the export is in. A search "
                 "that finds nothing has looked at what is indexed so far: what you need may still come. Work with "
                 "what is there; you never need to read a file again unless it changed and you rely on it.")
-    readme = _read(os.path.join(codex_root, "README.md"))
+    readme = _quoted(session, "codex/README.md", "## codex/README.md")
     if readme:
-        out.append(f"## codex/README.md\n{readme}")
+        out.append(readme)
     try:
         hits = word_hits(codex_root, session.prompt) if os.path.isdir(codex_root) else None
     except Exception:
         hits = None
     if hits:
-        out.append("## Where the request's words appear in the codex (files, with how often)\n" + "\n".join(hits))
-    if opening:
-        out.append(f"## The live game now (looked at just before you started; it is paused)\n{opening}")
+        ranked = [line for line in hits if line.startswith("- ")]
+        text, _ = _listing(session, "## Where the request's words appear in the codex (files, with how often)",
+                           ranked, "request_words", "files have some of the request's words, the most first")
+        out.append("\n".join([text, *(line for line in hits if not line.startswith("- "))]))
+    try:  # (the workflow for this kind of request: the package's, or this game's own: autopilot/workflows.py)
+        from .. import workflows
+        from ..cli import kind_by_words
+
+        flow = workflows.text(kind_by_words(session.prompt), root)
+        if flow:
+            out.append(flow)
+    except Exception as e:  # noqa: BLE001 - a run never fails for its playbook
+        session.note(f"workflow: {e}")
+    if opening:  # (last: the live game's state is the part a long briefing is cut at, and it is kept whole in a file)
+        title = "## The live game now (looked at just before you started; it is paused)"
+        if len(opening) > BRIEF_PART:  # (whole in a file of the run)
+            rel = whole.kept(session.run_dir, session.run_rel, "opening", opening)[1]
+            opening = whole.deliver(opening, BRIEF_PART, rel, what="What the live game shows",
+                                    holds="the briefing quotes")
+        out.append(f"{title}\n{opening}")
     return "\n\n".join(out)
 
 
@@ -1827,7 +2045,11 @@ def codex_since(session, codex_root):
             entries.append((1 if earlier else 0, path, f"- {kind}: codex/{path} (named in {names}"
                             + (f"; changed before runs/{entry['since']}, not checked since)" if earlier else ")")))
     entries.sort(key=lambda e: e[0])
-    shown = entries[:BRIEF_CHANGES]
+    # All of them; when they are more than the briefing lists, whole in a file of the run, and those that fit here
+    # (the ones named in notes.md or lib.py first). Only those listed here count as told
+    listed, shown_lines = _listing(session, "", [line for *_, line in entries], "codex_changes",
+                                   "changes to the codex since that run")
+    shown = entries[:len(shown_lines)]
     session.codex_told = {path: passages(path, texts) for _, path, _ in shown if path in pending}
     earlier = sum(1 for e in pending.values() if e["since"] != last.get("run"))
     counts = ", ".join(f"{len(diff[k])} {k}" for k in ("changed", "removed", "added") if diff[k])
@@ -1837,30 +2059,15 @@ def codex_since(session, codex_root):
     text = [head, f"{summary}. What notes.md, lib.py and earlier harnesses say about these may be out of date: check "
             "it before you rely on it. A file notes.md or lib.py names stays listed until the note or helper naming "
             f"it is edited: fix it, or, if it still holds, say so there (\"checked in runs/{session.run_id}\")."]
-    text += [line for *_, line in shown]
-    if len(entries) > BRIEF_CHANGES:
-        text.append(f"... {len(entries) - BRIEF_CHANGES} more")
-    return "\n".join(text)
+    return "\n".join(text) + listed  # (listed: the title "" and its lines, each after a newline)
 
 
 def _show(v):
+    """A probe's last value, whole (the probe's answer is delivered as every tool's)."""
     try:
-        return json.dumps(runtime.jsonable(v), indent=1)[:8000]
+        return json.dumps(runtime.jsonable(v), indent=1)
     except Exception:
-        return repr(v)[:8000]
-
-
-def _cut(text, n):
-    return text if len(text) <= n else text[: n // 2] + f"\n... ({len(text) - n} characters cut) ...\n" + text[-n // 2:]
-
-
-def _cut_lines(text, n):
-    """text's head of at most n characters, cut on a line boundary where one is near, saying what was cut."""
-    if len(text) <= n:
-        return text
-    at = text.rfind("\n", n // 2, n)
-    at = at if at > 0 else n
-    return text[:at] + f"\n... ({len(text) - at} more characters)"
+        return repr(v)
 
 
 def stage_of(text):
@@ -1882,8 +2089,8 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
     activity: where the run's activity events go (the plugin's link; docs/protocol.md, `activity`)."""
     from .. import sandbox as sandboxmod
 
-    session = Session(game, project, prompt, run_id or time.strftime("%Y%m%d-%H%M%S"), say=say, client=client,
-                      activity=activity)
+    session = Session(game, project, prompt, run_id or memory.new_run(codexmod.project_dir(project)), say=say,
+                      client=client, activity=activity)
     session.budget = float(timeout or default_timeout())
     # Reading and probing keep to half of the time a run has for play. The agent isn't told the run's time, so without
     # this a short run could go all on probes and end with no episode played
@@ -1896,6 +2103,10 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
     if steering is not None:
         session.steering = steering
     session.describer = describer
+    session.looker = looker_for(describer, client)
+    if session.looker is not None:
+        why = session.looker.available()
+        session.note("watch: " + (f"off ({why})" if why else "on: the picture is looked at while harnesses play"))
     # The run's earlier session, when one stopped before it reported and this one goes on from it (go_on): its
     # episodes keep their numbers (harnessN.py, traceN_summary.txt), and the agent is told to read them first
     marker = os.path.join(session.run_dir, GOING_ON_FILE)
@@ -1913,12 +2124,33 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
                                              codexmod.MEMORY, scrub=scrub,
                                              recorder=getattr(describer, "recorder", None),
                                              level=getattr(game, "level", None), say=session.say,
-                                             activity=session.activity)
+                                             activity=session.activity, looker=session.looker)
         session.note(f"sandbox: {session.sandbox.kind}")
         if session.episodes:  # (episodes play in its process: a new one must not take an earlier one's number)
             session.sandbox.call("go_on", timeout=30, episodes=session.episodes)
     start_reading(session, describer)
     return session
+
+
+SLOW_FPS = 25  # frames a second under which the briefing calls the game slow
+
+
+def looker_for(describer, client):
+    """The run's watch.Looker (looking while harnesses play): the recording's frames (the describer's recorder's),
+    Jev (the run's client: TypeSafe takes the frames as images) and the describer's vision model as the fallback and
+    for the deaths' reviews. None when the run has no recording (no describer) or AUTOPILOT_WATCH=0."""
+    if describer is None or (os.environ.get("AUTOPILOT_WATCH") or "1").strip() == "0":
+        return None
+    from ..watch import Looker
+
+    frames = getattr(describer, "frames", None)
+    if frames is None:
+        return None
+    # (Jev's answers about pictures are off unless AUTOPILOT_WATCH_JEV=1: the vision model answers the looks)
+    jev = client if (os.environ.get("AUTOPILOT_WATCH_JEV") or "").strip() == "1" else None
+    return Looker(frames, jev=jev, route=describer.route, provider=describer.provider,
+                  usage=describer.usage, proxied=describer.proxied, log=describer.log,
+                  named=getattr(describer, "named", False))
 
 
 def start_reading(session, describer=None):
@@ -1956,7 +2188,7 @@ def first_message(session):
     opening = None
     try:
         opening = session.opening()
-        session.note(f"opening: {opening[:1500]}")
+        session.note(f"opening: {opening}")
     except Exception as e:
         session.note(f"opening failed: {e}")
     with open(os.path.join(session.run_dir, "prompt.txt"), "w", encoding="utf-8") as f:
@@ -1967,13 +2199,13 @@ def first_message(session):
 
 
 def watch_steering(session):
-    """While the user's words wait to be read, end the episode running in the sandbox (the sandbox can't see them).
-    Returns an Event: set it once the agent has finished."""
+    """While a redirect waits to be read, end the episode running in the sandbox (the sandbox can't see it; a hint lets
+    the episode play on). Returns an Event: set it once the agent has finished."""
     done = threading.Event()
 
     def watch():
         while not done.is_set():
-            if session.sandbox and session.steering.pending():
+            if session.sandbox and session.steering.redirecting():
                 try:
                     session.sandbox.end_episode()
                 except Exception:
@@ -1991,10 +2223,10 @@ def finish(session, started, stopped, last_text, **facts):
     agent's own (model, cost, turns...)."""
     if session.out_of_time():  # (an exploration ended by its minutes of play, not by the user)
         stopped = f"its {session.play_seconds / 60:.0f} minutes of play were up"
-    report = dict(session.report or {
+    report = report_words(session.report or {
         "outcome": ("explored" if session.out_of_time() else
                     "INCONCLUSIVE" if re.match(r"(?i)\s*verify", session.prompt) else "not_achieved"),
-        "summary": f"{NO_REPORT} ({stopped or 'the agent ended without one'}). Last words: {last_text[:500]}",
+        "summary": f"{NO_REPORT} ({stopped or 'the agent ended without one'}). Last words: {last_text}",
         "evidence": []})
     writes = runtime.jsonable(getattr(session, "sandbox_writes", None) or session.game.writes) or []
     report.update({

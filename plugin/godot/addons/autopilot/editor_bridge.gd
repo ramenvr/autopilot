@@ -36,7 +36,7 @@ signal run_started_elsewhere(run: Dictionary)
 ## "One prompt box"), before the run plays; tested: an exploration asked for as a test of the game.
 signal run_kind_received(kind: String, tested: bool)
 signal policy_step(frame: Dictionary)  # a "jev" frame: one of the agent's policy steps (only from an agent server on this machine)
-signal memory_changed  # a memory_state came: memory_known / memory_runs / memory_notes / memory_lib changed
+signal memory_changed  # a memory_state came: memory_known / memory_runs / memory_notes / memory_lib / detectors_on changed
 signal memory_cleared(ok: bool, message: String)  # a memory_cleared frame: Reset memory done, or not and why
 signal usage_received(models: Array, final: bool)  # a usage frame: the run's token counts so far, per model
 signal bill_received(frame: Dictionary)  # a bill frame: what Autopilot was billed for the run through Aura that just finished
@@ -56,6 +56,8 @@ var inspect := true
 var link = Link.new()
 var run_active := false
 var brain_steers := false  # the welcome's features had "steer": the user can steer a run while it plays
+## And "steer_mode": a steer says whether it is a hint (play goes on) or a redirect (the attempt playing now ends).
+var brain_steer_modes := false
 ## What the agent server remembers about this project (its memory_state on this connection; memory_known false until
 ## one came, and again once the connection closes): the earlier runs it keeps, whether it has notes and code of its own
 ## for the game. Nothing at all: the next run is cold.
@@ -64,12 +66,21 @@ var memory_runs := 0
 var memory_notes := false
 var memory_lib := false
 var memory_serial := -1  # the connection (connection_serial) the last memory_state came on
+## Whether the game's detectors run for this project (the Settings page's Bug detectors switch): the agent service keeps
+## it (the project's detectors.json) and says it in every memory_state ("detectors"; one without it, from an older agent
+## service, means on), or as the user flipped it since (shown at once: the memory_state the agent service answers with
+## confirms it, or puts it back). Kept once the connection closes: the switch shows it, not to be changed, until the next.
+## Always on with an agent service that can't turn them off (detectors_fixed_on()): it runs them. (shown_detectors())
+var detectors_on := true
+## The welcome's features had "detectors": the agent service takes the Bug detectors switch's `detectors` frame.
+var brain_detectors := false
 ## The account (docs/protocol.md "Account"): brain_account, the welcome's features had "account" (it can sign in to
 ## Aura); account, its last account frame ({} until one came; kept after the connection closes).
 var brain_account := false
 var account := {}
 var connection_serial := 0  # one more at every welcome
 var _sign_in_on := -1  # the connection a sign-in still going was asked on (-1: none)
+var _sign_in_another := false  # that sign-in is "Use another account"'s (asked again the same way)
 
 var _game_session := -1
 var _game_ready := false
@@ -159,8 +170,8 @@ func _send_hello() -> void:
 		"host": "editor", "inspect": inspect,
 		# the games it starts can be captured (a headless one answers record and capture with 409); `levels`, and
 		# `session` playing the `map` asked for; and what the game's own autoload does, relayed to it: a key hold with
-		# "seconds" let go in the game (timed_hold), `pointer`
-		"features": ["media", "levels", "timed_hold", "pointer"],
+		# "seconds" let go in the game (timed_hold), `pointer`, `trace`
+		"features": ["media", "levels", "timed_hold", "pointer", "trace"],
 		# whether the user shares runs' data (Autopilot/preferences.json; read again at every connection)
 		"share": Prefs.share_data(prefs),
 		# how input reaches the games it starts (as the game's own hello says; the game's context says it for the game
@@ -209,12 +220,21 @@ func can_steer() -> bool:
 	return is_connected_to_brain() and run_active and brain_steers
 
 
-## What the user types to steer the run going now: it goes on from where the game is (see docs/protocol.md).
-func steer_run(text: String) -> void:
+## And whether a steer can be a hint or a redirect (the welcome's features had "steer_mode").
+func can_redirect() -> bool:
+	return can_steer() and brain_steer_modes
+
+
+## What the user types to steer the run going now: a hint (play goes on), or with redirect a redirect that ends the
+## attempt playing now. The frame says its "mode" only to an agent server with "steer_mode" (see docs/protocol.md).
+func steer_run(text: String, redirect := false) -> void:
 	var said := text.strip_edges()
 	if not can_steer() or said == "":
 		return
-	link.send({"type": "steer", "text": said})
+	var frame := {"type": "steer", "text": said}
+	if can_redirect():
+		frame["mode"] = "redirect" if redirect else "hint"
+	link.send(frame)
 
 
 func clear_memory() -> void:
@@ -236,11 +256,18 @@ func can_sign_in() -> bool:
 
 
 ## Ask the agent service to sign in to Aura (it opens the browser; aura_sign_in frames follow). Whether it was sent.
-func aura_sign_in() -> bool:
-	if not (can_sign_in() and link.send({"type": "aura_sign_in"})):
+## another_account: "Use another account", Aura's page asked to let the user pick the account (an older agent service
+## ignores it).
+func aura_sign_in(another_account := false) -> bool:
+	if not (can_sign_in() and link.send(_sign_in_frame(another_account))):
 		return false
 	_sign_in_on = connection_serial
+	_sign_in_another = another_account
 	return true
+
+
+func _sign_in_frame(another_account: bool) -> Dictionary:
+	return {"type": "aura_sign_in", "another_account": true} if another_account else {"type": "aura_sign_in"}
 
 
 func aura_sign_in_cancel() -> bool:
@@ -262,7 +289,7 @@ func _resume_sign_in(frame: Dictionary) -> void:
 		_sign_in_on = -1
 		sign_in_frame.emit({"type": "aura_sign_in", "state": "signed_in", "email": email})
 	else:
-		link.send({"type": "aura_sign_in"})
+		link.send(_sign_in_frame(_sign_in_another))
 
 
 ## Forget the Aura sign-in on this computer (every editor here): an account frame follows.
@@ -276,6 +303,35 @@ func request_account() -> bool:
 
 func feedback(signature: String, verdict: String) -> void:
 	link.send({"type": "feedback", "signature": signature, "verdict": verdict})
+
+
+## The Settings page's Bug detectors switch flipped: `{"type": "detectors", "enabled": on}` to the agent service (the
+## project's detectors.json says so from now on, and the game's detectors are told at once, a run going on included),
+## shown at once in detectors_on; the memory_state it answers with says how it is. Whether it was sent (not without a
+## connection: the setting is the agent service's; nor to an agent service that can't turn them off, detectors_fixed_on()).
+func set_detectors(on: bool) -> bool:
+	if not can_set_detectors() or not link.send({"type": "detectors", "enabled": on}):
+		return false
+	detectors_on = on
+	return true
+
+
+## Whether the Bug detectors switch can be flipped: connected to an agent service that takes it (its welcome's features
+## had "detectors").
+func can_set_detectors() -> bool:
+	return is_connected_to_brain() and brain_detectors
+
+
+## Connected to an agent service older than this plugin, whose welcome's features don't have "detectors": it would ignore
+## the switch and the game's detectors would go on running, so the switch shows them on, greyed, and says why
+## (ui/settings_page.gd DETECTORS_OLDER).
+func detectors_fixed_on() -> bool:
+	return is_connected_to_brain() and not brain_detectors
+
+
+## What the Bug detectors switch shows: detectors_on, or on with an agent service that can't turn them off.
+func shown_detectors() -> bool:
+	return detectors_on or detectors_fixed_on()
 
 
 # --- the editor kept awake during a run ---------------------------------------------------------------
@@ -349,15 +405,21 @@ func _on_brain_frame(frame: Dictionary) -> void:
 			link.role = str(frame.get("role", ""))
 			connection_serial += 1
 			brain_steers = false
+			brain_steer_modes = false
 			brain_account = false
+			brain_detectors = false
 			_record = null
 			var features = frame.get("features", [])
 			if typeof(features) == TYPE_ARRAY:
 				for feature in features:
 					if typeof(feature) == TYPE_STRING and feature == "steer":
 						brain_steers = true
+					elif typeof(feature) == TYPE_STRING and feature == "steer_mode":
+						brain_steer_modes = true
 					elif typeof(feature) == TYPE_STRING and feature == "account":
 						brain_account = true
+					elif typeof(feature) == TYPE_STRING and feature == "detectors":
+						brain_detectors = true
 			if link.role == "cli":
 				run_active = true
 				run_changed.emit(true)
@@ -409,6 +471,8 @@ func _on_brain_frame(frame: Dictionary) -> void:
 			var lib = frame.get("lib", false)
 			memory_notes = typeof(notes) == TYPE_BOOL and notes
 			memory_lib = typeof(lib) == TYPE_BOOL and lib
+			var detectors = frame.get("detectors", true)
+			detectors_on = detectors if typeof(detectors) == TYPE_BOOL else true  # (not said: on)
 			memory_known = true
 			memory_serial = connection_serial
 			memory_changed.emit()

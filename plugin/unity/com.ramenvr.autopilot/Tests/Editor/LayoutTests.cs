@@ -154,7 +154,7 @@ namespace Autopilot.Playtest.Tests
             if (client != null) return client;
             client = new PlaytestClient(EditorHost.Instance) { TestWire = s => sent.Add(s) };
             client.TestConnected(true);
-            client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"layout\", \"features\": [\"account\", \"steer\"]}");
+            client.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"layout\", \"features\": [\"account\", \"steer\", \"detectors\"]}");
             EditorHost.TestClient(client);
             return client;
         }
@@ -639,6 +639,12 @@ namespace Autopilot.Playtest.Tests
             EditorHost.TestClient(null);
             view.OpenSetup();
             Layout();
+            // (Setup… opens with the BYOK card folded, as on a first run: its Show opens it)
+            Assert.IsFalse((bool)KeysShown.GetValue(view), "Setup… opens with the keys folded");
+            Assert.IsEmpty(host.Query<DropdownField>().ToList(), "no pickers while the keys are folded");
+            KeysShown.SetValue(view, true);
+            view.Refresh(true);
+            Layout();
             Assert.AreEqual("Codex", Agent().value);
             Assert.AreEqual("OpenAI", Provider().value);
             Agent().value = "OpenCode";
@@ -662,9 +668,15 @@ namespace Autopilot.Playtest.Tests
 
             var c = Client();
             c.TestReceive("{\"type\": \"aura_sign_in\", \"state\": \"waiting\", \"url\": \"https://app.tryaura.dev/auth/cli?code=AB12CD34EF56GH78IJ90KL12MN34OP56\"}");
+            notSaid.Add(AutopilotView.WrongAccount);  // (a plain sign-in says nothing about the wrong account)
             Check("waiting for the browser", v => Setup(v, 1), null,
                 "In your browser", "Finish signing in in your browser…",
                 "app.tryaura.dev", "Open again", "Copy link", "Cancel");
+            notSaid.Remove(AutopilotView.WrongAccount);
+            c.SignIn.AnotherAccount = true;  // (Use another account's sign-in)
+            Check("waiting for the browser, another account", v => Setup(v, 1), null,
+                "In your browser", "Finish signing in in your browser…", AutopilotView.WrongAccount, "Open again", "Cancel");
+            c.SignIn.AnotherAccount = false;
 
             // The connection to the agent service gone meanwhile: being prepared again (asked again once connected), or
             // the agent service's problem with Try again
@@ -889,6 +901,7 @@ namespace Autopilot.Playtest.Tests
         const string ShareLine = "Enabling this sends recordings, screenshots, and agent traces and memories to the developers of Autopilot." +
                                  " For runs from your own Claude Code or Codex, the agent traces are its conversation during the run.";
         const string ResearchLine = "Enabling the research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.";
+        const string DetectorsLine = "During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.";
 
         static void Settings(AutopilotView v) => v.Page = "settings";
 
@@ -897,10 +910,12 @@ namespace Autopilot.Playtest.Tests
         {
             Assert.AreEqual(ShareLine, AutopilotView.ShareLine);
             Assert.AreEqual(ResearchLine, AutopilotView.ResearchLine);
+            Assert.AreEqual(DetectorsLine, AutopilotView.DetectorsLine);
             var sharing = new List<string>
             {
                 "Share runs to improve Autopilot", ShareLine,
                 "RESEARCH AGENT", ResearchLine,
+                "BUG DETECTORS", DetectorsLine,
                 "Uninstall Autopilot", "Uninstall",
             };
             Assert.AreEqual(0, AutopilotUsage.Entries.Count, "the test's own ledger starts empty");
@@ -1088,7 +1103,7 @@ namespace Autopilot.Playtest.Tests
             Assert.IsNull(Callout(), "BYOK");
         }
 
-        /// <summary>Share runs, Research agent and Autopilot in Claude Code &amp; Codex look alike: each card is its
+        /// <summary>Share runs, Research agent, Bug detectors and Autopilot in Claude Code &amp; Codex look alike: each card is its
         /// title (the mono micro-label), the line under it in the sharing text's style, then its control (a switch
         /// with no words of its own, the commands with Copy), with the same gaps; no Time limit card (the composer has
         /// it).</summary>
@@ -1097,11 +1112,13 @@ namespace Autopilot.Playtest.Tests
         {
             Assert.AreEqual("Share runs to improve Autopilot", AutopilotView.ShareTitle);
             Assert.AreEqual("Research agent", AutopilotView.ResearchTitle);
+            Assert.AreEqual("Bug detectors", AutopilotView.DetectorsTitle);
             Show(new Vector2Int(560, 900), Settings);
             Assert.IsNull(host.Q(className: "time-limit"), "no Time limit card");
             var cards = new[]
             {
                 ("sharing", "SHARE RUNS TO IMPROVE AUTOPILOT", ShareLine), ("research", "RESEARCH AGENT", ResearchLine),
+                ("detectors", "BUG DETECTORS", DetectorsLine),
                 ("assistants", "AUTOPILOT IN CLAUDE CODE & CODEX", AutopilotView.AssistantsLine),
             };
             var shareLine = host.Q(className: "sharing").Children().ElementAt(1);
@@ -1192,6 +1209,29 @@ namespace Autopilot.Playtest.Tests
             Assert.AreEqual("Research agent on", lone.text, "and back");
             CollectionAssert.AreEqual(new[] { false, true }, got);
             host.Remove(lone);
+            // Bug detectors: the same switch, "Bug detectors on/off" (as it is now: no memory_state said otherwise, so on)
+            var detectors = host.Q(className: "detectors").Q(className: "setting-control").Q<Toggle>(className: "detectors-toggle");
+            Assert.IsNotNull(detectors);
+            Assert.AreEqual("Bug detectors", detectors.tooltip);
+            Assert.AreEqual(AutopilotView.DetectorsState(detectors.value), detectors.text);
+            Assert.AreEqual("Bug detectors on", AutopilotView.DetectorsState(true));
+            Assert.AreEqual("Bug detectors off", AutopilotView.DetectorsState(false));
+            var detectorsPill = detectors.Q(className: "unity-toggle__checkmark");
+            var detectorsWords = detectors.Q<Label>(className: "unity-toggle__text");
+            Assert.IsNotNull(detectorsPill);
+            Assert.IsNotNull(detectorsWords);
+            Assert.AreEqual(8, detectorsWords.worldBound.xMin - detectorsPill.worldBound.xMax, 0.5f, "8 px from the pill to its words");
+            Assert.AreEqual(detectorsPill.worldBound.center.y, detectorsWords.worldBound.center.y, 2f, "its words centred with the pill");
+            Assert.AreEqual(pill.worldBound.width, detectorsPill.worldBound.width, 0.5f, "the sharing switch's pill");
+            got.Clear();
+            lone = AutopilotView.DetectorsSwitch(true, got.Add);
+            host.Add(lone);
+            lone.value = false;
+            Assert.AreEqual("Bug detectors off", lone.text, "the words follow the switch");
+            lone.value = true;
+            Assert.AreEqual("Bug detectors on", lone.text, "and back");
+            CollectionAssert.AreEqual(new[] { false, true }, got);
+            host.Remove(lone);
             // Claude Code & Codex: the two commands, 6 px apart
             var rows = host.Q(className: "assistants").Q(className: "setting-control").Query(className: "connect-command").ToList();
             Assert.AreEqual(2, rows.Count);
@@ -1277,6 +1317,120 @@ namespace Autopilot.Playtest.Tests
             PlaytestSettings.Get().UseWithAura = false;
             Show(new Vector2Int(560, 900), Settings);
             Assert.IsFalse(host.Q(className: "research").Q<Toggle>(className: "research-toggle").value, "the choice beats the own agent service");
+        }
+
+        /// <summary>The Bug detectors switch shows what the agent service's memory_state says ("detectors"; none, an
+        /// older agent service's, means on), every one of them; flipped, it sends {"type": "detectors", "enabled"} and
+        /// shows the new value at once, and the next memory_state confirms or corrects it. Not connected: greyed, the
+        /// last value said, and flipping it sends nothing.</summary>
+        [Test]
+        public void TheBugDetectorsSwitchFollowsTheAgentService()
+        {
+            Toggle Switch()
+            {
+                Show(new Vector2Int(560, 900), Settings);
+                return host.Q(className: "detectors").Q<Toggle>(className: "detectors-toggle");
+            }
+
+            // Connected, no memory_state yet: on, and it can be flipped
+            var c = Client();
+            var toggle = Switch();
+            Assert.IsTrue(toggle.value, "on until the agent service says otherwise");
+            Assert.IsTrue(toggle.enabledSelf, "connected: it can be flipped");
+
+            // What each memory_state says: off, then on again with no "detectors" (an older agent service)
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+            toggle = Switch();
+            Assert.IsFalse(toggle.value);
+            Assert.AreEqual("Bug detectors off", toggle.text);
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false}");
+            toggle = Switch();
+            Assert.IsTrue(toggle.value, "no \"detectors\": on");
+            Assert.AreEqual("Bug detectors on", toggle.text);
+
+            // Flipped off: sent, shown at once (built again too); the agent service's answer confirms it
+            sent.Clear();
+            toggle.value = false;
+            Assert.AreEqual(1, sent.Count);
+            var frame = Json.ParseObject(sent[0]);
+            Assert.AreEqual("detectors", Json.Str(frame, "type"));
+            Assert.IsTrue(frame.ContainsKey("enabled"));
+            Assert.IsFalse(Json.Bool(frame, "enabled", true));
+            Assert.AreEqual("Bug detectors off", toggle.text);
+            Assert.IsFalse(c.BugDetectors, "shown at once, before the answer");
+            Assert.IsFalse(Switch().value, "and when the page is built again");
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+            Assert.IsFalse(Switch().value, "confirmed");
+
+            // Flipped on, but the agent service couldn't save it: its memory_state puts the switch back
+            sent.Clear();
+            Switch().value = true;
+            Assert.IsTrue(Json.Bool(Json.ParseObject(sent.Last()), "enabled", false));
+            Assert.IsTrue(Switch().value, "on at once");
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+            toggle = Switch();
+            Assert.IsFalse(toggle.value, "corrected");
+            Assert.AreEqual("Bug detectors off", toggle.text);
+
+            // Not connected: greyed, still the last value said; flipped anyway, nothing is sent
+            c.TestConnected(false);
+            toggle = Switch();
+            Assert.IsFalse(toggle.enabledSelf, "not connected: greyed");
+            Assert.IsFalse(toggle.value, "the last value said");
+            sent.Clear();
+            toggle.value = true;
+            Assert.IsEmpty(sent, "nothing to send it to");
+            Assert.IsFalse(c.BugDetectors);
+            Assert.IsFalse(toggle.value, "and it goes back");
+            Assert.AreEqual("Bug detectors off", toggle.text);
+            Assert.IsNull(host.Q(className: "detectors-why"), "no line saying why: it isn't the agent service's");
+            c.TestConnected(true);
+            Assert.IsTrue(Switch().enabledSelf, "connected again");
+            Assert.IsNull(host.Q(className: "detectors-why"), "connected: no line saying why");
+        }
+
+        /// <summary>Connected to an agent service older than this plugin (its welcome's features without "detectors"),
+        /// which would ignore the switch and go on running the game's detectors: the switch is greyed and shows them on,
+        /// a line under it says why in the card's small words, and flipping it anyway sends nothing and goes back. The
+        /// agent service of this plugin again: as before.</summary>
+        [Test]
+        public void AnOlderAgentServiceGreysTheBugDetectorsSwitchOn()
+        {
+            Toggle Switch()
+            {
+                Show(new Vector2Int(560, 900), Settings);
+                return host.Q(className: "detectors").Q<Toggle>(className: "detectors-toggle");
+            }
+
+            var c = Client();
+            c.TestReceive("{\"type\": \"memory_state\", \"runs\": 3, \"notes\": true, \"lib\": false, \"detectors\": false}");
+            Assert.IsFalse(Switch().value, "this plugin's agent service: off, as it says");
+            c.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"older\", \"features\": [\"account\", \"steer\"]}");
+            var toggle = Switch();
+            Assert.IsTrue(toggle.value, "an older one: on (it runs them)");
+            Assert.AreEqual("Bug detectors on", toggle.text);
+            Assert.IsFalse(toggle.enabledSelf, "greyed");
+            var why = host.Q(className: "detectors").Q<Label>(className: "detectors-why");
+            Assert.IsNotNull(why, "a line saying why");
+            Assert.AreEqual("The agent service in use is older than this plugin and can't turn them off.", why.text);
+            Assert.AreEqual(PlaytestClient.BugDetectorsFixedOnWhy, why.text);
+            Assert.IsTrue(why.ClassListContains("small") && why.ClassListContains("t-sec2"), "in the card's small words");
+            Assert.Greater(why.worldBound.yMin, toggle.worldBound.yMax, "under the switch");
+            Assert.LessOrEqual(why.worldBound.xMax, host.Q(className: "detectors").worldBound.xMax + 0.5f, "inside its card");
+            sent.Clear();
+            toggle.value = false;
+            Assert.IsEmpty(sent, "flipped anyway: nothing sent");
+            Assert.IsTrue(toggle.value, "and it goes back");
+            Assert.AreEqual("Bug detectors on", toggle.text);
+            Assert.IsTrue(c.BugDetectors);
+            Assert.AreEqual(PlaytestClient.BugDetectorsFixedOnWhy, c.LastStatus, "the status line says why");
+
+            // This plugin's agent service again
+            c.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"layout\", \"features\": [\"account\", \"steer\", \"detectors\"]}");
+            toggle = Switch();
+            Assert.IsTrue(toggle.enabledSelf, "this plugin's agent service: it can be flipped");
+            Assert.IsFalse(toggle.value, "what it said");
+            Assert.IsNull(host.Q(className: "detectors-why"));
         }
 
         // -- Autopilot in Claude Code & Codex: a run started there, and how to set them up ---------------------------
@@ -2272,6 +2426,52 @@ namespace Autopilot.Playtest.Tests
             StringAssert.Contains("## Findings", ReportText(run));
         }
 
+        [Test]
+        public void ManyKindsOfOneDetectorAreOneLineAndOneCard()
+        {
+            var now = AutopilotText.UnixNow;
+            var run = new AutopilotRun
+            {
+                Id = "layout-kinds", Kind = "explore", Prompt = "Explore the game", Started = now - 60, Ended = now,
+                Result = Json.ParseObject("{\"bugs\": [], \"memory\": {\"updated\": false}}"),
+            };
+            Dictionary<string, object> Oow(string kind, int count, string severity = "warning") => Json.ParseObject(
+                $"{{\"source\": \"engine\", \"severity\": \"{severity}\", \"detector\": \"out_of_world\", \"summary\": \"{kind} is below the world's KillZ (-1000)\", \"signature\": \"out_of_world:{kind}\", \"count\": {count}}}");
+            run.Findings.Add(Json.ParseObject("{\"source\": \"engine\", \"severity\": \"suspicion\", \"detector\": \"teleport\", \"summary\": \"Pawn moved 5000 units in one frame (at most 1000 expected)\", \"signature\": \"teleport:Pawn\", \"count\": 1}"));
+            run.Findings.Add(Oow("Cone", 12));
+            run.Findings.Add(Oow("Rail", 1));
+            run.Findings.Add(Oow("Bench", 3, "error"));
+            run.Findings.Add(Oow("Sign", 1));
+            run.NotABug.Add("out_of_world:Sign");
+            AutopilotSession.Runs.Add(run);
+            var report = ReportText(run).Replace("\r", "");
+            StringAssert.Contains("- [engine · suspicion · teleport] Pawn moved 5000 units in one frame (at most 1000 expected)\n", report);
+            StringAssert.Contains("- [engine · error · out_of_world] 4 kinds: Cone (×12), Rail, Bench (×3), Sign (not a bug) — e.g. Cone is below the world's KillZ (-1000)\n", report);
+            Assert.AreEqual(2, report.Split('\n').Count(l => l.StartsWith("- [engine", StringComparison.Ordinal)), report);
+            // One card for the detector, every kind on it; its own cards under Show each
+            notSaid.Add("Rail is below");
+            Check("result, many kinds", v => v.SelectedId = run.Id, null, "ENGINE FINDINGS · 5", "4 kinds", "Cone ×12 · Rail · Bench ×3 · Sign", "Show each",
+                "Cone is below the world's KillZ");
+            notSaid.Clear();
+
+            // The feed: the first 3 kinds of a detector, then one line saying there are more, then none
+            var live = new AutopilotRun { Id = "layout-kinds-feed", Kind = "explore", Prompt = "Explore the game", Started = now };
+            AutopilotSession.Runs.Add(live);
+            var onFinding = typeof(AutopilotSession).GetMethod("OnFinding", BindingFlags.Static | BindingFlags.NonPublic);
+            foreach (var kind in new[] { "A", "B", "C", "D", "E" })
+                onFinding.Invoke(null, new object[] { Oow(kind, 1) });
+            onFinding.Invoke(null, new object[] { Oow("A", 10) });
+            onFinding.Invoke(null, new object[] { Oow("E", 10) });
+            var lines = live.Feed.Where(l => l.Kind == "engine").Select(l => l.Text).ToList();
+            CollectionAssert.AreEqual(new[]
+            {
+                "A is below the world's KillZ (-1000)", "B is below the world's KillZ (-1000)", "C is below the world's KillZ (-1000)",
+                "D is below the world's KillZ (-1000) (and more out_of_world findings: all of them are in the result)",
+                "A is below the world's KillZ (-1000) (×10)",
+            }, lines, string.Join("\n", lines));
+            Assert.AreEqual(5, live.Findings.Count);
+        }
+
         static string ReportText(AutopilotRun run) =>
             (string)typeof(AutopilotView).GetMethod("Report", BindingFlags.Static | BindingFlags.NonPublic).Invoke(null, new object[] { run });
 
@@ -2637,6 +2837,64 @@ namespace Autopilot.Playtest.Tests
                     first ??= r;
                     Assert.AreEqual(first.Value.yMin, r.yMin, 0.5f, $"the steer row's top {at}");
                     Assert.AreEqual(first.Value.height, r.height, 0.5f, $"the steer row's height {at}");
+                }
+            }
+        }
+
+        [Test]
+        public void TheSteerBoxSendsAHintOrARedirect()
+        {
+            // An agent service that tells hints from redirects ("steer_mode"): the box says play goes on, Send (a hint)
+            // and Redirect beside it (the attempt playing now ends), both only at the Rollout, everything fitting
+            var c = Client();
+            c.TestReceive("{\"type\": \"welcome\", \"role\": \"editor\", \"session\": \"layout\", \"features\": [\"account\", \"steer\", \"steer_mode\"]}");
+            c.StartRun(new Dictionary<string, object> { ["kind"] = "explore", ["minutes"] = 20 });
+            Assert.IsTrue(c.CanRedirect);
+            var now = AutopilotText.UnixNow;
+            var live = new AutopilotRun { Id = "layout-steer-modes", Kind = "explore", Started = now - 40, StageSince = now - 40, Prompt = "Explore for 20 minutes", Stage = 1 };
+            AutopilotSession.Runs.Add(live);
+            Assert.AreSame(live, AutopilotSession.Current);
+            var sizes = new[] { 300, 320, 360 }.Select(w => new Vector2Int(w, 700)).Concat(Sizes);
+            foreach (var size in sizes)
+            {
+                foreach (var stage in new[] { 3, AutopilotText.StageRollout })
+                {
+                    live.Stage = stage;
+                    var at = $"at {AutopilotText.Stages[stage]}, {size.x}x{size.y}";
+                    var view = Show(size, v => v.SelectedId = live.Id, v => v.TestUpdateSteer());
+                    var row = host.Q(className: "steer");
+                    var field = row.Q<TextField>();
+                    var send = row.Q(className: "primary");
+                    var redirect = row.Q(className: "steer-redirect");
+                    var rollout = stage == AutopilotText.StageRollout;
+                    Assert.AreEqual(AutopilotView.SteerHintModes, field.textEdition.placeholder, at);
+                    Assert.AreEqual("Add a hint; Autopilot keeps playing", AutopilotView.SteerHintModes);
+                    Assert.AreEqual("Send", send.Q<Label>().text, at);
+                    Assert.AreEqual("Redirect", redirect.Q<Label>().text, at);
+                    Assert.AreEqual(DisplayStyle.Flex, redirect.resolvedStyle.display, $"Redirect shown {at}");
+                    Assert.AreEqual(rollout ? AutopilotView.SteerSendTip : AutopilotView.SteerWaitHint, send.tooltip, at);
+                    Assert.AreEqual(rollout ? AutopilotView.SteerRedirectTip : AutopilotView.SteerWaitHint, redirect.tooltip, at);
+                    field.value = "go round the rocks";
+                    view.TestUpdateSteer();
+                    Assert.AreEqual(rollout, send.enabledInHierarchy, $"Send {at}");
+                    Assert.AreEqual(rollout, redirect.enabledInHierarchy, $"Redirect {at}");
+                    field.value = "";
+                    view.TestUpdateSteer();
+                    Layout();
+                    var text = field.Q<TextElement>();
+                    var room = text.contentRect;
+                    var hint = AutopilotView.SteerHintModes;
+                    foreach (var word in hint.Split(' '))
+                    {
+                        var w = text.MeasureTextSize(word, 0, VisualElement.MeasureMode.Undefined, 0, VisualElement.MeasureMode.Undefined).x;
+                        Assert.LessOrEqual(w, room.width + 0.5f, $"the hint's word \"{word}\" needs {w:0.#} px, the box has {room.width:0.#} {at}");
+                    }
+                    var need = text.MeasureTextSize(hint, room.width, VisualElement.MeasureMode.AtMost, 0, VisualElement.MeasureMode.Undefined);
+                    Assert.LessOrEqual(need.y, room.height + 0.5f, $"\"{hint}\" needs {need.y:0.#} px of height, the box has {room.height:0.#} {at}");
+                    Assert.LessOrEqual(field.worldBound.xMax, send.worldBound.xMin + 0.5f, $"the box beside Send {at}");
+                    Assert.LessOrEqual(send.worldBound.xMax, redirect.worldBound.xMin + 0.5f, $"Redirect after Send {at}");
+                    Assert.LessOrEqual(redirect.worldBound.xMax, row.worldBound.xMax + 0.5f, $"Redirect inside the row {at}");
+                    Assert.IsEmpty(Problems("live, steer modes " + at, size, out _));
                 }
             }
         }

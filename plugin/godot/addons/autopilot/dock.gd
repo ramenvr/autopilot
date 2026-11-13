@@ -9,9 +9,9 @@
 ## and Show Policy Log: all shown in Godot's Editor Settings too, under Autopilot (SETTINGS), and kept in step both ways.
 ## The ⋮ menu beside the gear: Connect or Disconnect, Settings, Rerun setup, Reset memory….
 ## Also the Settings page (ui/settings_page.gd: the account and Rerun setup, the tokens the agent's models used, per run
-## and for the project, and the Data sharing choice) and, until Autopilot/preferences.json says the user went through it,
-## the first-run setup (ui/setup_page.gd) in place of everything else, ending with a first Explore run offered when the
-## game's memory is empty.
+## and for the project, the Data sharing choice and the project's Bug detectors switch) and, until
+## Autopilot/preferences.json says the user went through it, the first-run setup (ui/setup_page.gd) in place of
+## everything else, ending with a first Explore run offered when the game's memory is empty.
 ## The agent service on this computer is started by the dock (lib/service.gd) when it connects to the default address
 ## (never in a headless editor), and installed from the installer the addon carries; the Aura sign-in is asked of it
 ## (begin_sign_in: the agent service opens the browser). Set up before but with the agent service gone (not installed,
@@ -68,6 +68,7 @@ var shown = null  # the run shown
 var composing := false
 var tab := "main"  # main (live or result) | feed | policy
 var wide := false
+var _groups_open := {}  # "<run id>|<detector>" -> true: a grouped detector whose own cards are shown (Show each)
 
 var _conn := ""
 var _tick := 0.0
@@ -181,7 +182,9 @@ var _l_stop: Button
 var _l_steer_row: Control  # steer: the user's words to the live run while it plays
 var _l_steer: LineEdit
 var _l_steer_btn: Button
-var _l_steer_box: BoxContainer  # the box and its button: side by side, or the button under the box in a narrow dock
+var _l_redirect_btn: Button  # (beside Send when the agent service tells hints from redirects)
+var _l_steer_btns: HBoxContainer  # the buttons
+var _l_steer_box: BoxContainer  # the box and its buttons: side by side, or the buttons under the box in a narrow dock
 var _l_track
 var _l_now_title: Label
 var _l_now: Label
@@ -212,6 +215,7 @@ var auto_start_allowed := false  # the dock may start the agent service (not in 
 ## "no_installer", "url", "email", "message", "log"}
 var sign_in := {}
 var _sign_in_send := false  # aura_sign_in is still to be sent (once the agent service is connected)
+var sign_in_another := false  # the sign-in is "Use another account"'s (the setup says what to do if the page is wrong)
 var _sign_in_installed := false  # this sign-in ran the installer already
 var _connect_when_ready := false  # connect once the agent service started is ready
 var _ensure_at := 0.0
@@ -383,6 +387,7 @@ func _ready() -> void:
 	bridge.run_changed.connect(_on_run_changed)
 	bridge.policy_step.connect(_on_policy_step)
 	bridge.memory_changed.connect(_render_footer)
+	bridge.memory_changed.connect(_show_detectors)
 	bridge.memory_cleared.connect(_on_memory_cleared)
 	bridge.usage_received.connect(_on_usage)
 	bridge.bill_received.connect(_on_bill)
@@ -725,6 +730,7 @@ func _build() -> void:
 		_render())
 	_settings_page.share_toggled.connect(_on_share_toggled)
 	_settings_page.research_toggled.connect(_on_research_toggled)
+	_settings_page.detectors_toggled.connect(_on_detectors_toggled)
 	_settings_page.account_action.connect(_on_account_action)
 	_settings_page.remove_asked.connect(remove_from_computer)
 	_settings_page.brief_changed.connect(set_design_brief)
@@ -877,6 +883,11 @@ const PROMPT_PLACEHOLDER := "Describe what to verify, reach or explore"
 ## The steer box's placeholder (at every stage), and the Steer button's tooltip before the game plays (the Rollout stage).
 const STEER_HINT := "Send a steering prompt to Autopilot"
 const STEER_WAIT := "You can steer once the game is playing"
+## With an agent service that tells hints from redirects ("steer_mode"): the box's placeholder, its Send button (a hint:
+## play goes on) and Redirect beside it (the attempt playing now ends), with their tooltips once the game plays.
+const STEER_HINT_MODES := "Add a hint; Autopilot keeps playing"
+const STEER_SEND_TIP := "Autopilot reads your hint and keeps playing"
+const STEER_REDIRECT_TIP := "End the current attempt now and play on from your words"
 const RUN_NOTE := "A run is going: stop it or wait for its result."
 
 
@@ -1168,8 +1179,9 @@ func _build_live() -> void:
 	fv.add_child(fm)
 
 	# steer: the user's words to the run while it plays (it goes on from where the game is), in a box at the page's
-	# foot; the words can be typed at any stage, the Steer button sends them once the game plays. The button goes under
-	# the words when the box beside it would be too narrow for its placeholder (_fit_steer_row).
+	# foot; the words can be typed at any stage, the Steer button sends them once the game plays (with an agent service
+	# that tells hints from redirects: Send, a hint, and Redirect, ending the attempt playing now). The buttons go under
+	# the words when the box beside them would be too narrow for its placeholder (_fit_steer_row).
 	_l_steer_box = BoxContainer.new()
 	var sr := _l_steer_box
 	sr.add_theme_constant_override("separation", HT.px(8))
@@ -1181,9 +1193,16 @@ func _build_live() -> void:
 	_l_steer.text_changed.connect(func(_t: String) -> void: _update_steer_button())
 	_l_steer.text_submitted.connect(func(_t: String) -> void: _on_steer())
 	sr.add_child(_l_steer)
+	_l_steer_btns = HBoxContainer.new()
+	_l_steer_btns.add_theme_constant_override("separation", HT.px(6))
+	_l_steer_btns.size_flags_horizontal = Control.SIZE_SHRINK_END  # (under the words: at their right)
+	_l_steer_btns.size_flags_vertical = Control.SIZE_SHRINK_CENTER
 	_l_steer_btn = _button("Steer", "AutopilotPrimary", _on_steer)
-	_l_steer_btn.size_flags_horizontal = Control.SIZE_SHRINK_END  # (under the words: at their right)
-	sr.add_child(_l_steer_btn)
+	_l_steer_btns.add_child(_l_steer_btn)
+	_l_redirect_btn = _button("Redirect", "Button", func() -> void: _on_steer(true))
+	_l_redirect_btn.visible = false
+	_l_steer_btns.add_child(_l_redirect_btn)
+	sr.add_child(_l_steer_btns)
 	var well := _panel(sr, HT.box(HT.WELL, HT.R_PLATE, HT.LINE, 1, Vector4(12, 6, 6, 6)))
 	_l_steer_row = _panel(well, HT.edge_box(HT.GROUND, HT.RULE, "top", 1, Vector4(16, 10, 16, 12)))
 	_l_steer_row.visible = false
@@ -2222,8 +2241,16 @@ func _render_result() -> void:
 			fv.add_child(_agent_card(Model.scrub(a)))
 		if not engine.is_empty():
 			fv.add_child(_caps("Engine findings · %d" % engine.size()))
-			for f in engine:
-				fv.add_child(_engine_card(r, f))
+			for g in Model.finding_groups(engine):
+				if not g.has("detector"):
+					fv.add_child(_engine_card(r, g.finding))
+					continue
+				# (a detector with many kinds: one card naming them all; Show each opens their own cards under it)
+				var key := "%s|%s" % [r.id, g.detector]
+				fv.add_child(_group_card(r, g.detector, g.findings, key))
+				if _groups_open.has(key):
+					for f in g.findings:
+						fv.add_child(_engine_card(r, f))
 
 
 ## A code box (evidence, what was changed): the well plate, mono (11.5; 11 when narrow) in TEXT2, lines 4 apart; the
@@ -2397,6 +2424,41 @@ func _agent_card(text: String) -> PanelContainer:
 		DisplayServer.clipboard_set(text)
 		_set_status("Copied")
 	b.add_child(_button("Copy", "AutopilotQuiet", copy, true))
+	v.add_child(b)
+	return pv[0]
+
+
+## One card for a detector's many kinds (Model.finding_groups): its highest severity, the detector, how many kinds, the
+## first one's words, every kind (mono, wrapped: Cone ×12 · Rail), and Show each / Hide for their own cards.
+func _group_card(r, detector: String, findings: Array, key: String) -> PanelContainer:
+	var pv := _finding_plate()
+	var v: VBoxContainer = pv[1]
+	var h := HBoxContainer.new()
+	h.add_theme_constant_override("separation", HT.px(8))
+	var sev := Model.group_severity(findings)
+	h.add_child(HT.tag(sev if sev != "" else "info", severity_kind(sev)))
+	var det := _label(detector, "AutopilotMonoDim", false)
+	det.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	det.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	det.clip_text = true
+	h.add_child(det)
+	var kl := _label("%d kinds" % findings.size(), "AutopilotMono", false)
+	kl.add_theme_font_override("font", HT.font("mono_bold"))
+	kl.add_theme_font_size_override("font_size", HT.px(12))
+	kl.add_theme_color_override("font_color", HT.TEXT)
+	kl.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	h.add_child(kl)
+	v.add_child(h)
+	v.add_child(_label(Model.scrub(str(findings[0].get("summary", ""))), "AutopilotStrong"))
+	v.add_child(_label(Model.group_kinds(r, findings, " ×%d", " · ", " (not a bug)"), "AutopilotMonoDim"))
+	var b := _flow(6)
+	var toggle := func() -> void:
+		if _groups_open.has(key):
+			_groups_open.erase(key)
+		else:
+			_groups_open[key] = true
+		_render_run()
+	b.add_child(_button("Hide" if _groups_open.has(key) else "Show each", "AutopilotQuiet", toggle, true))
 	v.add_child(b)
 	return pv[0]
 
@@ -2603,17 +2665,30 @@ func _update_steer_box() -> void:
 		_l_steer.editable = editable
 		if not editable and _l_steer.has_focus():
 			_l_steer.release_focus()
-	_l_steer.placeholder_text = STEER_HINT
+	var modes: bool = bridge.can_redirect()
+	var hint := STEER_HINT_MODES if modes else STEER_HINT
+	var fit := _l_steer.placeholder_text != hint or _l_redirect_btn.visible != modes
+	_l_steer.placeholder_text = hint
+	_l_steer_btn.text = "Send" if modes else "Steer"
+	_l_redirect_btn.visible = modes
 	_l_steer_box.get_parent().modulate = Color(1, 1, 1, 0.55 if stopping else 1.0)  # (the box dimmed once stopping)
 	_update_steer_button()
+	if fit:
+		_fit_steer_row()
 
 
 func _update_steer_button() -> void:
 	var now: bool = _can_steer_now() and not (active != null and active.stop_asked)
-	_l_steer_btn.disabled = not now or _l_steer.text.strip_edges() == ""
+	var off: bool = not now or _l_steer.text.strip_edges() == ""
+	_l_steer_btn.disabled = off
+	_l_redirect_btn.disabled = off
 	var stopping: bool = active != null and active.stop_asked
-	_l_steer_btn.tooltip_text = STEER_WAIT if not _can_steer_now() and not stopping else ""
-	_l_steer_btn.mouse_filter = Control.MOUSE_FILTER_PASS  # (its tooltip shows while it is disabled)
+	var modes: bool = bridge.can_redirect()
+	var wait := not _can_steer_now() and not stopping
+	_l_steer_btn.tooltip_text = STEER_WAIT if wait else STEER_SEND_TIP if modes and not stopping else ""
+	_l_redirect_btn.tooltip_text = STEER_WAIT if wait else STEER_REDIRECT_TIP if not stopping else ""
+	for b in [_l_steer_btn, _l_redirect_btn]:
+		b.mouse_filter = Control.MOUSE_FILTER_PASS  # (its tooltip shows while it is disabled)
 
 
 ## The button beside the box, or under it when the box beside it would be too narrow for its placeholder.
@@ -2621,25 +2696,27 @@ func _fit_steer_row() -> void:
 	if _l_steer_box == null:
 		return
 	var font: Font = _l_steer.get_theme_font("font")
-	var need: float = (font.get_string_size(STEER_HINT, HORIZONTAL_ALIGNMENT_LEFT, -1, _l_steer.get_theme_font_size("font_size")).x
+	var need: float = (font.get_string_size(_l_steer.placeholder_text, HORIZONTAL_ALIGNMENT_LEFT, -1, _l_steer.get_theme_font_size("font_size")).x
 		+ _l_steer.get_theme_stylebox("normal").get_minimum_size().x + 2.0)
 	# (the room inside the row's padding and the box's: the row's width less both panels' margins)
 	var well: Control = _l_steer_box.get_parent()
 	var outer := _l_steer_row.get_theme_stylebox("panel").get_minimum_size().x
 	var inner := well.get_theme_stylebox("panel").get_minimum_size().x
 	var room: float = (_l_steer_row.size.x - outer - inner - _l_steer_box.get_theme_constant("separation")
-		- _l_steer_btn.get_combined_minimum_size().x)
+		- _l_steer_btns.get_combined_minimum_size().x)
 	var stack := room < need
 	if _l_steer_box.vertical != stack:
 		_l_steer_box.vertical = stack
 
 
-func _on_steer() -> void:
+## Sends the box's words: a hint (Send, Steer, Enter), or with redirect a redirect (Redirect: the attempt playing now ends).
+func _on_steer(redirect := false) -> void:
 	var said := _l_steer.text.strip_edges()
 	if said == "" or not _can_steer_now():
 		return
-	bridge.steer_run(said)
-	active.add_feed("You: %s" % said, "status")
+	redirect = redirect and bridge.can_redirect()
+	bridge.steer_run(said, redirect)
+	active.add_feed(("You (redirect): %s" if redirect else "You: %s") % said, "status")
 	_l_steer.clear()
 	_update_steer_button()
 	_live_changed()
@@ -2869,9 +2946,14 @@ func _on_finding(f: Dictionary) -> void:
 	var count := int(f.get("count", 1))
 	# (the engine's findings after ENGINE in their severity's colors; the agent's after AGENT, always red)
 	var engine := Model.Run.is_engine(f)
-	active.add_feed("%s%s" % [Model.scrub(str(f.get("summary", f.get("detector", "")))), (" (×%d)" % count) if count > 1 else ""],
-		"engine" if engine else "agent")
-	active.feed[-1]["tone"] = severity_kind(str(f.get("severity", ""))) if engine else "bad"
+	var text := "%s%s" % [Model.scrub(str(f.get("summary", f.get("detector", "")))), (" (×%d)" % count) if count > 1 else ""]
+	# (a detector's first GROUP_AT kinds each have their lines; the next once, saying there are more; then none)
+	var index: int = active.detector_index(f)
+	if index == Model.GROUP_AT and fresh:
+		text = "%s (and more %s findings: all of them are in the result)" % [Model.scrub(str(f.get("summary", ""))), str(f.get("detector", ""))]
+	if index < Model.GROUP_AT or (index == Model.GROUP_AT and fresh):
+		active.add_feed(text, "engine" if engine else "agent")
+		active.feed[-1]["tone"] = severity_kind(str(f.get("severity", ""))) if engine else "bad"
 	if fresh or count > 1:
 		_live_changed()
 
@@ -3151,7 +3233,8 @@ func _render_usage() -> void:
 	# (the Research agent switch: the user's choice, else off through the Aura app (Use with Aura), on otherwise)
 	var research := SettingsPage.research_shown(Prefs.research_agent(prefs), _with_aura())
 	_settings_page.show_data(_usage_runs, Prefs.share_data(prefs), _usage_note, account_view(prefs),
-		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()}, research)
+		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()}, research,
+		bridge.shown_detectors(), bridge.can_set_detectors(), bridge.detectors_fixed_on())
 
 
 ## The composer's Time limit as last set (a run's minutes in all), kept per user and project (project metadata
@@ -3174,6 +3257,27 @@ func _on_share_toggled(on: bool) -> void:
 ## here: until then the agent service decides). The hello carries it once chosen, so it applies as the sharing box does.
 func _on_research_toggled(on: bool) -> void:
 	_save_setting({"research_agent": on})
+
+
+## The Settings page's Bug detectors switch: told to the agent service, which keeps it for the project (a `detectors`
+## frame; the switch shows the new value at once, and the memory_state it answers with confirms it or puts it back). Not
+## connected the switch is disabled; flipped anyway, it goes back to the last known value and the status line says why.
+## So with an agent service older than this plugin, which can't turn them off: disabled and on, the page saying why.
+func _on_detectors_toggled(on: bool) -> void:
+	if not bridge.set_detectors(on):
+		if bridge.detectors_fixed_on():
+			_set_status(SettingsPage.DETECTORS_OLDER)
+		else:
+			_set_status("Not connected: connect first to turn the bug detectors on or off")
+		_show_detectors(true)
+
+
+## The Bug detectors switch as the agent service last said (a memory_state came, or the connection closed): set in place
+## on the Settings page while it shows, so nothing there is built again (the Design brief keeps its caret). always: even
+## while the page is hidden (its switch was just flipped).
+func _show_detectors(always := false) -> void:
+	if _settings_page and (always or _settings_page.visible):
+		_settings_page.show_detectors(bridge.shown_detectors(), bridge.can_set_detectors(), bridge.detectors_fixed_on())
 
 
 ## A Settings page switch's choice merged into preferences.json; with no run going an open connection is made again at
@@ -3380,6 +3484,7 @@ func begin_sign_in() -> void:
 	sign_in = {"state": "preparing"}
 	_sign_in_send = true
 	_sign_in_installed = false
+	sign_in_another = false
 	if _with_aura():
 		_set_use_with_aura(false, false)  # (the sign-in is the user's own agent service's)
 	if service.state in ["stopped", "failed", "install_failed"]:
@@ -3395,14 +3500,17 @@ func cancel_sign_in() -> void:
 		bridge.aura_sign_in_cancel()
 	sign_in = {}
 	_sign_in_send = false
+	sign_in_another = false
 	_render_pages()
 
 
-## Use another account: sign out, then sign in again.
+## Use another account: sign out, then sign in again with Aura's page asked to let the user pick the account (an
+## older agent service ignores that and signs in as before).
 func another_account() -> void:
 	bridge.aura_sign_out()
 	sign_in = {"state": "preparing"}
 	_sign_in_send = true
+	sign_in_another = true
 	_tick_sign_in()
 	_render_pages()
 
@@ -3433,7 +3541,7 @@ func _tick_sign_in() -> void:
 		sign_in = {"state": "preparing"}  # (its page may have gone with it)
 	if bridge.is_connected_to_brain():
 		if bridge.brain_account:
-			_sign_in_send = not bridge.aura_sign_in()
+			_sign_in_send = not bridge.aura_sign_in(sign_in_another)
 		else:
 			sign_in = {"state": "error", "message": "This agent service can’t sign in to Aura: install it again, then try again."}
 	elif service.state in ["stopped", "failed", "install_failed"]:

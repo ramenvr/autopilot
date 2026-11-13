@@ -483,6 +483,7 @@ void UPlaytestSubsystem::OpenSocket()
 			This->bConnected = true;
 			This->bWelcomedHere = false;
 			This->bBrainAccount = false;
+			This->bBrainDetectors = false;
 			This->LastRequestAt = -1.0;
 			++This->ConnectionSerial;
 			This->Backoff = 1.0;
@@ -564,6 +565,10 @@ void UPlaytestSubsystem::SendHello()
 	Features.Add(MakeShared<FJsonValueString>(TEXT("timed_hold")));  // key hold with "seconds", let go in-game
 	Features.Add(MakeShared<FJsonValueString>(TEXT("levels")));  // `levels`, and `session` playing the `map` asked for
 	Features.Add(MakeShared<FJsonValueString>(TEXT("pointer")));  // `pointer`: the mouse to a place, clicks land there
+	Features.Add(MakeShared<FJsonValueString>(TEXT("trace")));  // `trace`: a line or a ball by the world's collision
+	// A request's "player" n is for player n of the editor's multiplayer Play In Editor (its own world: its keys, view,
+	// screen, UI, watch and context); how many there are is the editor's Play settings' (context's `players`)
+	Features.Add(MakeShared<FJsonValueString>(TEXT("players")));
 	if (FPlaytestMedia::CanCapture())
 	{
 		Features.Add(MakeShared<FJsonValueString>(TEXT("media")));  // `record` and `capture` (a game that renders)
@@ -614,6 +619,11 @@ void UPlaytestSubsystem::SendHello()
 
 void UPlaytestSubsystem::Send(const TSharedRef<FJsonObject>& Message)
 {
+	if (TestSent)
+	{
+		TestSent(PlaytestJson::Write(Message));
+		return;
+	}
 	if (Socket.IsValid() && bConnected)
 	{
 		Socket->Send(PlaytestJson::Write(Message));
@@ -666,7 +676,7 @@ bool UPlaytestSubsystem::GetExportProgress(int32& OutDone, int32& OutTotal) cons
 	return PlaytestCodex::ExportProgress(OutDone, OutTotal);
 }
 
-void UPlaytestSubsystem::SteerRun(const FString& Text)
+void UPlaytestSubsystem::SteerRun(const FString& Text, bool bRedirect)
 {
 	const FString Said = Text.TrimStartAndEnd();
 	if (!CanSteer() || Said.IsEmpty())
@@ -676,6 +686,10 @@ void UPlaytestSubsystem::SteerRun(const FString& Text)
 	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
 	Message->SetStringField(TEXT("type"), TEXT("steer"));
 	Message->SetStringField(TEXT("text"), Said);
+	if (CanRedirect())  // (an agent service without "steer_mode" gets the frame as before)
+	{
+		Message->SetStringField(TEXT("mode"), bRedirect ? TEXT("redirect") : TEXT("hint"));
+	}
 	Send(Message);
 }
 
@@ -710,15 +724,40 @@ void UPlaytestSubsystem::ClearMemory()
 	Status(TEXT("Resetting memory…"));
 }
 
+void UPlaytestSubsystem::SetDetectorsEnabled(bool bOn)
+{
+	if (!bConnected)
+	{
+		Status(TEXT("Not connected: connect first to turn the bug detectors on or off"));
+		return;
+	}
+	if (!CanSetDetectors())
+	{
+		// (an older agent service ignores the message and goes on running them: the switch stays on)
+		Status(DetectorsFixedOnWhy());
+		return;
+	}
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("type"), TEXT("detectors"));
+	Message->SetBoolField(TEXT("enabled"), bOn);
+	Send(Message);
+	bDetectorsEnabled = bOn;  // (shown at once: the memory_state it answers with confirms it, or puts it back)
+}
+
 UWorld* UPlaytestSubsystem::GetGameWorld() const
 {
+	return GetPlayerWorld(1);
+}
+
+TArray<UWorld*> UPlaytestSubsystem::GetPlayerWorlds() const
+{
+	TArray<UWorld*> Out;
 	if (!GEngine)
 	{
-		return nullptr;
+		return Out;
 	}
 	UWorld* Game = nullptr;
-	UWorld* Pie = nullptr;
-	int32 PieInstance = MAX_int32;
+	TArray<TPair<int32, UWorld*>> Pie;
 	bool bAnyPie = false;
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
 	{
@@ -729,12 +768,11 @@ UWorld* UPlaytestSubsystem::GetGameWorld() const
 		}
 		if (Context.WorldType == EWorldType::PIE)
 		{
-			// (the first of several clients: the lowest PIE instance; a dedicated server's is never played)
+			// (a dedicated server's is never played: no local player, no viewport)
 			bAnyPie = true;
-			if (!Context.RunAsDedicated && World->GetNetMode() != NM_DedicatedServer && Context.PIEInstance < PieInstance)
+			if (!Context.RunAsDedicated && World->GetNetMode() != NM_DedicatedServer)
 			{
-				Pie = World;
-				PieInstance = Context.PIEInstance;
+				Pie.Emplace(Context.PIEInstance, World);
 			}
 		}
 		else if (Context.WorldType == EWorldType::Game && !Game)
@@ -742,15 +780,38 @@ UWorld* UPlaytestSubsystem::GetGameWorld() const
 			Game = World;
 		}
 	}
-	return bAnyPie ? Pie : Game;
+	if (!bAnyPie)
+	{
+		if (Game)
+		{
+			Out.Add(Game);
+		}
+		return Out;
+	}
+	Pie.StableSort([](const TPair<int32, UWorld*>& A, const TPair<int32, UWorld*>& B) { return A.Key < B.Key; });
+	for (const TPair<int32, UWorld*>& Entry : Pie)
+	{
+		Out.Add(Entry.Value);
+	}
+	return Out;
+}
+
+UWorld* UPlaytestSubsystem::GetPlayerWorld(int32 Player) const
+{
+	const TArray<UWorld*> Worlds = GetPlayerWorlds();
+	return Worlds.IsValidIndex(Player - 1) ? Worlds[Player - 1] : nullptr;
 }
 
 UWorld* UPlaytestSubsystem::GetServerWorld() const
 {
-	UWorld* Played = GetGameWorld();
+	return GetServerWorld(GetGameWorld());
+}
+
+UWorld* UPlaytestSubsystem::GetServerWorld(const UWorld* Played) const
+{
 	if (!Played || Played->GetNetMode() != NM_Client || !GEngine)
 	{
-		return Played;
+		return const_cast<UWorld*>(Played);
 	}
 	for (const FWorldContext& Context : GEngine->GetWorldContexts())
 	{
@@ -853,7 +914,9 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 		bWelcomed = true;
 		bWelcomedHere = true;
 		bBrainSteers = false;
+		bBrainSteerModes = false;
 		bBrainAccount = false;
+		bBrainDetectors = false;
 		const TArray<TSharedPtr<FJsonValue>>* BrainFeatures = nullptr;
 		if (Message->TryGetArrayField(TEXT("features"), BrainFeatures) && BrainFeatures)
 		{
@@ -861,7 +924,9 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 			{
 				const FString Name = Feature.IsValid() && Feature->Type == EJson::String ? Feature->AsString() : FString();
 				bBrainSteers |= Name == TEXT("steer");
+				bBrainSteerModes |= Name == TEXT("steer_mode");
 				bBrainAccount |= Name == TEXT("account");
+				bBrainDetectors |= Name == TEXT("detectors");
 			}
 		}
 		Problem.Empty();
@@ -915,6 +980,9 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 		Message->TryGetBoolField(TEXT("notes"), bMemoryNotes);
 		Message->TryGetBoolField(TEXT("lib"), bMemoryLib);
 		bMemoryKnown = true;
+		// And whether the game's detectors run for it: the Bug detectors switch (an older agent service doesn't say: on)
+		bDetectorsEnabled = true;
+		Message->TryGetBoolField(TEXT("detectors"), bDetectorsEnabled);
 	}
 	else if (Type == TEXT("usage"))
 	{
@@ -975,7 +1043,7 @@ void UPlaytestSubsystem::HandleMessage(const FString& Text)
 			}
 			else
 			{
-				SendType(TEXT("aura_sign_in"));
+				SendSignIn();
 			}
 		}
 	}
@@ -1040,21 +1108,35 @@ void UPlaytestSubsystem::RequestAccount()
 	}
 }
 
-bool UPlaytestSubsystem::SignInWithAura(bool bSignOutFirst)
+void UPlaytestSubsystem::SendSignIn()
+{
+	TSharedRef<FJsonObject> Message = MakeShared<FJsonObject>();
+	Message->SetStringField(TEXT("type"), TEXT("aura_sign_in"));
+	if (bSignInAnotherAccount)
+	{
+		Message->SetBoolField(TEXT("another_account"), true);  // (an older agent service ignores it)
+	}
+	Send(Message);
+}
+
+bool UPlaytestSubsystem::SignInWithAura(bool bAnotherAccount)
 {
 	if (!HasAccountFeature())
 	{
 		return false;
 	}
-	if (bSignOutFirst)
+	if (bAnotherAccount)
 	{
+		// (the sign-in kept ends at once, whatever the browser does next; an older agent service, which ignores
+		// another_account, still signs in again after it)
 		SendType(TEXT("aura_sign_out"));
 	}
 	SignIn = FPlaytestSignIn();
 	SignIn.State = TEXT("asked");
 	SignInSerial = ConnectionSerial;
+	bSignInAnotherAccount = bAnotherAccount;
 	++AccountRevision;
-	SendType(TEXT("aura_sign_in"));
+	SendSignIn();
 	return true;
 }
 
@@ -1079,6 +1161,7 @@ void UPlaytestSubsystem::SignOutOfAura()
 void UPlaytestSubsystem::ClearSignIn()
 {
 	SignIn = FPlaytestSignIn();
+	bSignInAnotherAccount = false;
 	++AccountRevision;
 }
 
@@ -1416,7 +1499,10 @@ bool UPlaytestSubsystem::Tick(float DeltaTime)
 	}
 
 	CheckSessionChange();
-	PlaytestScreen::TickUnpainted(GetGameWorld(), DeltaTime);
+	for (UWorld* Played : GetPlayerWorlds())
+	{
+		PlaytestScreen::TickUnpainted(Played, DeltaTime);  // (every player's HUD: any of them can be read)
+	}
 
 	for (int32 i = PendingOps.Num() - 1; i >= 0; --i)
 	{

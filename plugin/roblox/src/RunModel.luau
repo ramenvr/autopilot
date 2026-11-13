@@ -116,6 +116,37 @@ function M.folds(detail: string): boolean
 	return detail ~= "" and (string.find(detail, "\n", 1, true) ~= nil or #detail > 80)
 end
 
+-- What a fold shows of a detail: all of it up to DETAIL_SHOWN bytes (what a text box here shows well); past that, the
+-- whole lines that fit, then where the rest is. Nothing is lost: the agent service keeps a detail within that size
+-- itself (a longer one whole in a file it names), and every detail is whole in the run's activity.jsonl.
+M.DETAIL_SHOWN = 16000
+
+function M.shownDetail(detail: string): string
+	if #detail <= M.DETAIL_SHOWN then
+		return detail
+	end
+	local room = M.DETAIL_SHOWN - 200
+	local at = 0
+	local from = 1
+	while true do
+		local i = string.find(detail, "\n", from, true)
+		if i == nil or i > room then
+			break
+		end
+		at = i - 1
+		from = i + 1
+	end
+	if at == 0 then
+		at = room
+		-- (not inside a UTF-8 character: back to the start of one)
+		while at > 1 and bit32.band(string.byte(detail, at + 1) or 0, 0xC0) == 0x80 do
+			at -= 1
+		end
+	end
+	return string.sub(detail, 1, at)
+		.. "\n… (the rest isn't shown here: all of it is in this run's activity.jsonl, in its folder)"
+end
+
 function M.foldLabel(label: string, open: boolean): string
 	return (if open then "– hide " else "+ inspect ") .. label
 end
@@ -425,6 +456,98 @@ function Run:engineFindings(): { any }
 		end
 	end
 	return out
+end
+
+-- A detector with more than GROUP_AT kinds of finding in a run is told once, its kinds listed (the report, the
+-- result's cards, the feed), as the other engines' docks do: an out_of_world for each of 33 classes is one problem.
+M.GROUP_AT = 3
+local SEVERITY_RANK = { error = 3, warning = 2, suspicion = 1, info = 0 }
+
+-- What a finding is about, within its detector: its signature without "<detector>:", else its summary.
+function M.kindOf(f: any): string
+	local sig = tostring(f.signature or "")
+	local det = tostring(f.detector or "")
+	if det ~= "" and string.sub(sig, 1, #det + 1) == det .. ":" then
+		sig = string.sub(sig, #det + 2)
+	end
+	return if sig ~= "" then sig else tostring(f.summary or "")
+end
+
+local function rank(severity: any): number
+	return SEVERITY_RANK[tostring(severity or "")] or 2
+end
+
+-- The highest of the findings' severities (error, warning, suspicion, info).
+function M.highestSeverity(list: { any }): string
+	local best, bestRank = "", -1
+	for _, f in ipairs(list) do
+		if rank(f.severity) > bestRank then
+			best, bestRank = tostring(f.severity or ""), rank(f.severity)
+		end
+	end
+	return best
+end
+
+-- The engine findings in order, each detector with more than GROUP_AT of them one group where its first was:
+-- {finding = f} or {detector, findings = {...}, severity (the highest)}.
+function M.findingGroups(engine: { any }): { any }
+	local byDetector: { [string]: { any } } = {}
+	for _, f in ipairs(engine) do
+		local det = tostring(f.detector or "")
+		byDetector[det] = byDetector[det] or {}
+		table.insert(byDetector[det], f)
+	end
+	local out, placed = {}, {}
+	for _, f in ipairs(engine) do
+		local det = tostring(f.detector or "")
+		local list = byDetector[det]
+		if det == "" or #list <= M.GROUP_AT then
+			table.insert(out, { finding = f })
+		elseif not placed[det] then
+			placed[det] = true
+			table.insert(out, { detector = det, findings = list, severity = M.highestSeverity(list) })
+		end
+	end
+	return out
+end
+
+-- A group's kinds as the report says them: "Cone (×12), Rail, Sign (not a bug)", every one.
+function M.groupKinds(r: any, g: any): string
+	local parts = {}
+	for _, f in ipairs(g.findings) do
+		local count = tonumber(f.count) or 1
+		table.insert(parts, M.scrub(M.kindOf(f)) .. (if count > 1 then string.format(" (×%d)", count) else "")
+			.. (if r.notABug[tostring(f.signature or "")] then " (not a bug)" else ""))
+	end
+	return table.concat(parts, ", ")
+end
+
+-- The feed's line for an engine finding just come (fresh: its first time), nil for none: a detector's first GROUP_AT
+-- kinds as they come (and again as their count goes up); the next kind once, saying there are more; then nothing.
+function Run:findingLine(f: any, fresh: boolean): string?
+	local text = M.scrub(tostring(f.summary or f.detector or ""))
+	local count = tonumber(f.count) or 1
+	local line = text .. (if count > 1 then string.format(" (×%d)", count) else "")
+	local det = tostring(f.detector or "")
+	if not M.isEngine(f) or det == "" then
+		return line
+	end
+	local sig = tostring(f.signature or f.summary or "")
+	local index = 0
+	for _, g in ipairs(self.findings) do
+		if M.isEngine(g) and tostring(g.detector or "") == det then
+			if tostring(g.signature or g.summary or "") == sig then
+				break
+			end
+			index += 1
+		end
+	end
+	if index < M.GROUP_AT then
+		return line
+	elseif index == M.GROUP_AT and fresh then
+		return text .. " (and more " .. det .. " findings: all of them are in the result)"
+	end
+	return nil
 end
 
 function Run:addFeed(text: string, kind: string)
@@ -741,7 +864,14 @@ function M.reportMarkdown(r: any): string
 		for _, a in ipairs(ag) do
 			table.insert(lines, "- [agent] " .. a)
 		end
-		for _, f in ipairs(eng) do
+		for _, g in ipairs(M.findingGroups(eng)) do
+			local f = g.finding
+			if f == nil then
+				-- (a detector with many kinds: one line, every kind, and what the first said)
+				table.insert(lines, string.format("- [engine · %s · %s] %d kinds: %s — e.g. %s", g.severity, g.detector,
+					#g.findings, M.groupKinds(r, g), M.scrub(tostring(g.findings[1].summary or ""))))
+				continue
+			end
 			local loc = M.whereText(f.where)
 			local count = tonumber(f.count) or 1
 			table.insert(lines, string.format("- [engine · %s · %s] %s%s%s%s", tostring(f.severity or ""),

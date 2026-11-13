@@ -293,6 +293,30 @@ def test_level(g):
     check("transforms: extent is half the orb's size", abs(e["Z"] - 25) < 0.5 and 24.5 <= e["X"] <= 35.5 and 24.5 <= e["Y"] <= 35.5, e)
     gate = g.req("transforms", {"objects": ["Main:/Gate"]})["objects"]["Main:/Gate"]
     check("transforms: gate box from its children (center)", close_to(gate["center"], {"X": 60, "Y": 600, "Z": 125}, 1), gate["center"])
+    # (the orb's box is its collider's, 25 cm every way however it spins; with visual its mesh's too)
+    vis = g.req("transforms", {"objects": [orbs[0]], "visual": True})["objects"][orbs[0]]["extent"]
+    check("transforms: the collider's box, the drawn one with visual", all(abs(e[k] - 25) < 0.5 for k in "XYZ")
+          and 24.5 <= vis["X"] <= 35.5, f"{e} {vis}")
+
+    # trace: the world's collision from any point (the player's own capsule and the orbs' triggers never hit)
+    check("hello: trace", "trace" in g.link.hello.get("features", []), g.link.hello.get("features"))
+    t = g.req("trace", {"start": {"X": 0, "Y": 0, "Z": 108}, "end": {"X": -3000, "Y": 0, "Z": 108}})
+    hit = t.get("hit") or {}
+    check("trace: a line back meets the wall's face", t.get("channel") == "body" and hit.get("actor") == "Main:/Level/Wall"
+          and close_to(hit["location"], {"X": -775, "Y": 0, "Z": 108}, 1) and close_to(hit["normal"], {"X": 1, "Y": 0, "Z": 0}, 0.01)
+          and abs(hit["distance"] - 775) < 1 and hit["inside"] is False, t)
+    t = g.req("trace", {"start": {"X": 0, "Y": 0, "Z": 108}, "end": {"X": -3000, "Y": 0, "Z": 108}, "radius": 50})
+    hit = t.get("hit") or {}
+    check("trace: a ball stops its radius short, touching the face", hit.get("actor") == "Main:/Level/Wall"
+          and close_to(hit["location"], {"X": -725, "Y": 0, "Z": 108}, 2) and close_to(hit["point"], {"X": -775, "Y": 0, "Z": 108}, 2), t)
+    t = g.req("trace", {"start": {"X": 500, "Y": 0, "Z": 300}, "end": {"X": 500, "Y": 0, "Z": -100}, "channel": "sight"})
+    hit = t.get("hit") or {}
+    check("trace: down through an orb's trigger onto the ground", t.get("channel") == "sight"
+          and hit.get("actor") == "Main:/Level/Ground" and close_to(hit["point"], {"X": 500, "Y": 0, "Z": 0}, 1), t)
+    t = g.req("trace", {"start": {"X": 0, "Y": 0, "Z": 108}, "end": {"X": 3000, "Y": 0, "Z": 108}})
+    check("trace: nothing ahead (the orbs are triggers)", t.get("hit") is None, t)
+    t = g.req("trace", {"start": {"X": -800, "Y": 0, "Z": 150}, "end": {"X": -800, "Y": 300, "Z": 150}, "radius": 10})
+    check("trace: a ball that starts in the wall is inside it", (t.get("hit") or {}).get("inside") is True, t)
 
     # rotation: kit yaw = euler y, kit pitch = -euler x
     g.set("Main:/Level/Block", "eulerAngles", {"x": 20, "y": 30, "z": 0})
@@ -603,9 +627,25 @@ def test_world(g, orbs):
     f = g.wait_for("log_error finding", lambda: [x for x in g.link.findings if x.get("detector") == "log_error" and "smoke test error" in x.get("summary", "")], 5)
     check("detector log_error (and a log event)", f and "smoke test error" in f[0]["summary"] and any("smoke test error" in l.get("message", "") for l in g.link.logs),
           f[0]["summary"] if f else None)
+    # What the project muted isn't reported (mute: detector names and signatures), until it is no longer in the list
+    g.req("detectors", {"mute": ["log_error"]})
+    g.call("type:UnityEngine.Debug", "LogError", message="smoke test muted error")
+    time.sleep(1.0)
+    check("detectors mute: a muted detector's finding isn't sent",
+          not [x for x in g.link.findings if "smoke test muted" in x.get("summary", "")])
+    g.req("detectors", {"mute": []})
+    g.call("type:UnityEngine.Debug", "LogError", message="smoke test unmuted error")
+    f = g.wait_for("unmuted log_error", lambda: [x for x in g.link.findings if "smoke test unmuted" in x.get("summary", "")], 5)
+    check("detectors mute: an emptied list reports it again", bool(f))
+    # Beyond the world bounds: past max_distance from the origin, when set (the player stands on the course, 1.08 m up)
+    g.req("detectors", {"max_distance": 0.5})
+    f = g.wait_for("out_of_world past max_distance", lambda: [x for x in g.link.findings if x.get("detector") == "out_of_world" and "beyond the world bounds" in x.get("summary", "")], 5)
+    check("detector out_of_world past max_distance (0.5 m)", bool(f) and "bounds_max" in f[0].get("details", {}), f[0] if f else None)
+    g.req("detectors", {"max_distance": 0})
     # Falling out of the world
+    before = len(g.link.findings)
     teleport(g, player, {"x": 30, "y": 1.08, "z": 30})
-    f = g.wait_for("long_fall/out_of_world", lambda: [x for x in g.link.findings if x.get("detector") in ("out_of_world", "long_fall")], 15)
+    f = g.wait_for("long_fall/out_of_world", lambda: [x for x in g.link.findings[before:] if x.get("detector") in ("out_of_world", "long_fall")], 15)
     check("detector out_of_world / long_fall when the player falls off the level", bool(f), [x["summary"] for x in (f or [])])
 
 
@@ -656,6 +696,20 @@ def test_parity(g):
     f = g.wait_for("teleport finding", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "teleport"], 5)
     check("detector teleport: the game moves the player 17 m in one frame", f and f[0]["severity"] == "suspicion" and f[0]["signature"] == "teleport:PlayerController"
           and f[0]["details"]["moved"] > 1600 and f[0]["details"]["allowed"] >= 1000, f[0] if f else None)
+    # Right after the agent's own key press (an unbound R here; a game's reset key in real life): still told, as info
+    teleport(g, player, {"x": 0, "y": 1.08, "z": 0})
+    time.sleep(0.5)
+    check("detector teleport: quiet again when the agent moves the player back (rc)",
+          len([x for x in g.link.findings[before:] if x.get("detector") == "teleport"]) == 1)
+    before = len(g.link.findings)
+    g.req("key", {"key": "R", "mode": "press"})
+    g.call(hazard, "Blink")
+    f = g.wait_for("teleport after the key", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "teleport"], 5)
+    check("detector teleport: right after the agent's key press it is info, naming the key",
+          f and f[0]["severity"] == "info" and f[0]["signature"] == "teleport:PlayerController after R"
+          and f[0]["summary"].endswith("right after the agent pressed R") and f[0]["details"]["after_input"]["key"] == "R"
+          and 0 <= f[0]["details"]["after_input"]["seconds"] <= 1.0, f[0] if f else None)
+    before = len(g.link.findings)
     g.set(hazard, "stamina", 150)
     f = g.wait_for("clamp finding", lambda: [x for x in g.link.findings[before:] if x.get("detector") == "clamp"], 5)
     check("detector clamp: a [Range(0, 100)] field at 150", f and f[0]["signature"] == "clamp:Hazard.stamina" and f[0]["details"]["clamp"] == "[0, 100]"
