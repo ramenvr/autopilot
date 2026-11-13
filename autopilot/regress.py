@@ -8,7 +8,12 @@ the project's regressions folder with what that episode ended on:
         lib.py              the project's lib.py as the run left it (a snapshot: replay uses the live one by default)
         regression.json     the claim, the verdict, the episode's end (status state and evidence), Jev's picks in order
 
-<regressions> is AUTOPILOT_REGRESSIONS, else the project's memory folder (memory/<project>/regressions/<run id>).
+<regressions> is AUTOPILOT_REGRESSIONS (<it>/<project>/<run id>), else the game's own project folder,
+Autopilot/regressions/<run id> beside its .uproject, Assets/ or project.godot, when the game is on this machine: they go
+into source control with the game, so a QA machine or CI with no Autopilot memory replays them on a build of the game
+(`autopilot regress --build <Game.exe> --regressions <that folder>`, or the window `autopilot qa`). Else (the game isn't
+on this machine) the project's memory folder (memory/<project>/regressions/<run id>), where they were kept before too:
+a replay of the project lists both.
 
 A replay (`autopilot regress`, or replay() here) restarts the level and runs the saved harness through the runtime as
 an episode did, but its decisions come from ReplayJev: the recorded picks, in order, where they are offered, else the
@@ -40,20 +45,79 @@ LOOKAHEAD = 5  # recorded picks a replay may skip to find one offered now (timin
 MIN_SECONDS = 20.0  # a replay's episode lasts at least this, and 1.5x the recorded one
 
 
+IN_GAME = ("Autopilot", "regressions")  # a game's regressions folder, inside its own project folder
+
+
 def root():
-    """Where regressions are kept: AUTOPILOT_REGRESSIONS, else None (each project's memory folder)."""
+    """Where regressions are kept: AUTOPILOT_REGRESSIONS, else None (each game's own folder, or its memory's)."""
     return (os.environ.get("AUTOPILOT_REGRESSIONS") or "").strip() or None
 
 
-def folder(project, project_root=None):
-    """A project's regressions folder."""
-    if root():
-        return os.path.join(root(), project)
+def game_dir(project_root):
+    """The game's project folder on this machine as its memory remembers it (project.json's `project`: the .uproject
+    or the project's folder), or None when it isn't on this machine."""
+    try:
+        with open(os.path.join(project_root, "project.json"), encoding="utf-8") as f:
+            path = (json.load(f) or {}).get("project")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return None
+    if not path or not isinstance(path, str) or not os.path.exists(path):
+        return None
+    return path if os.path.isdir(path) else os.path.dirname(path)
+
+
+def in_game(game):
+    """The regressions folder inside a game's project folder."""
+    return os.path.join(game, *IN_GAME)
+
+
+def _memory(project, project_root):
     if project_root is None:
         from . import codex
 
         project_root = codex.project_dir(project)
-    return os.path.join(project_root, "regressions")
+    return project_root
+
+
+def folder(project, project_root=None):
+    """Where a project's regressions are saved: AUTOPILOT_REGRESSIONS/<project>, else the game's own folder's
+    Autopilot/regressions (the game is on this machine), else its memory folder's regressions."""
+    if root():
+        return os.path.join(root(), project)
+    project_root = _memory(project, project_root)
+    game = game_dir(project_root)
+    return in_game(game) if game else os.path.join(project_root, "regressions")
+
+
+def folders(project, project_root=None):
+    """Where a replay of the project looks, the folders that exist of: AUTOPILOT_REGRESSIONS/<project>; else the
+    game's own folder's and the project's memory's (where they were kept before they went into the game's folder, and
+    still go when the game isn't on this machine)."""
+    if root():
+        found = [os.path.join(root(), project)]
+    else:
+        project_root = _memory(project, project_root)
+        game = game_dir(project_root)
+        found = ([in_game(game)] if game else []) + [os.path.join(project_root, "regressions")]
+    return [f for f in found if os.path.isdir(f)]
+
+
+def results_dir():
+    """A new folder for a replay's traces and results: regress/<time> in Autopilot's settings folder."""
+    from . import bridge
+
+    return os.path.join(os.path.dirname(bridge.brain_file()), "regress", time.strftime("%Y%m%d-%H%M%S"))
+
+
+def keep_out_of_engine(dest):
+    """A Godot project imports (and exports) the files under its folder: a .gdignore in the game's Autopilot folder
+    keeps the regressions' Python and JSON out. Unreal and Unity only look in their own folders (Content/, Assets/)."""
+    top = os.path.dirname(os.path.dirname(os.path.normpath(dest)))  # (<game>/Autopilot, of .../regressions/<run>)
+    if os.path.basename(top) != IN_GAME[0] or not os.path.isfile(os.path.join(os.path.dirname(top), "project.godot")):
+        return
+    ignore = os.path.join(top, ".gdignore")
+    if not os.path.exists(ignore):
+        open(ignore, "w").close()
 
 
 # -- reading an episode's trace --------------------------------------------------------------------------------------
@@ -123,6 +187,7 @@ def save(run_dir, report, project, project_root=None, dest=None):
     rid = str(report.get("run") or os.path.basename(os.path.normpath(run_dir)))
     dest = dest or os.path.join(folder(project, project_root), rid)
     os.makedirs(dest, exist_ok=True)
+    keep_out_of_engine(dest)
     shutil.copyfile(os.path.join(run_dir, f"harness{n}.py"), os.path.join(dest, "harness.py"))
     lib = os.path.join(project_root, "lib.py") if project_root else None
     if lib and os.path.exists(lib):
@@ -160,6 +225,30 @@ def listing(base):
         if FILE in files:
             found.append(here)
     return sorted(found)
+
+
+def listing_all(bases):
+    """The regression folders under each of bases, one per run id (a run's in an earlier base wins: the game's own
+    folder over the memory's copy from before)."""
+    found, ids = [], set()
+    for base in bases:
+        for reg in (listing(base) if os.path.isdir(base) else []):
+            rid = os.path.basename(os.path.normpath(reg))
+            if rid not in ids:
+                ids.add(rid)
+                found.append(reg)
+    return found
+
+
+def describe(reg):
+    """What a list of regressions shows of one: {"id", "prompt", "summary", "saved", "dir"} (a folder whose
+    regression.json doesn't read: its id and dir)."""
+    try:
+        spec = load(reg)
+    except (OSError, ValueError):
+        spec = {}
+    return {"id": spec.get("id") or os.path.basename(os.path.normpath(reg)), "prompt": spec.get("prompt"),
+            "summary": spec.get("summary"), "saved": spec.get("saved"), "dir": reg}
 
 
 def load(reg):
@@ -272,10 +361,10 @@ def _load_harness(reg, lib_dir):
             pass
 
 
-def replay(game, reg, project_root=None, frozen_lib=False, seconds=None, restart=True):
+def replay(game, reg, project_root=None, frozen_lib=False, seconds=None, restart=True, trace=None):
     """Play regression reg (its folder) again on game, without a model: {"id", "passed", "why", "state", "evidence",
     "decisions", "seconds", "trace"}. lib: the project's live lib.py (project_root) unless frozen_lib, or there is
-    none: then the snapshot saved with it."""
+    none: then the snapshot saved with it. trace: where the replay's trace goes (default: replay.jsonl in reg)."""
     spec = load(reg)
     started = time.time()
     out = {"id": spec.get("id") or os.path.basename(reg), "prompt": spec.get("prompt"), "passed": False, "why": "",
@@ -292,7 +381,8 @@ def replay(game, reg, project_root=None, frozen_lib=False, seconds=None, restart
     expect = spec.get("expect") or {}
     played = spec.get("played_seconds") or 0
     limit = seconds or max(MIN_SECONDS, 1.5 * float(played))
-    trace = os.path.join(reg, "replay.jsonl")
+    trace = trace or os.path.join(reg, "replay.jsonl")
+    os.makedirs(os.path.dirname(os.path.abspath(trace)), exist_ok=True)
     try:
         if restart:
             game.restart(map=getattr(harness, "start_map", None))
@@ -326,21 +416,30 @@ def replay(game, reg, project_root=None, frozen_lib=False, seconds=None, restart
     return out
 
 
-def replay_all(game, regs, project_root=None, frozen_lib=False, seconds=None, say=print, retries=RETRIES):
+def replay_all(game, regs, project_root=None, frozen_lib=False, seconds=None, say=print, retries=RETRIES,
+               out_dir=None, on_event=None):
     """replay() of each regression folder in regs, one after another (one game): their results. One that fails is
     replayed again, up to `retries` times (a replay costs no model): one that then passes is FLAKY (its "flaky": it
-    passed, but not every time: its harness reads the game too tightly, or the game itself varies)."""
+    passed, but not every time: its harness reads the game too tightly, or the game itself varies). out_dir: where
+    the replays' traces go (<id>.jsonl; default: in each regression's folder). on_event: told
+    {"event": "replaying", "id", "try"} as each replay starts and {"event": "result", **result} as each ends."""
     results = []
+    tell = on_event or (lambda event: None)
     for reg in regs:
-        r = replay(game, reg, project_root=project_root, frozen_lib=frozen_lib, seconds=seconds)
+        rid = describe(reg)["id"]
+        trace = os.path.join(out_dir, f"{rid}.jsonl") if out_dir else None
+        tell({"event": "replaying", "id": rid, "try": 1})
+        r = replay(game, reg, project_root=project_root, frozen_lib=frozen_lib, seconds=seconds, trace=trace)
         first = r
         for k in range(max(0, retries)):
             if r["passed"]:
                 break
-            r = replay(game, reg, project_root=project_root, frozen_lib=frozen_lib, seconds=seconds)
+            tell({"event": "replaying", "id": rid, "try": k + 2, "why": r["why"]})
+            r = replay(game, reg, project_root=project_root, frozen_lib=frozen_lib, seconds=seconds, trace=trace)
             if r["passed"]:
                 r = dict(r, flaky=True, why=f"passed on try {k + 2}; the first: {first['why']}")
         results.append(r)
+        tell({"event": "result", **r})
         if say:
             mark = "FLAKY" if r.get("flaky") else "ok   " if r["passed"] else "FAIL "
             say(f"  {mark} {r['id']}: {r['prompt'] or ''}  ({r['why']}, {r['seconds']:.0f}s)")

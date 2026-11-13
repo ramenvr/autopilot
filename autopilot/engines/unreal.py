@@ -13,7 +13,7 @@ import time
 
 from ..kit.game import GAMEPLAY, KISMET_SYSTEM, GameError, name_of
 from ..kit.geom import Vec
-from .base import Engine, safe_rel
+from .base import Engine, app_bundle, safe_rel
 
 # The engine's folder (the one with Engine/ in it): AUTOPILOT_UNREAL, else the Epic launcher's default for UE 5.8
 UNREAL = os.environ.get("AUTOPILOT_UNREAL", r"C:\Program Files\Epic Games\UE_5.8")
@@ -236,15 +236,31 @@ class Unreal(Engine):
 
     # -- a headless game ---------------------------------------------------------------------------------
 
-    def launch_command(self, project, url, log, map=None, exe=None):
+    def launch_command(self, project, url, log, map=None, exe=None, headless=True):
         """The editor's executable as a game, without rendering (-game -nullrhi); or a packaged build of the game
         (exe: <Game>.exe, a Development build with the plugin), which needs neither the project nor -game. Both read
-        the -Playtest* arguments."""
-        playtest = ["-nullrhi", "-unattended", "-nosplash", "-log", "-Playtest=goal", "-PlaytestGoal=autopilot",
-                    f"-PlaytestUrl={url}", f"-abslog={log}"]
+        the -Playtest* arguments. headless=False: rendered, in a window."""
+        playtest = (["-nullrhi"] if headless else ["-windowed"]) + [
+            "-unattended", "-nosplash", "-log", "-Playtest=goal", "-PlaytestGoal=autopilot", f"-PlaytestUrl={url}",
+            f"-abslog={log}"]
         if exe and is_packaged(exe):
             return [exe] + ([map] if map else []) + playtest
         return [exe or EDITOR, project] + ([map] if map else []) + ["-game"] + playtest
+
+    def is_build(self, exe):
+        """A packaged game: <Game>.exe (or Game.sh) beside the staged Engine/ and <Game>/ folders, the program under
+        <Game>/Binaries/<platform>/ in that layout, or a macOS Game.app holding Contents/UE. Not the editor."""
+        if not exe or not os.path.isfile(exe) or not is_packaged(exe):
+            return False
+        app = app_bundle(exe)
+        if app:
+            return os.path.isdir(os.path.join(app, "Contents", "UE"))
+        stem = os.path.splitext(os.path.basename(exe))[0].split("-")[0]  # (Game-Win64-Shipping.exe: Game)
+        here = os.path.dirname(os.path.abspath(exe))
+        for base in (here, os.path.dirname(os.path.dirname(os.path.dirname(here)))):
+            if os.path.isdir(os.path.join(base, "Engine")) and os.path.isdir(os.path.join(base, stem)):
+                return True
+        return False
 
 
 # -- the codex (functions: autopilot.codex keeps their old names) ---------------------------------------------

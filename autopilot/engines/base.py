@@ -290,10 +290,48 @@ class Engine:
 
     default_exe = None  # the engine (or a build of the game) bench/run_autopilot.py starts, when --engine isn't given
 
-    def launch_command(self, project, url, log, map=None, exe=None):
-        """The command line of a headless game of the project (no window, no rendering) whose plugin connects to the
-        brain at url and asks it for a goal run, logging to log."""
+    def launch_command(self, project, url, log, map=None, exe=None, headless=True):
+        """The command line of a game of the project whose plugin connects to the brain at url and asks it for a goal
+        run, logging to log: headless (no window, no rendering), or with headless=False in a window (a person watches
+        it: `autopilot regress --watch`). exe: the engine, or a build of the game (then project may be None)."""
         raise NotImplementedError(f"no headless launch for {self.title or self.name} yet")
+
+    # -- a build of the game (autopilot regress --build, autopilot qa) ----------------------------------------
+
+    def is_build(self, exe):
+        """Whether exe (an executable, as build_executable gives it) is a built game of this engine, one
+        launch_command starts without its project: an Unreal packaged game, a Unity player, a Godot export."""
+        return False
+
+
+def build_executable(path):
+    """The executable of a built game: path itself, or for a macOS app bundle (Game.app) the program inside it
+    (Contents/MacOS: the one Info.plist names, else the only one there)."""
+    if not (path and os.path.isdir(path) and path.lower().rstrip("/\\").endswith(".app")):
+        return path
+    macos = os.path.join(path, "Contents", "MacOS")
+    try:
+        import plistlib
+
+        with open(os.path.join(path, "Contents", "Info.plist"), "rb") as f:
+            name = plistlib.load(f).get("CFBundleExecutable")
+        if name and os.path.isfile(os.path.join(macos, name)):
+            return os.path.join(macos, name)
+    except (OSError, ValueError, ImportError):
+        pass
+    try:
+        files = [f for f in os.listdir(macos) if os.path.isfile(os.path.join(macos, f))]
+    except OSError:
+        return path
+    return os.path.join(macos, files[0]) if len(files) == 1 else path
+
+
+def app_bundle(exe):
+    """The macOS app bundle an executable is inside (…/Game.app/Contents/MacOS/Game -> …/Game.app), or None."""
+    parts = os.path.normpath(os.path.abspath(exe)).split(os.sep)
+    if len(parts) >= 4 and parts[-2] == "MacOS" and parts[-3] == "Contents" and parts[-4].lower().endswith(".app"):
+        return os.sep.join(parts[:-3])
+    return None
 
 
 class OpEngine(Engine):

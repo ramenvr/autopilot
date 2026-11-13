@@ -18,7 +18,7 @@ import shutil
 import sys
 
 from ..kit.geom import Vec, wrap
-from .base import CODEX_OWN, OpEngine, safe_rel
+from .base import CODEX_OWN, OpEngine, app_bundle, safe_rel
 
 # The Godot executable (on Windows, the _console one): AUTOPILOT_GODOT, else `godot` on PATH
 EXE = os.environ.get("AUTOPILOT_GODOT") or shutil.which("godot") or "godot"
@@ -159,15 +159,33 @@ class Godot(OpEngine):
 
     # -- a headless game ---------------------------------------------------------------------------------
 
-    def launch_command(self, project, url, log, map=None, exe=None):
+    def launch_command(self, project, url, log, map=None, exe=None, headless=True):
         """Godot without a window or rendering (--headless) on the project's folder; or an exported build of the game
         (exe: its executable, the project packed beside it or inside it), which needs no --path. The addon reads the
         arguments after `--` (Unreal's spellings, or its own --playtest-url=...); -PlaytestMap: the scene to start in
-        (a res:// path or a scene file's name)."""
+        (a res:// path or a scene file's name). headless=False: rendered, in a window."""
         where = [] if exe and is_exported(exe) else ["--path", self.project_folder(project)]
-        return [exe or EXE, "--headless"] + where + ["--log-file", log, "--",
-                "-Playtest=goal", "-PlaytestGoal=autopilot", f"-PlaytestUrl={url}"] + (
-                    [f"-PlaytestMap={map}"] if map else [])
+        return [exe or EXE, "--headless" if headless else "--windowed"] + where + [
+            "--log-file", log, "--", "-Playtest=goal", "-PlaytestGoal=autopilot", f"-PlaytestUrl={url}"] + (
+                [f"-PlaytestMap={map}"] if map else [])
+
+    def is_build(self, exe):
+        """An exported game: its .pck beside it, the pack embedded in the executable (Godot's "Embed PCK": the file
+        ends with the pack's magic, GDPC), or a macOS Game.app with a .pck in Contents/Resources."""
+        if not exe or not os.path.isfile(exe):
+            return False
+        app = app_bundle(exe)
+        if app:
+            res = os.path.join(app, "Contents", "Resources")
+            return os.path.isdir(res) and any(f.lower().endswith(".pck") for f in os.listdir(res))
+        if os.path.isfile(os.path.splitext(exe)[0] + ".pck"):
+            return True
+        try:
+            with open(exe, "rb") as f:
+                f.seek(-4, os.SEEK_END)
+                return f.read(4) == b"GDPC"
+        except OSError:
+            return False
 
 
 # -- project.godot -----------------------------------------------------------------------------------------
