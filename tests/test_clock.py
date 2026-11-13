@@ -185,8 +185,12 @@ def test_moveset_is_run_by_the_game_when_the_plugin_can():
     assert r.ok and r.data["by"] == "game" and r.data["fired"] == 3, r
     kinds = [(k, m) for _, k, m in link.fired]
     assert kinds == [("W", "hold"), ("SpaceBar", "press"), ("W", "release")]
+    # (each step fires on the first game frame at or after its time; this fake's frames come when the test reads
+    # it, so on a slow machine a frame can come a good while late: never early, though)
+    t0 = next(iter(link.sequences.values()))["t0"]
     t_hold, t_jump, t_release = (t for t, _, _ in link.fired)
-    assert 0.25 <= t_jump - t_hold <= 0.45 and 0.15 <= t_release - t_jump <= 0.4, link.fired
+    assert t_hold <= t0 + 0.25 and 0.3 <= t_jump - t0 + 1e-6 <= 0.6, (t0, link.fired)
+    assert 0.2 <= t_release - t_jump + 1e-6 <= 0.5, (t0, link.fired)
     assert "W" not in game.held()  # (released by the game, and the brain knows)
 
 
