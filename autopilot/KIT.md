@@ -127,6 +127,11 @@ Each does one tick of control per step and returns a `Result` (truthy when it wo
   `{"on_ground": bool}`, `{"falling": bool}`, `{"vz_below": cm/s}` (the top of a jump: 0). For a
   move that must land on a frame (a jump at an edge, a dodge a tenth after a tell, a combo): the brain's delay is
   out of it. Where the plugin runs no sequences it runs from here by the game's clock.
+  Steps fire in order (one waits for the step before it): run what doesn't wait for each other as sequences side
+  by side (`game.sequence(steps)` returns at once with an id: one for the direction held, one for the jumps). A key
+  a step holds goes down when its step fires and stays down, during the sequence and after it, until a later step,
+  `game.release(key)` or `release_all()` lets it go (never repeat a hold to keep it down);
+  `game.sequence_cancel(id)` drops the steps still waiting and lets go of what that sequence holds.
 - `jump_at(game, edge, direction, hold=0.6)`: run along `direction` and jump the frame the player passes `edge` (a
   point on the take-off line), forward held `hold` s more: a gap jump that lands the same on every machine.
 - `run(gen, timeout=15)`: drive a controller to its end from plain code (`setup()`, `teardown()`), as in probes;

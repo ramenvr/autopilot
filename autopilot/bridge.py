@@ -122,6 +122,8 @@ class Link:
         self.game_time = None  # the latest game time the plugin reported
         self.game_time_at = None  # ... and the wall time (time.time()) it came in
         self.last_heartbeat = None  # wall time of the latest heartbeat
+        self.fps = None  # the game's frame rate, as its latest heartbeat said it
+        self.awake = None  # wincap.Awake: Roblox Studio kept at full frame rate behind other windows
         self.findings = []  # finding dicts from in-engine detectors, in arrival order
         # Detector names and signatures the project muted (autopilot/detectors.py): their findings are dropped here too,
         # for a plugin that doesn't drop them itself
@@ -321,6 +323,15 @@ class Link:
         self.last_heartbeat = time.time()
         if str(frame.get("engine") or "").lower() != "roblox":
             return
+        if getattr(self, "awake", None) is None:
+            # (Roblox Studio draws 15 frames a second behind another window: kept at full rate while a game plays)
+            try:
+                from . import wincap
+
+                if wincap.awake_enabled():
+                    self.awake = wincap.Awake(self, "Roblox Studio", str(frame.get("project") or "") or None)
+            except Exception as e:  # noqa: BLE001 - the run goes on, slower
+                print(f"note: Studio isn't kept at full frame rate: {type(e).__name__}: {e}", file=sys.stderr)
         if self.media is not None:
             features = frame.setdefault("features", [])
             if isinstance(features, list) and "media" not in features:
@@ -338,6 +349,8 @@ class Link:
         kind = event.get("kind")
         if kind == "heartbeat":
             self.last_heartbeat = time.time()
+            if isinstance(event.get("fps"), (int, float)) and event["fps"] > 0:
+                self.fps = event["fps"]
         elif kind == "finding":
             finding = dict(event.get("finding", {}))
             if self.muted and is_muted(finding, self.muted):

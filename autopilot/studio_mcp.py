@@ -37,6 +37,8 @@ import autopilot
 MCP_PROTOCOL = "2025-06-18"
 START_TIMEOUT = 20.0  # seconds for StudioMCP to start and answer `initialize`
 CALL_TIMEOUT = 20.0  # seconds for one tool call
+WINDOW_CHECK = 20.0  # seconds the game view's window is trusted before a picture of Studio's own checks it again
+WINDOW_RETRY = 15.0  # seconds before looking for the window again when it wasn't found
 # seconds for a picture (one takes well under one): a call that hangs (Studio's MCP server sometimes leaves one
 # unanswered) costs a recording this much, and the server is started over after it
 SHOT_TIMEOUT = 5.0
@@ -275,6 +277,13 @@ class StudioPictures:
         self._studio = None
         self._ids = itertools.count(1)
         self._lock = threading.Lock()
+        # The game view grabbed from Windows itself (autopilot/wincap.py): a picture in about a tenth of a second where
+        # Studio's own tool takes about one. Found from a picture of Studio's, checked against one again every
+        # WINDOW_CHECK seconds (the user may put another tab over the game view), dropped at any doubt.
+        self._window = None
+        self._window_checked = 0.0
+        self._window_retry = 0.0
+        self.via = "studio_mcp"  # how the latest picture was made ("window": from Windows)
 
     def _pick(self, content):
         text = text_of(content)
@@ -335,7 +344,35 @@ class StudioPictures:
             self._connect()
 
     def shot(self, max_dim=MAX_DIM, quality=QUALITY):
-        """The game view now: (JPEG bytes, width, height)."""
+        """The game view now: (JPEG bytes, width, height). From Windows where the view's window is known (fast),
+        else through Studio's MCP server."""
+        now = time.monotonic()
+        window = self._window
+        if window is not None and now - self._window_checked < WINDOW_CHECK:
+            try:
+                picture = window.shot(max_dim, quality)
+                self.via = "window"
+                return picture
+            except Exception:  # noqa: BLE001 - minimized, closed, resized away: Studio's own pictures again
+                self._window = None
+        data = self._studio_shot()
+        self.via = "studio_mcp"
+        self._find_window(data, now)
+        return jpeg_of(data, max_dim, quality)
+
+    def _find_window(self, data, now):
+        """With a picture of Studio's own in hand: find the game view's window (or check it still shows the game)."""
+        from . import wincap
+
+        if not wincap.enabled() or (self._window is None and now < self._window_retry):
+            return
+        self._window = wincap.View.find("Roblox Studio", self.place, data)
+        self._window_checked = now
+        if self._window is None:
+            self._window_retry = now + WINDOW_RETRY
+
+    def _studio_shot(self):
+        """The game view through Studio's MCP server: the picture's bytes (a JPEG or PNG)."""
         with self._lock:
             for attempt in range(2):
                 client, studio = self._connect()
@@ -354,7 +391,7 @@ class StudioPictures:
                     self._studio = None  # (Studio restarted: its id changed; listed again once)
         for c in content:
             if isinstance(c, dict) and c.get("type") == "image" and c.get("data"):
-                return jpeg_of(base64.b64decode(c["data"]), max_dim, quality)
+                return base64.b64decode(c["data"])
         raise McpError(f"Studio's MCP server answered no picture ({text_of(content)[:200]!r})")
 
     def close(self):
@@ -403,7 +440,7 @@ class RobloxMedia:
         except (McpError, ValueError, ImportError, OSError) as e:
             raise self._no_picture(str(e)) from e
         return {"jpeg": base64.b64encode(jpeg).decode("ascii"), "width": w, "height": h, "t": self._game_time(),
-                "via": "studio_mcp"}
+                "via": self.pictures.via}
 
     def record(self, args):
         action = str(args.get("action") or "start")

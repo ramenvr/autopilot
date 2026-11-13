@@ -170,6 +170,7 @@ function Client.start(plugin: Plugin)
 			local h = held[name] or { spec = spec }
 			held[name] = h
 			h.value = value
+			h.seq = args.seq -- (the sequence that holds it, kept down with the sequence; nil: the brain's own hold)
 			h.renewed = os.clock()
 			local seconds = tonumber(args.seconds) or 0
 			h["until"] = if seconds > 0 then World.gameTime() + seconds else 0
@@ -249,6 +250,7 @@ function Client.start(plugin: Plugin)
 			end
 			local h = held[name]
 			h.value = value
+			h.seq = args.seq -- (as a stick's hold: the sequence that holds it)
 			h.rate = args.rate == true
 			h.renewed = os.clock()
 			local seconds = tonumber(args.seconds) or 0
@@ -289,7 +291,14 @@ function Client.start(plugin: Plugin)
 		Keys.tick()
 		local now = os.clock()
 		local t = World.gameTime()
+		local live = sequencesRef[1]
 		for name, h in pairs(held) do
+			-- (a hold a sequence made stays down while the brain keeps that sequence alive: the brain renews the
+			-- sequence, not each key it will hold; once it stops, or the sequence is gone, the key's own lease runs)
+			local q = if h.seq and live then live[h.seq] else nil
+			if q and now - q.renewed <= lease then
+				h.renewed = now
+			end
 			local releaseAt = h["until"] or 0
 			local expired = if releaseAt > 0 then t >= releaseAt else (now - h.renewed > lease)
 			if expired then
@@ -314,8 +323,10 @@ function Client.start(plugin: Plugin)
 	-- Heartbeat: {near = {X, Y, Z (kit, cm), within (cm)}} the player within that far across the floor of the point,
 	-- {past = {X, Y, Z, dX, dY, dZ}} the player past the plane through the point facing the direction, {on_ground},
 	-- {falling}, {vz_below}, {vz_above} (its vertical speed, cm/s), {t} (game time); all given must hold. A step whose
-	-- condition doesn't come within `timeout` (3 s) of the step before is skipped. Holds a sequence leaves down are
-	-- leased from then, as any hold (the brain renews them). {action = "start" | "status" | "cancel", id, steps}
+	-- condition doesn't come within `timeout` (3 s) of the step before is skipped. A key a sequence holds stays down
+	-- while the brain renews the sequence ({action = "renew", ids}: every tick of its loop), during the sequence and
+	-- after it, until a step or the brain releases it; a cancel lets go of what the sequence holds. Several sequences
+	-- run side by side (a direction's and the jumps'). {action = "start" | "status" | "renew" | "cancel", id, steps}
 	local sequences: { [string]: any } = {}
 	sequencesRef[1] = sequences
 
@@ -394,8 +405,27 @@ function Client.start(plugin: Plugin)
 				return true, { done = true, fired = 0, skipped = {}, t = Frame.r2(World.gameTime()), unknown = true }
 			end
 			return true, { done = q.done, fired = q.fired, skipped = q.skipped, t = Frame.r2(World.gameTime()) }
+		elseif action == "renew" then
+			-- the brain is still there for these sequences (every tick of its loop): the holds they made stay down
+			if tonumber(args.lease) and tonumber(args.lease) > 0 then
+				lease = math.clamp(tonumber(args.lease) :: number, 0.2, 10)
+			end
+			local now = os.clock()
+			for _, one in ipairs(if type(args.ids) == "table" then args.ids else { id }) do
+				local q = sequences[tostring(one)]
+				if q then
+					q.renewed = now
+				end
+			end
+			return true, Json.object()
 		elseif action == "cancel" then
+			-- (what it still waited to press is dropped, and what it holds is let go: the move is over)
 			sequences[id] = nil
+			for name, h in pairs(held) do
+				if h.seq == id then
+					keyOp({ key = name, mode = "release" }, nil)
+				end
+			end
 			return true, Json.object()
 		end
 		if type(args.steps) ~= "table" or #args.steps == 0 then
@@ -406,7 +436,7 @@ function Client.start(plugin: Plugin)
 		end
 		local t0 = World.gameTime()
 		sequences[id] = { steps = args.steps, i = 1, t0 = t0, last = t0, fired = 0, skipped = {}, done = false,
-			endedAt = 0 }
+			endedAt = 0, renewed = os.clock() }
 		return true, { id = id, t0 = Frame.r2(t0) }
 	end
 
@@ -437,15 +467,17 @@ function Client.start(plugin: Plugin)
 				else
 					local step = s
 					task.spawn(function()
-						keyOp({ key = step.key, mode = step.mode or "press", value = step.value }, nil)
+						keyOp({ key = step.key, mode = step.mode or "press", value = step.value, seq = id }, nil)
 					end)
 					q.fired += 1
 					q.i += 1
 					q.last = t
 				end
 			end
-			if q.done and t - q.endedAt > 30 then
-				sequences[id] = nil -- (its status was there to be asked for a while)
+			if q.done and t - q.endedAt > 30 and os.clock() - q.renewed > 5 then
+				-- (its status was there to be asked for a while, and the brain renews it no more: a hold it left
+				-- down goes by the key's own lease from here)
+				sequences[id] = nil
 			end
 		end
 	end

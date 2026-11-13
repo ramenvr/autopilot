@@ -40,6 +40,8 @@ class SequenceLink(FakeLink):
         self.hello = {"project": "fake", "features": ["sequence"]}
         self.sequences = {}
         self.fired = []  # (game time, key, mode)
+        self.renewed = []  # the ids of each `sequence renew` (the brain keeping sequences alive)
+        self.key_holds = []  # the keys of each `key hold` the brain sent (a renewal presses the key if it is up)
 
     def _advance(self):
         super()._advance()
@@ -82,12 +84,20 @@ class SequenceLink(FakeLink):
                     self.sequences[args["id"]] = {"steps": args["steps"], "i": 0, "t0": self.game_time,
                                                   "last": self.game_time, "fired": 0, "skipped": [], "done": False}
                     return {"id": args["id"], "t0": self.game_time}
+                if args.get("action") == "renew":
+                    self.renewed.append(list(args.get("ids") or []))
+                    return {}
                 q = self.sequences.get(args.get("id"))
                 if args.get("action") == "status":
                     return {"done": True} if q is None else {"done": q["done"], "fired": q["fired"],
                                                              "skipped": q["skipped"], "t": self.game_time}
-                self.sequences.pop(args.get("id"), None)
+                gone = self.sequences.pop(args.get("id"), None)  # (cancel: what it holds is let go)
+                for step in (gone or {}).get("steps", [])[:(gone or {}).get("i", 0)]:
+                    if step["mode"] == "hold":
+                        self.held.pop(step["key"], None)
                 return {}
+        if op == "key" and args.get("mode") == "hold":
+            self.key_holds.append(args.get("key"))
         return super().request(op, args, timeout)
 
 
@@ -236,12 +246,54 @@ def test_a_sequence_is_only_posted_with_the_feature():
     game = Game(link)
     sid = game.sequence([{"key": "W", "mode": "hold"}])
     assert sid and sid in link.sequences
-    assert "W" in game.held()  # (a hold the sequence leaves down is the brain's to renew)
+    assert "W" not in game.held()  # (the game presses it when its step fires: it is not a key the brain holds)
     sid2 = game.sequence([{"key": "W", "mode": "release", "after": 0.1}])
-    assert "W" not in game.held()  # (and one it releases is let go of)
     done = threading.Event()
     deadline = time.time() + 5
     while time.time() < deadline and not game.sequence_status(sid2).get("done"):
         time.sleep(0.05)
     done.set()
     assert game.sequence_status(sid2).get("done") and "W" not in link.held
+
+
+def test_a_sequences_holds_are_the_games_to_press_and_the_sequence_is_what_the_brain_renews():
+    """A key a step holds goes down when its step fires, never at a renewal before it, and the brain keeps the
+    sequence alive instead of the key: during it, and after it while a key is left down."""
+    link = SequenceLink()
+    game = Game(link)
+    sid = game.sequence([{"key": "Gamepad_LeftY", "mode": "hold", "value": 1.0, "at": 0.6},
+                         {"key": "SpaceBar", "mode": "press", "after": 0.2}])
+    for _ in range(6):  # (the runtime's ticks before the step is due)
+        game.renew()
+        time.sleep(0.05)
+    assert "Gamepad_LeftY" not in link.key_holds, "a renewal pressed the key before its step"
+    assert "Gamepad_LeftY" not in link.held
+    assert link.renewed and all(ids == [sid] for ids in link.renewed)
+    deadline = time.time() + 5
+    while time.time() < deadline and not game.sequence_status(sid).get("done"):
+        game.renew()
+        time.sleep(0.05)
+    assert link.held.get("Gamepad_LeftY") == 1.0  # (left down: the sequence is renewed on)
+    before = len(link.renewed)
+    game.renew()
+    assert len(link.renewed) == before + 1
+    game.release("Gamepad_LeftY")  # (let go as any held key)
+    assert "Gamepad_LeftY" not in link.held
+
+
+def test_a_sequence_that_lets_go_of_its_keys_is_renewed_only_while_it_may_run():
+    link = SequenceLink()
+    game = Game(link)
+    sid = game.sequence([{"key": "W", "mode": "hold"}, {"key": "W", "mode": "release", "after": 0.1}])
+    game.renew()
+    assert link.renewed[-1] == [sid]
+    game._seq_holds[sid]["until"] = 0.0  # (its time is over)
+    n = len(link.renewed)
+    game.renew()
+    assert len(link.renewed) == n and sid not in game._seq_holds
+    # a cancelled one is dropped at once, with what it held
+    sid2 = game.sequence([{"key": "W", "mode": "hold"}])
+    game.sequence_status(sid2)
+    assert "W" in link.held
+    game.sequence_cancel(sid2)
+    assert "W" not in link.held and sid2 not in game._seq_holds

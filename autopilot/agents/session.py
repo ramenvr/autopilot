@@ -1440,6 +1440,12 @@ class Session:
             out["level"] = c.get("world")
             out["player"] = c.get("character") or "(no player pawn: a menu, a loading screen, dead?)"
             out["game_time"] = round(float(c.get("game_time") or 0.0), 1)
+            fps = getattr(getattr(g, "link", None), "fps", None)
+            if fps:  # (a slow game is played differently: said, so the harness is written for it)
+                out["frames_a_second"] = fps if fps >= SLOW_FPS else (
+                    f"{fps:g}: SLOW (a frame is {1000 / fps:.0f} ms: the player moves far between two). Time every "
+                    "move by the game's clock and hand jumps and other frame-exact presses to the game "
+                    "(jump_at, moveset, Game.sequence); keep tick_hz near the frame rate; batch reads.")
             out["controls"] = {x.get("name"): x.get("keys") for x in c.get("controls") or []}
             # (the plugin's notes on how input reaches the game, e.g. Unity's: point before clicking, or keys can't)
             notes = c["input"].get("notes") if isinstance(c.get("input"), dict) else None
@@ -2126,6 +2132,9 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
     return session
 
 
+SLOW_FPS = 25  # frames a second under which the briefing calls the game slow
+
+
 def looker_for(describer, client):
     """The run's watch.Looker (looking while harnesses play): the recording's frames (the describer's recorder's),
     Jev (the run's client: TypeSafe takes the frames as images) and the describer's vision model as the fallback and
@@ -2137,7 +2146,9 @@ def looker_for(describer, client):
     frames = getattr(describer, "frames", None)
     if frames is None:
         return None
-    return Looker(frames, jev=client, route=describer.route, provider=describer.provider,
+    # (Jev's answers about pictures are off unless AUTOPILOT_WATCH_JEV=1: the vision model answers the looks)
+    jev = client if (os.environ.get("AUTOPILOT_WATCH_JEV") or "").strip() == "1" else None
+    return Looker(frames, jev=jev, route=describer.route, provider=describer.provider,
                   usage=describer.usage, proxied=describer.proxied, log=describer.log,
                   named=getattr(describer, "named", False))
 

@@ -135,3 +135,14 @@
 not: Roblox draws and collides the same parts). `game.trace` is a `workspace:Raycast` (with a radius, `Spherecast`)
 on the player's client: what stops the body is parts with CanCollide in the character's CollisionGroup, a line of
 sight any part a query meets (CanQuery). Roblox's casts never meet a part they start in (`inside` is always false).
+
+**Frame rate.** Roblox Studio draws 60 frames a second while its window is the one in front and 15 while it is behind
+another (a frame is then 67 ms: a running character moves 30 cm between two, and input is read once a frame). On
+Windows the agent service keeps Studio at full rate while a game plays without bringing it in front
+(autopilot/wincap.py; AUTOPILOT_STUDIO_AWAKE=0 turns that off); elsewhere, or if the briefing says
+`frames_a_second` is low, keep Studio's window in front or write for a slow game: every move by the game's clock,
+frame-exact presses handed to the game (`jump_at`, `moveset`, `Game.sequence`).
+
+**Pictures.** On Windows the recording's frames are grabbed from Studio's window itself (about 5 a second, as asked);
+through Studio's own `screen_capture` they come about one a second, so a look at the last seconds of play has
+three or four frames and can miss what killed the player.

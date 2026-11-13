@@ -60,6 +60,7 @@ class Game:
         # timed to the game (a jump at an edge) must be sent ahead by
         self.lag = 0.0
         self._sequences = 0  # input sequences started (sequence())
+        self._seq_holds = {}  # sequence id -> {"left": keys it leaves held, "until": when it has surely ended}
         # What the picture showed lately (autopilot/watch.py): {question id: answer, "t": game time of the look,
         # "note": words}, {} before the first look. An executor may read it (game.watch.get("blocked", 0) > 0.7)
         self.watch = {}
@@ -388,8 +389,14 @@ class Game:
         top of a jump: 0); all given must hold), "timeout" (seconds after the step before fired after which it is
         skipped; default 3)}, ...].
         Returns the sequence's id when the plugin runs sequences (its features say "sequence"), else None: then
-        kit.control.moveset runs the steps from here by the game's clock. A hold a sequence leaves down is held on
-        (renewed) until released, as hold() is."""
+        kit.control.moveset runs the steps from here by the game's clock.
+
+        Steps fire in order: one waits for the step before it. Run things that don't wait for each other as
+        sequences side by side (one for the direction held, one for the jumps): each has its own steps and clock.
+        A key a step holds goes down when that step fires, never before, and stays down while the sequence runs
+        and after it (the runtime keeps the sequence alive each tick, as it renews hold()'s keys), until a later
+        step, release(key) or release_all() lets it go; sequence_cancel(id) drops the steps still waiting and
+        lets go of what the sequence holds. No step needs repeating to keep a key down."""
         if "sequence" not in self.features:
             return None
         self._sequences += 1
@@ -404,12 +411,20 @@ class Game:
                 step["when"] = _when_native(s["when"])
             clean.append(step)
         self.request("sequence", {"action": "start", "id": sid, "steps": clean, "lease": KEY_LEASE})
-        with self._lock:
-            for s in clean:
-                if s["mode"] == "hold" and not s["key"].startswith("/"):
-                    self._held[s["key"]] = s.get("value")
-                elif s["mode"] == "release":
-                    self._held.pop(s["key"], None)
+        # The keys it holds are the game's to press, each when its step fires: they are not hold()'s keys (renewing
+        # one of those presses it at once, with a value of a step that hasn't come). The sequence itself is kept
+        # alive instead (renew), for as long as it may still run, and on while a key it holds is left down
+        left, holds, budget = set(), False, 2.0
+        for s in clean:
+            budget += s.get("at", 0.0) + s.get("after", 0.0) + s.get("timeout", 3.0)
+            if s["mode"] == "hold":
+                holds = True
+                left.add(s["key"])
+            elif s["mode"] == "release":
+                left.discard(s["key"])
+        if holds:
+            with self._lock:
+                self._seq_holds[sid] = {"left": left, "until": time.monotonic() + 2.0 * budget}
         self.log("input", key="sequence", mode="start", value={"id": sid, "steps": clean})
         return sid
 
@@ -419,6 +434,8 @@ class Game:
         return self.request("sequence", {"action": "status", "id": sid}) or {"done": True}
 
     def sequence_cancel(self, sid):
+        with self._lock:
+            self._seq_holds.pop(sid, None)
         try:
             self.request("sequence", {"action": "cancel", "id": sid})
         except GameError:
@@ -427,7 +444,10 @@ class Game:
     def release(self, key):
         with self._lock:
             was = self._held.pop(key, "none")
-        if was == "none":
+            mine = [q for q in self._seq_holds.values() if key in q["left"]]
+            for q in mine:  # (a key a sequence left down: let go here as any held key is)
+                q["left"].discard(key)
+        if was == "none" and not mine:
             return
         if key.startswith("/"):
             self.post("input", {"action": key, "mode": "release"})
@@ -445,6 +465,7 @@ class Game:
         with self._lock:
             held = list(self._held)
             self._held.clear()
+            self._seq_holds.clear()  # (the plugin's release_all drops its sequences and what they hold)
         for key in held:
             if key.startswith("/"):
                 self.post("input", {"action": key, "mode": "release"})
@@ -463,6 +484,13 @@ class Game:
             body._renew_own()
 
     def _renew_own(self):
+        with self._lock:  # (sequences that hold keys: alive while they may run, and while a key is left down)
+            now = time.monotonic()
+            for sid in [k for k, q in self._seq_holds.items() if not q["left"] and now > q["until"]]:
+                del self._seq_holds[sid]
+            alive = list(self._seq_holds)
+        if alive:
+            self.post("sequence", {"action": "renew", "ids": alive, "lease": KEY_LEASE})
         for key, value in self.held().items():
             if not key.startswith("/"):
                 args = {"key": key, "mode": "hold", "lease": KEY_LEASE}
