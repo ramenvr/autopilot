@@ -261,15 +261,20 @@ def test_a_sequences_holds_are_the_games_to_press_and_the_sequence_is_what_the_b
     sequence alive instead of the key: during it, and after it while a key is left down."""
     link = SequenceLink()
     game = Game(link)
-    sid = game.sequence([{"key": "Gamepad_LeftY", "mode": "hold", "value": 1.0, "at": 0.6},
-                         {"key": "SpaceBar", "mode": "press", "after": 0.2}])
-    for _ in range(6):  # (the runtime's ticks before the step is due)
+    # a step a minute ahead (however slow the machine, it isn't due in this test): the runtime's ticks before it
+    # keep the sequence alive and never press its key
+    far = game.sequence([{"key": "Gamepad_LeftX", "mode": "hold", "value": 1.0, "at": 60.0}])
+    for _ in range(6):
         game.renew()
-        time.sleep(0.05)
-    assert "Gamepad_LeftY" not in link.key_holds, "a renewal pressed the key before its step"
-    assert "Gamepad_LeftY" not in link.held
-    assert link.renewed and all(ids == [sid] for ids in link.renewed)
-    deadline = time.time() + 5
+        time.sleep(0.02)
+    assert "Gamepad_LeftX" not in link.key_holds, "a renewal pressed the key before its step"
+    assert "Gamepad_LeftX" not in link.held
+    assert link.renewed and all(ids == [far] for ids in link.renewed)
+    game.sequence_cancel(far)
+    # one whose step comes: the key goes down then and is left down
+    sid = game.sequence([{"key": "Gamepad_LeftY", "mode": "hold", "value": 1.0, "at": 0.2},
+                         {"key": "SpaceBar", "mode": "press", "after": 0.2}])
+    deadline = time.time() + 30
     while time.time() < deadline and not game.sequence_status(sid).get("done"):
         game.renew()
         time.sleep(0.05)
