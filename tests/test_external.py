@@ -78,9 +78,11 @@ def test_a_run_is_worked_on_through_the_mcp_front(started, tmp_path):
     assert text_of(front.call("write_file", {"path": "codex/README.md", "content": "x"})).startswith("Refused")
 
     # The game's tools, with the clock; the report's own rules hold, as for every agent
-    assert "no run_harness episode" in text_of(front.call("report", {"outcome": "CONFIRMED", "summary": "s",
-                                                                     "evidence": []}))
-    assert "min used]" in text_of(front.call("snapshot", {}))
+    # (game calls through settled: with WAIT_SECONDS at 0.3, a slow machine (a CI runner) can take longer than that
+    # over the control port, and the call answers "still going")
+    assert "no run_harness episode" in text_of(settled(front, front.call("report", {"outcome": "CONFIRMED",
+                                                                                   "summary": "s", "evidence": []})))
+    assert "min used]" in text_of(settled(front, front.call("snapshot", {})))
 
     # A call that takes long answers "still going"; other game calls wait for it; wait gives its result
     session = desk.session
@@ -94,28 +96,27 @@ def test_a_run_is_worked_on_through_the_mcp_front(started, tmp_path):
     # Another front that started no run (Codex starts one for each subagent: the frames' describer) works on the
     # run going
     other = mcp.Server(out=io.StringIO(), find=lambda: ([control.url], None))
-    assert "min used]" in text_of(other.call("snapshot", {}))
-    assert "isn't filmed" in text_of(other.call("frames", {"episode": 1}))
+    assert "min used]" in text_of(settled(other, other.call("snapshot", {})))
+    assert "isn't filmed" in text_of(settled(other, other.call("frames", {"episode": 1})))
 
     # What the user types in the tab reaches the agent with its next tool result
     session.steering.add("open the other crate")
-    assert '"open the other crate"' in text_of(front.call("snapshot", {}))
+    assert '"open the other crate"' in text_of(settled(front, front.call("snapshot", {})))
 
     # The report ends the run: its report says whose agent it was; later calls are told it is over
     session.episodes, session.most_decisions = 1, sessionmod.MIN_JEV_DECISIONS
     # (the episode whose recording is the run's: one that was played, else the report is refused)
-    assert "1 to 1" in text_of(front.call("report", {"outcome": "CONFIRMED", "summary": "It opens.",
-                                                     "evidence": ["trace1: opened at 4.2 s"], "episode": 3}))
-    assert "Reported" in text_of(front.call("report", {"outcome": "CONFIRMED", "summary": "It opens.",
-                                                       "evidence": ["trace1: opened at 4.2 s"], "episode": 1}))
+    report = {"outcome": "CONFIRMED", "summary": "It opens.", "evidence": ["trace1: opened at 4.2 s"]}
+    assert "1 to 1" in text_of(settled(front, front.call("report", {**report, "episode": 3})))
+    assert "Reported" in text_of(settled(front, front.call("report", {**report, "episode": 1})))
     box["thread"].join(30)
     report = box["report"]
     assert report["outcome"] == "CONFIRMED" and report["agent"] == "external" and report["client"] == "claude-code"
     assert report["stopped"] is None and report["episode"] == 1
-    over = front.call("snapshot", {})
+    over = settled(front, front.call("snapshot", {}))
     assert over["isError"] and "has ended" in text_of(over)
     # (frames still answers: a describer may still be looking; this game isn't filmed)
-    looked = front.call("frames", {"episode": 1})
+    looked = settled(front, front.call("frames", {"episode": 1}))
     assert not looked["isError"] and "isn't filmed" in text_of(looked)
 
 
