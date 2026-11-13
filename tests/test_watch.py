@@ -23,6 +23,8 @@ class FakeLooker:
         self.looks = []
         self.described = []
         self.lock = threading.Lock()
+        self.ticks = None  # (a callable giving the runtime's ticks so far: each look keeps how many ran during it)
+        self.ticked = []
 
     def available(self):
         return None
@@ -31,7 +33,10 @@ class FakeLooker:
         return True
 
     def look(self, wall0, wall1, questions, facts=None, rate=watch.RATE, limit=watch.MAX_FRAMES):
+        before = self.ticks() if self.ticks else None
         time.sleep(self.delay)
+        if self.ticks:
+            self.ticked.append(self.ticks() - before)
         with self.lock:
             self.looks.append({"wall0": wall0, "wall1": wall1, "questions": list(questions), "facts": facts})
         return {**self.answers, "frames": [1.0, 2.0], "by": "fake", "latency": self.delay}
@@ -113,12 +118,14 @@ def test_a_slow_look_never_holds_up_the_episode(tmp_path):
     looker = FakeLooker(delay=1.5)
     h = DyingHarness()
     rt = runtime.Runtime(game, h, str(tmp_path / "t.jsonl"), client=FakeJev("go"), max_seconds=20, looker=looker)
+    looker.ticks = lambda: rt.ticks
     t0 = time.monotonic()
     res = rt.run()
     assert res["status"]["state"] == "done"
-    # the episode's ticks ran at their rate (the look's 1.5 s never blocked them); the end waited for the reviews
-    assert res["ticks"]["ran_hz"] > 10, res["ticks"]
-    assert time.monotonic() - t0 < 15
+    # the episode's ticks went on while a look took its 1.5 s (a look that held them up would see none go by); counted
+    # in ticks, not ticks per second, which a slow machine (a CI runner) lowers with or without looks
+    assert looker.ticked and max(looker.ticked) >= 5, (looker.ticked, res["ticks"])
+    assert time.monotonic() - t0 < 15  # (the end waited for the reviews, not for every look)
 
 
 def test_no_looker_means_no_looks_and_a_plain_summary(tmp_path):
