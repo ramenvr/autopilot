@@ -200,7 +200,8 @@ def test_runtime_plays_harness_to_done(game, tmp_path):
 def test_the_harness_says_how_often_the_trace_keeps_its_observation(game, tmp_path):
     def observations(harness, name):
         path = tmp_path / name
-        runtime.Runtime(game, harness, str(path), client=FakeJev("wait"), max_seconds=2).run()
+        # (4 s: a slow CI runner's loop runs 7 ticks a second where 30 are asked, and 2 s kept under 10 of them)
+        runtime.Runtime(game, harness, str(path), client=FakeJev("wait"), max_seconds=4).run()
         events = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
         start = next(e for e in events if e["kind"] == "start")
         return start["trace_every"], [e for e in events if e["kind"] == "obs"]
@@ -209,8 +210,8 @@ def test_the_harness_says_how_often_the_trace_keeps_its_observation(game, tmp_pa
     dense_harness = CrateHarness()
     dense_harness.trace_every = 0  # (every observation: each tick's, 30 a second)
     dense_every, dense = observations(dense_harness, "dense.jsonl")
-    assert every == 1.0 and len(sparse) <= 3
-    assert dense_every == 0 and len(dense) >= 10 and len(dense) > 3 * len(sparse)
+    assert every == 1.0 and len(sparse) <= 5
+    assert dense_every == 0 and len(dense) >= 10 and len(dense) > 2 * len(sparse)
     assert all(b["t"] >= a["t"] for a, b in zip(dense, dense[1:]))
     for odd, kept in ((None, 1.0), ("x", 1.0), (-1, 1.0), (float("nan"), 1.0), (float("inf"), 1.0), (0.1, 0.1)):
         assert runtime.trace_every_of(types.SimpleNamespace(trace_every=odd)) == kept
