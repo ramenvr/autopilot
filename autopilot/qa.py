@@ -27,8 +27,10 @@ from . import bridge, engines, processes, regress
 SETTINGS_FILE = "qa.json"
 TITLE = "Autopilot QA"
 
-# A row's status, as the list shows it
+# A row's status; its words in the list (the theme's tags: upper case) and its tone (qa_theme.TONES)
 WAITING, REPLAYING, PASSED, FAILED, FLAKY, NOT_RUN = "", "replaying", "ok", "FAIL", "FLAKY", "not run"
+WORDS = {WAITING: "", REPLAYING: "REPLAYING", PASSED: "OK", FAILED: "FAIL", FLAKY: "FLAKY", NOT_RUN: "NOT RUN"}
+TONE = {WAITING: "neutral", REPLAYING: "info", PASSED: "success", FAILED: "red", FLAKY: "amber", NOT_RUN: "neutral"}
 
 
 # -- what the window remembers ------------------------------------------------------------------------------------
@@ -222,20 +224,46 @@ class Model:
         row = self.rows.get(rid)
         if not row:
             return ""
-        parts = [row.get("prompt") or rid, ""]
-        if row.get("summary"):
-            parts += [f"When it was verified: {row['summary']}", ""]
-        if row["status"] in (PASSED, FAILED, FLAKY):
-            parts.append(f"Replay: {row['status']} - {row['why']}"
-                         + (f" ({row['seconds']:.0f}s)" if isinstance(row.get("seconds"), (int, float)) else ""))
-            if row.get("evidence") is not None:
-                parts += ["", "What the replay ended on:", json.dumps(row["evidence"], indent=1)]
-            if row.get("trace"):
-                parts += ["", f"Trace: {row['trace']}"]
+        return "".join(text for _, text in self.detail_parts(rid))
+
+    def detail_parts(self, rid):
+        """The details pane's text for a row as (style, text) runs: "title", "label" (a micro-label), "text", "mono",
+        and a result's tone ("success", "red", "amber", "info", "neutral")."""
+        row = self.rows.get(rid)
+        if not row:
+            return []
+        # (the replay's result first: what the pane is opened for)
+        out = [("title", f"{row.get('prompt') or rid}\n")]
+        done = row["status"] in (PASSED, FAILED, FLAKY)
+        if done:
+            secs = f" ({row['seconds']:.0f}s)" if isinstance(row.get("seconds"), (int, float)) else ""
+            out += [("label", "\nREPLAY\n"), (TONE[row["status"]], WORDS[row["status"]]),
+                    ("text", f"  {row['why']}{secs}\n")]
         elif row["status"]:
-            parts.append(f"Replay: {row['status']}")
-        parts += ["", f"Regression: {row.get('dir') or ''}  (id {rid})"]
-        return "\n".join(parts)
+            out += [("label", "\nREPLAY\n"), (TONE[row["status"]], f"{WORDS[row['status']]}\n")]
+        if row.get("summary"):
+            out += [("label", "\nWHEN IT WAS VERIFIED\n"), ("text", f"{row['summary']}\n")]
+        if done and row.get("evidence") is not None:
+            out += [("label", "\nWHAT THE REPLAY ENDED ON\n"), ("mono", json.dumps(row["evidence"], indent=1) + "\n")]
+        if done and row.get("trace"):
+            out += [("label", "\nTRACE\n"), ("mono", f"{row['trace']}\n")]
+        out += [("label", "\nREGRESSION\n"), ("mono", f"{row.get('dir') or ''}  (id {rid})\n")]
+        return out
+
+    def tag(self):
+        """The status line's tag, (tone, words), or None: the verdict once a replay ended, else what is going on."""
+        if self.running:
+            return "info", "RUNNING"
+        if self.summary and self.summary.get("total"):
+            failed = len(self.summary.get("failed") or [])
+            if failed:
+                return "red", f"FAILED {failed}/{self.summary['total']}"
+            return "success", f"PASSED {self.summary['passed']}/{self.summary['total']}"
+        if self.tone() == "bad":
+            return "red", "ERROR"
+        if self.status == "Stopped.":
+            return "neutral", "STOPPED"
+        return None
 
 
 # -- the command, read on a thread ----------------------------------------------------------------------------------
@@ -296,23 +324,26 @@ def open_folder(path):
 # -- the window -----------------------------------------------------------------------------------------------------
 
 class Window:
-    """Autopilot QA's window: the build and the regressions folder, Replay all / Replay selected / Stop, the list of
-    regressions with each one's result, its details and the command's log."""
-
-    COLORS = {PASSED: "#1a7f37", FAILED: "#cf222e", FLAKY: "#bc4c00", REPLAYING: "#0969da", NOT_RUN: "#6e7781"}
+    """Autopilot QA's window, in the editor tab's theme (autopilot/qa_theme.py): the build and the regressions folder
+    on a plate, Replay all / Replay selected / Stop, the list of regressions with each one's result, its details and
+    the command's log (the tab's underlined tabs), and the status line with the verdict's tag."""
 
     def __init__(self, root, build=None, regressions=None):
         import tkinter as tk
         from tkinter import ttk
 
-        self.tk, self.ttk, self.root = tk, ttk, root
+        from . import qa_theme as theme
+
+        self.tk, self.ttk, self.root, self.theme = tk, ttk, root, theme
         self.model = Model()
         self.replay = None
         saved = load_settings()
         root.title(TITLE)
-        root.geometry("920x640")
-        root.minsize(640, 420)
+        root.geometry("960x780")
+        root.minsize(680, 480)
         root.protocol("WM_DELETE_WINDOW", self.close)
+        self.fonts = fonts = theme.apply(root)
+        theme.dark_title_bar(root)
 
         self.build = tk.StringVar(value=build or saved.get("build") or "")
         self.folder = tk.StringVar(value=regressions or saved.get("regressions") or "")
@@ -321,65 +352,132 @@ class Window:
         self.build_note = tk.StringVar()
         self.folder_note = tk.StringVar()
         self.status = tk.StringVar(value=self.model.status)
+        G, P = theme.GROUND, theme.PLATE
 
-        top = ttk.Frame(root, padding=(12, 12, 12, 4))
-        top.pack(fill="x")
-        top.columnconfigure(1, weight=1)
-        ttk.Label(top, text="Build").grid(row=0, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(top, textvariable=self.build).grid(row=0, column=1, sticky="ew")
-        ttk.Button(top, text="Browse...", command=self.pick_build).grid(row=0, column=2, padx=(8, 0))
-        ttk.Label(top, textvariable=self.build_note, foreground="#57606a").grid(row=1, column=1, sticky="w",
-                                                                                pady=(2, 8))
-        ttk.Label(top, text="Regressions").grid(row=2, column=0, sticky="w", padx=(0, 8))
-        ttk.Entry(top, textvariable=self.folder).grid(row=2, column=1, sticky="ew")
-        ttk.Button(top, text="Browse...", command=self.pick_folder).grid(row=2, column=2, padx=(8, 0))
-        ttk.Label(top, textvariable=self.folder_note, foreground="#57606a", wraplength=640,
-                  justify="left").grid(row=3, column=1, sticky="w", pady=(2, 8))
-        opts = ttk.Frame(top)
-        opts.grid(row=4, column=1, sticky="w")
-        ttk.Checkbutton(opts, text="Watch the game (show its window)", variable=self.watch).pack(side="left")
-        ttk.Checkbutton(opts, text="Replay a failed one once more (flaky check)",
-                        variable=self.retry).pack(side="left", padx=(16, 0))
+        # (the header: the product's micro-label, a rule under it)
+        head = tk.Frame(root, bg=G)
+        head.pack(fill="x", padx=16, pady=(14, 10))
+        tk.Label(head, text="AUTOPILOT", bg=G, fg=theme.ACCENT, font=fonts.label(11)).pack(side="left")
+        tk.Label(head, text="QA", bg=G, fg=theme.MUTED, font=fonts.label(11)).pack(side="left", padx=(6, 0))
+        tk.Label(head, text="Replays a game's confirmed verifications on a build, without a model", bg=G,
+                 fg=theme.MUTED, font=fonts.body(12)).pack(side="right")
 
-        bar = ttk.Frame(root, padding=(12, 4))
-        bar.pack(fill="x")
-        self.all_button = ttk.Button(bar, text="Replay all", command=self.replay_all)
+        # (the choices, on a plate)
+        plate = tk.Frame(root, bg=P, highlightthickness=1, highlightbackground=theme.RULE)
+        plate.pack(fill="x", padx=16)
+        form = tk.Frame(plate, bg=P)
+        form.pack(fill="x", padx=14, pady=(12, 12))
+        form.columnconfigure(0, weight=1)
+
+        def field(row, label, var, note, pick):
+            tk.Label(form, text=label, bg=P, fg=theme.MUTED, font=fonts.label(10)).grid(
+                row=row, column=0, columnspan=2, sticky="w", pady=(0 if row == 0 else 10, 4))
+            entry = tk.Entry(form, textvariable=var, bg=theme.WELL, fg=theme.TEXT, insertbackground=theme.TEXT,
+                             relief="flat", font=fonts.body(13), highlightthickness=1,
+                             highlightbackground=theme.LINE, highlightcolor=theme.FOCUS,
+                             selectbackground=theme.ROW_ACTIVE, selectforeground=theme.TEXT)
+            entry.grid(row=row + 1, column=0, sticky="ew", ipady=5, ipadx=6)
+            ttk.Button(form, text="Browse...", style="Autopilot.TButton", command=pick).grid(
+                row=row + 1, column=1, padx=(8, 0), sticky="ns")
+            tk.Label(form, textvariable=note, bg=P, fg=theme.TEXT3, font=fonts.body(12), anchor="w", justify="left",
+                     wraplength=760).grid(row=row + 2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+            return entry
+
+        field(0, "BUILD", self.build, self.build_note, self.pick_build)
+        field(3, "REGRESSIONS", self.folder, self.folder_note, self.pick_folder)
+        opts = tk.Frame(form, bg=P)
+        opts.grid(row=6, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Checkbutton(opts, text="Watch the game (show its window)", variable=self.watch,
+                        style="Plate.Autopilot.TCheckbutton").pack(side="left")
+        ttk.Checkbutton(opts, text="Replay a failed one once more (flaky check)", variable=self.retry,
+                        style="Plate.Autopilot.TCheckbutton").pack(side="left", padx=(20, 0))
+
+        # (the actions)
+        bar = tk.Frame(root, bg=G)
+        bar.pack(fill="x", padx=16, pady=(12, 8))
+        self.all_button = ttk.Button(bar, text="Replay all", style="Primary.Autopilot.TButton",
+                                     command=self.replay_all)
         self.all_button.pack(side="left")
-        self.some_button = ttk.Button(bar, text="Replay selected", command=self.replay_selected)
+        self.some_button = ttk.Button(bar, text="Replay selected", style="Autopilot.TButton",
+                                      command=self.replay_selected)
         self.some_button.pack(side="left", padx=(8, 0))
-        self.stop_button = ttk.Button(bar, text="Stop", command=self.stop)
+        self.stop_button = ttk.Button(bar, text="Stop", style="Danger.Autopilot.TButton", command=self.stop)
         self.stop_button.pack(side="left", padx=(8, 0))
-        self.results_button = ttk.Button(bar, text="Open results", command=lambda: open_folder(self.model.out))
+        self.results_button = ttk.Button(bar, text="Open results", style="Autopilot.TButton",
+                                         command=lambda: open_folder(self.model.out))
         self.results_button.pack(side="right")
 
         # (the status line first, at the bottom: packed after the panes, a small window would squeeze it out)
-        self.status_label = ttk.Label(root, textvariable=self.status, padding=(12, 6), anchor="w")
-        self.status_label.pack(side="bottom", fill="x")
-        panes = ttk.PanedWindow(root, orient="vertical")
-        panes.pack(fill="both", expand=True, padx=12, pady=(4, 0))
-        listing = ttk.Frame(panes)
-        self.tree = ttk.Treeview(listing, columns=("status", "claim", "time"), show="headings", selectmode="extended")
-        for col, text, width, stretch in (("status", "Result", 90, False), ("claim", "Claim", 600, True),
-                                          ("time", "Time", 70, False)):
+        foot = tk.Frame(root, bg=G, highlightthickness=0)
+        foot.pack(side="bottom", fill="x")
+        tk.Frame(foot, bg=theme.RULE, height=1).pack(fill="x")
+        line = tk.Frame(foot, bg=G)
+        line.pack(fill="x", padx=16, pady=8)
+        self.tag_label = tk.Label(line, text="", font=fonts.label(10), padx=7, pady=1, highlightthickness=1)
+        self.status_label = tk.Label(line, textvariable=self.status, bg=G, fg=theme.TEXT3, font=fonts.mono_font(12),
+                                     anchor="w")
+        self.status_label.pack(side="left", fill="x", expand=True)
+
+        panes = ttk.Panedwindow(root, orient="vertical", style="Autopilot.TPanedwindow")
+        panes.pack(fill="both", expand=True, padx=16, pady=(0, 10))
+        listing = tk.Frame(panes, bg=G, highlightthickness=1, highlightbackground=theme.RULE)
+        # (a row's words stay the reading color, as the tab's history; its result is a dot of its tone beside them)
+        self.tree = ttk.Treeview(listing, columns=("status", "claim", "time"), show="tree headings",
+                                 selectmode="extended", style="Autopilot.Treeview")
+        self.tree.heading("#0", text="")
+        self.tree.column("#0", width=30, minwidth=30, stretch=False, anchor="center")
+        for col, text, width, stretch in (("status", "RESULT", 100, False), ("claim", "CLAIM", 640, True),
+                                          ("time", "TIME", 70, False)):
             self.tree.heading(col, text=text, anchor="w")
             self.tree.column(col, width=width, stretch=stretch, anchor="w")
-        for status, color in self.COLORS.items():
-            self.tree.tag_configure(status, foreground=color)
-        scroll = ttk.Scrollbar(listing, orient="vertical", command=self.tree.yview)
+        self.dots = {status: theme.dot(root, theme.TONES[tone][0] if status else theme.LINE)
+                     for status, tone in TONE.items()}
+        self.tree.tag_configure(FAILED, foreground=theme.TONES["red"][1])
+        scroll = ttk.Scrollbar(listing, orient="vertical", command=self.tree.yview,
+                               style="Autopilot.Vertical.TScrollbar")
         self.tree.configure(yscrollcommand=scroll.set)
         self.tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         self.tree.bind("<<TreeviewSelect>>", lambda e: self.show_details())
-        panes.add(listing, weight=3)
+        panes.add(listing, weight=1)
 
-        tabs = ttk.Notebook(panes)
-        self.details = tk.Text(tabs, height=10, wrap="word", relief="flat", padx=8, pady=6, font="TkDefaultFont")
-        self.log = tk.Text(tabs, height=10, wrap="none", relief="flat", padx=8, pady=6)
+        # (Details and Log: the tab's text tabs, the picked one underlined in the accent)
+        lower = tk.Frame(panes, bg=G)
+        tabs = tk.Frame(lower, bg=G)
+        tabs.pack(fill="x", pady=(4, 0))
+        tk.Frame(lower, bg=theme.RULE, height=1).pack(fill="x")
+        pages = tk.Frame(lower, bg=G)
+        pages.pack(fill="both", expand=True, pady=(8, 0))
+
+        def text_box(mono):
+            return tk.Text(pages, height=10, wrap="none" if mono else "word", relief="flat", padx=12, pady=10,
+                           bg=theme.WELL, fg=theme.TEXT2 if not mono else theme.TEXT3, insertbackground=theme.TEXT,
+                           font=fonts.mono_font(12) if mono else fonts.body(13), highlightthickness=1,
+                           highlightbackground=theme.RULE, highlightcolor=theme.RULE,
+                           selectbackground=theme.ROW_ACTIVE, selectforeground=theme.TEXT, spacing1=1, spacing3=1)
+
+        self.details = text_box(False)
+        self.log = text_box(True)
+        self.details.tag_configure("title", foreground=theme.TEXT, font=fonts.medium(14))
+        self.details.tag_configure("label", foreground=theme.MUTED, font=fonts.label(10), spacing1=4)
+        self.details.tag_configure("text", foreground=theme.TEXT2)
+        self.details.tag_configure("mono", foreground=theme.TEXT3, font=fonts.mono_font(12))
+        for tone, (solid, fore, fill, line_) in theme.TONES.items():
+            self.details.tag_configure(tone, foreground=fore, background=fill, font=fonts.label(11))
         for text in (self.details, self.log):
             text.configure(state="disabled")
-        tabs.add(self.details, text="Details")
-        tabs.add(self.log, text="Log")
-        panes.add(tabs, weight=2)
+        self.tab_buttons = {}
+        for name, widget in (("DETAILS", self.details), ("LOG", self.log)):
+            cell = tk.Frame(tabs, bg=G)
+            cell.pack(side="left", padx=(0, 18))
+            label = tk.Label(cell, text=name, bg=G, fg=theme.MUTED, font=fonts.label(10), cursor="hand2", pady=4)
+            label.pack()
+            under = tk.Frame(cell, bg=G, height=2)
+            under.pack(fill="x")
+            label.bind("<Button-1>", lambda e, n=name: self.show_tab(n))
+            self.tab_buttons[name] = (label, under, widget)
+        self.show_tab("DETAILS")
+        panes.add(lower, weight=1)
 
         self.build.trace_add("write", lambda *a: self.check_build())
         self.folder.trace_add("write", lambda *a: self.load_folder())
@@ -387,6 +485,16 @@ class Window:
         self.load_folder()
         self.buttons()
         root.after(100, self.poll)
+
+    def show_tab(self, name):
+        for other, (label, under, widget) in self.tab_buttons.items():
+            on = other == name
+            label.configure(fg=self.theme.TEXT if on else self.theme.MUTED)
+            under.configure(bg=self.theme.ACCENT if on else self.theme.GROUND)
+            if on:
+                widget.pack(fill="both", expand=True)
+            else:
+                widget.pack_forget()
 
     # (choices)
 
@@ -492,15 +600,23 @@ class Window:
             secs = f"{row['seconds']:.0f}s" if isinstance(row.get("seconds"), (int, float)) else ""
             claim = row.get("prompt") or rid
             if row["status"] in (FAILED, FLAKY) and row.get("why"):
-                claim = f"{claim}  -  {row['why']}"
-            self.tree.insert("", "end", iid=rid, values=(row["status"] or "-", claim, secs), tags=(row["status"],))
+                claim = f"{claim}  ·  {row['why']}"
+            self.tree.insert("", "end", iid=rid, image=self.dots[row["status"]],
+                             values=(WORDS[row["status"]] or "·", claim, secs), tags=(row["status"] or "waiting",))
         keep = [rid for rid in selected if rid in self.model.rows]
         if keep:
             self.tree.selection_set(keep)
 
     def show_details(self):
         sel = self.tree.selection()
-        self.write(self.details, self.model.details(sel[0]) if sel else "", replace=True)
+        widget = self.details
+        widget.configure(state="normal")
+        widget.delete("1.0", "end")
+        for style, text in (self.model.detail_parts(sel[0]) if sel else []):
+            widget.insert("end", text, (style,))
+        if not sel:
+            widget.insert("end", "Pick a regression to see what it verified and how its replay went.", ("label",))
+        widget.configure(state="disabled")
 
     def write(self, widget, text, replace=False):
         widget.configure(state="normal")
@@ -512,6 +628,7 @@ class Window:
         widget.configure(state="disabled")
 
     def buttons(self):
+        theme = self.theme
         running = self.replay is not None and self.replay.running()
         ready = getattr(self, "build_ok", False) and not running
         self.all_button.state(["!disabled"] if ready else ["disabled"])
@@ -520,7 +637,16 @@ class Window:
         self.results_button.state(["!disabled"] if self.model.out and os.path.isdir(self.model.out)
                                   else ["disabled"])
         tone = self.model.tone()
-        self.status_label.configure(foreground={"good": self.COLORS[PASSED], "bad": self.COLORS[FAILED]}.get(tone, ""))
+        self.status_label.configure(fg={"good": theme.TONES["success"][1], "bad": theme.TONES["red"][1]}.get(
+            tone, theme.TEXT3))
+        tag = self.model.tag()
+        if tag:
+            solid, fore, fill, line = theme.TONES[tag[0]]
+            self.tag_label.configure(text=tag[1], fg=fore, bg=fill, highlightbackground=line, highlightcolor=line)
+            if not self.tag_label.winfo_ismapped():
+                self.tag_label.pack(side="left", padx=(0, 10), before=self.status_label)
+        else:
+            self.tag_label.pack_forget()
 
     def close(self):
         if self.replay is not None and self.replay.running():

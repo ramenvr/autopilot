@@ -110,11 +110,13 @@ def test_the_model_follows_a_replay():
     assert "Replaying 2 regressions, without a model..." in seen and "Replaying 1 of 2..." in seen
     assert [m.rows[r]["status"] for r in ("r1", "r2")] == [qa.PASSED, qa.FLAKY]
     assert m.status == "2/2 passed, 1 flaky (passed only on a second try)." and not m.running and m.out == "OUT"
-    assert m.tone() == "good"
+    assert m.tone() == "good" and m.tag() == ("success", "PASSED 2/2")
     assert m.log == ["Starting Unreal Engine build Game.exe (in a window; its log: x.log)"]
     text = m.details("r1")
-    assert text.startswith("Verify the coin counts") and "Replay: ok - as recorded (12s)" in text
-    assert '"coins": 1' in text and "Trace: OUT/r1.jsonl" in text and "id r1" in text
+    assert text.startswith("Verify the coin counts") and "REPLAY\nOK  as recorded (12s)" in text
+    assert '"coins": 1' in text and "TRACE\nOUT/r1.jsonl" in text and "id r1" in text
+    parts = m.detail_parts("r2")
+    assert parts[0] == ("title", "Verify the door opens\n") and ("amber", "FLAKY") in parts
     assert "passed on try 2" in m.details("r2")
 
 
@@ -132,6 +134,7 @@ def test_a_stopped_or_broken_replay_shows_what_wasnt_run():
     m.apply("event", {"event": "error", "message": "The game didn't connect within 180s. A build connects only ..."})
     m.apply("exit", 1)
     assert m.status.startswith("The game didn't connect within 180s") and m.tone() == "bad"
+    assert m.tag() == ("red", "ERROR")
     # a command that died without a word of its own: its last line
     m.start(["r1"])
     m.apply("line", "SystemExit: Give --build or --project, not both")
@@ -219,7 +222,8 @@ def test_the_window(tmp_path, monkeypatch):
         assert "disabled" in w.all_button.state()
         w.replay.done = True
         w.poll()
-        assert [w.tree.set(r, "status") for r in ("r1", "r2")] == ["ok", "FLAKY"]
+        assert [w.tree.set(r, "status") for r in ("r1", "r2")] == ["OK", "FLAKY"]
+        assert w.tag_label.cget("text") == "PASSED 2/2" and w.tag_label.winfo_manager() == "pack"
         assert w.status.get() == "2/2 passed, 1 flaky (passed only on a second try)."
         w.tree.selection_set(["r2"])
         w.show_details()

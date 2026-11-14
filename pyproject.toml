@@ -45,7 +45,8 @@ namespaces = false
 
 [tool.setuptools.package-data]
 autopilot = ["KIT.md", "build.json", "engines/*.md", "engines/*.luau", "assistants/*.md", "workflows/*.md",
-         "agents/opencode_host/package.json", "agents/opencode_host/bun.lock", "agents/opencode_host/host.ts"]
+         "agents/opencode_host/package.json", "agents/opencode_host/bun.lock", "agents/opencode_host/host.ts",
+         "qa_fonts/*.ttf", "qa_fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
