@@ -60,10 +60,23 @@ def test_what_the_choices_say(tmp_path):
     regression(regs, "r1", "Verify the coin counts")
     found = qa.regressions_in(regs)
     assert [r["id"] for r in found] == ["r1", "r2"] and found[1]["prompt"] == "Verify the door opens"
-    assert qa.describe_folder(regs, found) == "2 regressions."
+    # (the game's Autopilot folder, the game's folder or the regressions folder: the same regressions)
+    folder = str(tmp_path / "Autopilot")
+    assert qa.regressions_in(folder) == found == qa.regressions_in(str(tmp_path))
+    assert qa.describe_folder(regs, found).startswith("2 regressions; no code index (a Testing run then plays "
+                                                      "without the game's code")
     assert qa.describe_folder("", []).startswith("No folder: this machine's Autopilot memory")
-    assert qa.describe_folder(str(tmp_path), []).startswith("No regressions in this folder")
+    assert qa.describe_folder(str(tmp_path / "x"), []) == "There's no folder there."
     assert qa.regressions_in("") == [] and qa.regressions_in(str(tmp_path / "none")) == []
+    # with an exported code index and memory
+    os.makedirs(os.path.join(folder, "codex", "source"))
+    open(os.path.join(folder, "codex", "source", "A.cpp"), "w").close()
+    os.makedirs(os.path.join(folder, "memory"))
+    open(os.path.join(folder, "memory", "notes.md"), "w").close()
+    with open(os.path.join(folder, "export.json"), "w") as f:
+        json.dump({"exported": "2026-11-13T19:00:00"}, f)
+    assert qa.describe_folder(folder, found) == ("2 regressions; code index: 1 files, exported 2026-11-13T19:00:00; "
+                                                 "notes.md.")
 
 
 def test_the_window_remembers_its_choices(tmp_path):
@@ -92,6 +105,65 @@ def events_of_a_replay():
         ("event", {"event": "summary", "passed": 2, "total": 2, "failed": [], "flaky": ["r2"], "out": "OUT"}),
         ("exit", 0),
     ]
+
+
+def events_of_a_test():
+    """What `autopilot play ... --build --events` prints for a Testing run that reports two findings."""
+    return [
+        ("event", {"event": "launching", "engine": "unreal", "watch": False}),
+        ("event", {"event": "connected", "project": "MyGame", "host": "game"}),
+        ("event", {"event": "status", "text": "Reading the game's code"}),
+        ("event", {"event": "activity", "t": 9.7, "stage": "analyze", "kind": "read", "text": "Read Door.cpp"}),
+        ("line", "Took the code index from G (2026-11-13T19:00:00)"),
+        ("event", {"event": "report", "run": "r9", "prompt": "Test the level", "outcome": "explored",
+                   "summary": "Played the level.", "findings": ["The deer can't be damaged.",
+                                                                "Logs fall out of the world\nat the north wall."],
+                   "episodes": 1, "seconds": 362.6, "cost_usd": 5.49, "visual": False, "run_dir": "R",
+                   "exit_code": 0}),
+        ("exit", 0),
+    ]
+
+
+def test_the_test_model_follows_a_testing_run():
+    m = qa.TestModel()
+    m.start()
+    assert m.running and m.tag() == ("info", "TESTING")
+    seen = []
+    for kind, data in events_of_a_test():
+        m.apply(kind, data)
+        seen.append(m.status)
+    assert "Starting the build (headless)..." in seen and "Reading the game's code..." in seen
+    assert m.activity == ["    10s  Read Door.cpp"] and m.log == ["Took the code index from G (2026-11-13T19:00:00)"]
+    assert m.status == "2 findings, 1 episode, 6 min, $5.49." and m.tag() == ("amber", "2 FINDINGS") and m.out == "R"
+    summary = m.details()
+    assert summary.startswith("Test the level") and "SUMMARY\nPlayed the level." in summary
+    assert "PICTURE\nNone: the game ran headless" in summary and "RUN\nR" in summary
+    assert m.details(1).startswith("Finding 2") and "north wall" in m.details(1)
+    # a run that ends without reporting, or never connected
+    m.start()
+    m.apply("line", "Waiting for the plugin ...")
+    m.apply("exit", 1)
+    assert m.status.startswith("The run ended before it reported (exit code 1)") and m.tag() == ("red", "ERROR")
+    m.start()
+    m.apply("exit", None)
+    assert m.status == "Stopped." and m.tag() == ("neutral", "STOPPED")
+    m.start()
+    m.apply("event", {"event": "report", "findings": []})
+    assert m.tag() == ("success", "NO FINDINGS")
+
+
+def test_the_test_command_is_autopilot_play_on_the_build(tmp_path):
+    folder = tmp_path / "Autopilot"
+    (folder / "codex").mkdir(parents=True)
+    cmd = qa.test_command("Game.exe", str(tmp_path), "Test the level", minutes=20, watch=True, python="py")
+    assert cmd == ["py", "-m", "autopilot", "play", "Test the level", "--build", "Game.exe", "--events",
+                   "--time-limit", "20", "--game-folder", str(folder), "--watch"]
+    assert qa.test_command("Game.exe", None, "x", python="py", watch=False) == [
+        "py", "-m", "autopilot", "play", "x", "--build", "Game.exe", "--events"]
+    from autopilot import cli
+
+    args = cli.parser().parse_args(cmd[3:])
+    assert args.cmd == "play" and args.build == "Game.exe" and args.time_limit == 20 and args.game_folder == str(folder)
 
 
 def test_the_model_follows_a_replay():
@@ -200,7 +272,7 @@ def test_the_window(tmp_path, monkeypatch):
         def __init__(self, cmd):
             started.append(cmd)
             self.events = queue.Queue()
-            for item in events_of_a_replay():
+            for item in (events_of_a_test() if "play" in cmd else events_of_a_replay()):
                 self.events.put(item)
             self.done = False
 
@@ -214,7 +286,7 @@ def test_the_window(tmp_path, monkeypatch):
     try:
         w = qa.Window(root)
         assert w.build.get() == build and w.folder.get() == regs and w.watch.get() is False
-        assert w.build_note.get().startswith("Unity build") and w.folder_note.get() == "2 regressions."
+        assert w.build_note.get().startswith("Unity build") and w.folder_note.get().startswith("2 regressions;")
         assert list(w.tree.get_children()) == ["r1", "r2"]
         assert "!disabled" not in w.stop_button.state() and "disabled" not in w.all_button.state()
         w.replay_all()
@@ -232,6 +304,27 @@ def test_the_window(tmp_path, monkeypatch):
         w.replay_selected()
         assert started[1][-2:] == ["--only", "r2"]
         w.replay.done = True
+        w.poll()
+        # the TEST page: a Testing run on the same build, its findings as they come
+        w.pages("TEST")
+        assert w.page == "TEST" and w.status.get() == "Ready." and not w.tag_label.winfo_ismapped()
+        w.minutes.set("15")
+        w.run_test()
+        assert started[2][3:6] == ["play", qa.DEFAULT_PROMPT, "--build"] and "--time-limit" in started[2]
+        assert started[2][started[2].index("--time-limit") + 1] == "15" and "--game-folder" in started[2]
+        assert "disabled" in w.test_button.state() and "disabled" in w.all_button.state()
+        w.replay.done = True
+        w.poll()
+        assert [w.findings.set(i, "finding") for i in w.findings.get_children()] == [
+            "The deer can't be damaged.", "Logs fall out of the world at the north wall."]
+        assert w.tag_label.cget("text") == "2 FINDINGS" and w.status.get() == "2 findings, 1 episode, 6 min, $5.49."
+        assert "Read Door.cpp" in w.activity_box.get("1.0", "end")
+        assert "SUMMARY" in w.finding_box.get("1.0", "end")
+        w.findings.selection_set(["1"])
+        w.show_finding()
+        assert "Finding 2" in w.finding_box.get("1.0", "end")
+        w.pages("REPLAY")
+        assert w.tag_label.cget("text") == "PASSED 2/2"
         w.build.set(str(tmp_path / "tool.exe"))
         assert "disabled" in w.all_button.state()
         w.close()
