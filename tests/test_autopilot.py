@@ -1013,6 +1013,36 @@ def test_fetch_from_plugin_reads_only_what_changed(tmp_path):
     assert not os.path.exists(os.path.join(root, "config", "DefaultGame.ini"))
 
 
+def test_a_build_never_prunes_the_codex(tmp_path):
+    """A packaged build (hello host "game") carries no source: it lists a few files, never the project. The codex built
+    from the source must keep everything the build doesn't list; what the build does send still arrives."""
+    from autopilot.codex import fetch_from_plugin
+
+    files = {"Source/G/A.cpp": "int a;", "Config/DefaultGame.ini": "[x]"}
+
+    class FakeGame:
+        def __init__(self, host):
+            self.link = types.SimpleNamespace(hello={"host": host})
+
+        def request(self, op, args, timeout=None):
+            if op == "codex_manifest":
+                return {"files": [{"path": p, "size": len(t), "hash": t} for p, t in files.items()],
+                        "export": {"ran": False}}
+            return {"files": {p: files[p] for p in args["paths"] if p in files}}
+
+    root = str(tmp_path / "codex")
+    os.makedirs(root)
+    fetch_from_plugin(FakeGame("editor"), root)  # (the source, from the editor)
+    files.clear()
+    files["Config/DefaultGame.ini"] = "[built]"  # (all a build lists)
+    stats = fetch_from_plugin(FakeGame("game"), root)
+    assert stats["removed"] == 0 and stats["fetched"] == 1
+    assert open(os.path.join(root, "source", "G", "A.cpp")).read() == "int a;"
+    # the editor's listing still prunes
+    stats = fetch_from_plugin(FakeGame("editor"), root)
+    assert stats["removed"] == 1 and not os.path.exists(os.path.join(root, "source", "G", "A.cpp"))
+
+
 class DestroyingLink(FakeLink):
     """The crate's actor can be destroyed: it still describes and reads (as Unreal's do until garbage collection),
     and its flag says it is being destroyed."""

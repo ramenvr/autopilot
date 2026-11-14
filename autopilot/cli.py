@@ -334,7 +334,12 @@ def prepare(link, path=None, level=None):
     if indexer is not None and indexer.running:
         print(f"codex: the export goes on while the run works ({codexmod.progress(indexer.status())})")
     elif not game.engine.has_export(game.codex.root):
-        print(game.engine.no_export_note)
+        if codexmod.from_game(game):
+            print("note: this is a build of the game, which carries no source: the run reads the code from the codex "
+                  "built from the game's source, and there is none here yet (`autopilot codex --project <the game's "
+                  "source>` makes one), so it plays without the game's code")
+        else:
+            print(game.engine.no_export_note)
     return project, game
 
 
