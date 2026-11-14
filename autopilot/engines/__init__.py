@@ -7,7 +7,7 @@ AUTOPILOT_ENGINE (an engine's name) chooses one instead, for every project found
 
 import os
 
-from .base import Engine, OpEngine  # noqa: F401
+from .base import Engine, OpEngine, build_executable  # noqa: F401
 from .godot import Godot
 from .roblox import Roblox
 from .roblox_connector import RobloxMcp
@@ -21,6 +21,18 @@ DEFAULT = "unreal"
 def get(name=None):
     """The engine of a name (None, "" or an unknown name: Unreal, as plugins from before engines are)."""
     return ENGINES.get(str(name or "").strip().lower()) or ENGINES[DEFAULT]
+
+
+def find_build(path):
+    """(engine, executable) of a built game (its executable, or a macOS Game.app): an Unreal packaged game, a Unity
+    player or a Godot export; (None, None) for anything else."""
+    exe = build_executable(path)
+    if not exe or not os.path.isfile(exe):
+        return None, None
+    for eng in ENGINES.values():
+        if eng.is_build(exe):
+            return eng, exe
+    return None, None
 
 
 def for_hello(hello):

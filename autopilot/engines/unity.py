@@ -24,7 +24,7 @@ import sys
 import time
 
 from ..kit.geom import Vec, wrap
-from .base import CODEX_OWN, OpEngine, safe_rel
+from .base import CODEX_OWN, OpEngine, app_bundle, safe_rel
 
 # The Unity editor: AUTOPILOT_UNITY, else Unity Hub's default folder for the version the package is tested with
 EDITOR = os.environ.get("AUTOPILOT_UNITY", r"C:\Program Files\Unity\Hub\Editor\6000.6.5f1\Editor\Unity.exe")
@@ -310,15 +310,26 @@ class Unity(OpEngine):
 
     # -- a headless game ---------------------------------------------------------------------------------
 
-    def launch_command(self, project, url, log, map=None, exe=None):
+    def launch_command(self, project, url, log, map=None, exe=None, headless=True):
         """A Development player build of the game (--engine <Game.exe>), or the editor in batch mode running the
         plugin's Headless.Run (it opens -PlaytestMap or the build's first scene, writes the codex export, enters play
         mode and connects); no window, no graphics either way, never -quit. The plugin reads the -Playtest* arguments
-        as Unreal's does."""
-        args = ["-batchmode", "-nographics", "-logFile", log, "-Playtest=goal", "-PlaytestGoal=autopilot",
-                f"-PlaytestUrl={url}"] + ([f"-PlaytestMap={map}"] if map else [])
-        exe = exe or self.players.get(os.path.normcase(self.project_folder(project)))
-        if exe and os.path.basename(exe).lower() != "unity.exe":
-            return [exe] + args
+        as Unreal's does. headless=False: a player build in a window, rendered (the editor stays in batch mode)."""
+        run = ["-logFile", log, "-Playtest=goal", "-PlaytestGoal=autopilot", f"-PlaytestUrl={url}"] + (
+            [f"-PlaytestMap={map}"] if map else [])
+        if not exe and project:
+            exe = self.players.get(os.path.normcase(self.project_folder(project)))
+        if exe and os.path.basename(exe).lower() not in ("unity.exe", "unity"):
+            return [exe] + (["-batchmode", "-nographics"] if headless else ["-screen-fullscreen", "0"]) + run
         return [exe or EDITOR, "-projectPath", self.project_folder(project),
-                "-executeMethod", self.HEADLESS_METHOD] + args
+                "-executeMethod", self.HEADLESS_METHOD, "-batchmode", "-nographics"] + run
+
+    def is_build(self, exe):
+        """A player build: <Game>.exe (or Linux's Game.x86_64) with its <Game>_Data folder beside it, or a macOS
+        Game.app holding Contents/Resources/Data. Not the editor."""
+        if not exe or not os.path.isfile(exe) or os.path.basename(exe).lower() in ("unity.exe", "unity"):
+            return False
+        app = app_bundle(exe)
+        if app:
+            return os.path.isdir(os.path.join(app, "Contents", "Resources", "Data"))
+        return os.path.isdir(os.path.splitext(os.path.abspath(exe))[0] + "_Data")

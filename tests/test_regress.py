@@ -11,6 +11,12 @@ import simharness as sim
 from autopilot import cli, regress
 
 
+@pytest.fixture(autouse=True)
+def results_here(tmp_path, monkeypatch):
+    """A replay's results and traces go to a folder of the test's, never this machine's settings folder."""
+    monkeypatch.setattr(regress, "results_dir", lambda: str(tmp_path / "results"))
+
+
 @pytest.fixture
 def memory(tmp_path):
     mem = str(tmp_path / "memory" / "Tiny")
@@ -177,7 +183,7 @@ def test_a_project_without_a_headless_game_waits_for_its_plugin(tmp_path, monkey
     class Studio(engines.get("godot").__class__):
         name = "studio"
 
-        def launch_command(self, project, url, log, map=None, exe=None):
+        def launch_command(self, project, url, log, map=None, exe=None, headless=True):
             raise NotImplementedError("Studio has no headless game")
 
     said, started = [], []
@@ -188,7 +194,7 @@ def test_a_project_without_a_headless_game_waits_for_its_plugin(tmp_path, monkey
     assert not hasattr(args, "game_process")
 
     class Headless(Studio):
-        def launch_command(self, project, url, log, map=None, exe=None):
+        def launch_command(self, project, url, log, map=None, exe=None, headless=True):
             return ["game", "--connect", url]
 
     monkeypatch.setattr(engines, "find_project", lambda path: (Headless(), str(tmp_path)))
@@ -271,3 +277,176 @@ def test_when_and_where_things_happened_are_not_compared():
     assert "crack_to_gone_s" in regress.same({"crack_to_gone_s": 0.4}, {"crack_to_gone_s": 0.7})
     assert regress.incidental("t") and regress.incidental("pulled_at_t") and regress.incidental("player_at")
     assert not any(regress.incidental(k) for k in ("seconds", "text", "attempts", "gate_open_attr", 3))
+
+
+# -- regressions in the game's own folder, replays on a build of it ---------------------------------------------------
+
+def remember_game(memory, path):
+    with open(os.path.join(memory, "project.json"), "w", encoding="utf-8") as f:
+        json.dump({"project": str(path)}, f)
+
+
+def test_regressions_are_saved_in_the_memory_and_a_replay_lists_the_game_folders_too(tmp_path, memory):
+    """A CONFIRMED claim's regression is saved in the memory, game on this machine or not: nothing goes into the
+    game's own folder by itself (an export copies them there: test_gamefolder). A replay of the project lists the
+    game's Autopilot/regressions (exported, or a teammate's from source control) and the memory's, one run's once,
+    the game's copy first."""
+    game = tmp_path / "Game"
+    game.mkdir()
+    (game / "Game.uproject").write_text("{}")
+    remember_game(memory, game / "Game.uproject")
+    run_dir, report = confirmed(tmp_path, memory)
+    reg = regress.save(run_dir, report, "Tiny", project_root=memory)
+    assert reg == os.path.join(memory, "regressions", "run-1")
+    assert regress.folder("Tiny", memory) == os.path.join(memory, "regressions")
+    assert not (game / "Autopilot").exists()
+    assert regress.folders("Tiny", memory) == [os.path.join(memory, "regressions")]
+
+    exported = os.path.join(str(game), "Autopilot", "regressions", "run-1")
+    regress.save(run_dir, report, "Tiny", project_root=memory, dest=exported)
+    teammate = os.path.join(str(game), "Autopilot", "regressions", "run-9")
+    regress.save(run_dir, report, "Tiny", project_root=memory, dest=teammate)
+    assert regress.folders("Tiny", memory) == [os.path.join(str(game), "Autopilot", "regressions"),
+                                               os.path.join(memory, "regressions")]
+    assert regress.listing_all(regress.folders("Tiny", memory)) == [exported, teammate]
+    # a game no longer there: the memory's alone
+    remember_game(memory, tmp_path / "gone" / "Gone.uproject")
+    assert regress.folders("Tiny", memory) == [os.path.join(memory, "regressions")]
+
+
+def test_regress_replays_the_ones_asked_and_tells_each_step(tmp_path, memory, capsys):
+    """--only replays those regressions alone; --events prints each step as a line of JSON (what the QA window
+    follows); the traces and results.json go to --out, not into the regressions folder (in the game's source)."""
+    for rid in ("run-1", "run-2"):
+        run_dir, report = confirmed(tmp_path, memory, rid=rid)
+        regress.save(run_dir, report, "Tiny", project_root=memory)
+    regs = os.path.join(memory, "regressions")
+    out = tmp_path / "out"
+    args = cli.parser().parse_args(["regress", "--regressions", regs, "--only", "run-2,nope", "--events",
+                                    "--out", str(out)])
+    game, world, _ = sim.connect()
+    try:
+        assert cli.regress_on(game, "Tiny", args) == 0
+    finally:
+        world.close()
+    lines = capsys.readouterr().out.splitlines()
+    events = [json.loads(line) for line in lines if line.startswith("{")]
+    assert [e["event"] for e in events] == ["regressions", "replaying", "result", "summary"]
+    assert [i["id"] for i in events[0]["items"]] == ["run-2"] and events[0]["out"] == str(out)
+    assert events[0]["items"][0]["prompt"].startswith("Verify that walking to the coin")
+    assert events[2]["id"] == "run-2" and events[2]["passed"] is True
+    assert events[3]["passed"] == events[3]["total"] == 1 and "results" not in events[3]
+    assert "No regression nope there" in lines
+    assert json.loads((out / "results.json").read_text())["results"][0]["id"] == "run-2"
+    assert (out / "run-2.jsonl").exists() and not os.path.exists(os.path.join(regs, "run-2", "replay.jsonl"))
+    # without --events: no JSON lines; without --out: a new results folder
+    args = cli.parser().parse_args(["regress", "--regressions", regs, "--only", "run-1"])
+    game, world, _ = sim.connect()
+    try:
+        assert cli.regress_on(game, "Tiny", args) == 0
+    finally:
+        world.close()
+    assert not [line for line in capsys.readouterr().out.splitlines() if line.startswith("{")]
+    assert (tmp_path / "results" / "results.json").exists() and (tmp_path / "results" / "run-1.jsonl").exists()
+
+
+def make_builds(tmp_path):
+    """Built games as each engine lays them out (tiny files: only the layout, and Godot's pack magic, are read)."""
+    def touch(path, data=b"MZ"):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+        return str(path)
+
+    ue = tmp_path / "ue" / "Windows"
+    (ue / "Engine").mkdir(parents=True)
+    unreal = touch(ue / "MyGame.exe")
+    unreal_inner = touch(ue / "MyGame" / "Binaries" / "Win64" / "MyGame-Win64-Development.exe")
+    unity = touch(tmp_path / "unity" / "MyGame.exe")
+    (tmp_path / "unity" / "MyGame_Data").mkdir()
+    godot = touch(tmp_path / "godot" / "MyGame.exe")
+    touch(tmp_path / "godot" / "MyGame.pck")
+    embedded = touch(tmp_path / "godot2" / "MyGame.exe", b"MZ" + bytes(64) + b"GDPC")
+    other = touch(tmp_path / "other" / "tool.exe")
+    editor = touch(tmp_path / "ed" / "UnrealEditor.exe")
+    (tmp_path / "ed" / "Engine").mkdir()
+    (tmp_path / "ed" / "UnrealEditor").mkdir()
+    app = tmp_path / "mac" / "MyGame.app"
+    touch(app / "Contents" / "MacOS" / "MyGame")
+    (app / "Contents" / "UE").mkdir(parents=True)
+    import plistlib
+
+    (app / "Contents" / "Info.plist").write_bytes(plistlib.dumps({"CFBundleExecutable": "MyGame"}))
+    return dict(unreal=unreal, unreal_inner=unreal_inner, unity=unity, godot=godot, embedded=embedded, other=other,
+                editor=editor, app=str(app))
+
+
+def test_builds_are_told_apart(tmp_path):
+    """--build takes an Unreal packaged game, a Unity player or a Godot export (or a macOS app of one), and tells which
+    from the files beside it; anything else (an editor, another program, nothing) is none."""
+    from autopilot import engines
+
+    b = make_builds(tmp_path)
+    found = {k: getattr(engines.find_build(v)[0], "name", None) for k, v in b.items()}
+    assert found == {"unreal": "unreal", "unreal_inner": "unreal", "unity": "unity", "godot": "godot",
+                     "embedded": "godot", "other": None, "editor": None, "app": "unreal"}
+    assert engines.find_build(b["app"])[1] == os.path.join(b["app"], "Contents", "MacOS", "MyGame")
+    assert engines.find_build(str(tmp_path / "missing.exe")) == (None, None)
+
+
+def test_a_build_starts_headless_or_in_a_window(tmp_path):
+    """Each engine starts a build without its project: headless by default, in a window to watch (--watch)."""
+    from autopilot import engines
+
+    b = make_builds(tmp_path)
+    url, log = "ws://127.0.0.1:9/v1/bridge", "x.log"
+    ue, unity, godot = engines.get("unreal"), engines.get("unity"), engines.get("godot")
+    cmd = ue.launch_command(None, url, log, exe=b["unreal"])
+    assert cmd[0] == b["unreal"] and "-nullrhi" in cmd and f"-PlaytestUrl={url}" in cmd and "-game" not in cmd
+    cmd = ue.launch_command(None, url, log, exe=b["unreal"], headless=False)
+    assert "-nullrhi" not in cmd and "-windowed" in cmd
+    cmd = unity.launch_command(None, url, log, exe=b["unity"])
+    assert cmd[:3] == [b["unity"], "-batchmode", "-nographics"] and f"-PlaytestUrl={url}" in cmd
+    cmd = unity.launch_command(None, url, log, exe=b["unity"], headless=False)
+    assert "-batchmode" not in cmd and "-nographics" not in cmd and cmd[1:3] == ["-screen-fullscreen", "0"]
+    cmd = godot.launch_command(None, url, log, exe=b["godot"])
+    assert cmd[:2] == [b["godot"], "--headless"] and "--path" not in cmd and f"-PlaytestUrl={url}" in cmd
+    assert godot.launch_command(None, url, log, exe=b["godot"], headless=False)[1] == "--windowed"
+
+
+def test_regress_on_a_build(tmp_path, monkeypatch, capsys):
+    """`autopilot regress --build <exe>` starts the build (no project needed) told to connect here; one that isn't a
+    build is refused; a build that ends before it connects (or never does: a Shipping build carries no plugin) is
+    reported with its log, and the command fails."""
+    b = make_builds(tmp_path)
+    monkeypatch.setattr(cli, "regress_logs", lambda: str(tmp_path / "logs"))
+    started = []
+    monkeypatch.setattr(cli, "start_game", lambda args, cmd: started.append(cmd))
+    args = cli.parser().parse_args(["regress", "--build", b["unity"], "--watch", "--events"])
+    assert cli.launch_build(args, "ws://127.0.0.1:9/v1/bridge", say=lambda s: None) is True
+    assert started[0][0] == b["unity"] and "-batchmode" not in started[0]
+    assert args.game_log.startswith(str(tmp_path / "logs"))
+    launching = json.loads(capsys.readouterr().out.splitlines()[-1])
+    assert launching["event"] == "launching" and launching["engine"] == "unity" and launching["watch"] is True
+    with pytest.raises(SystemExit, match="isn't a game build Autopilot knows"):
+        cli.launch_build(cli.parser().parse_args(["regress", "--build", b["other"]]), "ws://x")
+
+    args.game_process = types.SimpleNamespace(poll=lambda: 3, pid=1, kill=lambda: None)
+    monkeypatch.setattr(cli.processes, "kill", lambda proc: None)
+    assert cli.game_ended(args)
+    assert cli.game_never_connected(args) == 1
+    out = capsys.readouterr().out
+    assert ("The game ended (exit code 3) before it connected. A build connects only when it carries the Autopilot "
+            "plugin: a Development build") in out and args.game_log in out
+    assert json.loads(out.splitlines()[-1])["event"] == "error"
+
+
+def test_waiting_for_a_plugin_gives_up_when_asked():
+    """serve_local's give_up (the game it waits for has ended) stops the wait at once, not at its time limit."""
+    import time
+
+    from autopilot import bridge
+
+    t0 = time.monotonic()
+    with pytest.raises(TimeoutError):
+        bridge.serve_local(port=0, wait=60, give_up=lambda: time.monotonic() - t0 > 0.5, http_port=None)
+    assert time.monotonic() - t0 < 5

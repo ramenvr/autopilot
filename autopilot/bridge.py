@@ -741,7 +741,7 @@ BRIDGE_ORIGINS = [None, "http://127.0.0.1", "http://localhost"]
 
 
 def serve_local(host="127.0.0.1", port=8765, wait=None, role="cli", announce_as=BRAIN_FILE, extra=None,
-                http_port=None):
+                http_port=None, give_up=None):
     """Listen for the plugin on this machine and return the Link once it has said hello (a service says where it is
     in brain_file(announce_as), with extra: announce()). Keeps
     listening afterwards: a plugin that reconnects (e.g. after the editor restarts) takes over the link's
@@ -750,7 +750,8 @@ def serve_local(host="127.0.0.1", port=8765, wait=None, role="cli", announce_as=
     and requests waiting across the reload are answered. While a run goes (state "run": the hello of the game it plays,
     cli.run_holds) another game's plugin is refused: every editor on this machine finds this service, and one that took
     the link over would get the run's input. http_port: also take plugins over HTTP there (HttpPeer; 0 for any free
-    port; None: no HTTP)."""
+    port; None: no HTTP). wait: seconds to wait for the plugin (None: as long as it takes), and give_up: a function
+    asked every second whether to stop waiting (a game started to connect has ended); either raises TimeoutError."""
     from websockets.sync.server import serve
 
     ready = queue.Queue()
@@ -855,11 +856,17 @@ def serve_local(host="127.0.0.1", port=8765, wait=None, role="cli", announce_as=
         extra = {**(extra or {}), "http": f"http://{host}:{http.server_address[1]}{HTTP_PATH}"}
     if role == "service" and announce_as:  # (a brain that stays: the plugins may find it by brain_file())
         announce(f"ws://{host}:{server.socket.getsockname()[1]}/v1/bridge", brain_file(announce_as), extra)
-    try:
-        link = ready.get(timeout=wait)
-    except queue.Empty:
-        server.shutdown()
-        raise TimeoutError(f"the plugin didn't connect to ws://{host}:{port} within {wait}s")
+    deadline = None if wait is None else time.monotonic() + wait
+    link = None
+    while link is None:
+        left = None if deadline is None else deadline - time.monotonic()
+        if (left is not None and left <= 0) or (give_up is not None and give_up()):
+            server.shutdown()
+            raise TimeoutError(f"the plugin didn't connect to ws://{host}:{port} within {wait}s")
+        try:
+            link = ready.get(timeout=1.0 if give_up is not None else left)
+        except queue.Empty:
+            pass
     link.server = server
     link.server_state = state
     return link

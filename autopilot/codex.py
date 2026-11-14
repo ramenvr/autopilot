@@ -152,6 +152,14 @@ def snapshot_level(game, codex_root):
 FETCH_INDEX = ".fetched.json"  # {project-relative path: md5} of the files fetched from the plugin
 
 
+def from_game(game):
+    """Whether the plugin is a game's own (hello host "game": a packaged build, or the editor's executable run as a
+    game), not the editor's. A build carries no source: what it lists is a few files, never the project, so the codex
+    (built from the source in the editor, or by `autopilot codex --project`) must not be pruned to it."""
+    hello = getattr(getattr(game, "link", None), "hello", None) or {}
+    return isinstance(hello, dict) and hello.get("host") == "game"
+
+
 def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait=True, first_map=None, follow=False):
     """The game's code and asset export, fetched from the plugin (codex_manifest / codex_read). Only files that changed
     since the last fetch are read; which files go where is the game's engine's (Engine.codex_path).
@@ -217,7 +225,8 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
             break  # (the plugin sent nothing back: don't loop)
         wanted = [p for p in wanted if p not in progressed]
     removed = 0
-    for p in [p for p in have if p not in listed and not running]:
+    # (only the editor's listing is the project's: a game's lists what the build carries, so nothing goes for it)
+    for p in [p for p in have if p not in listed and not running and not from_game(game)]:
         dest = codex_path(p)
         if dest:
             try:

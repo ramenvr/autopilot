@@ -313,7 +313,7 @@ class RobloxMcp(OpEngine):
 
     # -- a game for bench/run_autopilot.py --------------------------------------------------------------------
 
-    def launch_command(self, project, url, log, map=None, exe=None):
+    def launch_command(self, project, url, log, map=None, exe=None, headless=True):
         """Not a headless game: the connector, which plays the place open in Roblox Studio (Studio must be open on it,
         with its MCP server on) and connects to the brain at url as a plugin would. exe: the Python to run it with.
         Studio's whole console goes to console.txt beside the log (the bench keeps it with each prompt)."""

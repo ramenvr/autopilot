@@ -181,6 +181,6 @@ class Roblox(OpEngine):
 
     # -- a headless game ---------------------------------------------------------------------------------
 
-    def launch_command(self, project, url, log, map=None, exe=None):
+    def launch_command(self, project, url, log, map=None, exe=None, headless=True):
         raise NotImplementedError("Roblox Studio has no headless game: open the place in Studio with the Autopilot "
                                   "plugin and connect it to `autopilot serve`")
