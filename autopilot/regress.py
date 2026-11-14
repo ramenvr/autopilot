@@ -8,12 +8,12 @@ the project's regressions folder with what that episode ended on:
         lib.py              the project's lib.py as the run left it (a snapshot: replay uses the live one by default)
         regression.json     the claim, the verdict, the episode's end (status state and evidence), Jev's picks in order
 
-<regressions> is AUTOPILOT_REGRESSIONS (<it>/<project>/<run id>), else the game's own project folder,
-Autopilot/regressions/<run id> beside its .uproject, Assets/ or project.godot, when the game is on this machine: they go
-into source control with the game, so a QA machine or CI with no Autopilot memory replays them on a build of the game
-(`autopilot regress --build <Game.exe> --regressions <that folder>`, or the window `autopilot qa`). Else (the game isn't
-on this machine) the project's memory folder (memory/<project>/regressions/<run id>), where they were kept before too:
-a replay of the project lists both.
+<regressions> is AUTOPILOT_REGRESSIONS (<it>/<project>/<run id>), else the project's memory folder
+(memory/<project>/regressions/<run id>). Nothing goes into the game's own folder by itself: `autopilot codex --project
+<source> --out <game>/Autopilot` exports them, with the codex and memory (autopilot/gamefolder.py), into
+<game>/Autopilot/regressions/<run id>, which goes into source control with the game, so a QA machine or CI with no
+Autopilot memory replays them on a build of the game (`autopilot regress --build <Game.exe> --regressions <that
+folder>`, or the window `autopilot qa`). A replay of the project lists the game's folder's and the memory's.
 
 A replay (`autopilot regress`, or replay() here) restarts the level and runs the saved harness through the runtime as
 an episode did, but its decisions come from ReplayJev: the recorded picks, in order, where they are offered, else the
@@ -49,7 +49,7 @@ IN_GAME = ("Autopilot", "regressions")  # a game's regressions folder, inside it
 
 
 def root():
-    """Where regressions are kept: AUTOPILOT_REGRESSIONS, else None (each game's own folder, or its memory's)."""
+    """Where regressions are kept: AUTOPILOT_REGRESSIONS, else None (each project's memory folder)."""
     return (os.environ.get("AUTOPILOT_REGRESSIONS") or "").strip() or None
 
 
@@ -80,19 +80,17 @@ def _memory(project, project_root):
 
 
 def folder(project, project_root=None):
-    """Where a project's regressions are saved: AUTOPILOT_REGRESSIONS/<project>, else the game's own folder's
-    Autopilot/regressions (the game is on this machine), else its memory folder's regressions."""
+    """Where a project's regressions are saved: AUTOPILOT_REGRESSIONS/<project>, else its memory folder's
+    regressions."""
     if root():
         return os.path.join(root(), project)
-    project_root = _memory(project, project_root)
-    game = game_dir(project_root)
-    return in_game(game) if game else os.path.join(project_root, "regressions")
+    return os.path.join(_memory(project, project_root), "regressions")
 
 
 def folders(project, project_root=None):
     """Where a replay of the project looks, the folders that exist of: AUTOPILOT_REGRESSIONS/<project>; else the
-    game's own folder's and the project's memory's (where they were kept before they went into the game's folder, and
-    still go when the game isn't on this machine)."""
+    game's own folder's Autopilot/regressions (exported there, or a teammate's from source control) and the project's
+    memory's."""
     if root():
         found = [os.path.join(root(), project)]
     else:
@@ -107,17 +105,6 @@ def results_dir():
     from . import bridge
 
     return os.path.join(os.path.dirname(bridge.brain_file()), "regress", time.strftime("%Y%m%d-%H%M%S"))
-
-
-def keep_out_of_engine(dest):
-    """A Godot project imports (and exports) the files under its folder: a .gdignore in the game's Autopilot folder
-    keeps the regressions' Python and JSON out. Unreal and Unity only look in their own folders (Content/, Assets/)."""
-    top = os.path.dirname(os.path.dirname(os.path.normpath(dest)))  # (<game>/Autopilot, of .../regressions/<run>)
-    if os.path.basename(top) != IN_GAME[0] or not os.path.isfile(os.path.join(os.path.dirname(top), "project.godot")):
-        return
-    ignore = os.path.join(top, ".gdignore")
-    if not os.path.exists(ignore):
-        open(ignore, "w").close()
 
 
 # -- reading an episode's trace --------------------------------------------------------------------------------------
@@ -187,7 +174,6 @@ def save(run_dir, report, project, project_root=None, dest=None):
     rid = str(report.get("run") or os.path.basename(os.path.normpath(run_dir)))
     dest = dest or os.path.join(folder(project, project_root), rid)
     os.makedirs(dest, exist_ok=True)
-    keep_out_of_engine(dest)
     shutil.copyfile(os.path.join(run_dir, f"harness{n}.py"), os.path.join(dest, "harness.py"))
     lib = os.path.join(project_root, "lib.py") if project_root else None
     if lib and os.path.exists(lib):

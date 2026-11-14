@@ -286,41 +286,31 @@ def remember_game(memory, path):
         json.dump({"project": str(path)}, f)
 
 
-def test_a_game_on_this_machine_keeps_its_regressions_in_its_own_folder(tmp_path, memory):
-    """With the game on this machine (its memory remembers where), a CONFIRMED claim's regression goes into the
-    game's own folder, Autopilot/regressions/<run>, for source control (a QA machine or CI replays it from there); a
-    Godot project gets a .gdignore so it never imports them. A replay of the project lists those and the memory's
-    from before (one run's once, the game's copy first)."""
-    old_run, old_report = confirmed(tmp_path, memory, rid="run-0")
-    old = regress.save(old_run, old_report, "Tiny", project_root=memory)  # (before: the game wasn't remembered)
-    assert old == os.path.join(memory, "regressions", "run-0")
-
+def test_regressions_are_saved_in_the_memory_and_a_replay_lists_the_game_folders_too(tmp_path, memory):
+    """A CONFIRMED claim's regression is saved in the memory, game on this machine or not: nothing goes into the
+    game's own folder by itself (an export copies them there: test_gamefolder). A replay of the project lists the
+    game's Autopilot/regressions (exported, or a teammate's from source control) and the memory's, one run's once,
+    the game's copy first."""
     game = tmp_path / "Game"
     game.mkdir()
-    (game / "project.godot").write_text("config_version=5\n")
-    remember_game(memory, game)
+    (game / "Game.uproject").write_text("{}")
+    remember_game(memory, game / "Game.uproject")
     run_dir, report = confirmed(tmp_path, memory)
     reg = regress.save(run_dir, report, "Tiny", project_root=memory)
-    assert reg == os.path.join(str(game), "Autopilot", "regressions", "run-1")
-    assert regress.folder("Tiny", memory) == os.path.join(str(game), "Autopilot", "regressions")
-    assert (game / "Autopilot" / ".gdignore").exists()
+    assert reg == os.path.join(memory, "regressions", "run-1")
+    assert regress.folder("Tiny", memory) == os.path.join(memory, "regressions")
+    assert not (game / "Autopilot").exists()
+    assert regress.folders("Tiny", memory) == [os.path.join(memory, "regressions")]
+
+    exported = os.path.join(str(game), "Autopilot", "regressions", "run-1")
+    regress.save(run_dir, report, "Tiny", project_root=memory, dest=exported)
+    teammate = os.path.join(str(game), "Autopilot", "regressions", "run-9")
+    regress.save(run_dir, report, "Tiny", project_root=memory, dest=teammate)
     assert regress.folders("Tiny", memory) == [os.path.join(str(game), "Autopilot", "regressions"),
                                                os.path.join(memory, "regressions")]
-    # (a run in both: the game's copy)
-    regress.save(run_dir, report, "Tiny", project_root=memory, dest=os.path.join(memory, "regressions", "run-1"))
-    assert regress.listing_all(regress.folders("Tiny", memory)) == [reg, old]
-
-    # Unreal: the remembered .uproject's folder; no .gdignore
-    ue = tmp_path / "UEGame"
-    ue.mkdir()
-    (ue / "UEGame.uproject").write_text("{}")
-    remember_game(memory, ue / "UEGame.uproject")
-    reg = regress.save(run_dir, report, "Tiny", project_root=memory)
-    assert reg == os.path.join(str(ue), "Autopilot", "regressions", "run-1")
-    assert not (ue / "Autopilot" / ".gdignore").exists()
-    # a game no longer there: the memory, as before
+    assert regress.listing_all(regress.folders("Tiny", memory)) == [exported, teammate]
+    # a game no longer there: the memory's alone
     remember_game(memory, tmp_path / "gone" / "Gone.uproject")
-    assert regress.folder("Tiny", memory) == os.path.join(memory, "regressions")
     assert regress.folders("Tiny", memory) == [os.path.join(memory, "regressions")]
 
 

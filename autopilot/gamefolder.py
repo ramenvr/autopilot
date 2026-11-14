@@ -2,16 +2,18 @@
 of it (a QA machine, CI) plays it as well as the developer's.
 
     <game>/Autopilot/
-        regressions/     CONFIRMED verifications that replay without a model (autopilot/regress.py)
+        regressions/     CONFIRMED verifications that replay without a model (autopilot/regress.py), saved in the
+                         memory when they're verified and copied here by an export
         codex/           the code index: the game's code, its Blueprints, scenes or data as text, which a run reads.
                          A build carries no source, so it is made from the source (the editor's runs, or
                          `autopilot codex --project <source>` headless, e.g. in the CI job that builds the game)
         memory/          what runs learned: notes.md, lib.py
-        export.json      when and from where codex/ and memory/ were exported
+        export.json      when and from where the folder was exported
 
-`autopilot codex --project <source> --out <game>/Autopilot` writes codex/, memory/ and export.json (export()). A run on
-a build given the folder (`autopilot play ... --build <exe> --game-folder <game>/Autopilot`, or the QA window) brings
-them into this machine's memory of the game first (seed()):
+`autopilot codex --project <source> --out <game>/Autopilot` writes regressions/, codex/, memory/ and export.json
+(export()): nothing is written into the game's folder otherwise. A replay on a build reads regressions/ where it is.
+A run on a build given the folder (`autopilot play ... --build <exe> --game-folder <game>/Autopilot`, or the QA window)
+brings the codex and memory into this machine's memory of the game first (seed()):
 - the codex, when this machine has none, or the folder's export is newer than the codex here;
 - notes.md and lib.py, file by file: taken when this machine has none, or when the folder's copy changed since it was
   last taken here and the one here didn't (what this machine learned since is never overwritten; both changed: the
@@ -92,8 +94,9 @@ def _has_codex(folder):
 
 def export(project_root, dest, project, source=None):
     """Write this machine's codex and learned memory of a project (its memory folder, project_root) into a game's
-    Autopilot folder dest: codex/ (replaced whole), memory/notes.md and lib.py (those there are), export.json. A Godot
-    project's folder gets a .gdignore. Returns export.json's content."""
+    Autopilot folder dest: codex/ (replaced whole), memory/notes.md and lib.py (those there are), regressions/ (its
+    saved regressions: export_regressions), export.json. A Godot project's folder gets a .gdignore. Returns
+    export.json's content."""
     os.makedirs(dest, exist_ok=True)
     codex = os.path.join(project_root, CODEX)
     files = 0
@@ -112,14 +115,38 @@ def export(project_root, dest, project, source=None):
             os.makedirs(os.path.join(dest, MEMORY), exist_ok=True)
             shutil.copyfile(src, os.path.join(dest, MEMORY, name))
             learned.append(name)
+    regressions = export_regressions(project_root, dest, project)
     game = os.path.dirname(os.path.abspath(dest))
     if os.path.isfile(os.path.join(game, "project.godot")) and not os.path.exists(os.path.join(dest, ".gdignore")):
         open(os.path.join(dest, ".gdignore"), "w").close()
     info = {"project": project, "exported": time.strftime("%Y-%m-%dT%H:%M:%S"), "exported_at": time.time(),
-            "codex_files": files, "memory": learned, **({"source": os.path.abspath(source)} if source else {})}
+            "codex_files": files, "memory": learned, "regressions": regressions,
+            **({"source": os.path.abspath(source)} if source else {})}
     with open(os.path.join(dest, EXPORT), "w", encoding="utf-8") as f:
         json.dump(info, f, indent=1)
     return info
+
+
+def export_regressions(project_root, dest, project):
+    """Copy the project's saved regressions (regress.folder: its memory's, or AUTOPILOT_REGRESSIONS') into dest's
+    regressions/, one folder per run: a run already there is replaced, the others there (exported from another
+    machine, or a teammate's) stay. Returns how many were copied."""
+    from . import regress
+
+    src = regress.folder(project, project_root)
+    if not os.path.isdir(src):
+        return 0
+    target = os.path.join(dest, "regressions")
+    copied = 0
+    for reg in regress.listing(src):
+        here = os.path.join(target, os.path.basename(os.path.normpath(reg)))
+        staging = here + ".new"
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.copytree(reg, staging, ignore=shutil.ignore_patterns("__pycache__"))
+        shutil.rmtree(here, ignore_errors=True)
+        os.replace(staging, here)
+        copied += 1
+    return copied
 
 
 def seed(project_root, folder):

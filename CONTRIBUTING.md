@@ -156,7 +156,7 @@ The variables:
 | `AUTOPILOT_TURNS`                                        | none                                                                                                            | Claude Code only: the most turns per prompt (without it, the run's time limit is what ends the run)                                                                                                                          |
 | `AUTOPILOT_SANDBOX`                                      | `auto`                                                                                                          | where model-written code runs: `auto`, `bwrap`, `process` or `off`                                                                                                                                                           |
 | `AUTOPILOT_MEMORY`                                       | `memory/` in the repository (installed: `Autopilot/memory` in your user settings folder)                        | where Autopilot keeps what it learns about each game                                                                                                                                                                         |
-| `AUTOPILOT_REGRESSIONS`                                  | the game's own folder: `<game>/Autopilot/regressions/` (else `memory/<project>/regressions/`)                   | where CONFIRMED verifications are kept as regressions (`<it>/<project>/<run>/`): see [Regression replay](#regression-replay)                                                                                                 |
+| `AUTOPILOT_REGRESSIONS`                                  | `memory/<project>/regressions/`                                                                                 | where CONFIRMED verifications are kept as regressions (`<it>/<project>/<run>/`): see [Regression replay](#regression-replay)                                                                                                 |
 | `AUTOPILOT_SHARE`                                        | `1`                                                                                                             | `0`: never share runs' data, whatever the plugin says                                                                                                                                                                        |
 | `AUTOPILOT_TRAINING_URL`                                 | Aura's                                                                                                          | where shared runs' data is sent                                                                                                                                                                                              |
 | `AUTOPILOT_INSPECT`                                      | (off)                                                                                                           | `1` sends each decision to an editor's policy log even when the editor is on another machine                                                                                                                                 |
@@ -217,11 +217,12 @@ message or a request must keep working with all three plugins.
 
 When a run reports a claim CONFIRMED (`agents/session.py`, `finish`), the harness of the episode that showed it is kept
 as a regression: a folder per run holding the harness, a snapshot of the project's lib.py, and `regression.json` (the
-claim, the episode's end state and evidence, and Jev's picks in order). It goes into the game's own folder,
-`<game>/Autopilot/regressions/<run>/` beside its `.uproject`, `Assets/` or `project.godot`, so it is committed with the
-game (a Godot project gets a `.gdignore` there, so it never imports them); when the game isn't on the brain's machine,
-into `memory/<project>/regressions/<run>/`, where they were kept before; `AUTOPILOT_REGRESSIONS` moves them all. A replay
-of the project lists both. Only an episode that started from a restarted level is kept: one that went on from where an
+claim, the episode's end state and evidence, and Jev's picks in order), in `memory/<project>/regressions/<run>/`
+(`AUTOPILOT_REGRESSIONS` moves them). Nothing goes into the game's own folder by itself: `autopilot codex --project
+<source> --out <game>/Autopilot` exports them, with the code index and memory (see [Testing a build](#testing-a-build)),
+into `<game>/Autopilot/regressions/<run>/` beside its `.uproject`, `Assets/` or `project.godot`, to commit with the game
+(a Godot project gets a `.gdignore` there, so it never imports them). A replay of the project lists the game's folder's
+and the memory's. Only an episode that started from a restarted level is kept: one that went on from where an
 earlier one left play needs state a replay can't rebuild.
 
 ```bash
@@ -238,7 +239,7 @@ which carries the Autopilot plugin (Unreal: not Shipping; Unity: Development Bui
 scripting symbol): a release build has no plugin and never connects, which the command reports after
 `--connect-timeout` (180 s), or at once when the game ends first. The game runs headless unless `--watch`, and listens on
 a free port. Nothing else is needed on that machine (no editor, no sign-in, no keys: a replay calls no model), so a QA
-machine or CI replays the regressions committed with the game on each build. Each replay's trace and `results.json` go
+machine or CI replays the regressions exported and committed with the game on each build. Each replay's trace and `results.json` go
 to `--out` (default a new `regress/<time>` folder in Autopilot's settings folder), never into the regressions folder;
 `--events` also prints each step as a line of JSON.
 
@@ -285,15 +286,16 @@ from the source and travels with the game, in its Autopilot folder (`autopilot/g
 
 ```
 <game>/Autopilot/
-    regressions/    CONFIRMED verifications (see Regression replay)
+    regressions/    CONFIRMED verifications, copied from the memory (see Regression replay)
     codex/          the code index
     memory/         what runs learned: notes.md, lib.py
-    export.json     when and from where codex/ and memory/ were exported
+    export.json     when and from where the folder was exported
 ```
 
 `autopilot codex --project <source> --out <game>/Autopilot` makes it with no editor open (Unreal: the AutopilotCodex
 commandlet, headless; Unity: the editor in batch mode; Godot: the project's files), so the CI job that builds the game
-can export its codex beside the build; a developer's machine exports what its runs learned the same way. A run on a
+can export its codex beside the build; a developer's machine exports what its runs learned and its regressions the same
+way (a run already in the folder is replaced, the others there stay). A run on a
 build given `--game-folder` first brings the folder into this machine's memory of the game: the codex when this machine
 has none or the export is newer; notes.md and lib.py when this machine has none, or when the folder's changed and this
 machine's didn't (what runs here learned is never overwritten; both changed: this machine's is kept, and the run says

@@ -52,6 +52,27 @@ def test_export_writes_the_codex_and_what_was_learned(tmp_path):
     assert os.listdir(os.path.join(dest, "codex", "source")) == ["Gate.cpp"]
 
 
+def test_export_copies_the_regressions_saved_in_the_memory(tmp_path, monkeypatch):
+    """Regressions are saved in the memory (never into the game's folder by themselves); an export copies them into
+    the game's Autopilot/regressions, replacing a run's copy there, and leaves the others there alone."""
+    monkeypatch.delenv("AUTOPILOT_REGRESSIONS", raising=False)
+    dev = dev_memory(str(tmp_path / "dev" / "MyGame"))
+    write(os.path.join(dev, "regressions", "r1", "regression.json"), '{"id": "r1"}')
+    write(os.path.join(dev, "regressions", "r1", "harness.py"), "# first\n")
+    dest = str(tmp_path / "game" / "Autopilot")
+    write(os.path.join(dest, "regressions", "teammate", "regression.json"), '{"id": "teammate"}')
+    info = gamefolder.export(dev, dest, "MyGame")
+    assert info["regressions"] == 1
+    assert read(os.path.join(dest, "regressions", "r1", "harness.py")) == "# first\n"
+    assert sorted(os.listdir(os.path.join(dest, "regressions"))) == ["r1", "teammate"]
+    write(os.path.join(dev, "regressions", "r1", "harness.py"), "# second\n")
+    gamefolder.export(dev, dest, "MyGame")
+    assert read(os.path.join(dest, "regressions", "r1", "harness.py")) == "# second\n"
+    assert os.path.exists(os.path.join(dest, "regressions", "teammate", "regression.json"))
+    # no regressions saved: none copied
+    assert gamefolder.export(dev_memory(str(tmp_path / "other" / "MyGame")), dest, "MyGame")["regressions"] == 0
+
+
 def test_resolve(tmp_path):
     folder = tmp_path / "game" / "Autopilot"
     (folder / "regressions").mkdir(parents=True)

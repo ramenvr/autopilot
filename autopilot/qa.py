@@ -1,12 +1,13 @@
 """Autopilot QA: a window that replays a game's regressions on a build of it, without a model (`autopilot qa`).
 
 For QA engineers: no editor, no project, no sign-in. A developer's Autopilot keeps every CONFIRMED verification as a
-regression in the game's own folder (Autopilot/regressions, autopilot/regress.py), which goes into source control with
-the game. Here QA picks a build of the game (a Development build: Unreal packaged, Unity player, Godot export) and that
-folder, and presses Replay: the window runs `autopilot regress --build <exe> --regressions <folder> --events`, which
-starts the build (in a window to watch, or headless), replays the regressions with their recorded decisions and ends
-the build; the window lists each one's result as it comes (ok, FAIL with why, FLAKY: passed only on a second try), and
-keeps the results and the replays' traces in a folder of their own (Open results).
+regression (autopilot/regress.py), and `autopilot codex --project <source> --out <game>/Autopilot` exports them into
+the game's own folder (Autopilot/regressions), which goes into source control with the game. Here QA picks a build
+of the game (a Development build: Unreal packaged, Unity player, Godot export) and that folder, and presses Replay:
+the window runs `autopilot regress --build <exe> --regressions <folder> --events`, which starts the build (in a
+window to watch, or headless), replays the regressions with their recorded decisions and ends the build; the window
+lists each one's result as it comes (ok, FAIL with why, FLAKY: passed only on a second try), and keeps the results and
+the replays' traces in a folder of their own (Open results).
 
 The command it runs is the one CI runs, so what QA sees here is what a pipeline gets. What the window remembers (the
 build, the folder, the options) is in qa.json in Autopilot's settings folder.

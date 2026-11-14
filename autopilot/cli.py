@@ -7,8 +7,8 @@
         result (see EXIT). --build GAME.exe [--game-folder <game>/Autopilot] [--watch]: on a Development build of the
         game, with the codex and what runs learned from the game's folder (autopilot/gamefolder.py).
     python -m autopilot codex --project PATH [--name NAME] [--out <game>/Autopilot]
-        Build a project's codex (the game's code as text) without the game running; --out: also export it, and what
-        runs learned, into the game's Autopilot folder, for runs on builds elsewhere.
+        Build a project's codex (the game's code as text) without the game running; --out: also export it, what
+        runs learned and the regressions, into the game's Autopilot folder, for replays and runs on builds elsewhere.
     python -m autopilot run memory/<project>/runs/<run>/harness.py [--seconds 60] [--no-restart]
         Play a saved harness again, with no language model (Jev decides), e.g. to watch it.
     python -m autopilot regress [--project PATH | --build GAME.exe] [--regressions FOLDER] [--watch] [--only ID]
@@ -945,8 +945,10 @@ def cmd_codex(args):
         from . import gamefolder
 
         info = gamefolder.export(codexmod.project_dir(project), args.out, project, source=path)
+        n = info["regressions"]
         print(f"Exported to {os.path.abspath(args.out)}: the codex ({info['codex_files']} files)"
-              + (f" and {', '.join(info['memory'])}" if info["memory"] else ""))
+              + (f", {', '.join(info['memory'])}" if info["memory"] else "")
+              + f" and {n} regression{'' if n == 1 else 's'}")
     return 0
 
 
@@ -1075,9 +1077,9 @@ def wanted(args):
 
 def regress_on(game, project, args, say=print):
     """Replay the project's regressions (or --regressions') on game without a model (autopilot/regress.py): 0 when
-    every one passes. The project's: those in the game's own folder and its memory (regress.folders). --only: those
-    regressions alone. Their traces and the results (results.json) go to --out, by default a new folder under the
-    settings folder's regress/; --json: the results there too."""
+    every one passes. The project's: those in the game's own folder (exported) and its memory (regress.folders).
+    --only: those regressions alone. Their traces and the results (results.json) go to --out, by default a new folder
+    under the settings folder's regress/; --json: the results there too."""
     from . import regress
 
     root = codexmod.project_dir(project)
@@ -1456,8 +1458,9 @@ def parser():
     c.add_argument("--project", dest="path", required=True, help=project_help)
     c.add_argument("--name", help="the project's name in memory/ (default: from its path)")
     c.add_argument("--out", metavar="FOLDER",
-                   help="also write the codex and what runs learned into the game's Autopilot folder there (e.g. "
-                        "<game>/Autopilot), for runs on builds on other machines (autopilot/gamefolder.py)")
+                   help="also write the codex, what runs learned and the regressions into the game's Autopilot "
+                        "folder there (e.g. <game>/Autopilot), for replays and runs on builds on other machines "
+                        "(autopilot/gamefolder.py)")
     r = sub.add_parser("run", help="play a saved harness again (no language model)")
     r.add_argument("harness")
     r.add_argument("--seconds", type=float, default=60)
@@ -1477,7 +1480,8 @@ def parser():
     rg.add_argument("--game-folder", help="the game's Autopilot folder (<game>/Autopilot): its regressions/ (as "
                                           "--regressions) and code index")
     rg.add_argument("--regressions", help="a regressions folder, such as the game's Autopilot/regressions (default: "
-                                          "AUTOPILOT_REGRESSIONS, else the game's own folder and its memory's)")
+                                          "AUTOPILOT_REGRESSIONS, else the game's own folder's (exported) and its "
+                                          "memory's)")
     rg.add_argument("--only", action="append", metavar="ID",
                     help="replay these regressions alone (their ids, the run ids: comma-separated or repeated)")
     rg.add_argument("--out", help="where the replays' traces and results.json go (default: a new folder under "
