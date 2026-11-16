@@ -29,7 +29,7 @@ from .control import (  # noqa: F401
 )
 from .game import GAMEPLAY, Game, GameError, name_of  # noqa: F401
 from .geom import Vec, aim_error, bearing, clock, forward, pitch_of, right_of, wrap, yaw_of  # noqa: F401
-from .harness import Harness, Option, Status, Step  # noqa: F401
+from .harness import Harness, Option, Status, Step, check_harness  # noqa: F401
 
 
 def where(pose, point):
