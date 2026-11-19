@@ -106,6 +106,55 @@ class Status:
         return self.state != "running"
 
 
+def check_harness(path="harness.py"):
+    """What a run would make of this harness file, before an episode pays for the mistake: (ok, problems).
+
+    Checks what the runtime needs and what a slow play episode would otherwise teach: the file parses, it defines a
+    Harness subclass, that class answers the contract (observe/options/status), and its goal and clock are usable.
+    It does not run the game: setup() and observe() need one."""
+    import importlib.util
+    import os
+    import sys
+
+    problems = []
+    if not os.path.exists(path):
+        return False, ["no such file: " + str(path)]
+    try:
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
+        code = compile(source, path, "exec")
+    except SyntaxError as e:
+        return False, ["line %s: %s" % (e.lineno, e.msg)]
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader("harness_checked", loader=None))
+    # a harness imports its neighbours: harness.py sits in <project>/runs/<id>/, lib.py in <project> two levels up.
+    # The check runs inside a live process, so sys.path is put back as it was afterwards.
+    saved = list(sys.path)
+    folder = os.path.dirname(os.path.abspath(path))
+    for _ in range(3):
+        if folder not in sys.path:
+            sys.path.insert(0, folder)
+        folder = os.path.dirname(folder)
+    try:
+        exec(code, module.__dict__)  # (the module's own imports run: a missing one is a real problem to report)
+    except Exception as e:
+        return False, ["import time: %s: %s" % (type(e).__name__, e)]
+    finally:
+        sys.path[:] = saved
+    classes = [v for v in vars(module).values()
+               if isinstance(v, type) and issubclass(v, Harness) and v is not Harness]
+    if not classes:
+        return False, ["no Harness subclass (the runtime takes the last one defined)"]
+    cls = classes[-1]
+    for name in ("observe", "options", "status"):
+        if not callable(getattr(cls, name, None)):
+            problems.append("%s: no %s()" % (cls.__name__, name))
+    if not (cls.goal or "").strip():
+        problems.append("%s: empty goal (Jev has nothing to aim at)" % cls.__name__)
+    if cls.tempo <= 0 and cls.tick_hz <= 0:
+        problems.append("%s: tempo and tick_hz are both 0 (nothing would ever run)" % cls.__name__)
+    return (not problems), problems
+
+
 class Harness:
     """Subclass this in harness.py (one class per file; the runtime takes the last Harness subclass defined)."""
 
