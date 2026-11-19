@@ -47,7 +47,9 @@ def project_of(hello):
     A folder records the id it is for (project_id in its project.json); one from before ids were recorded is the
     first project's that comes with one. Without an id, the name, as before."""
     hello = hello or {}
-    name = hello.get("project") or "game"
+    # the name is free text (a game's product name may hold ':' or '/'): it becomes a folder name, so the characters
+    # no filesystem on the supported platforms accepts are replaced rather than left to fail on mkdir
+    name = re.sub(r'[<>:"/\\|?*]', "-", str(hello.get("project") or "game")).strip(" .") or "game"
     pid = str(hello.get("project_id") or "").strip().lower()
     if not pid:
         return name

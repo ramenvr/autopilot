@@ -151,6 +151,19 @@ def test_the_project_is_found_through_the_game_and_remembered(tmp_path, monkeypa
     assert built[-1] and os.path.samefile(built[-1], g) and remembered.exists()
 
 
+def test_a_free_text_project_name_becomes_a_folder_name(tmp_path, monkeypatch):
+    """A product name is free text: the characters no supported filesystem takes ('/', ':', '?', '*') would fail on
+    mkdir, so the folder name replaces them and keeps everything else."""
+    from autopilot import codex
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path / "mem"))
+    assert codex.project_of({"project": "My Game: Definitive Edition"}) == "My Game- Definitive Edition"
+    assert codex.project_of({"project": "Slicer/Slice"}) == "Slicer-Slice"
+    assert codex.project_of({"project": "What?"}) == "What-"
+    assert codex.project_of({"project": "  "}) == "game"
+    assert codex.project_of({}) == "game"
+
+
 def test_two_projects_of_one_name_keep_their_own_memory(tmp_path, monkeypatch):
     """Memory is per project: by name, and by the plugin's project_id when another project of that name has the
     folder. A folder from before ids were recorded stays its old project's; Delete memory keeps whose it is."""
