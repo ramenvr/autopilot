@@ -321,7 +321,7 @@ class Unity(OpEngine):
             exe = self.players.get(os.path.normcase(self.project_folder(project)))
         if exe and os.path.basename(exe).lower() not in ("unity.exe", "unity"):
             return [exe] + (["-batchmode", "-nographics"] if headless else ["-screen-fullscreen", "0"]) + run
-        return [exe or EDITOR, "-projectPath", self.project_folder(project),
+        return [exe or editor_for(self.project_folder(project)), "-projectPath", self.project_folder(project),
                 "-executeMethod", self.HEADLESS_METHOD, "-batchmode", "-nographics"] + run
 
     def is_build(self, exe):

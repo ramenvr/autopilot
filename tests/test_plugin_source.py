@@ -116,10 +116,11 @@ def test_the_number_of_players_is_the_editors():
     assert asked < start.index("Bridge.SessionHandler(") and "can't be changed from here" in start
     assert "Bridge.PlaySettingsPlayers" in start
     # Against the session the action leaves running: the editor's restart, or its start in another level, plays the Play
-    # settings' number (it starts play again), whatever plays now; a start of a running game keeps its players
+    # settings' number (it starts play again), whatever plays now; a start of a running game keeps its players, and so
+    # does a restart in place (runs one after another in one game: the level reopens in the game playing)
     check = start[asked:start.index("Bridge.SessionHandler(")]
     assert start.index("const bool bSwitch") < asked
-    assert 'Bridge.SessionHandler && (Action == TEXT("restart") || bSwitch)' in check
+    assert 'Bridge.SessionHandler && !bInPlace && (Action == TEXT("restart") || bSwitch)' in check
     assert "!bNewSession ? Playing : Bridge.PlaySettingsPlayers" in check
     editor = _read("plugin", "unreal", "Autopilot", "Source", "AutopilotPlaytestEditor", "Private",
                    "AutopilotPlaytestEditorModule.cpp")

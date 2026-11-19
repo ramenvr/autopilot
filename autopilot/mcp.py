@@ -15,6 +15,12 @@ share this server (Claude Code's) works on several runs through it; a call that 
 several runs started here go, a call on the game answers "still going" after SHARED_WAIT_SECONDS: a client that makes
 its calls one at a time (Claude Code, for calls that aren't read-only) then has every run's episode playing at once.
 
+Several verifications may also play one after another in one game (start_run's keep_game_open): each run reports
+its own verdict, and the game stays open, paused where the run left it, for the next; the runs' restarts reopen the
+level in the game playing. And a run may play headless (start_run's headless): this server then starts an agent
+service of its own (`autopilot serve --headless`), which starts the project's game with no window and no editor, and
+plays every headless run in that one game until this server ends (or no run has come for a while).
+
 A program that runs an agent service of its own and sets this server up for its own agent says which service to use:
 AUTOPILOT_MCP_BRAIN names a brain file (what that service announced: its "control" address), and then no other service
 on the machine is looked for. It may also say where the runs its agent starts were asked for: AUTOPILOT_MCP_TRACE, a
@@ -25,6 +31,7 @@ Nothing but the protocol goes to stdout.
 
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -37,6 +44,11 @@ WAIT_SECONDS = float(os.environ.get("AUTOPILOT_MCP_WAIT") or 40)  # (under Codex
 # calls on the game one after another, even those it sends together, so each answers "still going" soon and the next
 # run's episode starts while this one's plays (wait, which a client may make side by side, gives the results)
 SHARED_WAIT_SECONDS = float(os.environ.get("AUTOPILOT_MCP_WAIT_SHARED") or 3)
+# How long a headless game may take to start and connect (an engine importing the project first takes minutes)
+HEADLESS_START_SECONDS = float(os.environ.get("AUTOPILOT_MCP_HEADLESS_START") or 900)
+HEADLESS_NOTE = ("\n\nThis game plays headless: no window, and it draws no picture, so `frames` and describe_frames "
+                 "have nothing to show. Settle the request from what the game's state shows (positions, values, "
+                 "events); a claim about how something looks on screen can only be INCONCLUSIVE here: say so.")
 
 INSTRUCTIONS = ("Autopilot playtests the game open in the user's game editor (Unreal, Unity, Godot or Roblox Studio): "
                 "call start_run with the user's request (explore it, test it, verify a claim, reach a goal), then "
@@ -58,15 +70,28 @@ START_SPEC = (
     "that looks wrong\"). minutes: an exploration's minutes of play (default 10). "
     "time_limit_minutes: the run's time limit (default 30). level: the level to play, when you know its path or "
     "name (default: the one open in the editor; the briefing lists the project's levels, and restart_level moves to "
-    "the one the request means). parallel: when you work through several requests, how many runs you keep going at "
-    "once (default 1; up to 3, as the agent service allows): the first start_run of a batch says it, and the editor "
-    "then plays that many games side by side (a window each), one per run; a start_run while that many go is refused "
-    "until one reports. Answers with the run's id (pass it as run with every other call), the briefing and the "
+    "the one the request means). keep_game_open (verifications only): how to work through several requests (a list, "
+    "a spreadsheet), by default: one run after another in ONE game: when this run has reported, the game stays open, "
+    "paused where it left it, for your next start_run (which plays on in it: its first run_harness may go on from "
+    "there with restart=False); every restart of these runs reopens the level in the game playing, never closing it. "
+    "Pass it on every run of the batch but the last; "
+    "the game closes when the last one reports (or when no run has come for 10 minutes). parallel: only when the user "
+    "asks for requests to run at the same time (in parallel, side by side, several windows): how many runs you keep "
+    "going at once (default 1; up to 3, as the agent service allows): the first start_run of a batch says it, and the "
+    "editor then plays that many games side by side (a window each), one per run; a start_run while that many go is "
+    "refused until one reports. headless: play the game "
+    "with no window and no editor: Autopilot starts the project's game itself (Unreal, Unity, Godot; not Roblox, "
+    "whose games play only in Roblox Studio) and every headless run plays in that one game, one after another; it "
+    "draws no picture, so claims about how something looks can't be settled. project: with headless, the game's "
+    "project (a .uproject, a Unity project folder, a project.godot; default: the one in your working folder); "
+    "engine: with headless, the engine's executable (default: the project's own). "
+    "Answers with the run's id (pass it as run with every other call), the briefing and the "
     "instructions to follow; the game is paused between calls.",
     {"type": "object", "properties": {
         "request": {"type": "string"}, "kind": {"type": "string", "enum": ["verify", "goal", "explore"]},
         "minutes": {"type": "number"}, "time_limit_minutes": {"type": "number"}, "level": {"type": "string"},
-        "parallel": {"type": "integer", "minimum": 1}},
+        "parallel": {"type": "integer", "minimum": 1}, "keep_game_open": {"type": "boolean"},
+        "headless": {"type": "boolean"}, "project": {"type": "string"}, "engine": {"type": "string"}},
      "required": ["request", "kind"]})
 WAIT_SPEC = (
     "wait",
@@ -172,6 +197,70 @@ def plain(answer):
     return answer
 
 
+def find_headless_project(asked=None, cwd=None):
+    """(engine, project path) of the game a headless run plays: the project asked for, else the one in the working
+    folder (or a folder above it); or (None, why not)."""
+    from . import engines
+
+    if asked:
+        eng, path = engines.find_project(os.path.abspath(os.path.expanduser(str(asked))))
+        return (eng, path) if eng else (None, f"No Unreal, Unity or Godot project at {asked}: pass project, the path "
+                                              "of the game's .uproject, Unity project folder or project.godot.")
+    here = os.path.abspath(cwd or os.getcwd())
+    while True:
+        eng, path = engines.find_project(here)
+        if eng:
+            return eng, path
+        if os.path.dirname(here) == here:
+            return None, ("No game project in the working folder: pass project, the path of the game's .uproject, "
+                          "Unity project folder or project.godot.")
+        here = os.path.dirname(here)
+
+
+class Headless:
+    """The agent service this server started for headless runs (`autopilot serve --headless`): it starts the project's
+    game with no window and plays the runs in it; it ends with this server (--exit-with), or once idle."""
+
+    def __init__(self, project, engine=None):
+        from . import bridge
+
+        self.project, self.engine = project, engine
+        self.brain = bridge.brain_file(f"headless-brain-{os.getpid()}.json")
+        logs = os.path.join(os.path.dirname(self.brain), "logs")
+        os.makedirs(logs, exist_ok=True)
+        self.log = os.path.join(logs, f"headless-{time.strftime('%Y%m%d-%H%M%S')}.log")
+        try:
+            os.remove(self.brain)
+        except OSError:
+            pass
+        cmd = [sys.executable, "-m", "autopilot", "serve", "--headless", "--project", project, "--port", "0",
+               "--exit-with", str(os.getpid()), "--brain-file", self.brain] + (["--engine", engine] if engine else [])
+        with open(self.log, "ab") as out:
+            self.proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                         env={**os.environ, "PYTHONUNBUFFERED": "1"})
+
+    def alive(self):
+        return self.proc.poll() is None
+
+    def control(self):
+        """Its control address, once it has said where it is; else None."""
+        try:
+            with open(self.brain, encoding="utf-8") as f:
+                return json.load(f).get("control")
+        except (OSError, ValueError, AttributeError):
+            return None
+
+    def why_ended(self):
+        """Why it ended: the end of its log."""
+        try:
+            with open(self.log, encoding="utf-8", errors="replace") as f:
+                lines = [line.rstrip() for line in f.read().splitlines() if line.strip()]
+        except OSError:
+            lines = []
+        tail = "\n".join(lines[-12:]) or "(nothing logged)"
+        return f"The headless game's agent service ended (log: {self.log}):\n{tail}"
+
+
 class Server:
     def __init__(self, out=None, find=control_urls):
         self.out = out or sys.stdout
@@ -186,6 +275,8 @@ class Server:
         self.starts = 0  # start_run calls so far (one still going waits as "start-<n>")
         self.pending = {}  # the calls still going, by the run they are for ("": one that named none): (thread, box,
         # tool, started)
+        self.headless = None  # the agent service started for headless runs (Headless)
+        self.headless_lock = threading.Lock()
 
     def send(self, message):
         with self.send_lock:
@@ -220,18 +311,66 @@ class Server:
                 return url, answer
         return None, refused or unreached
 
+    def start_headless(self, body):
+        """A headless start_run: made on the agent service this server started for the project's game (started now
+        when there is none for it, and waited for while its game starts). (its address, its answer)."""
+        if pinned_brain():
+            return None, text("Headless runs aren't available here: this Autopilot plays the game in the editor "
+                              "(start_run without headless).", error=True)
+        if int(body.get("parallel") or 1) > 1:
+            return None, text("A headless game plays one run at a time: start_run without parallel.", error=True)
+        eng, project = find_headless_project(body.get("project"))
+        if eng is None:
+            return None, text(project, error=True)
+        if eng.name.startswith("roblox"):
+            return None, text("Roblox has no headless game: its games play only in Roblox Studio, in its window. "
+                              "Start the run without headless (the place open in Studio, its Autopilot plugin "
+                              "connected).", error=True)
+        engine = str(body.get("engine") or "").strip() or None
+        with self.headless_lock:
+            service = self.headless
+            if service is None or not service.alive() or os.path.normcase(service.project) != os.path.normcase(
+                    project) or (engine and engine != service.engine):
+                if service is not None and service.alive():
+                    service.proc.terminate()
+                service = self.headless = Headless(project, engine)
+        body = {k: v for k, v in body.items() if k not in ("headless", "project", "engine")}
+        started = time.time()
+        while True:
+            control = service.control()
+            if control:
+                answer = self.post(f"{control}/start", body)
+                if answer.get("connected") is not False and answer.get("reached") is not False:
+                    return control, answer
+            if not service.alive():
+                return None, text(service.why_ended(), error=True)
+            if time.time() - started > HEADLESS_START_SECONDS:
+                return None, text(f"The headless game didn't connect within {HEADLESS_START_SECONDS:.0f} s (log: "
+                                  f"{service.log}).", error=True)
+            time.sleep(2.0)
+
     def forward(self, name, args):
         """The call, made on the agent service (blocking)."""
         if name == "start_run":
             trace = run_trace()
             body = {**(args or {}), "client": self.client, **({"trace": trace} if trace else {})}
-            url, answer = self.first_taker("start", body, "connected")
+            headless = body.get("headless") is True
+            if headless:
+                url, answer = self.start_headless(body)
+            else:
+                body = {k: v for k, v in body.items() if k not in ("headless", "project", "engine")}
+                url, answer = self.first_taker("start", body, "connected")
             if url is not None and not answer.get("isError"):
                 self.control = url
                 first = next((c.get("text", "") for c in answer.get("content") or [] if c.get("type") == "text"), "")
                 self.run = first.split()[2] if first.startswith("Autopilot run ") else None
                 if self.run:
                     self.runs[self.run] = url
+                if headless:
+                    for part in answer.get("content") or []:
+                        if part.get("type") == "text":
+                            part["text"] = str(part.get("text") or "") + HEADLESS_NOTE
+                            break
             return plain(answer)
         args = dict(args or {})
         run = str(args.pop("run", "") or "").strip() or None

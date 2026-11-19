@@ -871,6 +871,11 @@ function Editor:_session(id: any, args: any)
 		else
 			self:_respondError(id, err or "couldn't stop", 500)
 		end
+	elseif action == "restart" and args.in_place == true and self.playing and args.device == nil
+		and args.orientation == nil and (args.players == nil or players == self:_clientsHere()) then
+		-- A restart in place (runs one after another in one game, start_run's keep_game_open): the play session goes
+		-- on, its players respawned by the server (`respawn`); what the world changed stays
+		self:_forward({ id = id, op = "respawn", args = Json.object() }, "server", false)
 	elseif action == "restart" then
 		-- As Studio's Stop then Play: a fresh server and client (the game's scripts start over)
 		local ok, err = self:stopPlaying()

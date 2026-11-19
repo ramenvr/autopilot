@@ -51,6 +51,11 @@ class Game:
         # starts it over. level_info: how it was chosen (a levels.Level, for the agent's briefing)
         self.level = None
         self.level_info = None
+        # Whether a restart reopens the level in the game playing, its play session left open (the editor's Play In
+        # Editor window, Unity's play mode, Godot's game, Roblox's play session): runs one after another in one game
+        # (start_run's keep_game_open) never stop play between them. By default a restart in the editor stops play
+        # and starts it again, as the person at the editor would
+        self.restart_in_place = False
         self._waited = threading.local()  # reads this thread waited on, one by one (see waits())
         self._bodies = {}  # n -> Body: the other players of a multiplayer game (player())
         self.index = 1  # which player this is (1: the run's own; a Body is another)
@@ -578,6 +583,8 @@ class Game:
             self._need_players(f"restart(players={int(players)})")
         self.release_all()
         args = {"action": "restart"}
+        if self.restart_in_place:
+            args["in_place"] = True
         map = map or self.level
         if map:
             args["map"] = map

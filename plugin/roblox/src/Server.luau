@@ -2,7 +2,8 @@
 -- The play session's server: the game's authoritative state. Answers rc (reads, writes and calls on the server's
 -- instances and modules: what the game's Scripts see and change; LocalPlayer, Character and Humanoid are the request's
 -- `player`'s), find and transforms on the server's instances, pause, adds players to a multiplayer test
--- (`add_players`), and ends the play session (`end_test`, StudioTestService:EndTest). Runs the server's detectors.
+-- (`add_players`), respawns the players (`respawn`: a restart in place) and ends the play session (`end_test`,
+-- StudioTestService:EndTest). Runs the server's detectors.
 local RunService = game:GetService("RunService")
 
 local Detectors = require(script.Parent.Detectors)
@@ -78,6 +79,48 @@ function Server.start(plugin: Plugin)
 				detectors.paused = want
 			end
 			return true, { paused = paused }
+		end,
+		-- `respawn`: every player's character loaded afresh where the game spawns it (Player:LoadCharacter), the play
+		-- session going on: the restart in place of runs one after another in one game (the editor's session restart
+		-- "in_place"). A place can't reopen its world without stopping play: what the world changed stays
+		respawn = function()
+			if paused then
+				pcall(function()
+					RunService:Run()
+				end)
+				paused = false
+				if detectors then
+					detectors.paused = false
+				end
+			end
+			local players = game:GetService("Players"):GetPlayers()
+			if #players == 0 then
+				return false, "No player is in the game to respawn", 409
+			end
+			for _, player in players do
+				local ok, err = pcall(function()
+					player:LoadCharacter()
+				end)
+				if not ok then
+					return false, "Couldn't respawn " .. player.Name .. ": " .. tostring(err), 500
+				end
+			end
+			local deadline = os.clock() + 20
+			while os.clock() < deadline do
+				local all = true
+				for _, player in players do
+					local character = player.Character
+					if not (character and character:FindFirstChildOfClass("Humanoid")
+						and character:FindFirstChild("HumanoidRootPart")) then
+						all = false
+					end
+				end
+				if all then
+					break
+				end
+				task.wait(0.1)
+			end
+			return true, { running = true, scene = game.Name, players = #players, respawned = true }
 		end,
 		end_test = function()
 			local ok, err = pcall(function()

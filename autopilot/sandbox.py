@@ -87,7 +87,7 @@ class Sandbox:
     """The parent side: starts the child and serves its requests with the real link and Jev client."""
 
     def __init__(self, link, client, project, prompt, run_id, root, memory, scrub=None, recorder=None, level=None,
-                 say=None, activity=None, looker=None):
+                 say=None, activity=None, looker=None, restart_in_place=False):
         self.link, self.client = link, client
         self.recorder = recorder  # (the run's media.Recorder: the episodes the child plays mark their videos on it)
         self.reader = None  # (the run's llm.Reader: the child's llm and llm_map calls; set by the parent's session)
@@ -112,7 +112,7 @@ class Sandbox:
                                      bufsize=0)
         self._write({"type": "init", "project": project, "prompt": prompt, "run_id": run_id,
                      "hello": getattr(link, "hello", None) or {}, "loopback": bool(getattr(link, "loopback", False)),
-                     "level": level,
+                     "level": level, "restart_in_place": bool(restart_in_place),
                      # (whether the child's runtime may look at the picture: why not, or None)
                      "watch": looker.available() if looker is not None else "no looker in this run"})
         self.listener = lambda event: self._write({"type": "event", "event": event})
@@ -475,6 +475,7 @@ def child_main():
 
     game = Game(link, codexmod.Codex.for_project(init["project"]))
     game.level = init.get("level")  # (the run's level: restarts start it over)
+    game.restart_in_place = bool(init.get("restart_in_place"))  # (runs one after another in one game: kit.Game)
     session = Session(game, init["project"], init["prompt"], init["run_id"], say=link.status, client=RemoteJev(link))
     session.forward = lambda event: out({"type": "activity", "event": event})  # (the parent's feed has it)
     session.stop = stopped.is_set

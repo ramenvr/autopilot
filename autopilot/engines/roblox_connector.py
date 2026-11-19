@@ -690,6 +690,11 @@ class StudioBackend:
                 self._play(False)
             return {"running": False}
         if action == "restart":
+            if args.get("in_place") and self.is_running():
+                # (runs one after another in one game: the play session goes on, its players respawned)
+                self.release_everything()
+                self.luau("respawn", {}, "Server")
+                return {"running": True, "map": place, "character": self._wait_for_character()}
             if self.is_running():
                 self._play(False)
             self._play(True)

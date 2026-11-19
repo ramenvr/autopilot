@@ -101,6 +101,16 @@ GAME_START_SECONDS = 600.0
 MAX_PARALLEL = 3
 # How long the first of them waits for the games side by side to start (each loads the level)
 LANES_START_SECONDS = 300.0
+# A game a run left open for the next (start_run's keep_game_open: the user's own agent works through several
+# verifications one after another in one play session) is closed once no run has started for this long
+# (AUTOPILOT_KEEP_OPEN_SECONDS changes it)
+KEEP_OPEN_SECONDS = 600.0
+# How long a start call waits for a run that has reported to finish (its memory, its result frame) before it is
+# refused as a run still going: the next request of a batch is often asked for at once
+REPORTED_WAIT_SECONDS = 60.0
+# `autopilot serve --headless` (the game it plays started by itself, with no window): it ends, and the game with it,
+# once no run has gone for this long (AUTOPILOT_HEADLESS_IDLE_SECONDS); `autopilot mcp` starts it again when asked
+HEADLESS_IDLE_SECONDS = 900.0
 
 
 class Feed:
@@ -275,16 +285,19 @@ def wont_start_report(kind, e):
 
 def start_level(link, game, level):
     """Start the game (when it isn't running) in the level chosen (choose_level); a level that can't be played
-    leaves the game in the editor's own (level.failed says why). A game that refuses to start raises GameWontStart."""
+    leaves the game in the editor's own (level.failed says why). A game that refuses to start raises GameWontStart.
+    A game kept open for the run (game.restart_in_place) moves to the level asked for in the game playing."""
     running = bool(link.request("session", {"action": "status"}).get("running"))
     if level.asked and not level.failed:
         if running and levelsmod.same(level.playing, level.asked):
             level.playing_asked = True
         else:
             link.status("Starting the game")
+            asked = {"action": "restart" if running else "start", "map": level.asked}
+            if running and game.restart_in_place:
+                asked["in_place"] = True
             try:
-                link.request("session", {"action": "restart" if running else "start", "map": level.asked},
-                             timeout=60)
+                link.request("session", asked, timeout=60)
                 level.playing_asked = True
             except Exception as e:
                 if refused(e):
@@ -342,12 +355,15 @@ def wait_for_start(link, seconds=GAME_START_SECONDS):
     return time.time() - t0
 
 
-def prepare(link, path=None, level=None):
+def prepare(link, path=None, level=None, restart_in_place=False):
     """The game, started if needed in the level the run plays (choose_level), and its codex (built on first use; the
     level snapshot refreshed every time). path: the project on this machine when given by hand (--project);
-    otherwise it is remembered or asked of the game. level: the level the run asks for (its start frame's), if any."""
+    otherwise it is remembered or asked of the game. level: the level the run asks for (its start frame's), if any.
+    restart_in_place: the run is one of several in one game (start_run's keep_game_open): its restarts reopen the
+    level in the game playing (kit.Game.restart_in_place), never stopping play."""
     project = codexmod.project_of(link.hello)  # (its memory folder's name)
     game = Game(link, codexmod.Codex.for_project(project))
+    game.restart_in_place = bool(restart_in_place)
     name = (link.hello or {}).get("project") or "game"
     path = remember_project(project, path or find_project(game, project, name), game.engine)
     # The project's detector settings (what it muted: autopilot/detectors.py), before the game starts, so its first
@@ -674,6 +690,15 @@ def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, 
     return later
 
 
+def keep_game(game):
+    """Leave the play session open for the next run (start_run's keep_game_open), paused where the run left it: the
+    next run goes on from there, in the same game (cmd_serve closes it once no run has come for KEEP_OPEN_SECONDS)."""
+    try:
+        game.pause(True)
+    except Exception as e:
+        print(f"note: couldn't pause the game kept open: {e}")
+
+
 def close_game(link):
     """End the editor's play session the run played in (Unreal's Play In Editor, Unity's Play mode, Godot's playing
     scene) once its harnesses are done: the plugins' Report stage shows the result without the game still open. A
@@ -696,7 +721,8 @@ LAST_REPORT = {}  # the report of the run run_prompt finished last (`play --even
 
 def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sent=None, steering=None, kind=None,
                play_minutes=None, trace=None, desk=None, level=None, aura_model=None, disable_premium_models=False,
-               feed=None, explore_minutes=None, design_brief=None, thinking_level=None):
+               feed=None, explore_minutes=None, design_brief=None, thinking_level=None, keep_game_open=False,
+               restart_in_place=False):
     """Research, write and run a harness for prompt; send the plugin the result and return the exit code.
 
     path: the project on this machine (--project); model: the language model; timeout: the agent's budget in
@@ -717,7 +743,10 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     passed on with it: Auto in a chat it has picked nothing for yet plays the free-tier model; thinking_level: the
     start frame's run `thinking_level` (the level picked in Aura's chat), passed on with it too: Aura answers with how
     hard the agent thinks; feed: a Feed that
-    keeps the run's activity events for a plugin that asks for them again (by default they are only sent).
+    keeps the run's activity events for a plugin that asks for them again (by default they are only sent);
+    keep_game_open: the play session stays open once the run has reported (paused, for the next run of the same agent:
+    start_run's keep_game_open), unless the run was stopped; restart_in_place: the run's restarts reopen the level in
+    the game playing, never stopping play (a run of several in one game).
 
     The plugin is told the tokens the run uses as it goes (telemetry.RunTelemetry). When the run's data is shared
     (telemetry.sharing, and for a run through Aura the user's Aura account), it is kept whole in the run's
@@ -777,7 +806,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             if not kind:
                 kind, tested = told_kind(link, prompt)
             asked, play_seconds = settle()
-            project, game = prepare(link, path, level)
+            project, game = prepare(link, path, level, restart_in_place=restart_in_place or keep_game_open)
             setup.push(resume_if_failed(game))
             indexer = getattr(getattr(game, "codex", None), "indexer", None)
             if indexer is not None:  # (an export still going when the run ends is the next run's)
@@ -835,7 +864,10 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                         link.status(SAVING_MEMORY)
             recording, report = shown_recording(tel, report)
             missing = None if recording else tel.no_recording()
-            close_game(link)  # (every harness has run, and the recording has stopped)
+            if keep_game_open and not (stop and stop()):
+                keep_game(game)  # (the next run of the agent's goes on in it)
+            else:
+                close_game(link)  # (every harness has run, and the recording has stopped)
             if share:
                 upload = (root, project if run else key, run)
         if ends.error is not None:
@@ -1314,7 +1346,8 @@ def launch_headless(args, url, say=print):
     eng, path = engines.find_project(args.path)
     if not eng:
         raise SystemExit(f"No Unreal, Unity, Godot or Roblox project at {args.path}")
-    log = os.path.join(HERE, "logs", f"regress-{time.strftime('%Y%m%d-%H%M%S')}.log")
+    stem = "headless" if args.cmd == "serve" else "regress"
+    log = os.path.join(HERE, "logs", f"{stem}-{time.strftime('%Y%m%d-%H%M%S')}.log")
     os.makedirs(os.path.dirname(log), exist_ok=True)
     try:
         cmd = eng.launch_command(path, url, log, exe=getattr(args, "engine", None),
@@ -1322,9 +1355,31 @@ def launch_headless(args, url, say=print):
     except NotImplementedError as e:
         say(f"{e}. Waiting for the plugin instead: open the project in its editor, with the plugin connecting to {url}")
         return False
+    if args.cmd == "serve":  # (its game plays run after run: the plugin never exits on a run's result)
+        cmd = cmd + ["-PlaytestStayOpen"]
     args.game_log = log
     start_game(args, cmd)
     return True
+
+
+def headless_refused(args):
+    """Why `autopilot serve --headless` can't start the project's game (args.path), or None."""
+    if not args.path:
+        return "--headless needs the game's project (--project)"
+    eng, path = engines.find_project(args.path)
+    if not eng:
+        return f"No Unreal, Unity, Godot or Roblox project at {args.path}"
+    if eng.name.startswith("roblox"):
+        return ("Roblox has no headless game: Roblox Studio plays the place, in its window (open it in Studio with the "
+                "Autopilot plugin, and play there)")
+    if eng.name == "unity":
+        from .engines import unity
+
+        folder = eng.project_folder(path)
+        if unity.project_open(folder) and not getattr(args, "engine", None):
+            return ("The project is open in the Unity editor, and Unity opens a project in one editor at a time: close "
+                    "it there for a headless game (or play in the editor, without headless)")
+    return None
 
 
 def decision_key_missing():
@@ -1369,6 +1424,8 @@ def external_run(params):
             run["parallel"] = int(params["parallel"])
     except (TypeError, ValueError):
         pass
+    if params.get("keep_game_open") is True:  # (the game stays open for the agent's next run: cmd_serve)
+        run["keep_game_open"] = True
     if isinstance(params.get("trace"), dict):  # (where the run was asked for, as its MCP server was told)
         run["trace"] = params["trace"]
     return run
@@ -1381,6 +1438,27 @@ def max_parallel():
         return max(1, int(os.environ.get("AUTOPILOT_MAX_PARALLEL") or MAX_PARALLEL))
     except ValueError:
         return MAX_PARALLEL
+
+
+def seconds_setting(name, default):
+    """A number of seconds from the environment (name), else default."""
+    try:
+        return max(0.0, float(os.environ.get(name) or default))
+    except ValueError:
+        return default
+
+
+def keep_open_refused(run):
+    """Why a run can't keep the game open for the next (start_run's keep_game_open), or None."""
+    if not run.get("keep_game_open"):
+        return None
+    if run.get("kind") != "verify":
+        return ("keep_game_open is for verifications (kind verify): start this run without it (its game closes "
+                "when it reports, and the next run starts the game again).")
+    if int(run.get("parallel") or 1) > 1:
+        return ("keep_game_open plays runs one after another in one game; parallel plays them at once, each in a game "
+                "of its own: pass one or the other.")
+    return None
 
 
 def plays_side_by_side(link):
@@ -1431,6 +1509,14 @@ class Lanes:
                           "one of them has reported.")
         return next(n for n in range(1, self.size + 1) if n not in self.going), None
 
+    def reported(self):
+        """Whether every run going has already reported (it is only finishing: its memory, its result frame): a start
+        waits for those rather than being refused. The tab's runs never count (they have no desk)."""
+        with self.lock:
+            self.prune()
+            desks = [getattr(g[0], "desk", None) for g in self.going.values()]
+        return bool(desks) and all(d is not None and d.ended is not None for d in desks)
+
     def stop_all(self):
         with self.lock:
             for thread, stop, _ in self.going.values():
@@ -1458,8 +1544,15 @@ def cmd_serve(link, args):
     lock = lanes.lock  # (what goes, as the tab's frames and the user's own agent's start calls see it)
     feed = Feed()  # the latest run's activity events, for a plugin that asks for them again (hello activity_since)
     feed.watch_rebind(link)
+    # The game a run left open for the next (start_run's keep_game_open): until when it waits for one ("until"); the
+    # run started while it is open plays on in it (its restarts reopen the level in the game playing)
+    kept = {}
+    headless = bool(getattr(args, "headless", False))  # (the game was started by this service, with no window)
+    if headless:
+        run = asked = None  # (its command line's run is only how it connects: runs come from the user's own agent)
+    idle_since = time.time()
 
-    def start(run, prompt, stop, steering, desk=None, lane=None):
+    def start(run, prompt, stop, steering, desk=None, lane=None, in_place=False):
         nonlocal done
         sent = []
         played = link
@@ -1477,7 +1570,9 @@ def cmd_serve(link, args):
                            disable_premium_models=run.get("disable_premium_models") is True,
                            thinking_level=run.get("thinking_level"),
                            feed=feed if lane in (None, 1) else None, explore_minutes=explore_minutes(run),
-                           design_brief=str(run.get("design_brief") or "").strip() or None)
+                           design_brief=str(run.get("design_brief") or "").strip() or None,
+                           keep_game_open=bool(run.get("keep_game_open")) and lane is None,
+                           restart_in_place=in_place)
         except Exception as e:
             print(f"The run failed: {type(e).__name__}: {e}")
             if desk is not None:
@@ -1498,6 +1593,9 @@ def cmd_serve(link, args):
                     lanes.played.add(lane)
         if run is asked and sent:
             done = [(time.time(), run, sent[-1], link.current)]
+        if run.get("keep_game_open") and lane is None and not stop.is_set():
+            with lock:  # (the next run of the agent's goes on in it; closed if none comes)
+                kept["until"] = time.time() + seconds_setting("AUTOPILOT_KEEP_OPEN_SECONDS", KEEP_OPEN_SECONDS)
         send_memory_state(link)  # (what the run added)
 
     def ready_lane(played, lane):
@@ -1520,9 +1618,12 @@ def cmd_serve(link, args):
             lane, refused = lanes.take(want)
             if refused:
                 return refused
+            # (a game a run left open for this one: it plays on in it, its restarts in the game playing)
+            in_place = bool(kept) or bool(run.get("keep_game_open"))
+            kept.clear()
             stop, steering = threading.Event(), Steering()
             thread = threading.Thread(target=start, args=(run, prompt, stop, steering, desk,
-                                                          lane if lanes.size > 1 else None), daemon=True)
+                                                          lane if lanes.size > 1 else None, in_place), daemon=True)
             thread.desk = desk
             lanes.going[lane] = (thread, stop, steering)
             thread.start()
@@ -1539,6 +1640,16 @@ def cmd_serve(link, args):
         if missing:
             return missing
         run = external_run(params)
+        if headless:  # (every run plays in the one game this service started: never closed between them)
+            run["keep_game_open"] = True
+            run.pop("parallel", None)
+        refused = None if headless else keep_open_refused(run)
+        if refused:
+            return refused
+        # (a run that has reported is only finishing: the next request of a batch waits for it, not refused)
+        waited = time.time()
+        while lanes.reported() and time.time() - waited < REPORTED_WAIT_SECONDS:
+            time.sleep(0.25)
         refused = begin(run, prompt_of(run), desk)
         if refused:
             return refused
@@ -1567,7 +1678,24 @@ def cmd_serve(link, args):
             if prompt:
                 begin(run, prompt)
             run = None
-        lanes.busy()
+        if lanes.busy():
+            idle_since = time.time()
+        else:
+            with lock:
+                close = bool(kept) and time.time() > kept["until"]
+                if close:
+                    kept.clear()
+            if close:  # (no run came for the game kept open)
+                print("Closing the game kept open: no run came for it")
+                close_game(link)
+            if headless and time.time() - idle_since > seconds_setting("AUTOPILOT_HEADLESS_IDLE_SECONDS",
+                                                                        HEADLESS_IDLE_SECONDS):
+                print("No run for a while: the headless game ends, and this service with it")
+                return 0
+        if headless and game_ended(args):
+            print("The headless game has ended: this service ends with it")
+            lanes.stop_all()
+            return 1
         msg = link.next_message(timeout=1.0)
         if msg is None:
             continue
@@ -1594,9 +1722,15 @@ def cmd_serve(link, args):
                 link.send({"type": "status", "text": "A run is going: steer it, or stop it first"})
             else:
                 run = msg.get("run") or {}
+                with lock:  # (the tab's own run plays on in a game kept open, and closes it as every run of its)
+                    kept.clear()
         elif kind == "stop" and lanes.busy():
             lanes.stop_all()  # (the tab's Stop: every run going, the games side by side too)
             link.status("Stopping")
+        elif kind == "stop" and kept:
+            with lock:  # (the tab's Stop between the runs of a batch in one game: the game kept open closes)
+                kept.clear()
+            close_game(link)
         elif kind == "steer" and lanes.shown() is not None:
             # (mode: "hint", the default, or "redirect", which ends the episode playing now; see bridge.BRAIN_FEATURES)
             mode = msg.get("mode") if msg.get("mode") in STEER_MODES else HINT
@@ -1644,6 +1778,15 @@ def parser():
                    help="sign in with Aura: run on your Aura plan instead of your own keys")
     s.add_argument("--exit-with", type=int, metavar="PID",
                    help="end once the process PID has ended (for a program that starts Autopilot and owns it)")
+    s.add_argument("--headless", action="store_true",
+                   help="start the project's game (--project) itself, with no window and no editor (Unreal -game "
+                        "-nullrhi, Unity batch mode, Godot --headless), and play every run in it; it draws no picture. "
+                        "`autopilot mcp` starts one for start_run's headless")
+    s.add_argument("--engine", help="with --headless: the engine's executable (default: the project's own, else the "
+                                    "engine adapter's)")
+    s.add_argument("--brain-file", help=argparse.SUPPRESS)  # (where it says where it is: its starter reads it; never
+    # brain.json, which the editors' plugins read)
+    s.add_argument("--connect-timeout", type=float, default=600.0, help=argparse.SUPPRESS)
     p = sub.add_parser("play", help="run one prompt and exit with its result")
     p.add_argument("prompt")
     p.add_argument("--port", type=int, help="where to listen for the game (default 8765; with --build any free port)")
@@ -1808,6 +1951,17 @@ def main(argv=None):
         extra = {"control": args.control.url}
     wait, launched = None, False
     http_port = getattr(args, "http_port", None)
+    if args.cmd == "serve" and args.headless:
+        refused = headless_refused(args)
+        if refused:
+            print(refused)
+            return 1
+        if args.brain_file:  # (said under its own name: no editor's plugin finds it and connects)
+            announce_as = args.brain_file
+        if not args.port:  # (the game is told where to connect: any free port, never another Autopilot's)
+            args.port = free_port()
+        launched = launch_headless(args, f"ws://127.0.0.1:{args.port}/v1/bridge")
+        wait, http_port = args.connect_timeout, False
     if args.cmd in ("regress", "play"):
         if args.build and args.path:
             raise SystemExit("Give --build or --project, not both")

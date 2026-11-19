@@ -19,6 +19,54 @@ from .base import Engine, app_bundle, safe_rel
 UNREAL = os.environ.get("AUTOPILOT_UNREAL", r"C:\Program Files\Epic Games\UE_5.8")
 ENGINE_CMD = os.path.join(UNREAL, "Engine", "Binaries", "Win64", "UnrealEditor-Cmd.exe")
 EDITOR = os.path.join(UNREAL, "Engine", "Binaries", "Win64", "UnrealEditor.exe")
+
+
+def editor_for(project):
+    """The editor of the engine the project is set to (its .uproject's EngineAssociation: a launcher version such as
+    5.8, a source build's {GUID} as registered, or "" for the engine whose tree it sits in), else EDITOR. With
+    AUTOPILOT_UNREAL set, EDITOR."""
+    if "AUTOPILOT_UNREAL" in os.environ or not project:
+        return EDITOR
+    try:
+        import json
+
+        with open(project, encoding="utf-8-sig") as f:
+            association = str(json.load(f).get("EngineAssociation") or "")
+    except (OSError, ValueError, AttributeError):
+        return EDITOR
+    roots = []
+    if not association:  # (in an engine's tree: the folder above with Engine/ in it)
+        here = os.path.dirname(os.path.abspath(project))
+        while os.path.dirname(here) != here:
+            here = os.path.dirname(here)
+            if os.path.isdir(os.path.join(here, "Engine", "Binaries")):
+                roots.append(here)
+                break
+    elif os.name == "nt":
+        try:
+            import winreg
+
+            if association.startswith("{"):
+                with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"SOFTWARE\Epic Games\Unreal Engine\Builds") as k:
+                    roots.append(winreg.QueryValueEx(k, association)[0])
+            else:
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                    rf"SOFTWARE\EpicGames\Unreal Engine\{association}") as k:
+                    roots.append(winreg.QueryValueEx(k, "InstalledDirectory")[0])
+        except OSError:
+            pass
+        roots.append(os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), "Epic Games",
+                                  f"UE_{association}"))
+    else:
+        roots.append(os.path.join("/Users/Shared/Epic Games", f"UE_{association}"))
+    for root in roots:
+        for exe in (os.path.join(root, "Engine", "Binaries", "Win64", "UnrealEditor.exe"),
+                    os.path.join(root, "Engine", "Binaries", "Mac", "UnrealEditor.app", "Contents", "MacOS",
+                                 "UnrealEditor"),
+                    os.path.join(root, "Engine", "Binaries", "Linux", "UnrealEditor")):
+            if os.path.isfile(exe):
+                return exe
+    return EDITOR
 SOURCE_EXT = (".h", ".hpp", ".cpp", ".inl", ".cs")
 SCRIPT_EXT = ".as"  # AngelScript (the Hazelight engine fork): Script/ beside Source/
 ANGELSCRIPT_MODULE = "Angelscript"  # its script classes are in /Script/Angelscript
@@ -245,7 +293,7 @@ class Unreal(Engine):
             f"-abslog={log}"]
         if exe and is_packaged(exe):
             return [exe] + ([map] if map else []) + playtest
-        return [exe or EDITOR, project] + ([map] if map else []) + ["-game"] + playtest
+        return [exe or editor_for(project), project] + ([map] if map else []) + ["-game"] + playtest
 
     def is_build(self, exe):
         """A packaged game: <Game>.exe (or Game.sh) beside the staged Engine/ and <Game>/ folders, the program under

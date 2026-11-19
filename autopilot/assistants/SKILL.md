@@ -32,9 +32,42 @@ and revise the harness, and report what play showed. Its tools come from the `au
    Once `report` says "Reported", the run is over: tell the user its outcome in a few lines. The Autopilot tab in
    their editor shows the whole result, with the recording.
 
-## Several requests at once
+## Several requests
 
-When the user gives several requests to go through (a list, a spreadsheet, a CSV of prompts), run them in batches:
+When the user gives several requests to go through (a list, a spreadsheet, a CSV of prompts), choose how:
+
+- **Verifications: one after another in one game. This is the default**, whatever the editor, and however many
+  requests there are. One game stays open for the whole list; it isn't torn down and started again for each request,
+  and nothing else is started beside it.
+- **Games side by side** (up to three at once, Unreal only) **only when the user asks for it** in so many words:
+  "in parallel", "at the same time", "side by side", "several windows", "three at a time". A long list, a deadline or
+  wanting it done quickly is not asking for it: go one after another.
+- Goals and explorations each get a run of their own (their game closes when they report): put them before or after
+  the verifications, never between two that share the game.
+
+Every request gets its own Autopilot run and its own verdict from that run's `report`, whichever way. When every run
+has reported, tell the user each request's outcome in one line, in their order (a table when they gave a table), and
+fill in whatever they asked to be filled in (a results column, repro steps) from the runs' reports.
+
+### One game, one after another (the default)
+
+- You choose the order: put requests that build on the same state next to each other (verify reloading right after
+  firing, a building's roof after entering it), and the ones that change the game for good (dying, using up a
+  resource) late.
+- Work through them yourself, one run at a time, with no subagents: `start_run` with `kind` verify and
+  `keep_game_open` true for every request but the last, steps 3-7 for it, then the next `start_run`. Don't pass
+  `parallel`. Read INSTRUCTIONS.md once, for the first run; the next runs' instructions are the same.
+- Every run reports its own verdict with `report`, as one run alone would: never settle a request yourself without
+  its run, and never report one run's verdict for another request. Each run's id is its own: pass it as `run`.
+- When a run has reported, its game stays open, paused where the run left it, and the next run plays on in it. Its
+  briefing shows the game as it is now; its first `run_harness` may go on from there with `restart=False` when that
+  suits its request, or restart. Restarts reopen the level in the game playing: in Roblox Studio they respawn the
+  player and keep what the world changed.
+- The game closes when the last run (the one without `keep_game_open`) reports, or when no run has come for 10
+  minutes.
+
+### Games side by side (only when the user asks for it)
+
 Autopilot plays up to three games side by side in the editor (Unreal), one run in each.
 
 - Give each request to a subagent of its own, in the background, with the request, its kind and these steps 2-7 (the
@@ -50,8 +83,17 @@ Autopilot plays up to three games side by side in the editor (Unreal), one run i
   every run's episode starts at once. Then call `wait` for each of them, in one message.
 - Don't end your turn while a run's subagent is still going: wait for each one's result (a session run without a
   person, `claude -p` or `codex exec`, ends with your turn, and its subagents with it).
-- When every run has reported, tell the user each request's outcome in one line, in their order (a table when they
-  gave a table).
+
+## Headless
+
+When the user asks for Autopilot headless (no window, no editor), pass `headless` true with every `start_run`:
+Autopilot starts the project's game itself with no window (Unreal, Unity, Godot; not Roblox, whose games play only
+in Roblox Studio) and plays every headless run in that one game, one after another, as above (no `keep_game_open`
+needed, and no `parallel`). `project` names the game's project when it isn't the one in your working folder. The
+first start takes a while (the game starts; say so to the user). A headless game draws no picture: settle requests
+from the game's state, and a request about how something looks is INCONCLUSIVE there (tell the user it needs the
+editor). Unity opens a project in one editor at a time: a headless Unity game needs the project closed in the Unity
+editor.
 
 Use Autopilot's own file tools for the game's folder (paths relative to it), never your own, and don't change the
 user's project or the game's files: the game is acted on only through play, with Autopilot's tools. The user can

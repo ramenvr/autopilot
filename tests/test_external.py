@@ -141,7 +141,8 @@ def test_an_argument_name_a_tool_doesnt_take_is_refused_never_dropped(started):
     words = text_of(refused)
     assert refused["isError"] and control.desk is None
     assert words.startswith("start_run: unknown argument(s) frames_fps; it takes request, kind, minutes, "
-                            "time_limit_minutes, level, parallel. frames_fps is an argument of run_harness.")
+                            "time_limit_minutes, level, parallel, keep_game_open, headless, project, engine. "
+                            "frames_fps is an argument of run_harness.")
     assert "Nothing was done" in words
     settled(front, front.call("start_run", {"request": "Reach the gate"}))
     desk = control.desk

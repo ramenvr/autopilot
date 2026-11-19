@@ -689,6 +689,17 @@ func _session(id, args: Dictionary) -> void:
 		if scene == "":
 			_respond_error(id, "No scene %s" % args.map, 404)  # (before anything changes)
 			return
+	# A restart in place ("in_place": runs one after another in one game, start_run's keep_game_open): the game reopens
+	# the scene itself (its own `session`: playtest.gd), the play session and its window staying as they are
+	var playing := EditorInterface.get_playing_scene() if EditorInterface.is_playing_scene() else ""
+	var switching := action == "start" and scene != "" and playing != "" and playing != scene
+	if bool(args.get("in_place", false)) and _game_ready and (action == "restart" or switching):
+		var asked := args.duplicate()
+		asked["action"] = "restart"
+		var frame := {"type": "request", "id": id, "op": "session", "args": asked}
+		if debugger.send(_game_session, "request", [JSON.stringify(frame)]):
+			_forwarded[id] = true
+			return
 	if action == "start" and scene != "" and EditorInterface.is_playing_scene():
 		# a start with a map while another scene plays: that map, as a restart into it
 		if EditorInterface.get_playing_scene() == scene and _game_ready:

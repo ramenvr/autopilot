@@ -317,8 +317,10 @@ namespace Autopilot.Playtest
         /// <summary>Reopen the launch scene (or `map`: a scene name, path or build index) and answer once it is loaded.
         /// A player's restart; the editor's is Stop and Play (EditorHost.StopAndPlay). A player can't do that, so the
         /// game's first scene, which starts the game, gets what a new launch would: nothing carried over. Any other
-        /// scene keeps it: it may need what the first scene set up.</summary>
-        public static void Restart(PlaytestClient client, long id, string map)
+        /// scene keeps it: it may need what the first scene set up. load: how the scene is opened (the editor's restart
+        /// in place opens a scene by its path inside play mode: EditorHost); by default SceneManager.LoadScene, a
+        /// build's scene list's.</summary>
+        public static void Restart(PlaytestClient client, long id, string map, Action<string> load = null)
         {
             var target = string.IsNullOrEmpty(map) ? LaunchScene : map;
             if (string.IsNullOrEmpty(target)) target = SceneManager.GetActiveScene().path;
@@ -328,7 +330,8 @@ namespace Autopilot.Playtest
             try
             {
                 if (SameScene(target, FirstScene)) DropCarried();
-                if (int.TryParse(target, out var index)) SceneManager.LoadScene(index, LoadSceneMode.Single);
+                if (load != null) load(target);
+                else if (int.TryParse(target, out var index)) SceneManager.LoadScene(index, LoadSceneMode.Single);
                 else SceneManager.LoadScene(target, LoadSceneMode.Single);
             }
             catch (Exception e)

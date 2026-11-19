@@ -430,6 +430,16 @@ namespace
 		}
 		// A start asking for another level than the one playing goes there, as a restart in it
 		const bool bSwitch = Action == TEXT("start") && World && !Package.IsEmpty() && Package != PlaytestLevels::PackageOf(World);
+		// A restart in place ("in_place": runs one after another in one game, start_run's keep_game_open): the level
+		// reopens in the game playing, as a game build's restart does, and Play In Editor's window stays open. Only for
+		// one standalone game: a networked session's clients would lose their server
+		bool bInPlaceArg = false;
+		if (Args.IsValid())
+		{
+			Args->TryGetBoolField(TEXT("in_place"), bInPlaceArg);
+		}
+		const bool bInPlace = bInPlaceArg && World && (Action == TEXT("restart") || bSwitch)
+			&& World->GetNetMode() == NM_Standalone && Bridge.GetPlayerWorlds().Num() == 1;
 		// How many players play is the editor's Play settings' (Number of Players, run under one process; the net mode
 		// with it): the run plays the game as the user set it up, so a start or restart asking for another number is
 		// refused before anything changes (Roblox's plugin starts that many; Unreal's never changes the user's settings)
@@ -440,7 +450,7 @@ namespace
 			// playing now); a start of a stopped game, and the editor's restart or level switch (it stops play and starts
 			// it again), play as many as the Play settings start now; a game build's restart reopens the level with the
 			// players it has
-			const bool bNewSession = !World || (Bridge.SessionHandler && (Action == TEXT("restart") || bSwitch));
+			const bool bNewSession = !World || (Bridge.SessionHandler && !bInPlace && (Action == TEXT("restart") || bSwitch));
 			const int32 Playing = Bridge.GetPlayerWorlds().Num();
 			const int32 Count = !bNewSession ? Playing : Bridge.PlaySettingsPlayers ? Bridge.PlaySettingsPlayers() : 1;
 			if (FMath::FloorToInt32(AskedPlayers) != Count)
@@ -462,6 +472,11 @@ namespace
 				Bridge.RespondError(Id, Problem, 412);
 				return;
 			}
+		}
+		if (bInPlace && Bridge.SessionHandler)
+		{
+			ReopenLevel(Bridge, Id, 1, World, Package.IsEmpty() ? PlaytestLevels::PackageOf(World) : Package);
+			return;
 		}
 		if (Bridge.SessionHandler)
 		{

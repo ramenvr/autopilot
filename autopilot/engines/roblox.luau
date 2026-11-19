@@ -941,6 +941,17 @@ end
 
 -- RUN(REQ): every op of the request under pcall, in order, in this one call (one frame of the data model); the answers
 -- as JSON: {t = game time, r = {{ok, v} or {ok = false, e = message}...}}
+-- `respawn` (on the server): every player's character loaded afresh where the game spawns it, the play session
+-- going on: the connector's restart in place (runs one after another in one game). What the world changed stays
+function O.respawn(a)
+	local Players = game:GetService("Players")
+	local players = Players:GetPlayers()
+	for _, player in ipairs(players) do
+		player:LoadCharacter()
+	end
+	return { respawned = #players }
+end
+
 local function RUN(REQ)
 	OVERRIDE = (REQ.player ~= nil and REQ.player ~= "") and REQ.player or nil
 	local answers = {}

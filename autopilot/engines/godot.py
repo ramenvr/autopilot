@@ -24,6 +24,20 @@ from .base import CODEX_OWN, OpEngine, app_bundle, safe_rel
 EXE = os.environ.get("AUTOPILOT_GODOT") or shutil.which("godot") or "godot"
 CODE_EXT = (".gd", ".cs", ".tscn", ".tres", ".gdshader")
 TOP_FILES = ("project.godot", "export_presets.cfg")
+
+
+def editor_for(folder):
+    """The Godot that runs the project: AUTOPILOT_GODOT or `godot` on PATH when there is one, else the editor that last
+    opened it (its .godot/editor/project_metadata.cfg's executable_path, which the editor writes), else EXE."""
+    if os.environ.get("AUTOPILOT_GODOT") or shutil.which("godot") or not folder:
+        return EXE
+    try:
+        with open(os.path.join(folder, ".godot", "editor", "project_metadata.cfg"), encoding="utf-8") as f:
+            m = re.search(r'^executable_path\s*=\s*"((?:[^"\\]|\\.)*)"', f.read(), re.M)
+    except OSError:
+        m = None
+    path = m.group(1).replace("\\\\", "\\") if m else ""
+    return path if path and os.path.isfile(path) else EXE
 # The addon's summary of the project (main scene, autoloads, input actions, global classes, each scene's nodes)
 EXPORT_PREFIX = ".godot/autopilot_codex/"
 
@@ -165,6 +179,8 @@ class Godot(OpEngine):
         arguments after `--` (Unreal's spellings, or its own --playtest-url=...); -PlaytestMap: the scene to start in
         (a res:// path or a scene file's name). headless=False: rendered, in a window."""
         where = [] if exe and is_exported(exe) else ["--path", self.project_folder(project)]
+        if not exe and project:
+            exe = editor_for(self.project_folder(project))
         return [exe or EXE, "--headless" if headless else "--windowed"] + where + [
             "--log-file", log, "--", "-Playtest=goal", "-PlaytestGoal=autopilot", f"-PlaytestUrl={url}"] + (
                 [f"-PlaytestMap={map}"] if map else [])

@@ -417,6 +417,10 @@ namespace Autopilot.Playtest.Editor
                 client.RespondError(id, problem, 412);
                 return true;
             }
+            // A restart in place ("in_place": runs one after another in one game, start_run's keep_game_open): the scene
+            // reopens inside play mode, as a player's restart does, never leaving it (what the game carries between
+            // scenes stays: Ops.Restart)
+            var inPlace = Json.Bool(args, "in_place", false) && EditorApplication.isPlaying;
             switch (action)
             {
                 case "start":
@@ -425,6 +429,11 @@ namespace Autopilot.Playtest.Editor
                         // (a scene asked for while another plays: switched to, as Godot's game does)
                         if (!string.IsNullOrEmpty(map) && !Ops.IsActiveScene(map) && !Ops.IsActiveScene(ScenePath(map)))
                         {
+                            if (inPlace)
+                            {
+                                RestartInPlace(client, id, map);
+                                return true;
+                            }
                             StopAndPlay(id, map);
                             return true;
                         }
@@ -449,10 +458,29 @@ namespace Autopilot.Playtest.Editor
                         EnterPlayMode(client, Wait(id, map));
                         return true;
                     }
+                    if (inPlace)
+                    {
+                        RestartInPlace(client, id, map);
+                        return true;
+                    }
                     StopAndPlay(id, map);
                     return true;
             }
             return false;
+        }
+
+        /// <summary>Reopen the scene playing (or `map`) inside play mode: the restart of runs one after another in one
+        /// game. A scene by its path, as EditorSceneManager opens any of the project's in play mode (a player's
+        /// SceneManager only those of the build's list).</summary>
+        static void RestartInPlace(PlaytestClient client, long id, string map)
+        {
+            var path = string.IsNullOrEmpty(map) ? null : ScenePath(map);
+            if (string.IsNullOrEmpty(path))
+            {
+                path = !string.IsNullOrEmpty(Ops.LaunchScene) ? (ScenePath(Ops.LaunchScene) ?? Ops.LaunchScene)
+                    : SceneManager.GetActiveScene().path;
+            }
+            Ops.Restart(client, id, path, p => EditorSceneManager.LoadSceneInPlayMode(p, new LoadSceneParameters(LoadSceneMode.Single)));
         }
 
         /// <summary>Start over as the person at the editor would, with Stop and then Play. Only that starts a game

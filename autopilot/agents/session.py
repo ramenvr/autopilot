@@ -2123,7 +2123,9 @@ def open_session(game, project, prompt, run_id=None, say=None, client=None, time
         session.sandbox = sandboxmod.Sandbox(game.link, client, project, prompt, session.run_id, session.root,
                                              codexmod.MEMORY, scrub=scrub,
                                              recorder=getattr(describer, "recorder", None),
-                                             level=getattr(game, "level", None), say=session.say,
+                                             level=getattr(game, "level", None),
+                                             restart_in_place=getattr(game, "restart_in_place", False),
+                                             say=session.say,
                                              activity=session.activity, looker=session.looker)
         session.note(f"sandbox: {session.sandbox.kind}")
         if session.episodes:  # (episodes play in its process: a new one must not take an earlier one's number)
