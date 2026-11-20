@@ -192,6 +192,18 @@ def test_each_provider_has_its_vision_model_or_says_why_not(monkeypatch):
     assert route[1] == "http://127.0.0.1:9/anthropic" and route[3] == "claude-other"
 
 
+def test_a_gateway_of_the_openai_wire_looks_through_its_own_root(monkeypatch):
+    """A provider this file has no entry for — a self-hosted gateway, a company proxy — serves the OpenAI wire: with
+    OPENAI_BASE_URL and OPENAI_API_KEY set, its own pictures-capable model describes the frames. Without them, no."""
+    keys(monkeypatch, OPENAI_API_KEY="sk-g")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://127.0.0.1:9/gw/v1")
+    route, why = vision.route("gateway")
+    assert why is None and route[0] == "openai" and route[1] == "http://127.0.0.1:9/gw/v1"
+    assert route[2] == "sk-g"
+    monkeypatch.delenv("OPENAI_BASE_URL")
+    assert vision.route("gateway") == (None, "no model of gateway is known to look at pictures")
+
+
 def test_what_cant_look_is_known_as_the_run_starts(monkeypatch):
     keys(monkeypatch, ANTHROPIC_API_KEY="sk-a")
     assert vision.Describer(FakeRecorder(), "anthropic").cannot() is None
