@@ -76,6 +76,8 @@ If you haven't already, download the Autopilot build for Roblox Studio from [try
 
 The Autopilot onboarding flow installs the agent service and sets up the models (LLMs and decision models) for Autopilot to work.
 
+> If your game engine was open during installation and you don't see Autopilot, restart your engine.
+
 1. Open the Autopilot window. For Unreal and Godot users, click the Autopilot icon (orange controller). For Unity users, click **Window > Autopilot**. For Roblox Studio users, click **Plugins > Autopilot**.
 2. We recommend using Autopilot with your Aura account so you can track your usage in one centralized platform. Click **Create Account** if you don't yet have an Aura account, or **Sign in** if you are a returning user. You also have the option to BYOK.
 3. Wait for Autopilot to set up and start the agent service. Once it is done, you are automatically redirected to the signup/signin page.
