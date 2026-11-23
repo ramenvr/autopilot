@@ -419,6 +419,22 @@ class RobloxMedia:
 
         return BridgeError(409, f"no picture: {why}")
 
+    @staticmethod
+    def _player(args):
+        from .bridge import _player_of
+
+        return _player_of(args)
+
+    def _only_player_one(self, args):
+        """Refuses a picture of another player than player 1 (args' "player"): Studio's MCP server pictures player 1's
+        client only, and player 1's picture mustn't be taken for another player's (media.Recorder)."""
+        from .bridge import BridgeError
+
+        player = self._player(args)
+        if player > 1:
+            raise BridgeError(409, f"no picture of player {player}: Roblox Studio's pictures are player 1's client's "
+                                   "only")
+
     def _game_time(self):
         t, at = self.link.game_time, self.link.game_time_at
         if not isinstance(t, (int, float)) or at is None:
@@ -431,6 +447,7 @@ class RobloxMedia:
             self.pictures.forget()
 
     def capture(self, args):
+        self._only_player_one(args)
         self._follow_sessions()
         if not self.link.session_running:
             raise self._no_picture("no game is running (start one with session start)")
@@ -444,6 +461,8 @@ class RobloxMedia:
 
     def record(self, args):
         action = str(args.get("action") or "start")
+        if action == "stop" and self._player(args) > 1:  # (another player's: never recorded, and player 1's goes on)
+            return {"recording": False, "frames": 0}
         if action == "stop":
             self.stop()
             return {"recording": False, "frames": self.frames}
@@ -451,6 +470,7 @@ class RobloxMedia:
             from .bridge import BridgeError
 
             raise BridgeError(400, f"unknown record action {action}")
+        self._only_player_one(args)
         try:
             self.pictures.check()
         except McpError as e:
