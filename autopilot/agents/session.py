@@ -620,6 +620,9 @@ class Session:
         self.index_was_running = False  # (the export was still running when the run started: its end is told)
         self.index_told_done = False
         self.harness_started = {}  # episode n -> time.time() its harness started playing
+        # episode n -> the indexer's status when its harness started: a harness written while the export still ran
+        # was built on part of the game's files (finish() alerts the user when the last one played was)
+        self.harness_index = {}
 
     def indexer(self):
         """The codex's Indexer (codex.Indexer) when the export streamed in for this run, else None."""
@@ -1230,6 +1233,9 @@ class Session:
         n = self.episodes + 1
         if os.path.exists(os.path.join(self.run_dir, file)):
             self.harness_started[n] = t0
+            idx = self.indexer()
+            if idx is not None:
+                self.harness_index[n] = idx.status()
             if self.researcher is not None:  # (it checks the harness against the code while it plays)
                 self.researcher.playing(n)
         if self.sandbox:
@@ -2225,6 +2231,29 @@ def watch_steering(session):
     return done
 
 
+def last_harness_index(session):
+    """(n, the indexer's status when harness n started) for the last harness played, or (None, None) when none played
+    or the export didn't stream in for it."""
+    statuses = getattr(session, "harness_index", None) or {}
+    played = [k for k in statuses if k <= session.episodes]
+    if not played:
+        return None, None
+    return max(played), statuses[max(played)]
+
+
+def index_alert(session):
+    """The result's alert when the last harness played was written while the game's files were still being indexed
+    (the files exported after it started were never read for it), else "". A harness that had the whole codex says
+    nothing: the alert would show on every run."""
+    n, status = last_harness_index(session)
+    if not status or not status.get("running"):
+        return ""
+    counted = (f"{status.get('done')} of {status['total']} exported" if status.get("total")
+               else "the export hadn't counted its files yet")
+    return (f"Harness {n}, the last one played, was written while the game's files were still being indexed "
+            f"({counted}). Files exported after that were not read for it.")
+
+
 def finish(session, started, stopped, last_text, **facts):
     """The request's report: what the agent reported (or, when it reported nothing, a fallback saying why), with the
     run's facts added. Saved as report.json in the run's folder. started: time.time() when the agent started;
@@ -2250,6 +2279,9 @@ def finish(session, started, stopped, last_text, **facts):
     })
     if session.reported_at_time_up:  # (the run's own fact: an agent's words about its time aren't taken for it)
         report["time_up"] = True
+    partial = index_alert(session)
+    if partial:
+        session.alert(partial)
     if session.alerts:
         report["alerts"] = list(session.alerts)
     if session.researcher is not None:
@@ -2262,6 +2294,9 @@ def finish(session, started, stopped, last_text, **facts):
             idx.listeners.remove(session.researcher.arrived)
         # How much of the export the run had (it streamed in while the run worked), and what the researcher found
         report["indexing"] = dict(idx.status(), batches_told=session.news_batches)
+        n, status = last_harness_index(session)
+        if status:  # (what the last harness played could read)
+            report["indexing"]["last_harness"] = dict(status, n=n)
     if session.findings:
         report["background_findings"] = len(session.findings)
     if session.reader is not None and session.reader.model.tokens:  # (llm, llm_map and the researcher, by model)

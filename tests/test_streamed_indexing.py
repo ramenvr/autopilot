@@ -6,9 +6,9 @@ import threading
 import time
 
 import pytest
-from test_autopilot import FakeJev, FakeLink
+from test_autopilot import FakeJev, FakeLink, crate_session
 
-from autopilot import codex, llm
+from autopilot import cli, codex, llm
 from autopilot.agents import researcher as researchermod
 from autopilot.agents import session
 from autopilot.kit.game import Game
@@ -432,3 +432,47 @@ def test_an_export_that_ended_well_counts_as_all_written(tmp_path, monkeypatch):
     idx.start()
     wait_for(idx)
     assert idx.status()["done"] == idx.status()["total"] == 2
+
+
+PARTIAL_ALERT = ("Harness 1, the last one played, was written while the game's files were still being indexed (5 of 9 "
+                 "exported). Files exported after that were not read for it.")
+
+
+def crate_run(tmp_path, monkeypatch, running):
+    """The crate game's session (tests/test_autopilot.py) with a codex whose export is still running (running=True),
+    is all in (False), or never streamed (None: no indexer)."""
+    game = Game(FakeLink())
+    game.look = {"x": 0.1, "y": 0.1}
+    s = crate_session(game, tmp_path, monkeypatch)
+    s.game.codex = codex.Codex.for_project("fake")
+    s.game.codex.indexer = None if running is None else StubIndexer([], running=running)
+    return s
+
+
+def test_the_report_says_the_last_harness_was_built_on_a_partial_index(tmp_path, monkeypatch):
+    s = crate_run(tmp_path, monkeypatch, running=True)
+    s.run_harness(15)
+    s.game.codex.indexer.running = False  # (the export ends before the report: the harness still had only part)
+    report = session.finish(s, time.time(), None, "")
+    assert report["alerts"] == [PARTIAL_ALERT]
+    assert report["indexing"]["last_harness"]["running"] is True and report["indexing"]["last_harness"]["n"] == 1
+    assert cli.result_frame(report, s.prompt)["alerts"] == [PARTIAL_ALERT]
+    # an export that hadn't counted its files when the harness started says so in the bracket
+    s.harness_index[1] = dict(s.harness_index[1], done=0, total=0)
+    assert "(the export hadn't counted its files yet)" in session.index_alert(s)
+
+
+def test_the_report_has_no_index_alert_when_the_harness_had_the_whole_codex(tmp_path, monkeypatch):
+    s = crate_run(tmp_path, monkeypatch, running=False)
+    s.run_harness(15)
+    report = session.finish(s, time.time(), None, "")
+    assert not any("indexed" in a for a in report.get("alerts", []))
+    # no indexer (the codex was whole when the run started): no alert and no `indexing`, as before
+    s = crate_run(tmp_path / "whole", monkeypatch, running=None)
+    s.run_harness(15)
+    report = session.finish(s, time.time(), None, "")
+    assert "alerts" not in report and "indexing" not in report
+    # no harness played: nothing was built on the partial codex
+    s = crate_run(tmp_path / "none", monkeypatch, running=True)
+    report = session.finish(s, time.time(), None, "")
+    assert not any("indexed" in a for a in report.get("alerts", []))
