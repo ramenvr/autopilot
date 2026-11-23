@@ -13,6 +13,11 @@ The plugin captures the game's view (docs/protocol.md, "Recording, stills and us
                episode or not, are kept in memory too, for describe_frames (autopilot/vision.py). The run's report
                shows the video of the episode the agent's report names as the one that shows the result best (its
                `episode`), else the last episode's.
+               In a game that plays several players in one editor (the plugin's hello says "players" and "instances"),
+               each other player is recorded too, from an episode's begin, up to MAX_PLAYERS: player k's video is
+               media/recording-<n>-p<k>.mp4, with media/frames-<n>-p<k>.jsonl, at OTHER_FPS. The result's
+               `recordings` lists every player's video of the episode shown, player 1's first; a player with none
+               gets an alert in the report saying why (a plugin that records player 1 only, no picture of it).
     still()    one still: media/stills/<seq>-<reason>.jpg, with a line in media/stills.jsonl.
 
 Both only when the plugin says it can capture (hello `features` has "media"). Nothing here may slow the game or the
