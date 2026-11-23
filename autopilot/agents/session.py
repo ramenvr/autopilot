@@ -2214,8 +2214,14 @@ def first_message(session):
     with open(os.path.join(session.run_dir, "prompt.txt"), "w", encoding="utf-8") as f:
         f.write(session.prompt)
     going_on = GOING_ON.format(run=session.run_rel) + "\n\n" if getattr(session, "going_on", False) else ""
-    return PROMPT.format(prompt=session.prompt, project=session.project, run=session.run_rel,
-                         briefing=going_on + briefing(session, opening) + "\n\n" + session.looking_note())
+    brief = briefing(session, opening)
+    looking = session.looking_note()
+    message = PROMPT.format(prompt=session.prompt, project=session.project, run=session.run_rel,
+                            briefing=going_on + brief + "\n\n" + looking)
+    # (sizes only, never the text; the briefing's own line has its parts)
+    session.note("request message sizes: " + json.dumps({"total": len(message), "briefing": len(brief),
+                                                         "going on": len(going_on), "looking": len(looking)}))
+    return message
 
 
 def watch_steering(session):

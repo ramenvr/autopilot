@@ -242,6 +242,30 @@ def test_the_briefing_logs_each_parts_size_not_its_text(game, tmp_path, monkeypa
     assert "lantern" not in line and "fact" not in line and "helper" not in line  # (numbers only, never the text)
 
 
+def test_the_first_message_logs_the_request_message_size(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    monkeypatch.setattr(session.Session, "opening", lambda self: "(the game)")
+    message = session.first_message(s)
+    line, sizes = logged(s, "request message sizes")
+    assert sizes["total"] == len(message) and sizes["briefing"] > 0 and sizes["going on"] == 0
+    assert sizes["looking"] == len(s.looking_note())
+    assert sizes["briefing"] + sizes["going on"] + sizes["looking"] < sizes["total"]
+    # (the message itself is what it was before the sizes were logged)
+    assert message == session.PROMPT.format(prompt=s.prompt, project=s.project, run=s.run_rel,
+                                            briefing=session.briefing(s, "(the game)") + "\n\n" + s.looking_note())
+    assert sizes["briefing"] == len(session.briefing(s, "(the game)"))
+
+
+def test_the_first_message_of_a_run_that_goes_on_logs_its_going_on_size(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    monkeypatch.setattr(session.Session, "opening", lambda self: "(the game)")
+    s.going_on = True
+    message = session.first_message(s)
+    line, sizes = logged(s, "request message sizes")
+    going_on = session.GOING_ON.format(run=s.run_rel) + "\n\n"
+    assert sizes["total"] == len(message) and sizes["going on"] == len(going_on) and going_on in message
+
+
 def test_the_start_answer_points_to_request_md_when_the_briefing_is_long():
     short = external.start_text("r1-ab", "fake", "Open the crate", "Request: Open the crate\n\nbrief", "runs/r1")
     assert short.endswith("Request: Open the crate\n\nbrief") and "runs/r1/INSTRUCTIONS.md" in short
