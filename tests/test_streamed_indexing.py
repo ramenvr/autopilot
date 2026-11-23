@@ -339,6 +339,20 @@ def test_the_researchers_pass_is_told_the_export_is_still_running(tmp_path, monk
             assert "still being indexed" not in model.prompts[0]
 
 
+def test_the_briefing_says_not_in_the_codex_yet_while_indexing(tmp_path, monkeypatch):
+    # (the request's words in no file: while the export runs they may still come, so the line says "yet")
+    s = open_run(tmp_path, monkeypatch, prompt="Kill the boss in the vault")
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    s.game.codex.indexer = StubIndexer([], running=True)
+    text = session.briefing(s)
+    assert "(not in the codex yet: kill, vault;" in text and "5 of 9 written, it may still come)" in text
+    for indexer in (StubIndexer([], running=False), None):
+        s.game.codex.indexer = indexer
+        text = session.briefing(s)
+        assert "(not in the codex: kill, vault)" in text
+        assert "not in the codex yet" not in text
+
+
 def test_the_researcher_is_the_users_choice_else_off_in_the_aura_apps_autopilot(monkeypatch):
     from autopilot import aura
 

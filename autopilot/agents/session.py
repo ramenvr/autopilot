@@ -1914,6 +1914,7 @@ def briefing(session, opening=None):
     if since and (notes or lib or runs):  # (with nothing learned yet, nothing can be out of date)
         out.append(since)
     idx = session.indexer()
+    status = None  # (the export's, when it streams in: while it runs, a word in no file may still come)
     if idx is not None:
         with session.news_lock:  # (what arrived before now is in the codex the briefing reads: not news)
             session.news_batches = len(idx.batches)
@@ -1942,7 +1943,13 @@ def briefing(session, opening=None):
         ranked = [line for line in hits if line.startswith("- ")]
         text, _ = _listing(session, "## Where the request's words appear in the codex (files, with how often)",
                            ranked, "request_words", "files have some of the request's words, the most first")
-        out.append("\n".join([text, *(line for line in hits if not line.startswith("- "))]))
+        asides = [line for line in hits if not line.startswith("- ")]
+        if status and status["running"]:
+            missing = "(not in the codex: "
+            later = f"; the export {codexmod.progress(status)}, it may still come)"
+            asides = [f"(not in the codex yet: {line[len(missing):-1]}{later}" if line.startswith(missing) else line
+                      for line in asides]
+        out.append("\n".join([text, *asides]))
     try:  # (the workflow for this kind of request: the package's, or this game's own: autopilot/workflows.py)
         from .. import workflows
         from ..cli import kind_by_words
