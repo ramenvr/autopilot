@@ -286,6 +286,59 @@ def test_the_researcher_only_wakes_for_files_that_bear_on_the_request(tmp_path, 
     r.stop()
 
 
+def test_the_researchers_search_says_what_isnt_indexed_yet(tmp_path, monkeypatch):
+    # (while the export runs, "no match" only means "not indexed so far": the researcher must not read it as "not in
+    # the game")
+    s = open_run(tmp_path, monkeypatch)
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    s.game.codex.indexer = StubIndexer([], running=True)
+    r = researchermod.Researcher(s, FakeModel())
+    r.stop()
+    nothing = r._grep("Phase3")
+    assert "(no match)" not in nothing.splitlines()
+    assert "indexed so far" in nothing and "5 of 9 written" in nothing
+    found = r._grep("Enrage").splitlines()
+    assert found[0].startswith("codex/blueprints/BP_Boss.txt:")
+    assert sum("indexed so far" in line for line in found) == 1
+    assert "indexed so far" in r._list("codex/data/*")
+    missing = r._tool("read_file", {"path": "codex/blueprints/BP_Gate.txt"}, [("playing", 1, None)], [])
+    assert "not in the codex yet" in missing and "5 of 9 written" in missing
+
+
+def test_the_researchers_search_reads_as_before_once_the_export_is_in(tmp_path, monkeypatch):
+    s = open_run(tmp_path, monkeypatch)
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    s.game.codex.indexer = StubIndexer([], running=False)
+    r = researchermod.Researcher(s, FakeModel())
+    r.stop()
+    assert r._grep("Phase3") == "(no match)"
+    assert r._list("codex/data/*") == "(none)"
+    assert "indexed so far" not in r._grep("Enrage")
+    missing = r._tool("read_file", {"path": "codex/blueprints/BP_Gate.txt"}, [("playing", 1, None)], [])
+    assert missing.startswith("read_file failed: FileNotFoundError")
+    s.game.codex.indexer = None  # (no streamed export at all)
+    assert r._grep("Phase3") == "(no match)"
+
+
+def test_the_researchers_pass_is_told_the_export_is_still_running(tmp_path, monkeypatch):
+    s = open_run(tmp_path, monkeypatch)
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    for running in (True, False):
+        s.game.codex.indexer = StubIndexer([], running=running)
+        model = FakeModel()
+        r = researchermod.Researcher(s, model)
+        r.playing(1)
+        deadline = time.time() + 5
+        while not model.prompts and time.time() < deadline:
+            time.sleep(0.02)
+        r.stop()
+        assert model.prompts
+        if running:
+            assert "still being indexed" in model.prompts[0] and "5 of 9 written" in model.prompts[0]
+        else:
+            assert "still being indexed" not in model.prompts[0]
+
+
 def test_the_researcher_is_the_users_choice_else_off_in_the_aura_apps_autopilot(monkeypatch):
     from autopilot import aura
 
