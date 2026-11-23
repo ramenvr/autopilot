@@ -89,7 +89,12 @@ def route(provider, agent_model=None, model=None):
     if provider in NO_VISION:
         return None, NO_VISION[provider]
     if provider not in ROUTES:
-        return None, f"no model of {provider} is known to look at pictures"
+        # a provider of the OpenAI wire that this file has no entry for (a self-hosted gateway, a proxy): its root and
+        # key are where OPENAI_BASE_URL and OPENAI_API_KEY point, the same way a known provider's own root is read
+        if (os.environ.get("OPENAI_BASE_URL") or "").strip() and (os.environ.get("OPENAI_API_KEY") or "").strip():
+            provider = "openai"
+        else:
+            return None, f"no model of {provider} is known to look at pictures"
     wire, root, keys, default, path = ROUTES[provider]
     root = (os.environ.get(provider.upper().replace("-", "_") + "_BASE_URL") or "").strip().rstrip("/") or root
     key = next((os.environ[k] for k in keys if (os.environ.get(k) or "").strip()), None)
