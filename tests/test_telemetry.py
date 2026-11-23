@@ -415,6 +415,145 @@ def test_the_recording_shown_is_the_episode_the_report_names(tmp_path):
     assert cli.shown_recording(tel, {"outcome": "CONFIRMED"})[0]["episode"] == 2
 
 
+PLAYERS_HELLO = {"project": "fake", "features": ["media", "players", "instances"]}
+
+
+class PlayersLink(CaptureLink):
+    """A plugin whose game plays several players in one editor (Unreal's multiplayer Play In Editor): its context says
+    how many; it records and pictures each player apart (a plugin built with per-player recording: "instances")."""
+
+    def __init__(self, hello=None, players=2):
+        super().__init__(hello or PLAYERS_HELLO)
+        self.players = players
+
+    def request(self, op, args=None, timeout=None):
+        if op == "context":
+            self.requests.append((op, args))
+            return {"net": {"mode": "listen_server", "players": self.players},
+                    "players": [{"player": k} for k in range(1, self.players + 1)]}
+        return super().request(op, args, timeout)
+
+
+def player_frame(n, wall, player=None):
+    frame = {"type": "frame", "n": n, "t": n, "wall": wall, "width": 64, "height": 48,
+             "jpeg": base64.b64encode(jpeg()).decode()}
+    if player is not None:
+        frame["player"] = player
+    return frame
+
+
+def feed(link, frame):
+    for listener in list(link.frame_listeners):  # (each player's Recorder listens for itself)
+        listener(frame)
+
+
+def with_player(link, player):
+    return [(op, args) for op, args in link.requests if (args or {}).get("player") == player]
+
+
+def test_a_second_player_is_recorded_apart(tmp_path):
+    link = PlayersLink()
+    now = time.time() - 60
+    with media.Recorder(link, str(tmp_path)) as rec:
+        rec.begin(1)
+        for n in range(3):
+            feed(link, player_frame(n, now + n * 0.2))
+            feed(link, player_frame(n, now + n * 0.2, player=2))
+        rec.end(1)
+    starts = [args for op, args in with_player(link, 2) if op == "record" and args["action"] == "start"]
+    assert len(starts) == 1
+    files = sorted(os.listdir(tmp_path / "media"))
+    assert files == ["frames-1-p2.jsonl", "frames-1.jsonl", "recording-1-p2.mp4", "recording-1.mp4"]
+    other = rec.others[2]
+    assert rec.kept == 3 + 1 and other.kept == 3 + 1  # (each one's frames and its end picture)
+    assert rec.received == 3 and other.received == 3  # (the other player's frames aren't player 1's)
+    assert ("capture", {"max_dim": 960, "quality": 75, "player": 2}) in link.requests
+    assert ("capture", {"max_dim": 960, "quality": 75}) in link.requests
+    assert ("record", {"action": "stop", "player": 2}) in link.requests
+    assert link.requests[-1] == ("record", {"action": "stop"})  # (player 1's last)
+    lines = [json.loads(x) for x in (tmp_path / "media" / "frames-1-p2.jsonl").read_text().splitlines()]
+    assert [x.get("final", False) for x in lines] == [False, False, False, True]
+    shown = rec.players_shown(1)
+    assert [p["player"] for p in shown] == [2] and shown[0]["episode"] == 1
+    assert shown[0]["video"] == os.path.abspath(tmp_path / "media" / "recording-1-p2.mp4")
+    assert rec.players_missing(1) == {}
+    assert rec.shown()["video"] == os.path.abspath(tmp_path / "media" / "recording-1.mp4")
+
+
+def test_a_player_the_plugin_never_pictures_isnt_recorded_as_player_one(tmp_path):
+    link = PlayersLink()  # (its frames never say "player": an older plugin, Roblox Studio)
+    now = time.time() - 60
+    with media.Recorder(link, str(tmp_path)) as rec:
+        rec.begin(1)
+        for n in range(3):
+            feed(link, player_frame(n, now + n * 0.2))
+        rec.end(1)
+    asked = with_player(link, 2)
+    assert not [a for op, a in asked if op == "capture"]
+    assert not [a for op, a in asked if op == "record" and a["action"] == "stop"]
+    assert sorted(os.listdir(tmp_path / "media")) == ["frames-1.jsonl", "recording-1.mp4"]
+    assert rec.kept == 3 + 1 and rec.received == 3
+    assert rec.players_shown(1) == []
+    missing = rec.players_missing(1)
+    assert list(missing) == [2] and "no picture of player 2" in missing[2]
+    assert rec.players_missing() == missing
+
+
+def test_a_single_player_game_asks_for_nothing_more(tmp_path):
+    link = PlayersLink(players=1)
+    now = time.time() - 60
+    with media.Recorder(link, str(tmp_path)) as rec:
+        rec.begin(1)
+        for n in range(3):
+            feed(link, player_frame(n, now + n * 0.2))
+        rec.end(1)
+    assert not [a for _, a in link.requests if "player" in (a or {})]
+    assert sorted(os.listdir(tmp_path / "media")) == ["frames-1.jsonl", "recording-1.mp4"]
+    assert rec.kept == 3 + 1 and "players" not in rec.summary()
+
+
+def test_a_plugin_without_per_player_recording_is_asked_for_player_one_only(tmp_path):
+    # An Unreal plugin built before per-player recording says "players" but not "instances": its `record start`
+    # ignores "player" and starts player 1's recording again, so another player's is never asked for (D8)
+    link = PlayersLink(hello={"project": "fake", "features": ["media", "players"]})
+    now = time.time() - 60
+    with media.Recorder(link, str(tmp_path)) as rec:
+        rec.begin(1)
+        for n in range(3):
+            feed(link, player_frame(n, now + n * 0.2))
+        rec.end(1)
+    assert not [a for _, a in link.requests if "player" in (a or {})]
+    assert "context" not in [op for op, _ in link.requests]
+    starts = [a for op, a in link.requests if op == "record" and a["action"] == "start"]
+    assert starts == [{"action": "start", "fps": 5, "max_dim": 960, "quality": 75}]
+    assert rec.kept == 3 + 1 and "players" not in rec.summary()
+
+
+def test_the_other_players_record_at_a_lower_rate_and_are_counted(tmp_path, capsys):
+    link = PlayersLink()
+    now = time.time() - 60
+    with media.Recorder(link, str(tmp_path)) as rec:
+        rec.begin(1)
+        for n in range(3):
+            feed(link, player_frame(n, now + n * 0.2))
+            feed(link, player_frame(n, now + n * 0.2, player=2))
+        rec.end(1)
+    starts = {(a or {}).get("player", 1): a for op, a in link.requests if op == "record" and a["action"] == "start"}
+    assert starts[1]["fps"] == media.FPS == 5 and "player" not in starts[1]
+    assert starts[2]["fps"] == media.OTHER_FPS == 2
+    other = rec.summary()["players"]["2"]
+    assert other["fps"] == 2 and other["player"] == 2 and other["frames"] == rec.others[2].kept == 4
+    assert [c["episode"] for c in other["episodes"]] == [1]
+    out = capsys.readouterr().out.splitlines()
+    assert [x for x in out if x.startswith("Recording (player 2, 2 fps): ")] == [
+        "Recording (player 2, 2 fps): 4 frames kept in 1 episode videos, of 3 received (0 outside the episodes, "
+        "0 dropped)"]
+    assert [x for x in out if x.startswith("Recording: ")] == [
+        "Recording: 4 frames kept in 1 episode videos, of 3 received (0 outside the episodes, 0 dropped)"]
+    assert out.index([x for x in out if x.startswith("Recording: ")][0]) > out.index(
+        [x for x in out if x.startswith("Recording (player 2")][0])  # (player 1's line stays last)
+
+
 def test_godots_recording_is_also_a_flipbook_at_a_fixed_rate(tmp_path):
     link = SendLink({"project": "fake", "features": ["media"], "engine": "godot"})
     with media.Recorder(link, str(tmp_path), flipbook=True) as rec:
@@ -552,6 +691,42 @@ def test_the_recording_goes_on_when_the_plugin_reconnects(tmp_path, monkeypatch)
         second.frame_listeners[0](frame_at(2))
         rec.end(1)
     assert rec.kept == 3 and rec.shown()["seconds"] == pytest.approx(0.4 + media.HOLD_MS / 1000)
+
+
+def test_every_players_recording_goes_on_when_the_plugin_reconnects(tmp_path, monkeypatch):
+    monkeypatch.setattr(media, "FOLLOW_EVERY", 0.02)
+
+    class Live:
+        """A LiveLink: the plugin's newest connection."""
+
+        def __init__(self):
+            self.current = PlayersLink()
+            self.hello = self.current.hello
+
+        def request(self, op, args=None, timeout=None):
+            return self.current.request(op, args, timeout)
+
+    def starts(link):
+        return sorted((a or {}).get("player", 1) for op, a in link.requests
+                      if op == "record" and a["action"] == "start")
+
+    link = Live()
+    first = link.current
+    with media.Recorder(link, str(tmp_path)) as rec:
+        rec.begin(1)
+        assert starts(first) == [1, 2]
+        feed(first, frame_at(0))
+        feed(first, {**frame_at(0), "player": 2})
+        link.current = second = PlayersLink()  # (Connect pressed again: the plugin ended every recording)
+        deadline = time.monotonic() + 5
+        while (starts(second) != [1, 2] or len(second.frame_listeners) < 2) and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert starts(second) == [1, 2] and not first.frame_listeners and len(second.frame_listeners) == 2
+        feed(second, frame_at(1))
+        feed(second, {**frame_at(1), "player": 2})
+        rec.end(1)
+    assert rec.kept == 2 + 1 and rec.others[2].kept == 2 + 1
+    assert ("record", {"action": "stop", "player": 2}) in second.requests
 
 
 def test_a_still_is_saved_with_its_line(tmp_path):
