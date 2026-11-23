@@ -490,7 +490,8 @@ def test_a_player_the_plugin_never_pictures_isnt_recorded_as_player_one(tmp_path
         rec.end(1)
     asked = with_player(link, 2)
     assert not [a for op, a in asked if op == "capture"]
-    assert not [a for op, a in asked if op == "record" and a["action"] == "stop"]
+    # (its recording, started, is still stopped: the plugin said "instances", so the stop is player 2's alone: D10)
+    assert [a for op, a in asked if op == "record" and a["action"] == "stop"] == [{"action": "stop", "player": 2}]
     assert sorted(os.listdir(tmp_path / "media")) == ["frames-1.jsonl", "recording-1.mp4"]
     assert rec.kept == 3 + 1 and rec.received == 3
     assert rec.players_shown(1) == []
@@ -523,7 +524,7 @@ def test_a_plugin_without_per_player_recording_is_asked_for_player_one_only(tmp_
             feed(link, player_frame(n, now + n * 0.2))
         rec.end(1)
     assert not [a for _, a in link.requests if "player" in (a or {})]
-    assert "context" not in [op for op, _ in link.requests]
+    assert [op for op, _ in link.requests].count("context") == 1  # (only to say who wasn't recorded: D11)
     starts = [a for op, a in link.requests if op == "record" and a["action"] == "start"]
     assert starts == [{"action": "start", "fps": 5, "max_dim": 960, "quality": 75}]
     assert rec.kept == 3 + 1 and "players" not in rec.summary()
@@ -552,6 +553,49 @@ def test_the_other_players_record_at_a_lower_rate_and_are_counted(tmp_path, caps
         "Recording: 4 frames kept in 1 episode videos, of 3 received (0 outside the episodes, 0 dropped)"]
     assert out.index([x for x in out if x.startswith("Recording: ")][0]) > out.index(
         [x for x in out if x.startswith("Recording (player 2")][0])  # (player 1's line stays last)
+
+
+def test_a_started_player_is_stopped_even_before_its_first_frame(tmp_path):
+    # A run that ends before player 2's first frame: its recording, started, is stopped all the same (D10), or the
+    # plugin would go on recording player 2 until its connection ends. Its end picture is still never asked for
+    link = PlayersLink()
+    now = time.time() - 60
+    with media.Recorder(link, str(tmp_path)) as rec:
+        rec.begin(1)
+        feed(link, player_frame(0, now))
+        rec.end(1)
+    assert rec.others[2].started and not rec.others[2].confirmed
+    assert ("record", {"action": "stop", "player": 2}) in link.requests
+    assert not [a for op, a in with_player(link, 2) if op == "capture"]
+    assert link.requests[-1] == ("record", {"action": "stop"})  # (player 1's last)
+
+
+def test_a_multiplayer_game_on_a_plugin_that_records_player_one_only_says_so(tmp_path):
+    # A plugin that says "players" but not "instances" (Unreal's built before per-player recording, Roblox Studio)
+    # records player 1 only: the game's players are counted once a run, so the result can say who wasn't recorded
+    # (D11), and no other player's recording is ever asked for (D8)
+    link = PlayersLink(hello={"project": "fake", "features": ["media", "players"]}, players=3)
+    now = time.time() - 60
+    with media.Recorder(link, str(tmp_path)) as rec:
+        for e in (1, 2):
+            rec.begin(e)
+            for n in range(2):
+                feed(link, player_frame(n, now + e * 10 + n * 0.2))
+            rec.end(e)
+    assert not [a for _, a in link.requests if "player" in (a or {})]
+    assert [op for op, _ in link.requests].count("context") == 1  # (at the first episode's begin, not every one)
+    assert not rec.others and "players" not in rec.summary()
+    assert rec.players_shown(1) == []
+    missing = rec.players_missing(1)
+    assert list(missing) == [2, 3] and all("this plugin records player 1 only" in why for why in missing.values())
+    assert rec.players_missing() == missing
+    assert rec.shown()["episode"] == 2  # (player 1's recording as before)
+
+    one = PlayersLink(hello={"project": "fake", "features": ["media", "players"]}, players=1)
+    with media.Recorder(one, str(tmp_path / "one")) as rec:
+        rec.begin(1)
+        rec.end(1)
+    assert rec.players_missing() == {}  # (a one-player game: nobody is missing)
 
 
 def test_godots_recording_is_also_a_flipbook_at_a_fixed_rate(tmp_path):

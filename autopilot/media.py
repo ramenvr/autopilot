@@ -36,7 +36,9 @@ FPS = 5  # frames a second the plugin is asked for
 # the plugin a GPU copy and a JPEG, and an encoder thread here (FLIPBOOK_FPS's rate)
 OTHER_FPS = 2
 MAX_PLAYERS = 4  # players recorded in one run, at most (a game that plays more: the first MAX_PLAYERS)
-OTHER_END_TIMEOUT = 5  # seconds an episode's end waits for another player's picture (the whole end has 20: sandbox.py)
+# Seconds an episode's end waits for another player's picture, one player after another: player 1's 10 and 3 others'
+# make 10 + 3 x 2 = 16, inside the 20 the sandbox gives the whole end (sandbox.py)
+OTHER_END_TIMEOUT = 2
 MAX_DIM = 960  # the recording's longer side, at most
 QUALITY = 75  # the plugin's JPEG quality, 1-100
 STILL_DIM = 1920
@@ -312,10 +314,13 @@ class Recorder:
         self._stopping = threading.Event()
         self._follower = None
         # Whether the plugin pictures this player: player 1 always; player k once a frame that says "player" k has
-        # come. Until then player k's `capture` and `record stop` aren't sent: a plugin that records player 1 only would
-        # answer them with player 1's picture, or stop player 1's recording
+        # come. Until then player k's end `capture` isn't sent: it could answer with player 1's picture. (Its `record
+        # stop` is: player k is only recorded on a plugin that records each player apart, _players)
         self.confirmed = player == 1
         self.others = {}  # (player 1's: the other players' Recorders, by player)
+        # (player 1's: the other players of a game whose plugin records player 1 only, counted once a run; None: not
+        # counted)
+        self.one_only = None
         self._apart = frozenset()  # (player 1's: the players whose frames aren't its own; replaced whole, read by the
         # bridge's thread)
 
@@ -431,13 +436,22 @@ class Recorder:
             other.begin(n)
 
     def _players(self):
-        """How many players the game plays now, up to MAX_PLAYERS (its context's `net.players` and `players`); 1 when
-        the plugin doesn't record each player apart. A plugin that says "players" (several in one game) but not
-        "instances" (built before per-player recording: Unreal's, Roblox Studio) answers a `record start` for another
-        player by starting player 1's again, so it is never asked."""
+        """How many players the game plays now that can be recorded, up to MAX_PLAYERS; 1 when the plugin doesn't
+        record each player apart. A plugin that says "players" (several in one game) but not "instances" (built before
+        per-player recording: Unreal's, Roblox Studio) answers a `record start` for another player by starting player
+        1's again, so it is never asked: its game's players are counted once a run all the same, for players_missing."""
         features = (getattr(self.link, "hello", None) or {}).get("features") or []
-        if "players" not in features or "instances" not in features:
+        if "players" not in features:
             return 1
+        if "instances" not in features:
+            if self.one_only is None:
+                self.one_only = list(range(2, self._count() + 1))
+            return 1
+        return self._count()
+
+    def _count(self):
+        """How many players the game plays now, up to MAX_PLAYERS (its context's `net.players` and `players`); 1 when
+        they can't be counted."""
         try:
             context = self.link.request("context", timeout=5) or {}
             net = context.get("net") or {}
@@ -543,7 +557,7 @@ class Recorder:
         self._stopping.set()
         if self._follower is not None:
             self._follower.join(timeout=30)
-        if self.started and self.confirmed:
+        if self.started:  # (player k's too before its first frame: else the plugin records it on till it disconnects)
             try:
                 self.link.request("record", self._args({"action": "stop"}), timeout=10)
             except Exception:
@@ -625,7 +639,8 @@ class Recorder:
     def players_missing(self, episode=None):
         """Why other players have no video (player 1's Recorder), once stopped: {k: why}, of an episode when given,
         else of the whole run; {} when every other player has one (or the game played one player)."""
-        missing = {}
+        missing = {k: ("this plugin records player 1 only (an Autopilot plugin built before per-player recording, or "
+                       "Roblox Studio)") for k in self.one_only or []}
         for k, other in sorted(self.others.items()):
             if (other.clip_of(episode) if episode is not None else other.last_clip()) is not None:
                 continue
