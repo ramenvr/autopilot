@@ -598,6 +598,62 @@ def test_a_multiplayer_game_on_a_plugin_that_records_player_one_only_says_so(tmp
     assert rec.players_missing() == {}  # (a one-player game: nobody is missing)
 
 
+def test_a_multiplayer_runs_result_lists_every_players_video(upstream, tmp_path, monkeypatch):
+    from autopilot import cli
+
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", upstream.url)
+    link = PlayersLink()
+    now = time.time() - 60
+    with telemetry.RunTelemetry(link, str(tmp_path / "r1"), "r1", "fake", "Go", "goal", False) as tel:
+        tel.recorder.begin(1)
+        for n in range(3):
+            feed(link, player_frame(n, now + n * 0.2))
+            feed(link, player_frame(n, now + n * 0.2, player=2))
+        tel.recorder.end(1)
+    report = {"outcome": "REACHED", "episode": 1, "alerts": ["earlier"]}
+    recording, report = cli.shown_recording(tel, report)
+    recordings, after = cli.players_recordings(tel, recording, report)
+    assert after == report  # (every player was recorded: nothing to say)
+    assert [r["player"] for r in recordings] == [1, 2]
+    assert recordings[0] == {"player": 1, **recording}  # (player 1's is the result's `recording`, as before)
+    assert recordings[1]["video"] == os.path.abspath(tmp_path / "r1" / "media" / "recording-1-p2.mp4")
+    assert recordings[1]["episode"] == 1 and recordings[1]["seconds"] > 0
+
+    # Player 2 never pictured (the plugin sent no frame of it): player 1's only, and the report says why
+    link = PlayersLink()
+    with telemetry.RunTelemetry(link, str(tmp_path / "r2"), "r2", "fake", "Go", "goal", False) as tel:
+        tel.recorder.begin(1)
+        for n in range(3):
+            feed(link, player_frame(n, now + n * 0.2))
+        tel.recorder.end(1)
+    recording, report = cli.shown_recording(tel, {"outcome": "REACHED", "alerts": ["earlier"]})
+    recordings, after = cli.players_recordings(tel, recording, report)
+    assert recordings == [{"player": 1, **recording}]
+    assert after["alerts"][0] == "earlier" and len(after["alerts"]) == 2
+    assert after["alerts"][1].startswith("Player 2's view wasn't recorded: the plugin sent no picture of player 2")
+    assert report["alerts"] == ["earlier"]  # (the report passed in is left as it was)
+
+
+def test_a_single_player_runs_result_has_no_recordings(upstream, tmp_path, monkeypatch):
+    from autopilot import cli
+
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", upstream.url)
+    link = PlayersLink(players=1)
+    now = time.time() - 60
+    with telemetry.RunTelemetry(link, str(tmp_path / "r1"), "r1", "fake", "Go", "goal", False) as tel:
+        tel.recorder.begin(1)
+        for n in range(3):
+            feed(link, player_frame(n, now + n * 0.2))
+        tel.recorder.end(1)
+    report = {"outcome": "REACHED"}
+    recording, report = cli.shown_recording(tel, report)
+    assert recording["episode"] == 1
+    assert cli.players_recordings(tel, recording, report) == (None, report)
+    # (a run whose telemetry can't list players, and a run with no recording at all: the same)
+    assert cli.players_recordings(types.SimpleNamespace(recording=tel.recording), recording, report) == (None, report)
+    assert cli.players_recordings(tel, None, report) == (None, report)
+
+
 def test_godots_recording_is_also_a_flipbook_at_a_fixed_rate(tmp_path):
     link = SendLink({"project": "fake", "features": ["media"], "engine": "godot"})
     with media.Recorder(link, str(tmp_path), flipbook=True) as rec:
