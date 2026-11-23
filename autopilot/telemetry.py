@@ -495,6 +495,24 @@ class RunTelemetry:
             print(f"note: the recording isn't shown: {type(e).__name__}: {e}")
             return None
 
+    def players_recordings(self, episode):
+        """The other players' videos of an episode, in a game that plays several (media.Recorder.players_shown); []
+        when there are none."""
+        try:
+            return self.recorder.players_shown(episode) if self.recorder is not None else []
+        except Exception as e:  # noqa: BLE001
+            print(f"note: the other players' recordings aren't shown: {type(e).__name__}: {e}")
+            return []
+
+    def players_missing(self, episode):
+        """Why other players of a game that plays several have no video of an episode, {player: why}
+        (media.Recorder.players_missing); {} when none is missing."""
+        try:
+            return self.recorder.players_missing(episode) if self.recorder is not None else {}
+        except Exception as e:  # noqa: BLE001
+            print(f"note: the other players' recordings couldn't be read: {type(e).__name__}: {e}")
+            return {}
+
     def no_recording(self):
         """Why the run has no recording, in plain words (the result's `no_recording`); None when it has one."""
         if self.recorder is None:

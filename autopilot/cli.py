@@ -433,6 +433,22 @@ def shown_recording(tel, report):
     return recording, report
 
 
+def players_recordings(tel, recording, report):
+    """(the result's `recordings`, the report), in a game that plays several players: every player's video of the
+    episode `recording` shows, player 1's (`recording`) first; the report's alerts say which player's is missing, and
+    why. None (and the report as it was) when the game played one player, or there is no recording."""
+    if not recording or getattr(tel, "players_recordings", None) is None:
+        return None, report
+    episode = recording.get("episode")
+    others, missing = tel.players_recordings(episode), tel.players_missing(episode)
+    if not others and not missing:
+        return None, report
+    if missing and isinstance(report, dict):
+        report = dict(report, alerts=list(report.get("alerts") or []) + [
+            f"Player {k}'s view wasn't recorded: {why}." for k, why in sorted(missing.items())])
+    return [{"player": 1, **recording}] + list(others), report
+
+
 def result_frame(report, prompt, kind=None):
     """The `result` the plugin is sent for a report (docs/protocol.md, Runs): a verdict for a claim, else a goal's.
     kind: the run's (verify, goal or explore), which decides the result's shape: a goal worded as a claim ("Confirm
@@ -752,7 +768,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     (telemetry.sharing, and for a run through Aura the user's Aura account), it is kept whole in the run's
     telemetry/ folder and sent once the plugin has the result (autopilot/training.py).
     """
-    run = upload = kept = learned = recording = missing = None
+    run = upload = kept = learned = recording = recordings = missing = None
     credits_refused = False
     if feed is not None:
         feed.start()
@@ -863,6 +879,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                     with contextlib.suppress(Exception):
                         link.status(SAVING_MEMORY)
             recording, report = shown_recording(tel, report)
+            recordings, report = players_recordings(tel, recording, report)  # (a game of several players: each one's)
             missing = None if recording else tel.no_recording()
             if keep_game_open and not (stop and stop()):
                 keep_game(game)  # (the next run of the agent's goes on in it)
@@ -886,6 +903,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
         frame["memory"] = learned
     if recording:
         frame["recording"] = recording
+        if recordings:
+            frame["recordings"] = recordings  # (every player's, player 1's first: the plugins read `recording`)
     elif missing:
         frame["no_recording"] = missing  # (why there is none: the plugins' report says so where it would play)
     if run is not None and "usd" in (run.finished or {}):  # (what Aura billed the run, for the Settings page)
