@@ -7,7 +7,7 @@ import re
 import types
 
 import pytest
-from test_activity import harness_file, open_run
+from test_activity import harness_file, log_of, open_run
 from test_autopilot import FakeLink
 
 from autopilot import cli, runtime
@@ -204,6 +204,42 @@ def test_the_briefing_quotes_what_fits_and_says_where_the_rest_is(game, tmp_path
     live = text[text.index("## The live game now"):]
     assert "runs/r1/whole/opening-1.txt" in live and len(live) <= session.BRIEF_PART + 200
     assert (root / "runs" / "r1" / "whole" / "opening-1.txt").read_text(encoding="utf-8") == opening
+
+
+def logged(s, label):
+    """The numbers of the one line of the run's log that starts with label (after its time)."""
+    lines = [line for line in log_of(s).splitlines() if f"] {label}: " in line]
+    assert len(lines) == 1, lines
+    return lines[0], json.loads(lines[0].split(f"] {label}: ", 1)[1])
+
+
+def test_the_briefing_logs_each_parts_size_not_its_text(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    root = tmp_path / "fake"
+    notes_text = "- the lantern needs oil\n" + "".join(f"- fact {i}: " + "n" * 60 + "\n" for i in range(1000))
+    (root / "notes.md").write_text(notes_text, encoding="utf-8")
+    (root / "lib.py").write_text("def helper():\n    return 1\n", encoding="utf-8")
+    for i in range(30):
+        (root / "runs" / f"r0{i:02}").mkdir(parents=True)
+        (root / "runs" / f"r0{i:02}" / "prompt.txt").write_text(f"Request {i} " + "q" * 400, encoding="utf-8")
+        (root / "runs" / f"r0{i:02}" / "report.json").write_text(json.dumps({"outcome": "achieved",
+                                                                              "summary": f"Done {i} " + "s" * 600}))
+    game.level_info = types.SimpleNamespace(levels=[f"/Game/Maps/Level_{i:04}" for i in range(2000)], playing="",
+                                            open="/Game/Maps/Level_0000", asked="", hint="", playing_asked=False,
+                                            failed="")
+    opening = "screen_texts: " + json.dumps({f"t{i}": "o" * 100 for i in range(300)})
+    text = session.briefing(s, opening)
+    line, sizes = logged(s, "briefing sizes")
+    parts, seen = sizes["parts"], sizes["whole"]
+    assert sizes["total"] == len(text)
+    assert sizes["total"] == sum(parts.values()) + 2 * (len(parts) - 1)  # (the parts, joined by blank lines)
+    assert {"level", "notes.md", "lib.py", "earlier runs", "live game"} <= set(parts) and "none yet" not in parts
+    notes = text[text.index("## notes.md"):].split("\n\n")[0]
+    assert parts["notes.md"] == len(notes) and parts["lib.py"] == len("## lib.py (importable as `import lib`)\n"
+                                                                       "```python\ndef helper():\n    return 1\n```")
+    assert seen["notes.md"] == len(notes_text.rstrip()) and seen["lib.py"] == len("def helper():\n    return 1")
+    assert seen["live game"] == len(opening) and parts["live game"] < len(opening)
+    assert "lantern" not in line and "fact" not in line and "helper" not in line  # (numbers only, never the text)
 
 
 def test_the_start_answer_points_to_request_md_when_the_briefing_is_long():

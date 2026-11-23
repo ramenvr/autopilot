@@ -1790,11 +1790,14 @@ def _whole(path):
         return ""
 
 
-def _quoted(session, rel, title, fence=None, why=""):
+def _quoted(session, rel, title, fence=None, why="", seen=None):
     """A file of the game's folder (rel: its path there) as a part of the briefing under title: whole when it fits
     BRIEF_PART, else its first lines, with how long it is and from where to read on (why: what reading the rest is
-    for). fence: a code block's language, or None. None when the file is missing or empty."""
+    for). fence: a code block's language, or None. seen: a dict, or None; when given, seen[rel] is set to the
+    file's whole length in characters, before any cut. None when the file is missing or empty."""
     text = _whole(os.path.join(session.root, *rel.split("/"))).rstrip()
+    if seen is not None:
+        seen[rel] = len(text)
     if not text.strip():
         return None
     note, shown = whole.split(text, BRIEF_PART, rel, what=rel, holds="the briefing quotes")
@@ -1878,17 +1881,26 @@ def word_hits(codex_root, prompt, limit=None):
 def briefing(session, opening=None):
     """The request message's second half: what every run used to read in its first turns."""
     root = session.root
-    out = []
+    out, parts, seen = [], {}, {}  # (parts, seen: each part's length, each quoted file's whole length; logged below)
+
+    def add(name, text):
+        out.append(text)
+        parts[name] = len(text)
+
     level = levelsmod.briefing(getattr(session.game, "level_info", None), budget=BRIEF_LIST,
                                keep=lambda stem, text: whole.kept(session.run_dir, session.run_rel, stem, text)[1])
     if level:  # (first: which level to play is the first decision)
-        out.append(level)
+        add("level", level)
     read_whole = "Read the rest of it before you rely on what it says."
-    notes = _quoted(session, "notes.md", "## notes.md (what earlier requests on this game verified)", why=read_whole)
-    lib = _quoted(session, "lib.py", "## lib.py (importable as `import lib`)", fence="python", why=read_whole)
-    out += [part for part in (notes, lib) if part]
+    notes = _quoted(session, "notes.md", "## notes.md (what earlier requests on this game verified)", why=read_whole,
+                    seen=seen)
+    lib = _quoted(session, "lib.py", "## lib.py (importable as `import lib`)", fence="python", why=read_whole,
+                  seen=seen)
+    for name, part in (("notes.md", notes), ("lib.py", lib)):
+        if part:
+            add(name, part)
     if not notes and not lib:
-        out.append("## notes.md, lib.py\nNone yet: the first request on this game.")
+        add("none yet", "## notes.md, lib.py\nNone yet: the first request on this game.")
     runs = []
     runs_dir = os.path.join(root, "runs")
     for rid in sorted(os.listdir(runs_dir)) if os.path.isdir(runs_dir) else []:
@@ -1903,8 +1915,8 @@ def briefing(session, opening=None):
         if prompt:
             runs.append(f"- runs/{rid}: {prompt} -> {rep.get('outcome', 'no report')}: {rep.get('summary', '')}")
     if runs:
-        out.append(_listing(session, "## Earlier runs (each folder keeps its harness versions, traces and report)",
-                            runs, "earlier_runs", "earlier runs", latest=True)[0])
+        add("earlier runs", _listing(session, "## Earlier runs (each folder keeps its harness versions, traces and "
+                                     "report)", runs, "earlier_runs", "earlier runs", latest=True)[0])
     codex_root = os.path.join(root, "codex")
     try:
         since = codex_since(session, codex_root)
@@ -1912,18 +1924,20 @@ def briefing(session, opening=None):
         session.note(f"codex changes: {e}")
         since = None
     if since and (notes or lib or runs):  # (with nothing learned yet, nothing can be out of date)
-        out.append(since)
+        add("codex since", since)
     idx = session.indexer()
     if idx is not None:
         with session.news_lock:  # (what arrived before now is in the codex the briefing reads: not news)
             session.news_batches = len(idx.batches)
         status = idx.status()
         if "level snapshot" in status.get("working", []):
-            out.append("## The level's snapshot is being taken\n"
-                       "codex/level.txt (every actor of the running level, by kind, and where) is being written while "
-                       "you work: a tool result says when it is in. What the live game shows now is below.")
+            add("level snapshot",
+                "## The level's snapshot is being taken\n"
+                "codex/level.txt (every actor of the running level, by kind, and where) is being written while "
+                "you work: a tool result says when it is in. What the live game shows now is below.")
         if status["running"]:
-            out.append(
+            add(
+                "indexing",
                 "## The game's files are still being indexed\n"
                 f"The plugin is exporting the game's Blueprints, data and maps ({codexmod.progress(status)} "
                 f"so far; the level this run plays and what it uses first). The codex has {status['files']} "
@@ -1931,9 +1945,9 @@ def briefing(session, opening=None):
                 f"one (all of them also in {codexmod.INDEXING}/batch-N.txt), and says when the export is in. A search "
                 "that finds nothing has looked at what is indexed so far: what you need may still come. Work with "
                 "what is there; you never need to read a file again unless it changed and you rely on it.")
-    readme = _quoted(session, "codex/README.md", "## codex/README.md")
+    readme = _quoted(session, "codex/README.md", "## codex/README.md", seen=seen)
     if readme:
-        out.append(readme)
+        add("codex/README.md", readme)
     try:
         hits = word_hits(codex_root, session.prompt) if os.path.isdir(codex_root) else None
     except Exception:
@@ -1942,24 +1956,28 @@ def briefing(session, opening=None):
         ranked = [line for line in hits if line.startswith("- ")]
         text, _ = _listing(session, "## Where the request's words appear in the codex (files, with how often)",
                            ranked, "request_words", "files have some of the request's words, the most first")
-        out.append("\n".join([text, *(line for line in hits if not line.startswith("- "))]))
+        add("request words", "\n".join([text, *(line for line in hits if not line.startswith("- "))]))
     try:  # (the workflow for this kind of request: the package's, or this game's own: autopilot/workflows.py)
         from .. import workflows
         from ..cli import kind_by_words
 
         flow = workflows.text(kind_by_words(session.prompt), root)
         if flow:
-            out.append(flow)
+            add("workflow", flow)
     except Exception as e:  # noqa: BLE001 - a run never fails for its playbook
         session.note(f"workflow: {e}")
     if opening:  # (last: the live game's state is the part a long briefing is cut at, and it is kept whole in a file)
         title = "## The live game now (looked at just before you started; it is paused)"
+        seen["live game"] = len(opening)
         if len(opening) > BRIEF_PART:  # (whole in a file of the run)
             rel = whole.kept(session.run_dir, session.run_rel, "opening", opening)[1]
             opening = whole.deliver(opening, BRIEF_PART, rel, what="What the live game shows",
                                     holds="the briefing quotes")
-        out.append(f"{title}\n{opening}")
-    return "\n\n".join(out)
+        add("live game", f"{title}\n{opening}")
+    text = "\n\n".join(out)
+    # (sizes only, never the text: what a total budget for the briefing would be decided from)
+    session.note("briefing sizes: " + json.dumps({"total": len(text), "parts": parts, "whole": seen}))
+    return text
 
 
 NAMED_IN = ("notes.md", "lib.py")  # what runs wrote down, which may name codex files
