@@ -530,7 +530,7 @@ def test_a_plugin_without_per_player_recording_is_asked_for_player_one_only(tmp_
     assert rec.kept == 3 + 1 and "players" not in rec.summary()
 
 
-def test_the_other_players_record_at_a_lower_rate_and_are_counted(tmp_path, capsys):
+def test_the_other_players_record_at_player_ones_rate_and_are_counted(tmp_path, capsys):
     link = PlayersLink()
     now = time.time() - 60
     with media.Recorder(link, str(tmp_path)) as rec:
@@ -541,13 +541,13 @@ def test_the_other_players_record_at_a_lower_rate_and_are_counted(tmp_path, caps
         rec.end(1)
     starts = {(a or {}).get("player", 1): a for op, a in link.requests if op == "record" and a["action"] == "start"}
     assert starts[1]["fps"] == media.FPS == 5 and "player" not in starts[1]
-    assert starts[2]["fps"] == media.OTHER_FPS == 2
+    assert starts[2]["fps"] == media.FPS == 5  # (player 1's rate)
     other = rec.summary()["players"]["2"]
-    assert other["fps"] == 2 and other["player"] == 2 and other["frames"] == rec.others[2].kept == 4
+    assert other["fps"] == 5 and other["player"] == 2 and other["frames"] == rec.others[2].kept == 4
     assert [c["episode"] for c in other["episodes"]] == [1]
     out = capsys.readouterr().out.splitlines()
-    assert [x for x in out if x.startswith("Recording (player 2, 2 fps): ")] == [
-        "Recording (player 2, 2 fps): 4 frames kept in 1 episode videos, of 3 received (0 outside the episodes, "
+    assert [x for x in out if x.startswith("Recording (player 2, 5 fps): ")] == [
+        "Recording (player 2, 5 fps): 4 frames kept in 1 episode videos, of 3 received (0 outside the episodes, "
         "0 dropped)"]
     assert [x for x in out if x.startswith("Recording: ")] == [
         "Recording: 4 frames kept in 1 episode videos, of 3 received (0 outside the episodes, 0 dropped)"]

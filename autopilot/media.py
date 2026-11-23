@@ -15,7 +15,8 @@ The plugin captures the game's view (docs/protocol.md, "Recording, stills and us
                `episode`), else the last episode's.
                In a game that plays several players in one editor (the plugin's hello says "players" and "instances"),
                each other player is recorded too, from an episode's begin, up to MAX_PLAYERS: player k's video is
-               media/recording-<n>-p<k>.mp4, with media/frames-<n>-p<k>.jsonl, at OTHER_FPS. The result's
+               media/recording-<n>-p<k>.mp4, with media/frames-<n>-p<k>.jsonl, at player 1's rate (FPS; set_fps
+               changes player 1's only, so a later set_fps leaves the others at FPS). The result's
                `recordings` lists every player's video of the episode shown, player 1's first; a player with none
                gets an alert in the report saying why (a plugin that records player 1 only, no picture of it).
     still()    one still: media/stills/<seq>-<reason>.jpg, with a line in media/stills.jsonl.
@@ -36,10 +37,7 @@ from fractions import Fraction
 
 from .bridge import _player_of
 
-FPS = 5  # frames a second the plugin is asked for
-# Frames a second asked for each player but player 1, in a game that plays several (Recorder(player=k)): each one costs
-# the plugin a GPU copy and a JPEG, and an encoder thread here (FLIPBOOK_FPS's rate)
-OTHER_FPS = 2
+FPS = 5  # frames a second the plugin is asked for, for every player it records
 MAX_PLAYERS = 4  # players recorded in one run, at most (a game that plays more: the first MAX_PLAYERS)
 # Seconds an episode's end waits for another player's picture, one player after another: player 1's 10 and 3 others'
 # make 10 + 3 x 2 = 16, inside the 20 the sandbox gives the whole end (sandbox.py)
@@ -471,7 +469,7 @@ class Recorder:
         for k in range(2, self._players() + 1):
             if k in self.others:
                 continue
-            other = Recorder(self.link, self.base, OTHER_FPS, self.max_dim, self.quality, self.flipbook, player=k)
+            other = Recorder(self.link, self.base, FPS, self.max_dim, self.quality, self.flipbook, player=k)
             self._apart = frozenset([*self.others, k])  # (before it listens: player k's frames are never player 1's)
             other.start()
             self.others[k] = other
