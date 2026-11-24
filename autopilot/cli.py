@@ -454,7 +454,9 @@ def keep_in_report(run_dir, recording, recordings, missing, report):
     result says of the recording: `recording`, `recordings` (a game of several players) and `no_recording`, as
     run_prompt gives them, their paths relative to the run's folder (report.json is synced and shared: no home folder
     in it, and it means the same on another machine), and the report's `alerts` as they ended (those added after the
-    agent ended too). A run with no report.json gets none; one that can't be read is left as it is."""
+    agent ended too). A run with no report.json gets none; one that can't be read is left as it is. The words of
+    `no_recording` and the alerts may name a folder (a video that couldn't be made says where its pictures are): one
+    in the run's folder is written relative to it, and the rest goes through redact (the home folder as ~...)."""
     path = os.path.join(run_dir, "report.json")
     if not os.path.isfile(path):
         return
@@ -468,14 +470,27 @@ def keep_in_report(run_dir, recording, recordings, missing, report):
             return dict(item, **{k: os.path.relpath(item[k], run_dir).replace(os.sep, "/")
                                  for k in ("video", "frames") if isinstance(item.get(k), str)})
 
+        from . import redact  # (here: what report.json gets, only once it is written)
+
+        # The run's folder (as given and as the disk has it), then the path in it up to a word that isn't a file name's
+        roots = sorted({os.path.abspath(run_dir), os.path.realpath(run_dir)}, key=len, reverse=True)
+        in_run = re.compile(rf"(?:{'|'.join(map(re.escape, roots))})(?P<rest>(?:[\\/][\w-]+(?:\.[\w-]+)*)*)(?![\w-])")
+        redactor = redact.Redactor()
+
+        def in_run_words(m):  # (media/frames-1, as report.json's videos are written; the folder itself in words)
+            return re.sub(r"[\\/]+", "/", m.group("rest")).strip("/") or "the run's folder"
+
+        def portable(text):
+            return redactor.text(in_run.sub(in_run_words, str(text)))
+
         if recording:
             kept["recording"] = relative(recording)
             if recordings:
                 kept["recordings"] = [relative(r) for r in recordings]
         elif missing:
-            kept["no_recording"] = missing
+            kept["no_recording"] = portable(missing)
         if isinstance(report, dict) and report.get("alerts"):
-            kept["alerts"] = [str(a) for a in report["alerts"]]
+            kept["alerts"] = [portable(a) for a in report["alerts"]]
         with open(path + ".part", "w", encoding="utf-8") as f:
             json.dump(kept, f, indent=1)
         os.replace(path + ".part", path)

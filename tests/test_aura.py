@@ -1319,6 +1319,78 @@ def test_a_single_player_report_json_gets_only_player_ones_recording(monkeypatch
     assert "recording" not in kept and "recordings" not in kept
 
 
+def no_absolute_path(value, *roots):
+    """Every string in a report.json value, checked: none names one of these folders or starts at the disk's root."""
+    if isinstance(value, dict):
+        return all(no_absolute_path(v, *roots) for v in value.values())
+    if isinstance(value, list):
+        return all(no_absolute_path(v, *roots) for v in value)
+    if not isinstance(value, str):
+        return True
+    return not os.path.isabs(value) and not any(r in value for r in roots)
+
+
+def test_report_json_has_no_absolute_path_when_the_video_could_not_be_made(monkeypatch, tmp_path):
+    """A run whose encoder fails says where its pictures are (media.Clip.problem): the result frame (the plugin, on
+    this machine) with the full path, report.json (synced to Aura) relative to the run's folder."""
+    import base64
+
+    from test_telemetry import CaptureLink, jpeg
+
+    from autopilot import media
+
+    def no_encoder(*a, **k):
+        raise RuntimeError("no H.264 encoder")
+
+    monkeypatch.setattr(media, "Encoder", no_encoder)
+    run_dir = str(tmp_path / "runs" / "r1")
+    link = CaptureLink({"project": "Farm", "features": ["media"]})
+    now = time.time() - 60
+    with media.Recorder(link, run_dir) as rec:
+        rec.begin(1)
+        for n in range(2):
+            for listener in list(link.frame_listeners):
+                listener({"type": "frame", "n": n, "t": n, "wall": now + n * 0.2, "width": 64, "height": 48,
+                          "jpeg": base64.b64encode(jpeg()).decode()})
+        rec.end(1)
+    missing = rec.missing()
+    assert os.path.join(run_dir, "media", "frames-1") in missing  # (the result frame's, as before)
+    with open(os.path.join(run_dir, "report.json"), "w", encoding="utf-8") as f:
+        json.dump(AGENTS_REPORT, f)
+    cli.keep_in_report(run_dir, None, None, missing, dict(AGENTS_REPORT))
+    with open(os.path.join(run_dir, "report.json"), encoding="utf-8") as f:
+        kept = json.load(f)
+    assert kept["no_recording"].endswith("its pictures are in media/frames-1")
+    assert no_absolute_path(kept, run_dir, str(tmp_path))
+
+
+def test_report_json_alerts_name_no_home_folder(monkeypatch, tmp_path):
+    """Another player's alert (media.Recorder.players_missing) carries the same why: in report.json a path in the run's
+    folder is made relative to it, and any other path in the home folder starts at ~."""
+    home = tmp_path / "Users" / "someone"
+    monkeypatch.setenv("HOME", str(home))
+    run_dir = str(home / ".autopilot" / "Farm" / "runs" / "r1")
+    os.makedirs(run_dir)
+    with open(os.path.join(run_dir, "report.json"), "w", encoding="utf-8") as f:
+        json.dump(AGENTS_REPORT, f)
+    pictures = os.path.join(run_dir, "media", "frames-1-p2")
+    elsewhere = os.path.join(str(home), "Games", "Farm", "Saved")
+    report = dict(AGENTS_REPORT, alerts=[
+        f"Player 2's view wasn't recorded: the video couldn't be made (RuntimeError: x): its pictures are in "
+        f"{pictures}.", f"The game's log is in {elsewhere}, see there.", "Nothing to change in this one."])
+    shown = {"video": os.path.join(run_dir, "media", "recording-1.mp4"), "seconds": 9.5, "episode": 1}
+    cli.keep_in_report(run_dir, shown, [{"player": 1, **shown}], None, report)
+    with open(os.path.join(run_dir, "report.json"), encoding="utf-8") as f:
+        kept = json.load(f)
+    assert kept["alerts"] == [
+        "Player 2's view wasn't recorded: the video couldn't be made (RuntimeError: x): its pictures are in "
+        "media/frames-1-p2.", "The game's log is in ~/Games/Farm/Saved, see there.",
+        "Nothing to change in this one."]
+    assert kept["recording"]["video"] == "media/recording-1.mp4"
+    assert no_absolute_path(kept, run_dir, str(home))
+    assert report["alerts"][0].endswith(f"{pictures}.")  # (the result's own alerts keep the full path)
+
+
 def test_report_json_is_left_alone_when_it_is_missing_or_broken(monkeypatch, tmp_path):
     kept, result, _ = run_with_recordings(monkeypatch, tmp_path, video(1), write=False)
     assert kept is None  # (none is made)
