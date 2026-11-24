@@ -474,10 +474,76 @@ def research_doc():
     return "\n".join(lines).strip()
 
 
-def system_prompt(engine, run_rel, agents=""):
+# The shorter instructions (short=True) the user's own agent reads (`autopilot connect`, external.py): it reads
+# INSTRUCTIONS.md with read_file, 20,000 characters a call, so the contract and the kit's reference sections below are
+# read when needed instead of quoted. Autopilot's own agents get the instructions as their system prompt, whole
+CONTRACT = "The contract's docstrings (autopilot/kit/harness.py):\n```python\n{contract}\n```"
+CONTRACT_SHORT = ("Before you write harness.py, read the contract, autopilot/kit/harness.py with read_file (its "
+                  "docstrings).")
+KIT_MORE = "KIT_MORE.md"  # in the run's folder: the kit's reference sections the shorter instructions list
+# Those sections, by how their heading starts, and what each is for (the list in their place says it)
+KIT_ON_DEMAND = {
+    "Geometry": "Vec, bearing, where() and the like",
+    "Time (": "Clock, game.now, game.lag for your own loops",
+    "Looking while playing": "game.watch, watch_questions, died",
+    "An example": "a whole harness",
+    "Reacting in time": "reflexes in executor code, faster than Jev decides",
+}
+
+
+def _sections(text):
+    """[(title, text)] of a markdown text cut at its level-2 headings outside code blocks (title None: what comes
+    before the first)."""
+    out, title, lines, fence = [], None, [], False
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+        elif not fence and line.startswith("## "):
+            out.append((title, "".join(lines)))
+            title, lines = line[3:].strip(), []
+        lines.append(line)
+    out.append((title, "".join(lines)))
+    return out
+
+
+def _kit_split(engine, run_rel):
+    """(the kit's reference for the shorter instructions, KIT_MORE.md's text): the KIT_ON_DEMAND sections moved out
+    of the reference (the engine's own wording) into KIT_MORE.md, and a list of them, saying where they are, in the
+    place of the first."""
+    kit = kit_doc(engine)
+    kept, moved = [], []
+    for title, text in _sections(kit):
+        when = next((w for start, w in KIT_ON_DEMAND.items() if title and title.startswith(start)), None)
+        if when is None:
+            kept.append(text)
+            continue
+        if not moved:
+            kept.append(None)  # (the list goes here)
+        moved.append((title, when, text))
+    if not moved:
+        return kit, ""
+    listing = (f"## More of the kit: {run_rel}/{KIT_MORE} (read a section when you need it)\n"
+               + "".join(f"- {title}: {when}\n" for title, when, _ in moved) + "\n")
+    short = "".join(listing if text is None else text for text in kept)
+    short = short.rstrip() + kit[len(kit.rstrip()):]  # (it ends as the reference does)
+    more = ("# More of the kit (autopilot.kit)\n\nThe sections of the kit's reference that INSTRUCTIONS.md lists "
+            "under \"More of the kit\".\n\n" + "".join(text for _, _, text in moved))
+    return short, more
+
+
+def kit_more(engine):
+    """KIT_MORE.md: the kit's reference sections the shorter instructions list instead of quoting."""
+    return _kit_split(engine, "")[1]
+
+
+def system_prompt(engine, run_rel, agents="", short=False):
     """The instructions. agents: what this agent's subagents are and when to use them (the Claude Code agent's
-    researchers), as a paragraph of step 1; "" for an agent that has none."""
-    return (SYSTEM.replace("{engine}", engine.title).replace("{run}", run_rel).replace("{kit}", kit_doc(engine))
+    researchers), as a paragraph of step 1; "" for an agent that has none. short: the shorter instructions the
+    user's own agent reads (the contract and the KIT_ON_DEMAND sections pointed to, not quoted)."""
+    system, kit = SYSTEM, kit_doc(engine)
+    if short:
+        system, kit = SYSTEM.replace(CONTRACT, CONTRACT_SHORT), _kit_split(engine, run_rel)[0]
+    return (system.replace("{engine}", engine.title).replace("{run}", run_rel).replace("{kit}", kit)
             .replace("{research}", research_doc()).replace("{agents}", (" " + agents.strip()) if agents else "")
             .replace("{probe_seconds:.0f}", f"{PROBE_SECONDS:.0f}")
             .replace("{research_minutes:g}", f"{research_seconds() / 60:g}")

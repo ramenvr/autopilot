@@ -37,6 +37,7 @@ from .. import engines, transcripts
 from . import whole
 from .files import FILE_TOOL_SPECS, FILE_TOOLS, FileTools
 from .session import (
+    KIT_MORE,
     PACKAGE,
     PROBING,
     READING,
@@ -45,6 +46,7 @@ from .session import (
     WRITING,
     finish,
     first_message,
+    kit_more,
     open_session,
     system_prompt,
     unknown_args,
@@ -116,8 +118,9 @@ before the harness takes it. Not needed for an episode the summary explains: the
 
 START = """Autopilot run {marker} started on {project}: the game is open in the user's editor and paused between your
 calls. Pass run="{marker}" with every Autopilot tool call (other runs may go at the same time). First read
-{instructions} with read_file, all of it (in parts: it is long): it is how to work and what the kit is. The request and
-its briefing follow (also in {request}).
+{instructions} with read_file, all of it (in parts: it is long): it is how to work and what the kit is, and it names
+what to read when you need it ({kit_more}, autopilot/kit/harness.py). The request and its briefing follow (also in
+{request}).
 
 {message}"""
 
@@ -130,7 +133,8 @@ The request: {prompt}
 Its briefing (what you would read first: notes.md, lib.py, earlier runs, what changed in the codex, where the request's
 words are, what the live game shows now) is {size:,} characters, more than one tool result holds, so it is in a file.
 Read, with read_file and all of each (in parts: a call says where to read on):
-1. {instructions}: how to work and what the kit is;
+1. {instructions}: how to work and what the kit is (it names what to read when you need it: {kit_more},
+   autopilot/kit/harness.py);
 2. then {request}: the request and its briefing, whole.
 Then work on the request."""
 
@@ -398,7 +402,7 @@ class Control:
 def instructions_text(engine, run_rel, marker=""):
     from .. import vision
 
-    return (system_prompt(engine, run_rel) + "\n" + EXTERNAL_TOOLS.replace("{run}", run_rel)
+    return (system_prompt(engine, run_rel, short=True) + "\n" + EXTERNAL_TOOLS.replace("{run}", run_rel)
             .replace("{marker}", marker or "<this run's id>")
             .replace("{max_frames}", str(vision.MAX_FRAMES))
             .replace("{describer}", " ".join(line.strip() for line in vision.SYSTEM.splitlines()
@@ -409,7 +413,8 @@ def instructions_text(engine, run_rel, marker=""):
 def start_text(marker, project, prompt, message, run_rel):
     """The start call's answer: the request message inline (START) when the answer fits one tool result, else
     START_LONG, which points to REQUEST.md (the message, whole) and to INSTRUCTIONS.md."""
-    paths = {"instructions": f"{run_rel}/{INSTRUCTIONS}", "request": f"{run_rel}/{REQUEST}"}
+    paths = {"instructions": f"{run_rel}/{INSTRUCTIONS}", "request": f"{run_rel}/{REQUEST}",
+             "kit_more": f"{run_rel}/{KIT_MORE}"}
     text = START.format(marker=marker, project=project, message=message, **paths)
     if len(text) <= whole.RESULT_CHARS:
         return text
@@ -444,6 +449,8 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
         instructions = instructions_text(engines.of(game), session.run_rel, desk.marker)
         with open(os.path.join(session.run_dir, INSTRUCTIONS), "w", encoding="utf-8", newline="\n") as f:
             f.write(instructions)
+        with open(os.path.join(session.run_dir, KIT_MORE), "w", encoding="utf-8", newline="\n") as f:
+            f.write(kit_more(engines.of(game)))  # (what the instructions list of the kit, read when needed)
         message = first_message(session, short=True)  # (the shorter briefing: it is read in parts)
         with open(os.path.join(session.run_dir, REQUEST), "w", encoding="utf-8", newline="\n") as f:
             f.write(message)
