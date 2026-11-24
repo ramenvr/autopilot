@@ -139,6 +139,20 @@ def test_an_outside_run_logs_what_its_agent_is_given(started, tmp_path):
     box["thread"].join(30)
 
 
+def test_an_outside_agent_gets_the_shorter_briefing(started, tmp_path):
+    front, control, box = started
+    folder = tmp_path / "memory" / "fake" / "codex"
+    folder.mkdir(parents=True)
+    (folder / "README.md").write_text("".join(f"- Parent_{i} (25): " + "b" * 150 + "\n" for i in range(120)),
+                                      encoding="utf-8")
+    settled(front, front.call("start_run", {"request": "Verify that the crate opens"}))
+    request = (tmp_path / "memory" / "fake" / "runs" / "r1" / "REQUEST.md").read_text(encoding="utf-8")
+    part = request[request.index("## codex/README.md"):].split("\n\n")[0]
+    assert len(part) <= sessionmod.README_PART + 200 and "all of it (120 lines) is in codex/README.md" in part
+    control.desk.session.stop = lambda: True  # (the tab's Stop)
+    box["thread"].join(30)
+
+
 def test_file_calls_are_never_held_up_by_a_call_still_going(started):
     front, control, box = started
     settled(front, front.call("start_run", {"request": "Reach the gate"}))

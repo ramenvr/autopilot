@@ -444,7 +444,7 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
         instructions = instructions_text(engines.of(game), session.run_rel, desk.marker)
         with open(os.path.join(session.run_dir, INSTRUCTIONS), "w", encoding="utf-8", newline="\n") as f:
             f.write(instructions)
-        message = first_message(session)
+        message = first_message(session, short=True)  # (the shorter briefing: it is read in parts)
         with open(os.path.join(session.run_dir, REQUEST), "w", encoding="utf-8", newline="\n") as f:
             f.write(message)
         start = start_text(desk.marker, project, prompt, message, session.run_rel)

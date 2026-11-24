@@ -278,6 +278,115 @@ def test_the_start_answer_points_to_request_md_when_the_briefing_is_long():
     assert len(huge) <= whole.RESULT_CHARS and "30,000 characters, at the top of runs/r1/REQUEST.md" in huge
 
 
+# -- the outside agent's shorter briefing (it reads REQUEST.md in parts; Autopilot's own agents get all of it) -------
+
+def part_of(text, title):
+    """The briefing's part that starts with title (to the next blank line)."""
+    return text[text.index(title):].split("\n\n")[0]
+
+
+def readme(root):
+    head = "".join(f"| table {i} | what is where |\n" for i in range(20))
+    (root / "codex").mkdir(parents=True, exist_ok=True)
+    (root / "codex" / "README.md").write_text(head + "".join(f"- Parent_{i} (25): " + "b" * 150 + "\n"
+                                                             for i in range(100)), encoding="utf-8")
+
+
+def word_files(root, n=60):
+    folder = root / "codex" / "blueprints"
+    folder.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        (folder / f"BP_Crate{i:02}.txt").write_text("open the crate\n" * (1 + i % 5), encoding="utf-8")
+    for i in range(200):  # (so the request's words are rare, and ranked)
+        (folder / f"BP_Other{i:03}.txt").write_text("nothing here\n", encoding="utf-8")
+
+
+def long_runs(root, n=12):
+    for i in range(n):
+        run = root / "runs" / f"r0{i:02}"
+        run.mkdir(parents=True)
+        (run / "prompt.txt").write_text(f"Request {i}: open the crate", encoding="utf-8")
+        (run / "report.json").write_text(json.dumps({"outcome": "achieved", "summary": "\n".join(
+            f"Line {k} of run {i}: " + "w" * 130 for k in range(6))}))
+
+
+def long_opening():
+    return "\n".join([
+        'level: "/Game/Maps/Demo"',
+        "controls: " + json.dumps({f"Action{i}": [f"Key{i}"] for i in range(40)}),
+        "screen_texts: " + json.dumps({f"t{i}": "text " * 4 for i in range(200)}),
+        "ui: " + json.dumps([{"id": f"button_{i}", "kind": "button", "label": f"Button {i}"} for i in range(300)]),
+        "network: " + json.dumps("The game runs as a listen server. " + "n" * 900),
+    ])
+
+
+def test_the_readme_quote_is_its_head_and_says_where_the_rest_is(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    readme(tmp_path / "fake")
+    part = part_of(session.briefing(s, short=True), "## codex/README.md")
+    assert len(part) <= session.README_PART + 200 and "| table 19 | what is where |" in part
+    assert "all of it (120 lines) is in codex/README.md" in part and "read on from line" in part
+    assert len(part_of(session.briefing(s), "## codex/README.md")) > session.README_PART + 200  # (own agents: all)
+
+
+def test_the_request_words_list_the_top_files_and_keep_all_of_them(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    word_files(tmp_path / "fake")
+    part = part_of(session.briefing(s, short=True), "## Where the request's words")
+    assert len(part) <= session.WORDS_PART + 300 and "(60 files have some of the request's words" in part
+    assert "- codex/blueprints/BP_Crate04.txt (open: 5, crate: 5)" in part  # (the most first)
+    kept = (tmp_path / "fake" / "runs" / "r1" / "whole" / "request_words-1.txt").read_text(encoding="utf-8")
+    assert len(kept.splitlines()) == 60
+    assert len(part_of(session.briefing(s), "## Where the request's words")) > session.WORDS_PART + 300
+
+
+def test_each_earlier_run_is_one_short_line_pointing_to_its_report(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    long_runs(tmp_path / "fake")
+    part = part_of(session.briefing(s, short=True), "## Earlier runs")
+    lines = [line for line in part.splitlines() if line.startswith("- runs/")]
+    assert len(part) <= session.RUNS_PART + 300 and 3 <= len(lines) < 12
+    assert all(len(line) <= session.RUN_LINE and line.endswith(f"(runs/{line[7:11]}/report.json)") for line in lines)
+    assert lines[-1].startswith("- runs/r011: Request 11: open the crate -> achieved: Line 0 of run 11: ")
+    kept = (tmp_path / "fake" / "runs" / "r1" / "whole" / "earlier_runs-1.txt").read_text(encoding="utf-8")
+    assert "Line 5 of run 0: " + "w" * 130 in kept and "Line 5 of run 11: " + "w" * 130 in kept  # (whole)
+    own = part_of(session.briefing(s), "## Earlier runs")
+    assert "Line 5 of run 11: " + "w" * 130 in own  # (own agents: the latest whole, as before)
+
+
+def test_the_live_game_cuts_long_lists_never_the_network_note(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    opening = long_opening()
+    part = part_of(session.briefing(s, opening, short=True), "## The live game now")
+    assert len(part) <= session.LIVE_PART + 300
+    lines = dict(line.split(": ", 1) for line in part.splitlines()[1:])
+    assert lines["network"] == json.dumps("The game runs as a listen server. " + "n" * 900)  # (a text: whole)
+    assert lines["level"] == '"/Game/Maps/Demo"'
+    assert lines["ui"].startswith('[{"id": "button_0", "kind": "button", "label": "Button 0"}, ')
+    assert len(lines["ui"]) + len("ui: ") <= session.LIVE_LINE
+    assert re.search(r"\] \(\+\d+ more: whole in runs/r1/whole/opening-1\.txt\)$", lines["ui"])
+    assert re.search(r"\} \(\+\d+ more: whole in runs/r1/whole/opening-1\.txt\)$", lines["screen_texts"])
+    assert (tmp_path / "fake" / "runs" / "r1" / "whole" / "opening-1.txt").read_text(encoding="utf-8") == opening
+    assert "more: whole in" not in part_of(session.briefing(s, opening), "## The live game now")  # (own: as before)
+
+
+def test_a_games_request_message_fits_the_start_answer(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    root = tmp_path / "fake"
+    (root / "notes.md").write_text("".join(f"- note {i}: " + "n" * 80 + "\n" for i in range(60)), encoding="utf-8")
+    (root / "lib.py").write_text("".join(f"def helper_{i}():\n    return {i}\n\n" for i in range(30)),
+                                 encoding="utf-8")
+    readme(root)
+    word_files(root)
+    long_runs(root)
+    monkeypatch.setattr(session.Session, "opening", lambda self: long_opening())
+    message = session.first_message(s, short=True)
+    assert len(message) <= 23000
+    start = external.start_text("r1-ab", "fake", s.prompt, message, "runs/r1")
+    assert message in start and "more than one tool result holds" not in start
+    assert len(session.first_message(s)) > whole.RESULT_CHARS  # (the own agents' message: all of it, as before)
+
+
 # -- what the summary and the result say -----------------------------------------------------------------------------
 
 def test_the_summary_cuts_nothing(tmp_path):

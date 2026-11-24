@@ -62,6 +62,8 @@ def _long_parts(root, game):
         head + "".join(f"- Parent_{i} (25): " + "b" * 150 + "\n" for i in range(100)), encoding="utf-8")
     for i in range(60):
         (codex_dir / f"BP_Crate{i:02}.txt").write_text("open the crate\n" * (1 + i % 5), encoding="utf-8")
+    for i in range(200):  # (so the request's words are rare: ranked, not "in most files")
+        (codex_dir / f"BP_Other{i:03}.txt").write_text("nothing here\n", encoding="utf-8")
     return "\n".join([
         'level: "/Game/Maps/Demo"',
         "controls: " + json.dumps({f"Action{i}": [f"Key{i}"] for i in range(40)}),
@@ -117,7 +119,7 @@ def hashes():
 # [characters, sha256], computed at 5c6319c (before the outside agent's files got shorter)
 EXPECTED = {
     "message empty": [3089, "8bcbdfc9e1638bc6a3f88b8c02bd0021fbcbea40d97938aad6d163c0f56a4558"],
-    "message long-parts": [34737, "5e886b8a35f070cca4ca199c7781acd133a171a9e5aeca8d7a667e6fa51f6c21"],
+    "message long-parts": [37933, "815ae46bb5b568aadf7894eafa4f2cc1367c2ddfa3fd2488d81b79e6547d5f4b"],
     "message rich": [39233, "1ababf408872ca2e21c8bf2e514ca4c42a9d29134649f6548458b9e094c60ff6"],
     "message rich-going-on": [39564, "42f3cb8f41aeea822adc51e2ad63e76eddf5129ca674f0c8bf85b9f66eadd5d4"],
     "system claude-code godot": [78447, "a918e5d239f6c6c3f6f2d3853cd4dc0fa8ed156b724a52b8667d3ff80fd38411"],

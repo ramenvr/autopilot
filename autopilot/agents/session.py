@@ -307,6 +307,15 @@ The game: {project}. This run's folder: {run}/. Write {run}/harness.py, run it, 
 #  briefing says where all of it is (the file itself, or a file of the run it was written to whole)
 BRIEF_PART = 12000  # characters of one file it quotes: notes.md, lib.py, the codex README, what the live game shows
 BRIEF_LIST = 6000  # characters of one list: earlier runs, codex changes, where the request's words are, the levels
+# The shorter briefing (short=True) the user's own agent reads (`autopilot connect`, external.py): it reads REQUEST.md
+# with read_file, 20,000 characters a call, so its request message is kept within the start answer (whole.RESULT_CHARS)
+# and comes inline. Autopilot's own agents get the message at once and keep the budgets above
+README_PART = 3000  # characters of codex/README.md (its table and settings come first; the rest is read on in the file)
+WORDS_PART = 1500  # characters of where the request's words are (the files with the most first; all of them in a file)
+RUN_LINE = 300  # characters of one earlier run's line, made one line (its report.json has the rest)
+RUNS_PART = 2500  # characters of the earlier runs (the latest that fit; all of them in a file of the run)
+LIVE_LINE = 1200  # characters of one list or table of what the live game shows (its first items; a text is never cut)
+LIVE_PART = 4500  # characters of what the live game shows
 STOP_WORDS = set("""verify that this those these there their they them then than when what where which while with
 without from into onto over under after before about does doesn't should would could must will have has been being
 player player's players game games level levels make makes made keep keeps goes going still stays same each every
@@ -1790,34 +1799,75 @@ def _whole(path):
         return ""
 
 
-def _quoted(session, rel, title, fence=None, why="", seen=None):
+def _quoted(session, rel, title, fence=None, why="", seen=None, budget=None):
     """A file of the game's folder (rel: its path there) as a part of the briefing under title: whole when it fits
-    BRIEF_PART, else its first lines, with how long it is and from where to read on (why: what reading the rest is
-    for). fence: a code block's language, or None. seen: a dict, or None; when given, seen[rel] is set to the
-    file's whole length in characters, before any cut. None when the file is missing or empty."""
+    budget (default BRIEF_PART), else its first lines, with how long it is and from where to read on (why: what
+    reading the rest is for). fence: a code block's language, or None. seen: a dict, or None; when given, seen[rel]
+    is set to the file's whole length in characters, before any cut. None when the file is missing or empty."""
     text = _whole(os.path.join(session.root, *rel.split("/"))).rstrip()
     if seen is not None:
         seen[rel] = len(text)
     if not text.strip():
         return None
-    note, shown = whole.split(text, BRIEF_PART, rel, what=rel, holds="the briefing quotes")
+    note, shown = whole.split(text, BRIEF_PART if budget is None else budget, rel, what=rel,
+                              holds="the briefing quotes")
     if fence is not None and shown:
         shown = f"```{fence}\n{shown}\n```"
     return "\n".join(filter(None, [title, note + (f" {why}" if note and why else ""), shown]))
 
 
-def _listing(session, title, items, stem, what, latest=False):
-    """(a list of the briefing under title, the items it shows): items one a line when they fit BRIEF_LIST, else all
-    of them written whole to a file of the run (stem) and those that fit (the first, or the latest), saying where
-    the rest are."""
-    k = whole.listed(items, BRIEF_LIST, latest)
+def _listing(session, title, items, stem, what, latest=False, budget=None, full=None):
+    """(a list of the briefing under title, the items it shows): items one a line when they fit budget (default
+    BRIEF_LIST), else all of them written whole to a file of the run (stem) and those that fit (the first, or the
+    latest), saying where the rest are. full: the items as the file has them, when the list shows them shorter (one
+    to one)."""
+    k = whole.listed(items, BRIEF_LIST if budget is None else budget, latest)
     if k == len(items):
         return "\n".join([title, *items]), items
-    rel = whole.kept(session.run_dir, session.run_rel, stem, "\n".join(items) + "\n")[1]
+    rel = whole.kept(session.run_dir, session.run_rel, stem, "\n".join(full or items) + "\n")[1]
     shown = items[len(items) - k:] if latest else items[:k]
     said = (f"({len(items)} {what}, one a line, whole in {rel}"
             + (f"; the {'latest' if latest else 'first'} {k} follow)" if k else ": read them there)"))
     return "\n".join([title, said, *shown]), shown
+
+
+def _one_line(text, limit, where):
+    """text made one line; when longer than limit, cut at a word and ending with where the rest is (where)."""
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    tail = f" ... ({where})"
+    cut = text[:max(0, limit - len(tail))]
+    if " " in cut:
+        cut = cut[:cut.rindex(" ")]
+    return cut + tail
+
+
+def _live_line(line, where):
+    """A line of what the live game shows ("key: <json>"): whole when it fits LIVE_LINE or its value is no list or
+    table (a text, such as the network note, is never cut), else its first items that fit and how many more are in
+    where (the whole of it, a file of the run)."""
+    key, sep, value = line.partition(": ")
+    if not sep or len(line) <= LIVE_LINE:
+        return line
+    try:
+        value = json.loads(value)
+    except ValueError:
+        return line
+    if isinstance(value, list):
+        items, ends = [json.dumps(v, default=str) for v in value], "[]"
+    elif isinstance(value, dict):
+        items, ends = [f"{json.dumps(k)}: {json.dumps(v, default=str)}" for k, v in value.items()], "{}"
+    else:
+        return line
+    room = LIVE_LINE - len(key) - len(sep) - len(ends) - len(f" (+{len(items)} more: whole in {where})")
+    size, k = -2, 0
+    for item in items:
+        size += len(item) + 2
+        if size > room:
+            break
+        k += 1
+    return f"{key}{sep}{ends[0]}{', '.join(items[:k])}{ends[1]} (+{len(items) - k} more: whole in {where})"
 
 
 def _stem(word):
@@ -1878,8 +1928,10 @@ def word_hits(codex_root, prompt, limit=None):
     return lines
 
 
-def briefing(session, opening=None):
-    """The request message's second half: what every run used to read in its first turns."""
+def briefing(session, opening=None, short=False):
+    """The request message's second half: what every run used to read in its first turns. short: the shorter one the
+    user's own agent reads (README_PART, WORDS_PART, RUN_LINE and RUNS_PART, LIVE_LINE and LIVE_PART, each saying
+    where the rest is); Autopilot's own agents get the whole of each part as far as BRIEF_PART and BRIEF_LIST go."""
     root = session.root
     out, parts, seen = [], {}, {}  # (parts, seen: each part's length, each quoted file's whole length; logged below)
 
@@ -1901,7 +1953,7 @@ def briefing(session, opening=None):
             add(name, part)
     if not notes and not lib:
         add("none yet", "## notes.md, lib.py\nNone yet: the first request on this game.")
-    runs = []
+    runs, rids = [], []
     runs_dir = os.path.join(root, "runs")
     for rid in sorted(os.listdir(runs_dir)) if os.path.isdir(runs_dir) else []:
         if rid == session.run_id:
@@ -1914,7 +1966,13 @@ def briefing(session, opening=None):
             rep = {}
         if prompt:
             runs.append(f"- runs/{rid}: {prompt} -> {rep.get('outcome', 'no report')}: {rep.get('summary', '')}")
-    if runs:
+            rids.append(rid)
+    if runs and short:  # (each run one short line; the file of the run keeps them whole)
+        lines = [_one_line(run, RUN_LINE, f"runs/{rid}/report.json") for run, rid in zip(runs, rids)]
+        add("earlier runs", _listing(session, "## Earlier runs (each folder keeps its harness versions, traces and "
+                                     "report)", lines, "earlier_runs", "earlier runs", latest=True, budget=RUNS_PART,
+                                     full=runs)[0])
+    elif runs:
         add("earlier runs", _listing(session, "## Earlier runs (each folder keeps its harness versions, traces and "
                                      "report)", runs, "earlier_runs", "earlier runs", latest=True)[0])
     codex_root = os.path.join(root, "codex")
@@ -1945,7 +2003,8 @@ def briefing(session, opening=None):
                 f"one (all of them also in {codexmod.INDEXING}/batch-N.txt), and says when the export is in. A search "
                 "that finds nothing has looked at what is indexed so far: what you need may still come. Work with "
                 "what is there; you never need to read a file again unless it changed and you rely on it.")
-    readme = _quoted(session, "codex/README.md", "## codex/README.md", seen=seen)
+    readme = _quoted(session, "codex/README.md", "## codex/README.md", seen=seen,
+                     budget=README_PART if short else None)
     if readme:
         add("codex/README.md", readme)
     try:
@@ -1955,7 +2014,8 @@ def briefing(session, opening=None):
     if hits:
         ranked = [line for line in hits if line.startswith("- ")]
         text, _ = _listing(session, "## Where the request's words appear in the codex (files, with how often)",
-                           ranked, "request_words", "files have some of the request's words, the most first")
+                           ranked, "request_words", "files have some of the request's words, the most first",
+                           budget=WORDS_PART if short else None)
         add("request words", "\n".join([text, *(line for line in hits if not line.startswith("- "))]))
     try:  # (the workflow for this kind of request: the package's, or this game's own: autopilot/workflows.py)
         from .. import workflows
@@ -1969,7 +2029,9 @@ def briefing(session, opening=None):
     if opening:  # (last: the live game's state is the part a long briefing is cut at, and it is kept whole in a file)
         title = "## The live game now (looked at just before you started; it is paused)"
         seen["live game"] = len(opening)
-        if len(opening) > BRIEF_PART:  # (whole in a file of the run)
+        if short:
+            opening = _live(session, opening)
+        elif len(opening) > BRIEF_PART:  # (whole in a file of the run)
             rel = whole.kept(session.run_dir, session.run_rel, "opening", opening)[1]
             opening = whole.deliver(opening, BRIEF_PART, rel, what="What the live game shows",
                                     holds="the briefing quotes")
@@ -1978,6 +2040,19 @@ def briefing(session, opening=None):
     # (sizes only, never the text: what a total budget for the briefing would be decided from)
     session.note("briefing sizes: " + json.dumps({"total": len(text), "parts": parts, "whole": seen}))
     return text
+
+
+def _live(session, opening):
+    """What the live game shows, for the shorter briefing: whole when it fits LIVE_PART and each line LIVE_LINE; else
+    kept whole in a file of the run, each long list or table its first items (_live_line), and, when that is still
+    longer than LIVE_PART, the lines that fit, saying from which line to read on."""
+    lines = opening.splitlines()
+    if len(opening) <= LIVE_PART and all(len(line) <= LIVE_LINE for line in lines):
+        return opening
+    rel = whole.kept(session.run_dir, session.run_rel, "opening", opening)[1]
+    text = "\n".join(_live_line(line, rel) for line in lines)  # (line for line: the file's line numbers hold)
+    return whole.deliver(text, LIVE_PART, rel, what="What the live game shows (long lists cut)",
+                         holds="the briefing quotes")
 
 
 NAMED_IN = ("notes.md", "lib.py")  # what runs wrote down, which may name codex files
@@ -2202,9 +2277,10 @@ def start_reading(session, describer=None):
         session.note(f"researcher: on, {reading.name}")
 
 
-def first_message(session):
+def first_message(session, short=False):
     """The request message an agent starts from: the request, then the briefing (what every run would read first,
-    and what the live game shows now). Also saves the request as prompt.txt in the run's folder."""
+    and what the live game shows now). Also saves the request as prompt.txt in the run's folder. short: with the
+    shorter briefing the user's own agent reads (briefing)."""
     opening = None
     try:
         opening = session.opening()
@@ -2214,7 +2290,7 @@ def first_message(session):
     with open(os.path.join(session.run_dir, "prompt.txt"), "w", encoding="utf-8") as f:
         f.write(session.prompt)
     going_on = GOING_ON.format(run=session.run_rel) + "\n\n" if getattr(session, "going_on", False) else ""
-    brief = briefing(session, opening)
+    brief = briefing(session, opening, short=True) if short else briefing(session, opening)
     looking = session.looking_note()
     message = PROMPT.format(prompt=session.prompt, project=session.project, run=session.run_rel,
                             briefing=going_on + brief + "\n\n" + looking)
