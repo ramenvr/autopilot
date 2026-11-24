@@ -681,7 +681,8 @@ class Game:
 
     def each_player(self, fn, players=None):
         """{n: fn(game.player(n))} for every player at once: their reads go out together and share a game frame, one
-        wait however many players (reads one player after another take a frame each). players: the numbers to play
+        wait however many players (reads one player after another take a frame each) while the players' context is
+        cached: it is read again each half second (context()), a frame or two more. players: the numbers to play
         (default: every player the game has; player 1 alone in a one-player game). A player whose fn failed with a
         GameError gets the error instead (as in batch)."""
         if players is None:
