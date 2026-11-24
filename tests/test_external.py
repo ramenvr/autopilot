@@ -335,6 +335,63 @@ def test_frames_are_handed_over_as_images_and_count_for_a_visual_report(tmp_path
     assert "files are gone" in text_of(lost) and not [c for c in lost["content"] if c["type"] == "image"]
 
 
+def players_session(tmp_path, monkeypatch, players=2, looks_itself=True, share=False):
+    """A session whose run has played an episode, with a recorder stub as media.Recorder is in a game of several
+    players: player 1's, its `others` the other players' (each with frames of its own)."""
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path / "memory"))
+    session = sessionmod.Session(Game(FakeLink()), "fake", "Reach the gate together", "r1")
+    session.looks_itself = looks_itself
+    session.marker = "r1-abcd" if looks_itself else None
+    base = os.path.join(session.run_dir, "telemetry") if share else session.run_dir
+    link = types.SimpleNamespace(hello={"features": ["media", "players", "instances"]})
+
+    def stub(player):
+        return types.SimpleNamespace(frames=vision.Frames(), link=link, received=True, problem=None, confirmed=True,
+                                     missing=lambda: None, player=player, base=base,
+                                     folder=os.path.join(base, "media"), others={}, players_missing=lambda e=None: {})
+
+    recorder = stub(1)
+    recorder.others = {k: stub(k) for k in range(2, players + 1)}
+    session.describer = vision.Describer(recorder, "deepseek")
+    session.episodes, session.most_decisions = 1, sessionmod.MIN_JEV_DECISIONS
+    return session, recorder
+
+
+def test_the_outside_agents_report_names_every_players_video(tmp_path, monkeypatch):
+    report = {"outcome": "achieved", "summary": "Both reached the gate", "evidence": []}
+    session, _ = players_session(tmp_path, monkeypatch)
+    answer = session.do_report(dict(report))
+    assert answer.startswith("Reported. You can stop now.\n")
+    # Paths in this game's folder, as its file tools take them; the one the tab plays is said
+    assert "player 1: runs/r1/media/recording-1.mp4" in answer
+    assert "player 2: runs/r1/media/recording-1-p2.mp4" in answer
+    assert "the Autopilot tab plays player 1's" in answer
+    # The episode the report names, in a shared run's folder; 3 players
+    session, _ = players_session(tmp_path, monkeypatch, players=3, share=True)
+    session.episodes = 2
+    answer = session.do_report(dict(report, episode=1))
+    assert "episode 1" in answer and "runs/r1/telemetry/media/recording-1-p3.mp4" in answer
+    assert "recording-2" not in answer
+    # A player the plugin never pictured has no video to name
+    session, recorder = players_session(tmp_path, monkeypatch, players=3)
+    recorder.others[3].confirmed = False
+    answer = session.do_report(dict(report))
+    assert "recording-1-p2.mp4" in answer and "-p3" not in answer
+
+
+def test_a_one_player_or_inner_agents_report_answer_is_as_before(tmp_path, monkeypatch):
+    report = {"outcome": "achieved", "summary": "Reached the gate", "evidence": []}
+    session, _ = players_session(tmp_path, monkeypatch, players=1)
+    assert session.do_report(dict(report)) == "Reported. You can stop now."
+    # An agent Autopilot runs itself (not the outside agent): as before, in a game of several players too
+    session, _ = players_session(tmp_path, monkeypatch, players=2, looks_itself=False)
+    assert session.do_report(dict(report)) == "Reported. You can stop now."
+    # Every other player's never pictured: nothing to name
+    session, recorder = players_session(tmp_path, monkeypatch, players=2)
+    recorder.others[2].confirmed = False
+    assert session.do_report(dict(report)) == "Reported. You can stop now."
+
+
 def test_the_mcp_front_lists_its_tools_and_finds_the_service(tmp_path, monkeypatch):
     out = io.StringIO()
     server = mcp.Server(out=out)

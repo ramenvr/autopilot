@@ -1697,7 +1697,24 @@ class Session:
         self.still("report", outcome=args.get("outcome"))
         with open(os.path.join(self.run_dir, "report.json"), "w", encoding="utf-8") as f:
             json.dump(args, f, indent=1)
-        return "Reported. You can stop now."
+        videos = self.players_videos(args.get("episode") or self.episodes) if self.looks_itself else ""
+        return "Reported. You can stop now." + (f"\n{videos}" if videos else "")
+
+    def players_videos(self, n):
+        """The line naming each player's video of episode n, in a game of several players whose other players are
+        recorded (media.Recorder's `others`), for the user's own agent to tell the user: paths in this game's folder,
+        as its file tools take them. "" in a game of one player. The file names are the Recorder's (media.Clip), so
+        they are known before its encoder has closed the episode's video."""
+        recorder = self.recorder or getattr(self.describer, "recorder", None)
+        others = [k for k, other in sorted((getattr(recorder, "others", None) or {}).items())
+                  if getattr(other, "confirmed", True)]  # (a player the plugin never pictured has no video)
+        if not others:
+            return ""
+        folder = f"{self.run_rel}/{os.path.relpath(recorder.folder, self.run_dir).replace(os.sep, '/')}"
+        names = [f"player 1: {folder}/recording-{n}.mp4"] + [f"player {k}: {folder}/recording-{n}-p{k}.mp4"
+                                                            for k in others]
+        return (f"Each player's video of episode {n}, in this game's folder (the Autopilot tab plays player 1's): "
+                + ", ".join(names) + ".")
 
     def _report_episode(self, episode):
         """The report's `episode` (the one whose recording is the run's) as a number 1..episodes played, or why it
