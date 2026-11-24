@@ -78,6 +78,16 @@ Inputs (the player's hands; the only way to act in play):
   Unreal's players are the editor's multiplayer Play In Editor (Number of Players in its Play settings, run under one
   process: a listen server's host or the first client is player 1): `game.restart(players=N)` can't change how many,
   and `game.pointer` is player 1's only (another player's UI: its `ui_act`).
+  Every read waits for a game frame, and reads sent together share one: drive players and read them together, or
+  each player you add costs another frame a tick. `yield from together([gen1, gen2])` steps every player's generator
+  each tick at the same time and returns their results in order; `game.each_player(fn)` is `{n: fn(game.player(n))}`
+  for every player read at once (one wait), `game.poses()` every player's pose. Read each player once a tick and pass
+  what you read on, rather than reading it again:
+      def meet(game):  # an executor: players 1 and 2 walk to each other
+          poses = game.poses()  # {1: pose, 2: pose}, one frame
+          a, b = yield from together([walk_to(game, poses[2]["at"], within=200),
+                                      walk_to(game.player(2), poses[1]["at"], within=200)])
+          return Result(bool(a and b), "met" if a and b else f"{a.why} / {b.why}")
 
 ## Controllers (kit.control): generators, `yield from` them inside executors
 
@@ -119,6 +129,7 @@ Each does one tick of control per step and returns a `Result` (truthy when it wo
 - `aim_and_strike(game, target, key, strikes=1, cooldown=0.5)`: look at the target and press `key` `strikes` times: one
   volley, for tactics of your own that choose when to be in reach.
 - `hold_for(game, key, seconds)`, `press(game, key, times=1, every=0.15)`, `wait(game, seconds)`, `until(game, cond, timeout)`.
+- `together([gen, ...])`: several controllers at once (one per player), each step at the same time; their results in order.
 - `moveset(game, steps, timeout=None)`: a sequence of inputs the game runs itself, frame by frame on its own clock
   (`game.sequence`): `steps` = `[{"key", "mode": "press"|"hold"|"release", "at": s | "after": s, "when": {...},
   "timeout": s}, ...]`; a step fires at its time once its `when` holds, read by the game every frame: `{"near":
