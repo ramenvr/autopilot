@@ -579,11 +579,20 @@ def test_with_no_indexer_the_report_says_whole_codex_only_when_this_run_got_it(t
     s.game.codex.fetch_error = None
     assert line(s) == head + "the codex an earlier run left (2 files; the plugin sent none this run)." + tail
     assert session.read_summary(s)["index"] == {"complete": False, "files": 2, "fetched": False}
-    # This run fetched it from the plugin, or read the project's own files: whole, as before
-    for source in ("plugin", "project"):
+    # This run fetched it from the plugin, or read the project's own files: whole, and said how it got it
+    for source, how in (("plugin", "fetched by this run"), ("project", "read from the project's folder this run")):
         s.game.codex.source = source
-        assert line(s) == head + "the game's whole codex (indexed before this run)." + tail
+        assert line(s) == head + f"the game's whole codex ({how})." + tail
         assert session.read_summary(s)["index"] == {"complete": True}
+    # The fetch failed and the project's own files were read instead (build_local: its source, and only what an
+    # earlier export left of its Blueprints and data): not whole, and the error is kept
+    s.game.codex.source = "project"
+    s.game.codex.fetch_error = "the game didn't answer codex_manifest within 900s"
+    assert line(s) == (head + "the project's own files, read from its folder (2 files; this run couldn't fetch the "
+                       "game's files from the plugin: the game didn't answer codex_manifest within 900s, so the "
+                       "Blueprints and data may be an earlier export's, or missing)." + tail)
+    assert session.read_summary(s)["index"] == {"complete": False, "files": 2, "fetched": False, "from": "project",
+                                                "error": "the game didn't answer codex_manifest within 900s"}
 
 
 def test_the_codex_says_how_this_run_got_it(tmp_path, monkeypatch):
@@ -695,8 +704,8 @@ def test_the_report_says_in_one_line_what_was_read_when_the_index_was_complete(t
     s.run_harness(15)
     read = session.finish(s, time.time(), None, "")["read"]
     assert read["index"] == {"complete": True}
-    assert read["lines"] == ["Harness 1, the last one played, was written with the game's whole codex (indexed "
-                             "before this run). Read for it: nothing by the agent; the background researcher was off."]
+    assert read["lines"] == ["Harness 1, the last one played, was written with the game's whole codex (fetched "
+                             "by this run). Read for it: nothing by the agent; the background researcher was off."]
     # No harness played: what was read in the whole run
     s = crate_run(tmp_path / "none", monkeypatch, running=True)
     s.activity("search", "Searched the game's code for Boss", "Boss")

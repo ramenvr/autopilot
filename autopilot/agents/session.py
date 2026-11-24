@@ -2322,20 +2322,23 @@ def read_summary(session):
              "searches": sum(1 for e in events if e.get("kind") == "search" and before(e.get("t")))}
     out = {"harness": n}
     # With no indexer: whole only when this run got the codex (from the plugin, or the project's own files); else it is
-    # what an earlier run left (maybe stale), or there is none (a plugin without the codex ops, a failed fetch)
+    # what an earlier run left (maybe stale), or there is none (a plugin without the codex ops, a failed fetch). The
+    # project's own files read after a failed fetch aren't whole either: its source, and only what an earlier export
+    # left of its Blueprints and data (engines' build_local)
     cx = getattr(getattr(session, "game", None), "codex", None)
     source, fetch_error = getattr(cx, "source", None), getattr(cx, "fetch_error", None)
+    whole = source is not None and not fetch_error
     on_disk = 0
-    if status is None and n is not None and source is None and getattr(session, "root", None):
+    if status is None and n is not None and not whole and getattr(session, "root", None):
         on_disk = sum(codexmod.codex_kinds(os.path.join(session.root, "codex")).values())
     if status is None:
         if n is None:
             out["index"] = None
-        elif source is not None:
+        elif whole:
             out["index"] = {"complete": True}
         else:
             out["index"] = {"complete": False, "files": on_disk, "fetched": False,
-                            **({"error": fetch_error} if fetch_error else {})}
+                            **({"from": source} if source else {}), **({"error": fetch_error} if fetch_error else {})}
     else:
         out["index"] = {"complete": not status.get("running") and not status.get("error"),
                         **{k: status.get(k) for k in ("done", "total", "files")}}
@@ -2372,8 +2375,13 @@ def read_summary(session):
     read_for = f"Read for it: {by_agent}; {by_researcher}."
     head = f"Harness {n}, the last one played, was written"
     if status is None:
-        if source is not None:
-            had_codex = "the game's whole codex (indexed before this run)"
+        if whole:
+            had_codex = "the game's whole codex (" + ("fetched by this run" if source == "plugin"
+                                                      else "read from the project's folder this run") + ")"
+        elif source == "project":
+            had_codex = (f"the project's own files, read from its folder ({_count(on_disk, 'file', 'files')}; this run "
+                         f"couldn't fetch the game's files from the plugin: {fetch_error}, so the Blueprints and data "
+                         "may be an earlier export's, or missing)")
         elif on_disk:
             why = (f"this run couldn't fetch the game's files: {fetch_error}" if fetch_error
                    else "the plugin sent none this run")
