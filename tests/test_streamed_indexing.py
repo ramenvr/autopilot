@@ -675,6 +675,37 @@ def test_the_codex_says_how_this_run_got_it(tmp_path, monkeypatch):
     assert cx.source == "plugin"
 
 
+def test_why_the_fetch_failed_names_no_folder_on_this_machine(tmp_path, monkeypatch):
+    # (it goes into report.json and the plugin's result panel: no home folder, no absolute path)
+    from autopilot.kit.game import GameError
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path / "mem"))
+    monkeypatch.setattr(codex, "snapshot_level", lambda game, root: None)
+
+    class Failing:
+        def __init__(self, error):
+            self.error = error
+
+        def request(self, op, args, timeout=None):
+            raise self.error
+
+    def why(error):
+        return codex.build("Failing", game=Failing(error), stream=True).fetch_error
+
+    assert why(OSError(28, "No space left on device", "/Users/someone/.autopilot/codex/blueprints/G/BP_Boss.txt")) \
+        == "No space left on device: BP_Boss.txt"
+    said = why(GameError(r"couldn't read C:\Users\someone\Games\Farm\Saved\AutopilotCodex\data\DT_Loot.csv"))
+    assert "someone" not in said and "C:" not in said and said.startswith("couldn't read ") and "DT_Loot.csv" in said
+    said = why(PermissionError("denied writing /private/var/folders/x1/T/proj/codex/data/DT_Loot.csv now"))
+    assert said == "denied writing [path]/DT_Loot.csv now"
+    # (an Unreal asset's path is no folder on this machine: kept)
+    assert why(GameError("codex_read: /Game/Maps/Arena not found")) == "codex_read: /Game/Maps/Arena not found"
+    # (no path: as it was)
+    assert why(TimeoutError("the game didn't answer codex_manifest within 900s")) == \
+        "the game didn't answer codex_manifest within 900s"
+    assert why(RuntimeError("")) == "RuntimeError"
+
+
 def background_researcher(read=(), passes=0, failed=0):
     """A stand-in for the run's background researcher: what it read ([(time.time(), path)]) and its passes."""
     return types.SimpleNamespace(read=list(read), passes=passes, failed=failed, stop=lambda: None, arrived=None,

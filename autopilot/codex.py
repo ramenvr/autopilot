@@ -16,7 +16,7 @@ import shutil
 import threading
 import time
 
-from . import bridge, engines, memory
+from . import bridge, engines, memory, redact
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -603,6 +603,23 @@ def batch_text(batch):
     return "".join(f"{'+' if f['kind'] == 'new' else '~'} codex/{f['path']}  {f['line']}\n" for f in batch["files"])
 
 
+# An absolute POSIX path redact.Redactor leaves (/private/..., /var/..., /tmp/...): not after ~, <project> or [path],
+# and not an Unreal asset's path (/Game/..., /Script/..., /Engine/...: no folder on this machine)
+OTHER_PATH = re.compile(r"(?<![\w.~>\]/])/(?!(?:Game|Script|Engine)/)(?:[^/\s'\"]+/)+([^/\s'\"]*)")
+
+
+def error_words(e, project=None):
+    """Why something failed, in one line (up to 200 characters) that names no folder on this machine: it goes into
+    report.json and the plugin's result. A file error's reason and the file's name; else the error's first line with
+    the project's and home folders, other absolute paths and secrets taken out (redact.Redactor)."""
+    if isinstance(e, OSError) and e.strerror:
+        text = e.strerror + (f": {os.path.basename(str(e.filename))}" if e.filename else "")
+    else:
+        text = (str(e).strip().splitlines() or [type(e).__name__])[0]
+    text = redact.Redactor(project=project).text(text)
+    return OTHER_PATH.sub(lambda m: "[path]/" + m.group(1), text)[:200]
+
+
 def build(project, path=None, game=None, export=True, engine=None, stream=False, first_map=None):
     """Make (or refresh) a project's codex. path: the project on this machine (Unreal: the .uproject; Unity, Godot:
     the folder), for its files and the commandlet; game: the live game, for level.txt; engine: the game's engine
@@ -630,7 +647,7 @@ def build(project, path=None, game=None, export=True, engine=None, stream=False,
                 fetched = fetch_from_plugin(game, codex.root, export="auto" if export else "skip")
         except Exception as e:
             print(f"codex: couldn't fetch the code from the plugin: {e}")
-            codex.fetch_error = (str(e).strip().splitlines() or [type(e).__name__])[0][:200]
+            codex.fetch_error = error_words(e, path)
         if fetched is not None:
             codex.source = "plugin"
             print(f"codex: {fetched['files']} files from the plugin ({fetched['fetched']} new or changed, "
