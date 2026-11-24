@@ -21,7 +21,10 @@ on a slow call: Codex after 60 s) and gives the result to the next `wait`.
 
 Looking at the picture: the user's agent hands an episode's frames (`frames`, JPEGs) to a subagent of its own told
 only open questions (docs/architecture.md, "Looking at the picture"), so the description comes from the user's plan
-too. describe_frames (Autopilot's own vision model) stays a fallback, where the run has a key or Aura for one.
+too. describe_frames (Autopilot's own vision model) stays a fallback, where the run has a key or Aura for one. In a
+game of several players whose plugin records each one, both take `player` for another player's view (its times on
+player 1's clock, as the summary's t=), and the report's answer names each player's video of the episode
+(Session.players_videos), for the user's agent to tell the user.
 """
 
 import base64

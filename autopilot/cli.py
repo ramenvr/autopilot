@@ -489,7 +489,9 @@ def result_frame(report, prompt, kind=None):
     """The `result` the plugin is sent for a report (docs/protocol.md, Runs): a verdict for a claim, else a goal's.
     kind: the run's (verify, goal or explore), which decides the result's shape: a goal worded as a claim ("Confirm
     the player spawns...") may be reported CONFIRMED and is still a goal's result, reached. Without one the prompt
-    and the outcome decide."""
+    and the outcome decide. run_prompt adds the recording: `recording` (player 1's video, which the plugins play),
+    `recordings` (in a game of several players: every player's video of that episode, player 1's first) or
+    `no_recording` (why there is none)."""
     outcome = report.get("outcome", "")
     code = EXIT.get(outcome, 1)
     summary = plain_words(report.get("summary", ""))
@@ -936,7 +938,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     if tested:
         frame["tested"] = True  # (the plugins show it as GAME TESTED)
     # What the run added to the memory (the plugins say so at the end of the feed) and its recording (their report
-    # plays it): both on this machine, never scrubbed
+    # plays player 1's; `recordings` lists every player's in a game of several): both on this machine, never scrubbed
+    # (report.json has the same, its paths relative to the run's folder: keep_in_report)
     if learned is not None:
         frame["memory"] = learned
     if recording:

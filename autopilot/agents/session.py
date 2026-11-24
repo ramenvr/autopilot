@@ -2306,7 +2306,9 @@ def finish(session, started, stopped, last_text, **facts):
     """The request's report: what the agent reported (or, when it reported nothing, a fallback saying why), with the
     run's facts added. Saved as report.json in the run's folder. started: time.time() when the agent started;
     stopped: why the agent ended early (None when it ended by itself); last_text: the agent's last words; facts: the
-    agent's own (model, cost, turns...)."""
+    agent's own (model, cost, turns...). The run completes report.json once its recording has stopped
+    (cli.keep_in_report): `recording`, `recordings` (every player's, in a game of several), `no_recording` and the
+    final `alerts`, their paths relative to the run's folder."""
     if session.out_of_time():  # (an exploration ended by its minutes of play, not by the user)
         stopped = f"its {session.play_seconds / 60:.0f} minutes of play were up"
     report = report_words(session.report or {
