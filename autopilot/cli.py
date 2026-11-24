@@ -449,6 +449,26 @@ def players_recordings(tel, recording, report):
     return [{"player": 1, **recording}] + list(others), report
 
 
+def portable(text, run_dir, run_name=None):
+    """text that may name a folder (a video that couldn't be made says where its pictures are), as it is shared: a
+    path in the run's folder relative to it (media/frames-1, as report.json's videos are written; the folder itself in
+    words), or from run_name when given (runs/<id>/media/frames-1, as the agent's tools name the game's files), and the
+    rest through redact (the home folder as ~...)."""
+    from . import redact  # (here: only once something shared is written)
+
+    # The run's folder (as given and as the disk has it), then the path in it up to a word that isn't a file name's
+    roots = sorted({os.path.abspath(run_dir), os.path.realpath(run_dir)}, key=len, reverse=True)
+    in_run = re.compile(rf"(?:{'|'.join(map(re.escape, roots))})(?P<rest>(?:[\\/][\w-]+(?:\.[\w-]+)*)*)(?![\w-])")
+
+    def in_run_words(m):
+        rest = re.sub(r"[\\/]+", "/", m.group("rest")).strip("/")
+        if run_name:
+            return f"{run_name}/{rest}" if rest else run_name
+        return rest or "the run's folder"
+
+    return redact.Redactor().text(in_run.sub(in_run_words, str(text)))
+
+
 def keep_in_report(run_dir, recording, recordings, missing, report):
     """Complete the run's report.json (the agent wrote it before the recording stopped: session.finish) with what the
     result says of the recording: `recording`, `recordings` (a game of several players) and `no_recording`, as
@@ -470,27 +490,14 @@ def keep_in_report(run_dir, recording, recordings, missing, report):
             return dict(item, **{k: os.path.relpath(item[k], run_dir).replace(os.sep, "/")
                                  for k in ("video", "frames") if isinstance(item.get(k), str)})
 
-        from . import redact  # (here: what report.json gets, only once it is written)
-
-        # The run's folder (as given and as the disk has it), then the path in it up to a word that isn't a file name's
-        roots = sorted({os.path.abspath(run_dir), os.path.realpath(run_dir)}, key=len, reverse=True)
-        in_run = re.compile(rf"(?:{'|'.join(map(re.escape, roots))})(?P<rest>(?:[\\/][\w-]+(?:\.[\w-]+)*)*)(?![\w-])")
-        redactor = redact.Redactor()
-
-        def in_run_words(m):  # (media/frames-1, as report.json's videos are written; the folder itself in words)
-            return re.sub(r"[\\/]+", "/", m.group("rest")).strip("/") or "the run's folder"
-
-        def portable(text):
-            return redactor.text(in_run.sub(in_run_words, str(text)))
-
         if recording:
             kept["recording"] = relative(recording)
             if recordings:
                 kept["recordings"] = [relative(r) for r in recordings]
         elif missing:
-            kept["no_recording"] = portable(missing)
+            kept["no_recording"] = portable(missing, run_dir)
         if isinstance(report, dict) and report.get("alerts"):
-            kept["alerts"] = [portable(a) for a in report["alerts"]]
+            kept["alerts"] = [portable(a, run_dir) for a in report["alerts"]]
         with open(path + ".part", "w", encoding="utf-8") as f:
             json.dump(kept, f, indent=1)
         os.replace(path + ".part", path)

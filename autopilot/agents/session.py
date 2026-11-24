@@ -1600,6 +1600,9 @@ class Session:
                 why = (self.describer.recorder.players_missing(n) or {}).get(k)
             except Exception:  # noqa: BLE001
                 why = None
+            if why:  # (it may say where the pictures are: named in the game's folder, as the agent's tools do)
+                from .. import cli
+                why = cli.portable(why, self.run_dir, self.run_rel)
             why = why or f"no picture of player {k} came while it played"
             return label, None, base, f"No frames of {label}: {why}."
         return label, other.frames, theirs, None

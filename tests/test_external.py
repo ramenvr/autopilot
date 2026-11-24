@@ -456,6 +456,21 @@ def test_frames_of_a_player_not_filmed_says_so(tmp_path, monkeypatch):
     assert text.startswith("No frames of episode 1, player 3") and not jpegs and not session.alerts
 
 
+def test_why_a_player_has_no_frames_names_no_full_path(tmp_path, monkeypatch):
+    """A player whose video couldn't be made says where its pictures are: in the tool's answer (which the agent may
+    copy into its report, which is synced) that folder is named in the game's folder, as report answers name videos."""
+    session, recorder = filmed_players(tmp_path, monkeypatch, players=3)
+    pictures = os.path.join(session.run_dir, "media", "frames-1-p3")
+    recorder.players_missing = lambda episode=None: {
+        3: f"the video couldn't be made (RuntimeError: x): its pictures are in {pictures}"}
+    why = "No frames of episode 1, player 3: the video couldn't be made (RuntimeError: x): its pictures are in "
+    text, jpegs = session.frames(1, player=3)
+    assert text == f"{why}runs/r1/media/frames-1-p3." and not jpegs
+    session.describer.unavailable = lambda: None  # (a describer that could look: the answer comes before it does)
+    session.looks_itself = False
+    assert session.describe_frames(["Where is the gate?"], episode=1, player=3) == text
+
+
 def test_frames_without_player_are_player_ones_as_before(tmp_path, monkeypatch):
     session, _ = filmed_players(tmp_path, monkeypatch)
     text, jpegs = session.frames(1, start=0.9, end=3.0, count=4)
