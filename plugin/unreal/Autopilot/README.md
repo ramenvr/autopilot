@@ -411,6 +411,14 @@ when the game needs every player to go on. Play In Editor plays as you set it up
 players or the net mode. Pointing the mouse at a place is player 1's only for now (another player's UI is clicked
 through its widgets directly), and the bug detectors follow player 1's world; each player is recorded apart.
 
+**Comparing host and client.** Each Play In Editor world (the server's, each client's) has its own copy of a replicated
+actor. The agent can find an actor's copy in another world (`counterpart`: matched by the player it belongs to, its
+network GUID, or its name for an actor loaded with the map; none when that world has no copy) and read the same
+fields of every copy in one call, all from the same engine frame (`read_worlds`, with the frame number and each
+world's net mode and game time). So a gap between the host's value and a client's is the game's own, not two reads a
+frame apart: a gap that closes again is replication lag, one that stays is a desync. The plugin's `welcome` lists
+`"worlds"` in its `features` when it has both.
+
 **Several runs at once: games side by side.** Your own Claude Code or Codex (through `autopilot mcp`) can keep up to
 three runs going at once when it works through several requests (a list or a spreadsheet of prompts): its first run
 asks for that many, and the editor then plays that many games side by side, each in a window of its own, one run in
@@ -657,6 +665,7 @@ The plugin has three modules:
 | `Private/PlaytestOpsTrace.cpp` | `trace`: a line trace or sphere sweep through the played world, on the pawn's own collision channel and responses (`sight`: Visibility) |
 | `Private/PlaytestOpsLook.cpp` | how a thing is drawn (meshes, effects, lights, animation), for `view` and `watch` |
 | `Private/PlaytestOpsWatch.cpp` | `watch`: what changes over a stretch of game time |
+| `Private/PlaytestOpsWorlds.cpp` | `counterpart` and `read_worlds`: an actor's copy in another Play In Editor world, and the same fields of every copy read in one frame |
 | `Private/PlaytestDetectors.cpp` | the in-engine bug detectors |
 | `Private/PlaytestScreen.cpp`, `Private/PlaytestUI.cpp` | reading what is on screen (widgets and text) and clicking or dragging game UI |
 | `Private/PlaytestCodex.cpp` | the codex ops: exporting the project's game logic and data for the agent to research, its AngelScript (`Script/**/*.as`) with its C++ |
