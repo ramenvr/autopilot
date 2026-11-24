@@ -88,6 +88,8 @@ class Researcher:
         self.events = queue.Queue()
         self.stopped = threading.Event()
         self.passes = 0
+        self.failed = 0  # passes that failed (the model refused or unreachable): the report says so
+        self.read = []  # [(time.time(), path in the game's folder)] of each file read_file read (the report's `read`)
         self.thread = threading.Thread(target=self._loop, name="researcher", daemon=True)
         self.thread.start()
 
@@ -141,6 +143,7 @@ class Researcher:
             try:
                 self._pass(events)
             except Exception as e:
+                self.failed += 1
                 self.session.note(f"researcher: the pass failed: {type(e).__name__}: {e}")
 
     def _event_text(self, events):
@@ -216,7 +219,9 @@ class Researcher:
             if name == "read_file":
                 path = str(args.get("path") or "")
                 try:
-                    return self._read(path, int(args.get("offset") or 1))
+                    text = self._read(path, int(args.get("offset") or 1))
+                    self.read.append((time.time(), os.path.relpath(self._path(path), self.root).replace(os.sep, "/")))
+                    return text
                 except FileNotFoundError:
                     status = self._partial()
                     if not status:

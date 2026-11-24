@@ -155,6 +155,21 @@ def test_the_test_model_follows_a_testing_run():
     assert m.tag() == ("success", "NO FINDINGS")
 
 
+def test_the_test_details_say_what_the_run_read():
+    m = qa.TestModel()
+    m.start()
+    m.apply("event", {"event": "report", "prompt": "Test the level", "summary": "Played the level.", "findings": [],
+                      "read": {"harness": 1, "lines": ["Harness 1, the last one played, was written with all of "
+                                                       "the game's files indexed (9 of 9 exported).", "b"]}})
+    text = m.details()
+    assert ("READ\nHarness 1, the last one played, was written with all of the game's files indexed (9 of 9 "
+            "exported).\nb\n") in text
+    assert text.index("SUMMARY") < text.index("READ")
+    m.start()
+    m.apply("event", {"event": "report", "prompt": "Test the level", "summary": "Played.", "findings": []})
+    assert "READ" not in m.details()  # (an older brain's report has none)
+
+
 def test_the_test_command_is_autopilot_play_on_the_build(tmp_path):
     folder = tmp_path / "Autopilot"
     (folder / "codex").mkdir(parents=True)

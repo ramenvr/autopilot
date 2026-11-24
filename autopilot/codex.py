@@ -287,6 +287,26 @@ def digest(codex_root, rel):
     return first
 
 
+def kind_of(rel):
+    """A codex path's kind: its top folder ("blueprints", "data", "source"...), "other" for a file at the top."""
+    rel = str(rel).replace("\\", "/")
+    return rel.split("/", 1)[0] if "/" in rel else "other"
+
+
+def codex_kinds(codex_root):
+    """{kind_of(path): how many} of the codex's files now, the VOLATILE and hidden ones excepted (what a harness
+    written while the export ran had: agents/session.py, read_summary)."""
+    kinds = {}
+    for folder, dirs, names in os.walk(codex_root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in names:
+            rel = os.path.relpath(os.path.join(folder, name), codex_root).replace(os.sep, "/")
+            if rel in VOLATILE or name.startswith("."):
+                continue
+            kinds[kind_of(rel)] = kinds.get(kind_of(rel), 0) + 1
+    return kinds
+
+
 class Indexer:
     """The plugin's export fetched as it is written, in a thread of its own: a run starts on the codex there is, and its
     agent is told what arrives while it works (agents/session.py, news). Each fetch that brings files is a batch: its
@@ -430,10 +450,12 @@ class Indexer:
                 print(f"codex: a listener failed at the end: {e}")
 
     def status(self):
-        """{"running", "done", "total", "files", "batches", "seconds", "finished", "error", "working"}."""
+        """{"running", "done", "total", "files", "batches", "seconds", "finished", "error", "working"}; seconds: how
+        long the export has taken, up to now while it runs, else to its end."""
         with self.lock:
+            seconds = (self.finished_at or time.time()) - self.started
             return {"running": self.running, "done": self.done, "total": self.total, "files": self.files,
-                    "batches": len(self.batches), "seconds": round(time.time() - self.started, 1),
+                    "batches": len(self.batches), "seconds": round(seconds, 1),
                     "finished": self.finished_at is not None, "error": self.error, "working": list(self.working)}
 
     def _write_status(self):

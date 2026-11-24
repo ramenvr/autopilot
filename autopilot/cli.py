@@ -449,13 +449,16 @@ def result_frame(report, prompt, kind=None):
                for c in report.get("level_modified", []) or [] if isinstance(c, dict)]
     # What the user must know to trust the outcome or to get a better one (the game's picture couldn't be looked at)
     alerts = {"alerts": [str(a) for a in report["alerts"]]} if report.get("alerts") else {}
+    # What the last harness played was written on and what was read for it (session.read_summary), in lines
+    read = report.get("read") if isinstance(report.get("read"), dict) else {}
+    read = {"read": [str(line) for line in read["lines"]]} if read.get("lines") else {}
     if kind == "verify" or (kind is None and (re.match(r"(?i)\s*verify", prompt) or outcome in VERDICTS)):
         # (a claim reported as a goal: achieved is shown true)
         verdict = outcome if outcome in VERDICTS else "CONFIRMED" if outcome == "achieved" else "INCONCLUSIVE"
         return {"verdict": verdict, "reason": summary, "claim": prompt, "evidence": evidence, "changes": changes,
-                "exit_code": EXIT[verdict], **alerts}
+                "exit_code": EXIT[verdict], **alerts, **read}
     return {"kind": "goal", "reached": outcome in ("achieved", "CONFIRMED"), "goal": prompt,
-            "notes": [summary] + evidence + findings, "changes": changes, "exit_code": code, **alerts}
+            "notes": [summary] + evidence + findings, "changes": changes, "exit_code": code, **alerts, **read}
 
 
 def prompt_of(run):
@@ -1062,8 +1065,8 @@ def mirror_events(link, args):
     link.send, link.status = send, status
 
 
-REPORT_FIELDS = ("run", "project", "prompt", "outcome", "summary", "evidence", "findings", "alerts", "episodes",
-                 "seconds", "cost_usd", "visual")
+REPORT_FIELDS = ("run", "project", "prompt", "outcome", "summary", "evidence", "findings", "alerts", "read",
+                 "episodes", "seconds", "cost_usd", "visual")
 
 
 def cmd_play(link, args):

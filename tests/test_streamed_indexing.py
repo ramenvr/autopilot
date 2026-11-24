@@ -5,6 +5,7 @@ import io
 import os
 import threading
 import time
+import types
 
 import pytest
 from test_autopilot import FakeJev, FakeLink, crate_session
@@ -523,3 +524,128 @@ def test_the_report_has_no_index_alert_when_the_harness_had_the_whole_codex(tmp_
     s = crate_run(tmp_path / "none", monkeypatch, running=True)
     report = session.finish(s, time.time(), None, "")
     assert not any("indexed" in a for a in report.get("alerts", []))
+
+
+def background_researcher(read=(), passes=0, failed=0):
+    """A stand-in for the run's background researcher: what it read ([(time.time(), path)]) and its passes."""
+    return types.SimpleNamespace(read=list(read), passes=passes, failed=failed, stop=lambda: None, arrived=None,
+                                 playing=lambda n: None, episode=lambda n, summary: None)
+
+
+def test_the_report_says_what_the_last_harness_had_read_while_indexing(tmp_path, monkeypatch):
+    s = crate_run(tmp_path, monkeypatch, running=True)
+    idx = s.game.codex.indexer
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    write_codex(s, "data/DT_Loot.csv", "---,Item\nA,Sword\n")
+    idx.batches.append({"n": 1, "at": time.time() - 1,
+                        "files": [{"path": "blueprints/BP_Boss.txt", "kind": "new", "line": "x"}]})
+    s.activity("read", "Read codex/blueprints/BP_Boss.txt", "codex/blueprints/BP_Boss.txt")
+    s.activity("read", "Read codex/blueprints/BP_Boss.txt", "codex/blueprints/BP_Boss.txt")  # (one file, read twice)
+    s.activity("read", "Read notes.md", "notes.md")  # (not one of the game's files)
+    s.activity("search", "Searched the game's code for Boss", "Boss")
+    s.add_finding("Boss enrages at half health", [], "from files the export brought")
+    s.researcher = background_researcher([(time.time(), "codex/data/DT_Loot.csv")], passes=2)
+    s.run_harness(15)
+    # What came after the harness started was not read for it
+    idx.batches.append({"n": 2, "at": time.time() + 1,
+                        "files": [{"path": "data/DT_Late.csv", "kind": "new", "line": "x"}]})
+    s.activity("read", "Read codex/data/DT_Late.csv", "codex/data/DT_Late.csv")
+    s.researcher.read.append((time.time() + 1, "codex/data/DT_Late.csv"))
+    report = session.finish(s, time.time(), None, "")
+    read = report["read"]
+    assert read["harness"] == 1
+    assert read["index"] == {"complete": False, "done": 5, "total": 9, "files": 40}
+    assert read["had"] == {"blueprints": 1, "data": 1}
+    assert read["agent"] == {"files": 1, "searches": 1}
+    assert read["researcher"] == {"files": 1, "findings": 1, "passes": 2, "failed": 0}
+    assert read["after"] == {"files": 1, "kinds": {"data": 1}}
+    assert read["lines"] == [
+        "Harness 1, the last one played, was written while the game's files were still being indexed: 5 of 9 "
+        "exported, 2 files in the codex (1 Blueprint, 1 data file).",
+        "Read for it: 1 of the game's files and 1 search by the agent; 1 file and 1 finding by the background "
+        "researcher.",
+        "Exported after it started, so not read for it: 1 file (1 data file)."]
+    assert cli.result_frame(report, s.prompt)["read"] == read["lines"]
+    assert report["alerts"] == [PARTIAL_ALERT]  # (the partial-index alert stays as it was)
+    with open(os.path.join(s.run_dir, "report.json"), encoding="utf-8") as f:
+        assert '"read"' in f.read()
+
+
+def test_the_report_says_in_one_line_what_was_read_when_the_index_was_complete(tmp_path, monkeypatch):
+    s = crate_run(tmp_path, monkeypatch, running=False)
+    s.game.codex.indexer.done = 9  # (an export that ended well wrote it all)
+    s.activity("read", "Read codex/blueprints/BP_Boss.txt", "codex/blueprints/BP_Boss.txt")
+    s.run_harness(15)
+    read = session.finish(s, time.time(), None, "")["read"]
+    assert read["lines"] == [
+        "Harness 1, the last one played, was written with all of the game's files indexed (9 of 9 exported). "
+        "Read for it: 1 of the game's files and 0 searches by the agent; the background researcher was off."]
+    assert read["index"] == {"complete": True, "done": 9, "total": 9, "files": 40}
+    assert "had" not in read and "after" not in read and read["researcher"] is None
+    # An export that didn't run (nothing changed since the last): the codex's files are counted
+    s.harness_index[1] = dict(s.harness_index[1], done=0, total=0)
+    assert session.read_summary(s)["lines"][0].startswith(
+        "Harness 1, the last one played, was written with all of the game's files indexed (40 files in the codex).")
+    # An indexer that gave up (the plugin stopped answering) never says all the files were indexed
+    s.harness_index[1] = dict(s.harness_index[1], done=5, total=9, error="the plugin stopped answering")
+    line = session.read_summary(s)["lines"][0]
+    assert line.startswith("Harness 1, the last one played, was written after the indexing of the game's files "
+                           "stopped early (5 of 9 exported). Read for it: ")
+    assert session.read_summary(s)["index"]["complete"] is False
+    # The background researcher's passes that failed are said
+    s.harness_index[1] = dict(s.harness_index[1], done=9, total=9, error=None)
+    s.researcher = background_researcher(passes=3, failed=3)
+    assert session.read_summary(s)["lines"][0].endswith(
+        "; nothing by the background researcher (its 3 passes failed).")
+    s.researcher = background_researcher([(0.0, "codex/data/DT_Loot.csv")], passes=7, failed=3)
+    assert session.read_summary(s)["lines"][0].endswith(
+        "; 1 file and 0 findings by the background researcher (3 of 7 passes failed).")
+    s.researcher = background_researcher(passes=2)
+    assert session.read_summary(s)["lines"][0].endswith("; nothing by the background researcher.")
+    # No indexer: the codex was whole when the run started
+    s = crate_run(tmp_path / "whole", monkeypatch, running=None)
+    s.run_harness(15)
+    read = session.finish(s, time.time(), None, "")["read"]
+    assert read["index"] == {"complete": True}
+    assert read["lines"] == ["Harness 1, the last one played, was written with the game's whole codex (indexed "
+                             "before this run). Read for it: nothing by the agent; the background researcher was off."]
+    # No harness played: what was read in the whole run
+    s = crate_run(tmp_path / "none", monkeypatch, running=True)
+    s.activity("search", "Searched the game's code for Boss", "Boss")
+    read = session.finish(s, time.time(), None, "")["read"]
+    assert read["harness"] is None
+    assert read["lines"] == ["No harness was played. Read: 0 of the game's files and 1 search by the agent; the "
+                             "background researcher was off."]
+
+
+def test_the_researcher_counts_its_reads_and_failed_passes(tmp_path, monkeypatch):
+    s = open_run(tmp_path, monkeypatch)
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    r = researchermod.Researcher(s, FakeModel())
+    assert r.read == [] and r.failed == 0
+    r._tool("read_file", {"path": "codex/blueprints/BP_Boss.txt"}, [("playing", 1, None)], [])
+    r._tool("read_file", {"path": "./codex/blueprints/BP_Boss.txt"}, [("playing", 1, None)], [])
+    assert [path for _, path in r.read] == ["codex/blueprints/BP_Boss.txt"] * 2
+    r._tool("read_file", {"path": "codex/blueprints/BP_Gate.txt"}, [("playing", 1, None)], [])  # (no such file)
+    assert len(r.read) == 2
+
+    def boom(events):
+        raise RuntimeError("HTTP 400: the model isn't available")
+
+    monkeypatch.setattr(r, "_pass", boom)
+    r.playing(1)
+    deadline = time.time() + 5
+    while r.failed < 1 and time.time() < deadline:
+        time.sleep(0.02)
+    r.stop()
+    assert r.failed == 1
+
+
+def test_the_indexers_seconds_stop_when_the_export_ends(tmp_path, monkeypatch):
+    plugin = ExportingPlugin({}, [{"Saved/AutopilotCodex/a.txt": "a"}, {"Saved/AutopilotCodex/b.txt": "b"}])
+    idx = make_indexer(tmp_path, plugin, monkeypatch)
+    idx.start()
+    wait_for(idx)
+    a = idx.status()["seconds"]
+    time.sleep(0.2)
+    assert idx.status()["seconds"] == a

@@ -422,6 +422,9 @@ class TestModel:
             out += [("label", "\nSUMMARY\n"), ("text", f"{r['summary']}\n")]
         for alert in r.get("alerts") or []:
             out += [("label", "\nNOTE\n"), ("amber", " ! "), ("text", f"  {alert}\n")]
+        read = r.get("read") if isinstance(r.get("read"), dict) else {}
+        if read.get("lines"):  # (what the last harness was written on: agents/session.py, read_summary)
+            out += [("label", "\nREAD\n"), ("text", "".join(f"{line}\n" for line in read["lines"]))]
         if r.get("visual") is False:
             out += [("label", "\nPICTURE\n"), ("text", "None: the game ran headless, so nothing visual was checked "
                                                        "(tick Watch the game to give it one).\n")]
