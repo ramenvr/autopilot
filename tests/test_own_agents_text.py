@@ -6,6 +6,7 @@ A change to SYSTEM, KIT.md, an engine's kit section, research.DOC, a workflow or
 purpose: run `python tests/test_own_agents_text.py` and put the hashes it prints in EXPECTED.
 """
 
+import ast
 import hashlib
 import json
 import pathlib
@@ -145,6 +146,43 @@ def test_the_own_agents_read_what_they_read_before():
     assert set(got) == set(EXPECTED)
     changed = [name for name in EXPECTED if got[name] != EXPECTED[name]]
     assert not changed, changed
+
+
+# The test above calls first_message and system_prompt itself; this one reads the code that calls them, so an own
+# agent that asks for the shorter text by mistake fails here. Only the outside agent's path (external.py) and the
+# session's own first_message (which hands short on to briefing) may ask for it.
+SHORTER = {"first_message": 1, "system_prompt": 3, "briefing": 2}  # (name: positional arguments of the full text)
+MAY_ASK = {"external.py", "session.py"}
+
+
+def _calls(path):
+    """[(name, line, asks for the shorter text)] of each call to a SHORTER function in the file at path."""
+    out = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else func.attr if isinstance(func, ast.Attribute) else None
+        if name not in SHORTER:
+            continue
+        asks = (len(node.args) > SHORTER[name] or any(isinstance(a, ast.Starred) for a in node.args)
+                or any(k.arg in (None, "short", "room") for k in node.keywords))  # (None: **kwargs)
+        out.append((name, node.lineno, asks))
+    return out
+
+
+def test_no_own_agent_asks_for_the_outside_agents_shorter_text():
+    package = pathlib.Path(session.__file__).parents[1]
+    asking, callers = [], {}
+    for path in sorted(package.rglob("*.py")):
+        for name, line, asks in _calls(path):
+            callers.setdefault(path.name, set()).add(name)
+            if asks and path.name not in MAY_ASK:
+                asking.append(f"{path.relative_to(package)}:{line} {name}")
+    assert not asking, asking
+    # (the check reads the own agents' calls: each starts from first_message, and has a system prompt)
+    for module in (claude_code, codex, opencode):
+        assert {"first_message", "system_prompt"} <= callers[pathlib.Path(module.__file__).name], module.__name__
 
 
 if __name__ == "__main__":
