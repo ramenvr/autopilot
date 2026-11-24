@@ -1369,6 +1369,7 @@ def test_report_json_alerts_name_no_home_folder(monkeypatch, tmp_path):
     folder is made relative to it, and any other path in the home folder starts at ~."""
     home = tmp_path / "Users" / "someone"
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))  # (Windows takes ~ from it, not HOME)
     run_dir = str(home / ".autopilot" / "Farm" / "runs" / "r1")
     os.makedirs(run_dir)
     with open(os.path.join(run_dir, "report.json"), "w", encoding="utf-8") as f:
