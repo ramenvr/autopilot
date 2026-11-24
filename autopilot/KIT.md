@@ -81,10 +81,14 @@ Inputs (the player's hands; the only way to act in play):
   Every read waits for a game frame, and reads sent together share one: drive players and read them together, or
   each player you add costs another frame a tick. `yield from together([gen1, gen2])` steps every player's generator
   each tick at the same time and returns their results in order; `game.each_player(fn)` is `{n: fn(game.player(n))}`
-  for every player read at once (one wait), `game.poses()` every player's pose. Read each player once a tick and pass
-  what you read on, rather than reading it again:
+  for every player read at once (one wait), `game.poses()` every player's pose. A player whose read failed (no pawn
+  while it respawns) gets its GameError in its place, as in `game.batch`: check before you index it. Read each player
+  once a tick and pass what you read on, rather than reading it again:
       def meet(game):  # an executor: players 1 and 2 walk to the point between them
           poses = game.poses()  # {1: pose, 2: pose}, one frame
+          failed = [p for p in poses.values() if isinstance(p, GameError)]
+          if failed:
+              return Result(False, f"no pose: {failed[0]}")
           mid = (poses[1]["at"] + poses[2]["at"]) * 0.5  # (a point is fixed: one at the other's start swaps them)
           a, b = yield from together([walk_to(game, mid, within=100),
                                       walk_to(game.player(2), mid, within=100)])

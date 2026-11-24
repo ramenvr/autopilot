@@ -295,6 +295,21 @@ def test_kit_md_meet_example_walks_both_players_to_one_point():
         assert 100.0 < targets[1].x < 200.0, targets
 
 
+def test_kit_md_meet_example_says_when_a_players_pose_failed():
+    """A player whose pose failed (no pawn, respawning) comes back from poses() as its GameError, as in batch: the
+    example ends with a failed Result saying so, not a TypeError from indexing the error."""
+    from autopilot.kit import GameError
+
+    def no_pawn():
+        raise GameError("pose: player 2 has no pawn")
+
+    with FrameLink(players=2) as link:
+        game = Game(link)
+        game.player(2).pose = no_pawn
+        steps, out, targets = run_meet(game)
+        assert not out and "no pawn" in out.why and targets == {}
+
+
 def test_a_players_sequence_holds_are_its_own():
     """Each player's sequences and the keys they hold are its own: player 1's release(key) doesn't let go of a key
     player 2's sequence holds (nor post a release for player 1), and player 2's release_all doesn't drop player 1's
