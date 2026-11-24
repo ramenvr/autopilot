@@ -293,3 +293,24 @@ def test_kit_md_meet_example_walks_both_players_to_one_point():
         assert sorted(targets) == [1, 2]
         assert targets[1].dist(targets[2]) < 1.0, targets  # (one point: players 1 and 2 stand at x = 100 and 200)
         assert 100.0 < targets[1].x < 200.0, targets
+
+
+def test_a_players_sequence_holds_are_its_own():
+    """Each player's sequences and the keys they hold are its own: player 1's release(key) doesn't let go of a key
+    player 2's sequence holds (nor post a release for player 1), and player 2's release_all doesn't drop player 1's
+    sequences (player 1 still renews it). Shared, the players' steps in together's threads raced on one dict."""
+    with FrameLink(players=2, features=("players", "sequence")) as link:
+        game = Game(link)
+        two = game.player(2)
+        mine = game.sequence([{"key": "D", "mode": "hold"}])
+        theirs = two.sequence([{"key": "W", "mode": "hold"}])
+        assert mine and theirs and mine != theirs
+        n = len(link.posts)
+        game.release("W")  # (player 1 holds no W)
+        assert link.posts[n:] == []
+        two.release_all()
+        n = len(link.posts)
+        game.renew()
+        renewed = [a["ids"] for op, a in link.posts[n:] if op == "sequence" and a.get("action") == "renew"
+                   and "player" not in a]
+        assert renewed == [[mine]], link.posts[n:]

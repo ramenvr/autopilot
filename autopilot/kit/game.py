@@ -706,13 +706,14 @@ class Game:
 
 class Body(Game):
     """Another player of a multiplayer game (Game.player): the same game, its requests sent as player n's (their
-    "player"), its keys held and its camera calibrated apart."""
+    "player"), its keys and sequences held and its camera calibrated apart."""
 
     def __init__(self, game, n):
         self.__dict__.update(game.__dict__)  # (the link, engine, codex, log, pool, writes and bodies are shared)
         self.index = n
         self._ctx, self._ctx_at = None, 0.0
         self._held = {}
+        self._sequences, self._seq_holds = 0, {}  # (its own: together steps players in threads at once)
         self._lock = threading.Lock()
         self.look = {"x": None, "y": None}
         self.turn_asked = 0.0
