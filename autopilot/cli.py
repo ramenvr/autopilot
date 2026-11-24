@@ -428,6 +428,7 @@ def prepare(link, path=None, level=None, restart_in_place=False, stop=None):
                             tick=lambda text: link.status(f"Reading the game's code: {text}"),
                             until=lambda: bool(getattr(link, "closed", False)) or bool(stop and stop()))
         game.stopped_waiting = bool(not done and stop and stop())
+        indexer.waited_batches = len(indexer.since(0))  # (the codex the run starts on: not news to its agent)
         print(f"codex: waited {time.time() - t0:.0f} s for the export (the user's setting)"
               + ("" if done else ": stopped" if game.stopped_waiting else ": it goes on while the run works"))
         game.ready_at = time.time()  # (the wait isn't the run's reading and probing time)

@@ -348,6 +348,9 @@ class Indexer:
         self.error = None
         self.export = None  # the manifest's last word on the export
         self.working = []  # what aside() is still writing (its names: "level snapshot")
+        # The batches that came while the run waited for the export (wait_for_index, cli.prepare): part of the codex
+        # the run starts on, so never told as news (agents/session.py)
+        self.waited_batches = 0
         self._stop = threading.Event()
         self.thread = None
 

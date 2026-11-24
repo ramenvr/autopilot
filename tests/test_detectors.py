@@ -239,6 +239,10 @@ class RunningExport:
     def __init__(self):
         self.running = True
         self.waited = []  # time.time() each wait() returned
+        self.batches = [{"n": 1, "at": 0.0, "files": []}]  # (what the export brought before the run started)
+
+    def since(self, n):
+        return list(self.batches[n:])
 
     def status(self):
         return {"running": self.running, "done": 3, "total": 9, "files": 12, "batches": 0, "seconds": 1.0,
@@ -275,6 +279,7 @@ def test_prepare_starts_the_run_while_the_export_streams_by_default(mem, tmp_pat
     _, game = cli.prepare(plugin, None)
     assert calls[0]["stream"] is True
     assert export.waited == [] and export.running  # (no wait: the run starts on what is indexed)
+    assert not hasattr(export, "waited_batches")
     assert game.ready_at <= returned[0]
     assert not any(text.startswith("Reading the game's code: ") for text in plugin.said)
 
@@ -289,6 +294,7 @@ def test_prepare_waits_for_the_export_when_the_user_chose_to(mem, tmp_path, monk
     assert len(export.waited) == 1 and not export.running
     assert game.ready_at >= export.waited[0]  # (the wait isn't the run's reading and probing time)
     assert "Reading the game's code: 3 of 9 written" in plugin.said
+    assert export.waited_batches == 1  # (what came while it waited is the codex the run starts on, not news)
 
 
 class NeverEnds:

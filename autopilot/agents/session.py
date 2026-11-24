@@ -615,7 +615,8 @@ class Session:
         self.findings = []  # [{"n", "at", "text", "files", "source", "told": the tool result that carried it}]
         self.findings_lock = threading.Lock()
         self.news_lock = threading.Lock()
-        self.news_batches = 0  # the indexer's batches told so far
+        # the indexer's batches told so far (those that came while the run waited for the export count as told)
+        self.news_batches = getattr(self.indexer(), "waited_batches", 0) or 0
         self.news_findings = 0  # the findings told so far
         self.index_was_running = False  # (the export was still running when the run started: its end is told)
         self.index_told_done = False

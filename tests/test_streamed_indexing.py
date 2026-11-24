@@ -690,3 +690,19 @@ def test_the_indexer_can_be_waited_for(tmp_path, monkeypatch):
     idx.stop()
     idx.thread.join(5)
     assert not idx.thread.is_alive()
+
+
+def test_files_that_came_while_the_run_waited_for_the_export_arent_news(tmp_path, monkeypatch):
+    # (the user chose to wait for the export, cli.prepare: what it brought meanwhile is the codex the run starts on)
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    game = Game(FakeLink())
+    game.codex = codex.Codex.for_project("fake")
+    idx = StubIndexer([{"n": 1, "at": time.time(), "files": [
+        {"path": "blueprints/BP_Boss.txt", "kind": "new", "line": "Blueprint"}]}], running=False)
+    idx.waited_batches = 1
+    game.codex.indexer = idx
+    s = session.Session(game, "fake", "Kill the boss", "r1", activity=lambda f: None, client=FakeJev("go"))
+    assert "BP_Boss" not in s.news()
+    idx.batches.append({"n": 2, "at": time.time(), "files": [
+        {"path": "blueprints/BP_Gate.txt", "kind": "new", "line": "Blueprint"}]})
+    assert "codex/blueprints/BP_Gate.txt" in s.news()  # (one after the run started is news, as ever)
