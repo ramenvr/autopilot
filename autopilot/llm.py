@@ -136,7 +136,10 @@ class Model:
         r = requests.post(url, headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
                           json=body, timeout=TIMEOUT)
         if r.status_code >= 400:
-            raise RuntimeError(f"HTTP {r.status_code}: {r.text}")
+            # (with its status, as the Anthropic SDK's errors have: turn() tells a refused model by it)
+            error = RuntimeError(f"HTTP {r.status_code}: {r.text}")
+            error.status_code = r.status_code
+            raise error
         answer = r.json()
         self._count(url, answer)
         msg = ((answer.get("choices") or [{}])[0].get("message") or {})
