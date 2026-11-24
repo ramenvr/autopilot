@@ -179,3 +179,16 @@ def test_kit_md_teaches_comparing_host_and_client():
     section = section[:section.index("\n## ", 1)] if "\n## " in section[1:] else section
     for word in ("game.read_worlds(", "game.counterpart(", "same_frame", "lag", "desync"):
         assert word in section, word
+
+
+def test_the_multiplayer_note_points_at_read_worlds_when_there_is_a_client_to_compare():
+    """The opening's network line names read_worlds when the editor plays a host and a client (a listen server with
+    players, a client with its server's world here); not for one player, nor for a server in another process."""
+    from autopilot.agents import session
+
+    for net in ({"mode": "listen_server", "players": 2, "player": 1},
+                {"mode": "client", "server_world": "/Game/UEDPIE_0_Map.Map", "clients": 2, "players": 2}):
+        assert "game.read_worlds" in session.network_note(net), net
+    for net in ({"mode": "listen_server"}, {"mode": "client", "server_world": ""},
+                {"mode": "client", "rc_side": "server", "clients": 2}):
+        assert "read_worlds" not in session.network_note(net), net
