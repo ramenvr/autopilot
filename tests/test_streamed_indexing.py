@@ -500,6 +500,8 @@ def crate_run(tmp_path, monkeypatch, running):
 def test_the_report_says_the_last_harness_was_built_on_a_partial_index(tmp_path, monkeypatch):
     s = crate_run(tmp_path, monkeypatch, running=True)
     s.run_harness(15)
+    s.game.codex.indexer.batches.append({"n": 1, "at": time.time() + 1,  # (a file exported after it started)
+                                         "files": [{"path": "data/DT_Late.csv", "kind": "new", "line": "x"}]})
     s.game.codex.indexer.running = False  # (the export ends before the report: the harness still had only part)
     report = session.finish(s, time.time(), None, "")
     assert report["alerts"] == [PARTIAL_ALERT]
@@ -524,6 +526,90 @@ def test_the_report_has_no_index_alert_when_the_harness_had_the_whole_codex(tmp_
     s = crate_run(tmp_path / "none", monkeypatch, running=True)
     report = session.finish(s, time.time(), None, "")
     assert not any("indexed" in a for a in report.get("alerts", []))
+
+
+def test_no_partial_index_alert_when_nothing_was_exported_after_the_harness_started(tmp_path, monkeypatch):
+    # (a re-export at 950 of 983 that brings nothing new: the harness had all there was to read)
+    s = crate_run(tmp_path, monkeypatch, running=True)
+    idx = s.game.codex.indexer
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    idx.batches.append({"n": 1, "at": time.time() - 1,
+                        "files": [{"path": "blueprints/BP_Boss.txt", "kind": "new", "line": "x"}]})
+    s.run_harness(15)
+    # After it started only the level's snapshot came (it isn't one of the game's files, as the codex's count isn't)
+    idx.batches.append({"n": 2, "at": time.time() + 1,
+                        "files": [{"path": "level.txt", "kind": "changed", "line": "x"}]})
+    idx.running = False
+    assert session.index_alert(s) == ""
+    report = session.finish(s, time.time(), None, "")
+    assert not any("indexed" in a for a in report.get("alerts", []))
+    assert report["read"]["after"] == {"files": 0, "kinds": {}}
+    assert report["read"]["lines"][2] == "Exported after it started, so not read for it: none."
+    # One of the game's files after it started: the alert
+    idx.batches.append({"n": 3, "at": time.time() + 1,
+                        "files": [{"path": "data/DT_Late.csv", "kind": "new", "line": "x"}]})
+    assert session.index_alert(s) == PARTIAL_ALERT
+    # A batch from before the harness started is never "after"
+    idx.batches[:] = idx.batches[:1]
+    assert session.index_alert(s) == ""
+
+
+def test_with_no_indexer_the_report_says_whole_codex_only_when_this_run_got_it(tmp_path, monkeypatch):
+    def line(s):
+        return session.read_summary(s)["lines"][0]
+
+    head = "Harness 1, the last one played, was written with "
+    tail = " Read for it: nothing by the agent; the background researcher was off."
+    # A plugin with no codex ops and no project folder: no codex at all
+    s = crate_run(tmp_path, monkeypatch, running=None)
+    s.run_harness(15)
+    assert line(s) == head + "no codex of the game's files (the plugin sent none)." + tail
+    assert session.read_summary(s)["index"] == {"complete": False, "files": 0, "fetched": False}
+    # The fetch failed: said, with why
+    s.game.codex.fetch_error = "the game didn't answer codex_manifest within 900s"
+    assert line(s) == (head + "no codex of the game's files (this run couldn't fetch them: the game didn't answer "
+                       "codex_manifest within 900s)." + tail)
+    assert session.read_summary(s)["index"]["error"] == "the game didn't answer codex_manifest within 900s"
+    # An earlier run's codex is there, but this run got nothing new: it may be stale
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    write_codex(s, "data/DT_Loot.csv", "---,Item\nA,Sword\n")
+    write_codex(s, "README.md", "# Codex")  # (the codex's own index isn't one of the game's files)
+    assert line(s) == (head + "the codex an earlier run left (2 files; this run couldn't fetch the game's files: the "
+                       "game didn't answer codex_manifest within 900s)." + tail)
+    s.game.codex.fetch_error = None
+    assert line(s) == head + "the codex an earlier run left (2 files; the plugin sent none this run)." + tail
+    assert session.read_summary(s)["index"] == {"complete": False, "files": 2, "fetched": False}
+    # This run fetched it from the plugin, or read the project's own files: whole, as before
+    for source in ("plugin", "project"):
+        s.game.codex.source = source
+        assert line(s) == head + "the game's whole codex (indexed before this run)." + tail
+        assert session.read_summary(s)["index"] == {"complete": True}
+
+
+def test_the_codex_says_how_this_run_got_it(tmp_path, monkeypatch):
+    from autopilot.kit.game import GameError
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path / "mem"))
+    monkeypatch.setattr(codex, "snapshot_level", lambda game, root: None)
+    assert codex.Codex.for_project("New").source is None  # (not built: nothing fetched this run)
+
+    class NoOps:
+        def request(self, op, args, timeout=None):
+            raise GameError("unknown op: " + op)
+
+    class Gone:
+        def request(self, op, args, timeout=None):
+            raise TimeoutError("the game didn't answer codex_manifest within 900s")
+
+    cx = codex.build("NoOps", game=NoOps(), stream=True)
+    assert cx.source is None and cx.fetch_error is None and cx.indexer is None
+    cx = codex.build("Gone", game=Gone(), stream=True)
+    assert cx.source is None and cx.fetch_error == "the game didn't answer codex_manifest within 900s"
+    plugin = ExportingPlugin({"Saved/AutopilotCodex/blueprints/G/BP_Boss.txt": BOSS}, [])
+    cx = codex.build("Streamed", game=plugin, stream=True)
+    assert cx.source == "plugin" and cx.fetch_error is None
+    cx = codex.build("Fetched", game=ExportingPlugin({"Saved/AutopilotCodex/blueprints/G/BP_Boss.txt": BOSS}, []))
+    assert cx.source == "plugin"
 
 
 def background_researcher(read=(), passes=0, failed=0):
@@ -602,8 +688,10 @@ def test_the_report_says_in_one_line_what_was_read_when_the_index_was_complete(t
         "; 1 file and 0 findings by the background researcher (3 of 7 passes failed).")
     s.researcher = background_researcher(passes=2)
     assert session.read_summary(s)["lines"][0].endswith("; nothing by the background researcher.")
-    # No indexer: the codex was whole when the run started
+    # No indexer: the codex was whole when the run started (this run fetched it, and it has the game's files)
     s = crate_run(tmp_path / "whole", monkeypatch, running=None)
+    s.game.codex.source = "plugin"
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
     s.run_harness(15)
     read = session.finish(s, time.time(), None, "")["read"]
     assert read["index"] == {"complete": True}

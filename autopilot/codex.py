@@ -75,6 +75,10 @@ class Codex:
         self.root = root
         self._bp = None
         self.indexer = None  # an Indexer while (and after) the plugin's export streams in, else None
+        # How this run got the codex (build): "plugin" (fetched from it), "project" (the project's own files read), or
+        # None: not this run (what an earlier run left, or nothing); fetch_error: why the fetch from the plugin failed
+        self.source = None
+        self.fetch_error = None
 
     @staticmethod
     def for_project(project):
@@ -165,7 +169,8 @@ def wait_for_index(hello=None):
     choice on the plugin's Settings page (hello `wait_for_index`, true or false), with AUTOPILOT_WAIT_FOR_INDEX=1 or 0
     winning over it (a bench or an eval host forces one mode). Off by default: the run starts on the files indexed
     so far and the rest stream in while it works (Indexer), so it starts sooner. Only a plugin whose export streams
-    (Unreal's) has anything to wait for."""
+    (Unreal's) has anything to wait for. For now only the env var turns it on: no plugin sends `wait_for_index` yet
+    (the Settings switch comes later)."""
     forced = (os.environ.get("AUTOPILOT_WAIT_FOR_INDEX") or "").strip()
     if forced in ("0", "1"):
         return forced == "1"
@@ -617,12 +622,15 @@ def build(project, path=None, game=None, export=True, engine=None, stream=False,
                 fetched = fetch_from_plugin(game, codex.root, export="auto" if export else "skip")
         except Exception as e:
             print(f"codex: couldn't fetch the code from the plugin: {e}")
+            codex.fetch_error = (str(e).strip().splitlines() or [type(e).__name__])[0][:200]
         if fetched is not None:
+            codex.source = "plugin"
             print(f"codex: {fetched['files']} files from the plugin ({fetched['fetched']} new or changed, "
                   f"{fetched['removed']} gone); export: {fetched.get('export')}")
     if path and fetched is None:
         # (a plugin without the codex ops: read the project's files directly)
         eng.build_local(path, codex.root, export=export)
+        codex.source = "project"
     if game is not None and codex.indexer is not None:
         # The level's snapshot reads every actor of the running level (on a big World Partition map, tens of
         # thousands at a few frames a second: minutes): written while the run works, told when it is in
