@@ -310,6 +310,9 @@ BRIEF_LIST = 6000  # characters of one list: earlier runs, codex changes, where 
 # The shorter briefing (short=True) the user's own agent reads (`autopilot connect`, external.py): it reads REQUEST.md
 # with read_file, 20,000 characters a call, so its request message is kept within the start answer (whole.RESULT_CHARS)
 # and comes inline. Autopilot's own agents get the message at once and keep the budgets above
+SHORT_MESSAGE = 23000  # characters of the shorter request message: notes.md and lib.py are quoted as far as the rest
+# leaves room (it then fits the start answer with its own words). When the rest alone is longer (a long request, level
+# list or codex changes), they keep BRIEF_PART and the message is in REQUEST.md, read in parts
 README_PART = 3000  # characters of codex/README.md (its table and settings come first; the rest is read on in the file)
 WORDS_PART = 1500  # characters of where the request's words are (the files with the most first; all of them in a file)
 RUN_LINE = 300  # characters of one earlier run's line, made one line (its report.json has the rest)
@@ -1994,14 +1997,18 @@ def word_hits(codex_root, prompt, limit=None):
     return lines
 
 
-def briefing(session, opening=None, short=False):
+def briefing(session, opening=None, short=False, room=None):
     """The request message's second half: what every run used to read in its first turns. short: the shorter one the
     user's own agent reads (README_PART, WORDS_PART, RUN_LINE and RUNS_PART, LIVE_LINE and LIVE_PART, each saying
-    where the rest is); Autopilot's own agents get the whole of each part as far as BRIEF_PART and BRIEF_LIST go."""
+    where the rest is); Autopilot's own agents get the whole of each part as far as BRIEF_PART and BRIEF_LIST go.
+    room: characters the briefing may take (short, first_message): when it is longer, notes.md and lib.py are quoted
+    as far as the rest leaves room, if that makes it fit; None: no limit."""
     root = session.root
     out, parts, seen = [], {}, {}  # (parts, seen: each part's length, each quoted file's whole length; logged below)
+    at = {}  # (each part's place in out)
 
     def add(name, text):
+        at[name] = len(out)
         out.append(text)
         parts[name] = len(text)
 
@@ -2010,10 +2017,14 @@ def briefing(session, opening=None, short=False):
     if level:  # (first: which level to play is the first decision)
         add("level", level)
     read_whole = "Read the rest of it before you rely on what it says."
-    notes = _quoted(session, "notes.md", "## notes.md (what earlier requests on this game verified)", why=read_whole,
-                    seen=seen)
-    lib = _quoted(session, "lib.py", "## lib.py (importable as `import lib`)", fence="python", why=read_whole,
-                  seen=seen)
+    learned = {"notes.md": ("## notes.md (what earlier requests on this game verified)", None),
+               "lib.py": ("## lib.py (importable as `import lib`)", "python")}  # (title, fence)
+
+    def quote(rel, budget=None):
+        title, fence = learned[rel]
+        return _quoted(session, rel, title, fence=fence, why=read_whole, seen=seen, budget=budget)
+
+    notes, lib = quote("notes.md"), quote("lib.py")
     for name, part in (("notes.md", notes), ("lib.py", lib)):
         if part:
             add(name, part)
@@ -2103,6 +2114,22 @@ def briefing(session, opening=None, short=False):
                                     holds="the briefing quotes")
         add("live game", f"{title}\n{opening}")
     text = "\n\n".join(out)
+    quoted = [rel for rel in learned if rel in parts]
+    if room is not None and len(text) > room and quoted:  # (notes.md and lib.py get what the rest leaves)
+        left = room - len(text) + sum(parts[rel] for rel in quoted)
+        small = min(quoted, key=parts.get)  # (the shorter one keeps all of it when it fits half, the other the rest)
+        share = {small: min(parts[small], left // len(quoted))}
+        share.update({rel: left - share[small] for rel in quoted if rel != small})
+        fitted = list(out)
+        for rel in (rel for rel in quoted if share[rel] < parts[rel]):
+            title, fence = learned[rel]
+            # (what the part adds beside the quote: its title and why, the code block's lines; the quote's own note is
+            # within its budget)
+            fitted[at[rel]] = quote(rel, budget=share[rel] - len(title) - len(read_whole) - 2 - (14 if fence else 0))
+        if len("\n\n".join(fitted)) <= room:  # (else it can't fit anyway: the message is read in parts, notes whole)
+            out = fitted
+            parts.update({rel: len(out[at[rel]]) for rel in quoted})
+            text = "\n\n".join(out)
     # (sizes only, never the text: what a total budget for the briefing would be decided from)
     session.note("briefing sizes: " + json.dumps({"total": len(text), "parts": parts, "whole": seen}))
     return text
@@ -2356,8 +2383,14 @@ def first_message(session, short=False):
     with open(os.path.join(session.run_dir, "prompt.txt"), "w", encoding="utf-8") as f:
         f.write(session.prompt)
     going_on = GOING_ON.format(run=session.run_rel) + "\n\n" if getattr(session, "going_on", False) else ""
-    brief = briefing(session, opening, short=True) if short else briefing(session, opening)
-    looking = session.looking_note()
+    if short:  # (the briefing gets what the message's other words leave of SHORT_MESSAGE)
+        looking = session.looking_note()
+        rest = len(PROMPT.format(prompt=session.prompt, project=session.project, run=session.run_rel,
+                                 briefing=going_on + "\n\n" + looking))
+        brief = briefing(session, opening, short=True, room=SHORT_MESSAGE - rest)
+    else:
+        brief = briefing(session, opening)
+        looking = session.looking_note()
     message = PROMPT.format(prompt=session.prompt, project=session.project, run=session.run_rel,
                             briefing=going_on + brief + "\n\n" + looking)
     # (sizes only, never the text; the briefing's own line has its parts)

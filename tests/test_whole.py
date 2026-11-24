@@ -384,7 +384,38 @@ def test_a_games_request_message_fits_the_start_answer(game, tmp_path, monkeypat
     assert len(message) <= 23000
     start = external.start_text("r1-ab", "fake", s.prompt, message, "runs/r1")
     assert message in start and "more than one tool result holds" not in start
+    assert "- note 59: " in message and "[notes.md is " not in message  # (notes that fit are quoted whole)
     assert len(session.first_message(s)) > whole.RESULT_CHARS  # (the own agents' message: all of it, as before)
+
+
+def test_a_game_with_long_notes_and_lib_still_fits_the_start_answer(game, tmp_path, monkeypatch):
+    s, frames, said = open_run(game, tmp_path, monkeypatch)
+    root = tmp_path / "fake"
+    notes = "".join(f"- note {i}: " + "n" * 80 + "\n" for i in range(1000))
+    (root / "notes.md").write_text(notes, encoding="utf-8")
+    (root / "lib.py").write_text("".join(f"def helper_{i}():\n    return {i}\n\n" for i in range(800)),
+                                 encoding="utf-8")
+    readme(root)
+    word_files(root)
+    long_runs(root)
+    monkeypatch.setattr(session.Session, "opening", lambda self: long_opening())
+    message = session.first_message(s, short=True)
+    assert len(message) <= 23000
+    start = external.start_text("r1-ab", "fake", s.prompt, message, "runs/r1")
+    assert message in start and "more than one tool result holds" not in start
+    # each is quoted as far as the rest leaves room, from its start, and says where all of it is
+    quoted = part_of(message, "## notes.md")
+    assert "[notes.md is " in quoted and "Read the rest of it before you rely on what it says." in quoted
+    assert "- note 0: " in quoted and "- note 999: " not in quoted
+    def code_of(text):  # (lib.py's part: to the end of its code block; the code has blank lines)
+        return text[text.index("## lib.py"):].split("\n```\n")[0]
+
+    code = code_of(message)
+    assert "[lib.py is " in code and "def helper_0():" in code
+    # the own agents' message quotes them as before (BRIEF_PART each)
+    own = session.first_message(s)
+    assert len(part_of(own, "## notes.md")) > session.BRIEF_PART - 200
+    assert len(code_of(own)) > session.BRIEF_PART - 200
 
 
 # -- what the summary and the result say -----------------------------------------------------------------------------
