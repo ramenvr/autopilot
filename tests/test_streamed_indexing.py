@@ -649,3 +649,44 @@ def test_the_indexers_seconds_stop_when_the_export_ends(tmp_path, monkeypatch):
     a = idx.status()["seconds"]
     time.sleep(0.2)
     assert idx.status()["seconds"] == a
+
+
+def test_waiting_for_the_index_is_off_unless_chosen(monkeypatch):
+    monkeypatch.delenv("AUTOPILOT_WAIT_FOR_INDEX", raising=False)
+    assert codex.wait_for_index(None) is False and codex.wait_for_index({}) is False
+    assert codex.wait_for_index({"wait_for_index": True}) is True
+    assert codex.wait_for_index({"wait_for_index": False}) is False
+    assert codex.wait_for_index({"wait_for_index": "yes"}) is False  # (only a true/false the plugin sent)
+    # AUTOPILOT_WAIT_FOR_INDEX wins over the plugin's switch (a bench or an eval host forces one mode)
+    monkeypatch.setenv("AUTOPILOT_WAIT_FOR_INDEX", "1")
+    assert codex.wait_for_index(None) is True and codex.wait_for_index({"wait_for_index": False}) is True
+    monkeypatch.setenv("AUTOPILOT_WAIT_FOR_INDEX", "0")
+    assert codex.wait_for_index({"wait_for_index": True}) is False
+
+
+def test_the_indexer_can_be_waited_for(tmp_path, monkeypatch):
+    plugin = ExportingPlugin({}, [{"Saved/AutopilotCodex/a.txt": "a"}, {"Saved/AutopilotCodex/b.txt": "b"},
+                                  {"Saved/AutopilotCodex/c.txt": "c"}])
+    idx = make_indexer(tmp_path, plugin, monkeypatch)
+    monkeypatch.setattr(codex, "WAIT_TICK_SECONDS", 0.0)
+    idx.start()
+    said = []
+    assert idx.wait(timeout=5, tick=said.append) is True
+    assert idx.status()["finished"] and not idx.status()["running"]
+    assert all(os.path.exists(os.path.join(idx.root, name)) for name in ("a.txt", "b.txt", "c.txt"))
+    assert said and said[0].endswith("of 3 written")
+    # An export that doesn't end in time: the wait gives up, the export goes on (the run starts on what is there)
+    slow = ExportingPlugin({}, [{"Saved/AutopilotCodex/a.txt": "a"}, {"Saved/AutopilotCodex/b.txt": "b"}])
+    idx = make_indexer(tmp_path / "slow", slow, monkeypatch)
+    monkeypatch.setattr(codex, "POLL_SECONDS", 30.0)
+    idx.start()
+    t0 = time.time()
+    assert idx.wait(timeout=0.05) is False and time.time() - t0 < 2
+    assert idx.status()["running"] and idx.thread.is_alive()
+    # until() true (the user pressed Stop, the plugin went): the wait ends at once, the export goes on
+    t0 = time.time()
+    assert idx.wait(timeout=60, until=lambda: True) is False and time.time() - t0 < 2
+    assert idx.status()["running"]
+    idx.stop()
+    idx.thread.join(5)
+    assert not idx.thread.is_alive()

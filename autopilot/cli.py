@@ -261,8 +261,14 @@ def refused(e):
     return None
 
 
+class StoppedWhileWaiting(Exception):
+    """The user pressed Stop while the run waited for the game's files to be indexed (prepare, codex.wait_for_index):
+    it ends there, nothing played (stopped_waiting_report)."""
+
+
 class EndsIfGameWontStart:
-    """Around a run's setup: a GameWontStart ends it there (kept in .error, the run's report: wont_start_report)."""
+    """Around a run's setup: a GameWontStart, or a StoppedWhileWaiting, ends it there (kept in .error, the run's
+    report: wont_start_report, stopped_waiting_report)."""
 
     error = None
 
@@ -270,7 +276,7 @@ class EndsIfGameWontStart:
         return self
 
     def __exit__(self, kind, e, tb):
-        if isinstance(e, GameWontStart):
+        if isinstance(e, (GameWontStart, StoppedWhileWaiting)):
             self.error = e
             return True
         return False
@@ -281,6 +287,13 @@ def wont_start_report(kind, e):
     why = str(e)
     return {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved", "summary": why, "evidence": [],
             "alerts": [why]}
+
+
+def stopped_waiting_report(kind):
+    """The report of a run the user stopped while it waited for the game's files to be indexed: nothing was played."""
+    return {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
+            "summary": "No report (stopped while waiting for the game's files to be indexed). Nothing was played.",
+            "evidence": [], "stopped": "stopped", "episodes": 0}
 
 
 def start_level(link, game, level):
@@ -355,12 +368,13 @@ def wait_for_start(link, seconds=GAME_START_SECONDS):
     return time.time() - t0
 
 
-def prepare(link, path=None, level=None, restart_in_place=False):
+def prepare(link, path=None, level=None, restart_in_place=False, stop=None):
     """The game, started if needed in the level the run plays (choose_level), and its codex (built on first use; the
     level snapshot refreshed every time). path: the project on this machine when given by hand (--project);
     otherwise it is remembered or asked of the game. level: the level the run asks for (its start frame's), if any.
     restart_in_place: the run is one of several in one game (start_run's keep_game_open): its restarts reopen the
-    level in the game playing (kit.Game.restart_in_place), never stopping play."""
+    level in the game playing (kit.Game.restart_in_place), never stopping play. stop(): true once the run must end
+    (the user pressed Stop): it ends a wait for the export (codex.wait_for_index), and game.stopped_waiting says so."""
     project = codexmod.project_of(link.hello)  # (its memory folder's name)
     game = Game(link, codexmod.Codex.for_project(project))
     game.restart_in_place = bool(restart_in_place)
@@ -405,8 +419,21 @@ def prepare(link, path=None, level=None, restart_in_place=False):
     game.codex = codexmod.build(project, path=path, game=game, export=True, stream=True,
                                 first_map=game.level_info.playing or game.level)
     indexer = getattr(game.codex, "indexer", None)
+    game.stopped_waiting = False
+    if indexer is not None and indexer.running and codexmod.wait_for_index(link.hello):
+        # The user chose to wait for the game's files to be indexed: the game stays paused, the tab says how far the
+        # export is, and Stop (or the plugin going) ends the wait
+        t0 = time.time()
+        done = indexer.wait(codexmod.WAIT_FOR_EXPORT_SECONDS,
+                            tick=lambda text: link.status(f"Reading the game's code: {text}"),
+                            until=lambda: bool(getattr(link, "closed", False)) or bool(stop and stop()))
+        game.stopped_waiting = bool(not done and stop and stop())
+        print(f"codex: waited {time.time() - t0:.0f} s for the export (the user's setting)"
+              + ("" if done else ": stopped" if game.stopped_waiting else ": it goes on while the run works"))
+        game.ready_at = time.time()  # (the wait isn't the run's reading and probing time)
     if indexer is not None and indexer.running:
-        print(f"codex: the export goes on while the run works ({codexmod.progress(indexer.status())})")
+        if not game.stopped_waiting:
+            print(f"codex: the export goes on while the run works ({codexmod.progress(indexer.status())})")
     elif not game.engine.has_export(game.codex.root):
         if codexmod.from_game(game):
             print("note: this is a build of the game, which carries no source: the run reads the code from the codex "
@@ -809,11 +836,17 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             if not kind:
                 kind, tested = told_kind(link, prompt)
             asked, play_seconds = settle()
-            project, game = prepare(link, path, level, restart_in_place=restart_in_place or keep_game_open)
+            project, game = prepare(link, path, level, restart_in_place=restart_in_place or keep_game_open,
+                                    stop=stop)
             setup.push(resume_if_failed(game))
             indexer = getattr(getattr(game, "codex", None), "indexer", None)
             if indexer is not None:  # (an export still going when the run ends is the next run's)
                 setup.callback(indexer.stop)
+            if getattr(game, "stopped_waiting", False):  # (Stop while it waited for the export: no agent starts)
+                with contextlib.suppress(Exception):
+                    game.pause(False)
+                close_game(link)
+                raise StoppedWhileWaiting()
             # (runs through Aura use the agent Aura names, Claude Code unless the model picked in Aura's chat needs
             # OpenCode, whatever AUTOPILOT_AGENT says; the user's own agent works on a run started from it, through
             # Aura or not)
@@ -873,7 +906,9 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 close_game(link)  # (every harness has run, and the recording has stopped)
             if share:
                 upload = (root, project if run else key, run)
-        if ends.error is not None:
+        if isinstance(ends.error, StoppedWhileWaiting):
+            report = stopped_waiting_report(kind)
+        elif ends.error is not None:
             report = wont_start_report(kind, ends.error)
     print(json.dumps(report, indent=1))
     LAST_REPORT.clear()

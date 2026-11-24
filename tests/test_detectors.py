@@ -2,6 +2,9 @@
 editor's Not a bug adding to it, and Reset memory leaving it."""
 
 import json
+import os
+import threading
+import time
 import types
 
 import pytest
@@ -227,3 +230,115 @@ def test_the_agent_is_told_where_muting_is():
     # (in the working folder's listing: where it is and what goes in it, not its contents)
     listing = session.SYSTEM.split("How to work:")[0]
     assert "detectors.json" in listing and "out_of_world:BP_Tree" in listing
+
+
+class RunningExport:
+    """A Codex's indexer whose export is still running: wait() (the user chose to wait) says how far it is, then
+    ends it."""
+
+    def __init__(self):
+        self.running = True
+        self.waited = []  # time.time() each wait() returned
+
+    def status(self):
+        return {"running": self.running, "done": 3, "total": 9, "files": 12, "batches": 0, "seconds": 1.0,
+                "finished": not self.running, "error": None}
+
+    def wait(self, timeout, tick=None, until=None):
+        if tick:
+            tick("3 of 9 written")
+        self.running = False
+        self.waited.append(time.time())
+        return True
+
+
+def building(tmp_path, monkeypatch, indexer):
+    """codex.build stubbed: its arguments kept, and a Codex with `indexer`; returns (the calls, when it returned)."""
+    calls, returned = [], []
+
+    def build(project, path=None, **kwargs):
+        calls.append(kwargs)
+        c = codex.Codex(str(tmp_path))
+        c.indexer = indexer
+        returned.append(time.time())
+        return c
+
+    monkeypatch.setattr(codex, "build", build)
+    return calls, returned
+
+
+def test_prepare_starts_the_run_while_the_export_streams_by_default(mem, tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTOPILOT_WAIT_FOR_INDEX", raising=False)
+    export = RunningExport()
+    calls, returned = building(tmp_path, monkeypatch, export)
+    plugin = Plugin()
+    _, game = cli.prepare(plugin, None)
+    assert calls[0]["stream"] is True
+    assert export.waited == [] and export.running  # (no wait: the run starts on what is indexed)
+    assert game.ready_at <= returned[0]
+    assert not any(text.startswith("Reading the game's code: ") for text in plugin.said)
+
+
+def test_prepare_waits_for_the_export_when_the_user_chose_to(mem, tmp_path, monkeypatch):
+    monkeypatch.delenv("AUTOPILOT_WAIT_FOR_INDEX", raising=False)
+    export = RunningExport()
+    building(tmp_path, monkeypatch, export)
+    plugin = Plugin()
+    plugin.hello["wait_for_index"] = True
+    _, game = cli.prepare(plugin, None)
+    assert len(export.waited) == 1 and not export.running
+    assert game.ready_at >= export.waited[0]  # (the wait isn't the run's reading and probing time)
+    assert "Reading the game's code: 3 of 9 written" in plugin.said
+
+
+class NeverEnds:
+    """A plugin whose export runs and never ends (a big project): every manifest says 3 of 9 written."""
+
+    def request(self, op, args, timeout=None):
+        if op == "codex_manifest":
+            return {"files": [], "export": {"ran": True, "running": True, "done": 3, "total": 9}}
+        return {"files": {}}
+
+
+def test_stop_during_the_wait_for_the_export_ends_the_run_cleanly(mem, tmp_path, monkeypatch, capsys):
+    # (the user chose to wait for the game's files to be indexed, then pressed Stop: the wait ends, nothing is played,
+    # and the run ends as a stopped run with its report and result; the game is let go and closed)
+    monkeypatch.delenv("AUTOPILOT_AURA_URL", raising=False)
+    monkeypatch.delenv("AUTOPILOT_WAIT_FOR_INDEX", raising=False)
+    monkeypatch.setattr(codex, "POLL_SECONDS", 0.01)
+    indexers = []
+
+    def build(project, path=None, **kwargs):
+        c = codex.Codex(str(tmp_path / "codex"))
+        os.makedirs(c.root, exist_ok=True)
+        idx = codex.Indexer(NeverEnds(), c.root)
+        idx.start()
+        c.indexer = idx
+        indexers.append(idx)
+        return c
+
+    monkeypatch.setattr(codex, "build", build)
+    monkeypatch.setattr(cli.agents, "select", lambda name=None: pytest.fail("the agent started after Stop"))
+    plugin = Plugin()
+    plugin.hello["wait_for_index"] = True
+    stopped = threading.Event()
+    threading.Timer(0.5, stopped.set).start()
+    t0 = time.time()
+    code = cli.run_prompt(plugin, "Open the gate", kind="goal", stop=stopped.is_set)
+    assert time.time() - t0 < 10
+    assert code == cli.EXIT["not_achieved"]
+    assert "Reading the game's code: 3 of 9 written" in plugin.said
+    result = [f for f in plugin.sent if f.get("type") == "result"]
+    assert len(result) == 1 and result[0]["result"]["reached"] is False
+    assert result[0]["result"]["notes"][0] == ("No report (stopped while waiting for the game's files to be "
+                                               "indexed). Nothing was played.")
+    assert cli.LAST_REPORT["stopped"] == "stopped" and cli.LAST_REPORT["episodes"] == 0
+    asked = [(op, a) for op, a in plugin.asked if op in ("pause", "session")]
+    assert asked.index(("pause", {"paused": True})) < asked.index(("pause", {"paused": False}))  # (let go)
+    assert ("session", {"action": "stop"}) in asked  # (the play session closed, as at a stopped run's end)
+    indexers[0].thread.join(5)
+    assert not indexers[0].thread.is_alive()  # (the export isn't followed any more)
+    out = capsys.readouterr()
+    assert "Traceback" not in out.out + out.err
+    assert "for the export (the user's setting): stopped\n" in out.out
+    assert "goes on while the run works" not in out.out

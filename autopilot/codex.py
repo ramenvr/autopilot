@@ -160,6 +160,19 @@ def from_game(game):
     return isinstance(hello, dict) and hello.get("host") == "game"
 
 
+def wait_for_index(hello=None):
+    """Whether the run waits for the game's files to be indexed before it starts reading (cli.prepare): the user's
+    choice on the plugin's Settings page (hello `wait_for_index`, true or false), with AUTOPILOT_WAIT_FOR_INDEX=1 or 0
+    winning over it (a bench or an eval host forces one mode). Off by default: the run starts on the files indexed
+    so far and the rest stream in while it works (Indexer), so it starts sooner. Only a plugin whose export streams
+    (Unreal's) has anything to wait for."""
+    forced = (os.environ.get("AUTOPILOT_WAIT_FOR_INDEX") or "").strip()
+    if forced in ("0", "1"):
+        return forced == "1"
+    chosen = hello.get("wait_for_index") if isinstance(hello, dict) else None
+    return chosen if isinstance(chosen, bool) else False
+
+
 def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait=True, first_map=None, follow=False):
     """The game's code and asset export, fetched from the plugin (codex_manifest / codex_read). Only files that changed
     since the last fetch are read; which files go where is the game's engine's (Engine.codex_path).
@@ -248,6 +261,8 @@ POLL_SECONDS = 3.0  # how often the plugin is asked for what its export has writ
 GONE_TRIES = 5  # failed asks in a row (the game gone, the editor busy) before the indexer gives up
 ASIDE_TRIES = 3  # tries of a piece of background work (the level's snapshot) before it is left out of the run
 ASIDE_RETRY_SECONDS = 20.0
+WAIT_FOR_EXPORT_SECONDS = 900  # the longest a run waits for the export (wait_for_index), as the manifest's own wait
+WAIT_TICK_SECONDS = 2.0  # how often a wait for the export says how far it is
 
 
 def digest(codex_root, rel):
@@ -464,6 +479,24 @@ class Indexer:
                 json.dump(self.status(), f)
         except OSError:
             pass
+
+    def wait(self, timeout, tick=None, until=None):
+        """Wait until the export is in, `timeout` seconds pass or until() is true (the user pressed Stop, the plugin
+        went), calling tick(progress) about every WAIT_TICK_SECONDS. The export goes on either way. Returns whether
+        it is in."""
+        t0, said = time.time(), None
+        while self.status()["running"]:
+            now = time.time()
+            if now - t0 >= timeout or (until is not None and until()):
+                break
+            if tick is not None and (said is None or now - said >= WAIT_TICK_SECONDS):
+                said = now
+                tick(progress(self.status()))
+            if self.thread is not None:
+                self.thread.join(0.1)
+            else:
+                time.sleep(0.1)
+        return not self.status()["running"]
 
     def since(self, n):
         """The batches after the n-th."""
