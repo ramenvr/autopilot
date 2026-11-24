@@ -689,7 +689,7 @@ class Session:
                     self.index_told_done = True
                     parts.append(self._indexed_text(status))
                 elif status["running"]:
-                    parts.append(f"[indexing the game's files: the export {codexmod.progress(status)}; "
+                    parts.append(f"[indexing the game's files: {codexmod.export_words(status)}; "
                                  f"{status['files']} files in the codex now]")
                 if status.get("working"):
                     parts.append(f"[still being written: {', '.join(status['working'])}]")
@@ -1082,7 +1082,7 @@ class Session:
                 found = searched(*a, **k)
                 status = view.status()
                 if status.get("running") and isinstance(found, list):
-                    found.append(f"(searched what is indexed so far: the export {codexmod.progress(status)}; what is "
+                    found.append(f"(searched what is indexed so far: {codexmod.export_words(status)}; what is "
                                  "still coming may match too)")
                 return found
 

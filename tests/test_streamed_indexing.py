@@ -1,6 +1,7 @@
 """The export streamed into a run while it works (codex.Indexer), what reaches the agent with its tool results
 (Session.news), `codex`/`llm`/`llm_map` in probes, and the background researcher's findings (agents/researcher.py)."""
 
+import io
 import os
 import threading
 import time
@@ -368,6 +369,35 @@ def test_before_the_export_has_counted_its_files_the_lines_say_it_is_starting(tm
     assert missing == "codex/blueprints/BP_Gate.txt is not in the codex yet: the export is starting; it may still come."
     for answer in (r._grep("Phase3"), r._grep("Enrage"), r._list("codex/data/*"), r._list("**/*")):
         assert "the export is starting" in answer and "the export starting" not in answer
+
+
+def test_before_the_export_has_counted_its_files_the_news_says_it_is_starting(tmp_path, monkeypatch):
+    # (no total yet: "the export is starting", not "the export starting, nothing written yet"; with a total, as before)
+    s = open_run(tmp_path, monkeypatch, prompt="Kill the boss in the vault")
+    s.game.codex.indexer = StubIndexer([], running=True, done=0, total=0)
+    news = s.news()
+    line = next(line for line in news.splitlines() if line.startswith("[indexing the game's files:"))
+    assert line == "[indexing the game's files: the export is starting; 40 files in the codex now]"
+    assert "the export starting" not in news
+
+
+def test_before_the_export_has_counted_its_files_the_probe_grep_says_it_is_starting(tmp_path, monkeypatch):
+    # (grep in probes reads the indexing from disk, codex.View: no total yet, "the export is starting"; else as before)
+    s = open_run(tmp_path, monkeypatch, prompt="Kill the boss in the vault")
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    folder = os.path.join(s.root, codex.INDEXING)
+    os.makedirs(folder, exist_ok=True)
+    grep = s._namespace(io.StringIO())["grep"]
+    for status, note in (
+            ('{"running": true, "done": 0, "total": 0, "files": 1, "batches": 0}',
+             "(searched what is indexed so far: the export is starting; what is still coming may match too)"),
+            ('{"running": true, "done": 3, "total": 9, "files": 1, "batches": 1}',
+             "(searched what is indexed so far: the export 3 of 9 written; what is still coming may match too)")):
+        with open(os.path.join(folder, "status.json"), "w", encoding="utf-8") as f:
+            f.write(status)
+        found = grep("Enrage")
+        assert found[0].startswith("blueprints/BP_Boss.txt:") and found[-1] == note
+        assert "the export starting" not in " ".join(found)
 
 
 def test_the_researcher_is_the_users_choice_else_off_in_the_aura_apps_autopilot(monkeypatch):
