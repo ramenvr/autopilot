@@ -246,3 +246,50 @@ def test_the_agent_is_told_to_drive_and_read_players_together():
         assert "together(" in note and "each_player(" in note, note
     for net in ({"mode": "listen_server"}, {"mode": "listen_server", "players": 1}):
         assert "together(" not in session.network_note(net)
+
+
+def kit_example(name):
+    """The code of KIT.md's example `def name(...)` (indented under its paragraph), dedented."""
+    import textwrap
+
+    from autopilot.agents import session
+
+    with open(os.path.join(os.path.dirname(session.__file__), "..", "KIT.md"), encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith(f"def {name}("))
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        block.append(line)
+    return textwrap.dedent("\n".join(block))
+
+
+def run_meet(game):
+    """KIT.md's `meet` example run on game with a walk_to that records its target: (steps, Result, targets)."""
+    import autopilot.kit as kit
+    from autopilot.kit import Result, Vec
+
+    targets = {}
+
+    def walk_to(game, target, within=120.0, **_):
+        targets[game.index] = Vec.of(target)
+        yield
+        return Result(True, "there")
+
+    scope = {**vars(kit), "walk_to": walk_to}
+    exec(kit_example("meet"), scope)
+    steps, out = drive(scope["meet"](game))
+    return steps, out, targets
+
+
+def test_kit_md_meet_example_walks_both_players_to_one_point():
+    """Both players walk to the same point between them: walking each to the other's starting spot (a Vec target
+    is fixed) only swaps them, and both would report there."""
+    with FrameLink(players=2) as link:
+        steps, out, targets = run_meet(Game(link))
+        assert out and out.why == "met" and steps == 1
+        assert sorted(targets) == [1, 2]
+        assert targets[1].dist(targets[2]) < 1.0, targets  # (one point: players 1 and 2 stand at x = 100 and 200)
+        assert 100.0 < targets[1].x < 200.0, targets

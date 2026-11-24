@@ -83,10 +83,11 @@ Inputs (the player's hands; the only way to act in play):
   each tick at the same time and returns their results in order; `game.each_player(fn)` is `{n: fn(game.player(n))}`
   for every player read at once (one wait), `game.poses()` every player's pose. Read each player once a tick and pass
   what you read on, rather than reading it again:
-      def meet(game):  # an executor: players 1 and 2 walk to each other
+      def meet(game):  # an executor: players 1 and 2 walk to the point between them
           poses = game.poses()  # {1: pose, 2: pose}, one frame
-          a, b = yield from together([walk_to(game, poses[2]["at"], within=200),
-                                      walk_to(game.player(2), poses[1]["at"], within=200)])
+          mid = (poses[1]["at"] + poses[2]["at"]) * 0.5  # (a point is fixed: one at the other's start swaps them)
+          a, b = yield from together([walk_to(game, mid, within=100),
+                                      walk_to(game.player(2), mid, within=100)])
           return Result(bool(a and b), "met" if a and b else f"{a.why} / {b.why}")
 
 ## Controllers (kit.control): generators, `yield from` them inside executors
