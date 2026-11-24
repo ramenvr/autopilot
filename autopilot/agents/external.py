@@ -441,12 +441,18 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
     done = watch_steering(session)
     try:
         game.pause(True)  # (in the try: a game that doesn't answer still gets cleaned up and reported)
+        instructions = instructions_text(engines.of(game), session.run_rel, desk.marker)
         with open(os.path.join(session.run_dir, INSTRUCTIONS), "w", encoding="utf-8", newline="\n") as f:
-            f.write(instructions_text(engines.of(game), session.run_rel, desk.marker))
+            f.write(instructions)
         message = first_message(session)
         with open(os.path.join(session.run_dir, REQUEST), "w", encoding="utf-8", newline="\n") as f:
             f.write(message)
-        desk.open(session, files, start_text(desk.marker, project, prompt, message, session.run_rel))
+        start = start_text(desk.marker, project, prompt, message, session.run_rel)
+        # (sizes only, never the text: what the user's agent reads before its first call, and whether REQUEST.md
+        # came inline in the start answer or must be read in parts)
+        session.note("instructions sizes: " + json.dumps({"instructions": len(instructions), "request": len(message),
+                                                          "start": len(start), "inline": message in start}))
+        desk.open(session, files, start)
         while True:
             if session.report is not None:
                 break

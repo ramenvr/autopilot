@@ -120,6 +120,25 @@ def test_a_run_is_worked_on_through_the_mcp_front(started, tmp_path):
     assert not looked["isError"] and "isn't filmed" in text_of(looked)
 
 
+def test_an_outside_run_logs_what_its_agent_is_given(started, tmp_path):
+    front, control, box = started
+    settled(front, front.call("start_run", {"request": "Verify that the crate opens"}))
+    desk = control.desk
+    run = tmp_path / "memory" / "fake" / "runs" / "r1"
+    instructions = (run / "INSTRUCTIONS.md").read_text(encoding="utf-8")
+    request = (run / "REQUEST.md").read_text(encoding="utf-8")
+    with open(desk.session.log, encoding="utf-8") as f:
+        lines = [line for line in f.read().splitlines() if "] instructions sizes: " in line]
+    assert len(lines) == 1, lines
+    sizes = json.loads(lines[0].split("] instructions sizes: ", 1)[1])
+    assert sizes == {"instructions": len(instructions), "request": len(request), "start": len(desk.opening),
+                     "inline": request in desk.opening}
+    assert sizes["inline"] is True  # (the fake game's briefing is short)
+    assert "crate" not in lines[0] and "Verify" not in lines[0]  # (numbers only, never the text)
+    desk.session.stop = lambda: True  # (the tab's Stop)
+    box["thread"].join(30)
+
+
 def test_file_calls_are_never_held_up_by_a_call_still_going(started):
     front, control, box = started
     settled(front, front.call("start_run", {"request": "Reach the gate"}))
