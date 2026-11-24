@@ -433,11 +433,87 @@ def shown_recording(tel, report):
     return recording, report
 
 
+def players_recordings(tel, recording, report):
+    """(the result's `recordings`, the report), in a game that plays several players: every player's video of the
+    episode `recording` shows, player 1's (`recording`) first; the report's alerts say which player's is missing, and
+    why. None (and the report as it was) when the game played one player, or there is no recording."""
+    if not recording or getattr(tel, "players_recordings", None) is None:
+        return None, report
+    episode = recording.get("episode")
+    others, missing = tel.players_recordings(episode), tel.players_missing(episode)
+    if not others and not missing:
+        return None, report
+    if missing and isinstance(report, dict):
+        report = dict(report, alerts=list(report.get("alerts") or []) + [
+            f"Player {k}'s view wasn't recorded: {why}." for k, why in sorted(missing.items())])
+    return [{"player": 1, **recording}] + list(others), report
+
+
+def portable(text, run_dir, run_name=None):
+    """text that may name a folder (a video that couldn't be made says where its pictures are), as it is shared: a
+    path in the run's folder relative to it (media/frames-1, as report.json's videos are written; the folder itself in
+    words), or from run_name when given (runs/<id>/media/frames-1, as the agent's tools name the game's files), and the
+    rest through redact (the home folder as ~...)."""
+    from . import redact  # (here: only once something shared is written)
+
+    # The run's folder (as given and as the disk has it), then the path in it up to a word that isn't a file name's
+    roots = sorted({os.path.abspath(run_dir), os.path.realpath(run_dir)}, key=len, reverse=True)
+    in_run = re.compile(rf"(?:{'|'.join(map(re.escape, roots))})(?P<rest>(?:[\\/][\w-]+(?:\.[\w-]+)*)*)(?![\w-])")
+
+    def in_run_words(m):
+        rest = re.sub(r"[\\/]+", "/", m.group("rest")).strip("/")
+        if run_name:
+            return f"{run_name}/{rest}" if rest else run_name
+        return rest or "the run's folder"
+
+    return redact.Redactor().text(in_run.sub(in_run_words, str(text)))
+
+
+def keep_in_report(run_dir, recording, recordings, missing, report):
+    """Complete the run's report.json (the agent wrote it before the recording stopped: session.finish) with what the
+    result says of the recording: `recording`, `recordings` (a game of several players) and `no_recording`, as
+    run_prompt gives them, their paths relative to the run's folder (report.json is synced and shared: no home folder
+    in it, and it means the same on another machine), and the report's `alerts` as they ended (those added after the
+    agent ended too). A run with no report.json gets none; one that can't be read is left as it is. The words of
+    `no_recording` and the alerts may name a folder (a video that couldn't be made says where its pictures are): one
+    in the run's folder is written relative to it, and the rest goes through redact (the home folder as ~...)."""
+    path = os.path.join(run_dir, "report.json")
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            kept = json.load(f)
+        if not isinstance(kept, dict):
+            return
+
+        def relative(item):
+            return dict(item, **{k: os.path.relpath(item[k], run_dir).replace(os.sep, "/")
+                                 for k in ("video", "frames") if isinstance(item.get(k), str)})
+
+        if recording:
+            kept["recording"] = relative(recording)
+            if recordings:
+                kept["recordings"] = [relative(r) for r in recordings]
+        elif missing:
+            kept["no_recording"] = portable(missing, run_dir)
+        if isinstance(report, dict) and report.get("alerts"):
+            kept["alerts"] = [portable(a, run_dir) for a in report["alerts"]]
+        with open(path + ".part", "w", encoding="utf-8") as f:
+            json.dump(kept, f, indent=1)
+        os.replace(path + ".part", path)
+    except (OSError, ValueError) as e:
+        print(f"note: report.json doesn't list the recording: {type(e).__name__}: {e}")
+        with contextlib.suppress(OSError):
+            os.remove(path + ".part")
+
+
 def result_frame(report, prompt, kind=None):
     """The `result` the plugin is sent for a report (docs/protocol.md, Runs): a verdict for a claim, else a goal's.
     kind: the run's (verify, goal or explore), which decides the result's shape: a goal worded as a claim ("Confirm
     the player spawns...") may be reported CONFIRMED and is still a goal's result, reached. Without one the prompt
-    and the outcome decide."""
+    and the outcome decide. run_prompt adds the recording: `recording` (player 1's video, which the plugins play),
+    `recordings` (in a game of several players: every player's video of that episode, player 1's first) or
+    `no_recording` (why there is none)."""
     outcome = report.get("outcome", "")
     code = EXIT.get(outcome, 1)
     summary = plain_words(report.get("summary", ""))
@@ -752,7 +828,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     (telemetry.sharing, and for a run through Aura the user's Aura account), it is kept whole in the run's
     telemetry/ folder and sent once the plugin has the result (autopilot/training.py).
     """
-    run = upload = kept = learned = recording = missing = None
+    run = upload = kept = learned = recording = recordings = missing = None
     credits_refused = False
     if feed is not None:
         feed.start()
@@ -863,7 +939,10 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                     with contextlib.suppress(Exception):
                         link.status(SAVING_MEMORY)
             recording, report = shown_recording(tel, report)
+            recordings, report = players_recordings(tel, recording, report)  # (a game of several players: each one's)
             missing = None if recording else tel.no_recording()
+            # (before the memory is saved and the run's data sent: both take report.json as it is now)
+            keep_in_report(tel.run_dir, recording, recordings, missing, report)
             if keep_game_open and not (stop and stop()):
                 keep_game(game)  # (the next run of the agent's goes on in it)
             else:
@@ -881,11 +960,14 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     if tested:
         frame["tested"] = True  # (the plugins show it as GAME TESTED)
     # What the run added to the memory (the plugins say so at the end of the feed) and its recording (their report
-    # plays it): both on this machine, never scrubbed
+    # plays player 1's; `recordings` lists every player's in a game of several): both on this machine, never scrubbed
+    # (report.json has the same, its paths relative to the run's folder: keep_in_report)
     if learned is not None:
         frame["memory"] = learned
     if recording:
         frame["recording"] = recording
+        if recordings:
+            frame["recordings"] = recordings  # (every player's, player 1's first: the plugins read `recording`)
     elif missing:
         frame["no_recording"] = missing  # (why there is none: the plugins' report says so where it would play)
     if run is not None and "usd" in (run.finished or {}):  # (what Aura billed the run, for the Settings page)
