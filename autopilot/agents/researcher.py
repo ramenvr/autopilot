@@ -221,7 +221,7 @@ class Researcher:
                     status = self._partial()
                     if not status:
                         raise
-                    return f"{path} is not in the codex yet: the export {codexmod.progress(status)}; it may still come."
+                    return f"{path} is not in the codex yet: {codexmod.export_words(status)}; it may still come."
             if name == "list_files":
                 return self._list(str(args.get("glob") or "**/*"))
             if name == "add_finding":
@@ -272,11 +272,11 @@ class Researcher:
                 continue
         status = self._partial()
         if not out and status:
-            return (f"(no match in the files indexed so far: the export {codexmod.progress(status)}, "
+            return (f"(no match in the files indexed so far: {codexmod.export_words(status)}, "
                     f"{status['files']} files in the codex now; it may still come)")
         text = self._kept("\n".join(out) or "(no match)", "grep")
         if status:  # (after the kept answer, so one kept in a file still says it)
-            text += (f"\n(searched what is indexed so far: the export {codexmod.progress(status)}; what is still "
+            text += (f"\n(searched what is indexed so far: {codexmod.export_words(status)}; what is still "
                      "coming may match too)")
         return text
 
@@ -295,11 +295,11 @@ class Researcher:
         listed = "\n".join(p for p in found if fnmatch.fnmatch(p, pattern))
         status = self._partial()
         if not listed and status:
-            return (f"(none in the files indexed so far: the export {codexmod.progress(status)}, "
+            return (f"(none in the files indexed so far: {codexmod.export_words(status)}, "
                     f"{status['files']} files in the codex now; they may still come)")
         text = self._kept(listed or "(none)", "list")
         if status:
-            text += (f"\n(listed what is indexed so far: the export {codexmod.progress(status)}; what is still coming "
+            text += (f"\n(listed what is indexed so far: {codexmod.export_words(status)}; what is still coming "
                      "may match too)")
         return text
 

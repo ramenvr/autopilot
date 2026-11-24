@@ -459,6 +459,14 @@ def progress(status):
     return f"{status.get('done')} of {status.get('total')} written"
 
 
+def export_words(status):
+    """progress() with "the export" before it, for a line that goes on after it: "the export is starting" before the
+    export has counted its files, else "the export 412 of 983 written"."""
+    if not status.get("total"):
+        return "the export is starting"
+    return f"the export {progress(status)}"
+
+
 class View:
     """`codex` in probes: the export's indexing as the Indexer writes it down (<project>/.indexing/), readable in any
     process (the sandbox's child too). status(): how far it is; arrivals(): the batches of files it brought, whole;

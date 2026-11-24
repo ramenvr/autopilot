@@ -119,13 +119,15 @@ def open_run(tmp_path, monkeypatch, prompt="Kill the boss"):
 
 
 class StubIndexer:
-    def __init__(self, batches, running=True):
+    def __init__(self, batches, running=True, done=5, total=9):
         self.batches = batches
         self.running = running
+        self.done, self.total = done, total
         self.listeners = []
 
     def status(self):
-        return {"running": self.running, "done": 5, "total": 9, "files": 40, "batches": len(self.batches),
+        return {"running": self.running, "done": self.done, "total": self.total, "files": 40,
+                "batches": len(self.batches),
                 "seconds": 1.0, "finished": not self.running, "error": None}
 
     def since(self, n):
@@ -351,6 +353,21 @@ def test_the_briefing_says_not_in_the_codex_yet_while_indexing(tmp_path, monkeyp
         text = session.briefing(s)
         assert "(not in the codex: kill, vault)" in text
         assert "not in the codex yet" not in text
+
+
+def test_before_the_export_has_counted_its_files_the_lines_say_it_is_starting(tmp_path, monkeypatch):
+    # (no total yet: "the export is starting", not "the export starting, nothing written yet")
+    s = open_run(tmp_path, monkeypatch, prompt="Kill the boss in the vault")
+    write_codex(s, "blueprints/BP_Boss.txt", BOSS)
+    s.game.codex.indexer = StubIndexer([], running=True, done=0, total=0)
+    line = next(line for line in session.briefing(s).splitlines() if line.startswith("(not in the codex yet:"))
+    assert line == "(not in the codex yet: kill, vault; the export is starting, it may still come)"
+    r = researchermod.Researcher(s, FakeModel())
+    r.stop()
+    missing = r._tool("read_file", {"path": "codex/blueprints/BP_Gate.txt"}, [("playing", 1, None)], [])
+    assert missing == "codex/blueprints/BP_Gate.txt is not in the codex yet: the export is starting; it may still come."
+    for answer in (r._grep("Phase3"), r._grep("Enrage"), r._list("codex/data/*"), r._list("**/*")):
+        assert "the export is starting" in answer and "the export starting" not in answer
 
 
 def test_the_researcher_is_the_users_choice_else_off_in_the_aura_apps_autopilot(monkeypatch):

@@ -1952,7 +1952,7 @@ def briefing(session, opening=None):
         asides = [line for line in hits if not line.startswith("- ")]
         if status and status["running"]:
             missing = "(not in the codex: "
-            later = f"; the export {codexmod.progress(status)}, it may still come)"
+            later = f"; {codexmod.export_words(status)}, it may still come)"
             asides = [f"(not in the codex yet: {line[len(missing):-1]}{later}" if line.startswith(missing) else line
                       for line in asides]
         out.append("\n".join([text, *asides]))
