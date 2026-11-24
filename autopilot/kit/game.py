@@ -22,10 +22,57 @@ KEY_LEASE = 0.6  # seconds a held key stays down without renewal
 CHANGES_STATE = re.compile(r"^(K2_)?(Destroy|Set|Spawn|Apply|Add|Remove|Teleport|Launch|Kill|Damage|Give|Grant|"
                            r"Equip|Unequip|Use|Fire|Open|Close|Start|Stop|Reset|Respawn|Possess|Attach|Detach)", re.I)
 PLAYER_CALLS = set()  # (none: a harness acts through inputs)
+_tally = threading.local()  # the waits a piece of code made, while counted (counting())
 
 
 class GameError(RuntimeError):
     """The game refused a request (a missing object, a wrong function or argument)."""
+
+
+class Pools:
+    """Thread pools by depth: work submitted from a thread of depth k's pool runs on depth k+1's. A thread that waits
+    on work it submitted (a pose()'s batch inside an each_player) then never waits on its own pool, so no pool fills
+    up with threads that all wait on work queued behind them. pools[0] is the first pool; deeper ones start when
+    first needed."""
+
+    def __init__(self, prefix, workers=16):
+        self.prefix, self.workers = prefix, workers
+        self.pools = [futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix)]
+        self._depth = threading.local()
+        self._lock = threading.Lock()
+
+    def submit(self, fn, *args):
+        depth = getattr(self._depth, "n", 0)
+        with self._lock:
+            while len(self.pools) <= depth:
+                self.pools.append(futures.ThreadPoolExecutor(
+                    max_workers=self.workers, thread_name_prefix=f"{self.prefix}{len(self.pools)}"))
+            pool = self.pools[depth]
+        return pool.submit(self._at, depth + 1, fn, *args)
+
+    def _at(self, depth, fn, *args):
+        self._depth.n = depth
+        return fn(*args)
+
+
+def _count(waited, n=1):
+    """n more waits on the game for this thread (waited: a Game's _waited), seen by counting() too."""
+    waited.n = getattr(waited, "n", 0) + n
+    seen = getattr(_tally, "seen", None)
+    if seen is not None:
+        seen[waited] = seen.get(waited, 0) + n
+
+
+def counting(fn, *args):
+    """fn(*args) in this thread, and the waits it made on each game: (result, what it raised or None, {waited: n}).
+    kit.together adds the waits of steps made in other threads to its caller's by it."""
+    before, _tally.seen = getattr(_tally, "seen", None), {}
+    try:
+        return fn(*args), None, _tally.seen
+    except BaseException as e:  # (StopIteration too: a generator's end, with its value)
+        return None, e, _tally.seen
+    finally:
+        _tally.seen = before
 
 
 class Game:
@@ -37,7 +84,9 @@ class Game:
         self.engine = engine or for_link(link)
         self.codex = codex  # autopilot.codex.Codex or None: resolves class names
         self.log = log or (lambda *kind, **fields: None)  # the runtime's trace (runtime.Trace)
-        self._pool = futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="game")
+        # Reads run together (batch): a batch inside a batch (a pose() in each_player) runs on the next pool down
+        self._pools = Pools("game")
+        self._pool = self._pools.pools[0]
         self._ctx, self._ctx_at = None, 0.0
         self._classes = {}
         self._held = {}  # key -> value held
@@ -75,7 +124,7 @@ class Game:
     def request(self, op, args=None, timeout=None):
         from ..bridge import BridgeError
 
-        self._waited.n = getattr(self._waited, "n", 0) + 1
+        _count(self._waited)
         try:
             return self.link.request(op, args or {}, timeout=timeout)
         except BridgeError as e:
@@ -105,10 +154,10 @@ class Game:
     def batch(self, thunks):
         """Run several reads at once (they resolve in the same game frame): a list of zero-argument callables, e.g.
         [lambda: game.loc(a), lambda: game.get(b, "Health")]. Returns their results in order; a read that failed
-        gives its GameError instead of raising."""
-        futs = [self._pool.submit(f) for f in thunks]
+        gives its GameError instead of raising. A batch's reads may batch in turn (pose() is a batch)."""
+        futs = [self._pools.submit(f) for f in thunks]
         if futs:
-            self._waited.n = getattr(self._waited, "n", 0) + 1  # (one wait here, however many reads)
+            _count(self._waited)  # (one wait here, however many reads)
         out = []
         for f in futs:
             try:
@@ -629,6 +678,22 @@ class Game:
         """The game's players: [{"player": n, "name", "path", "character", "you"}], 1 the run's own."""
         self._need_players("players()")
         return list(self.context(fresh=True).get("players") or [])
+
+    def each_player(self, fn, players=None):
+        """{n: fn(game.player(n))} for every player at once: their reads go out together and share a game frame, one
+        wait however many players (reads one player after another take a frame each). players: the numbers to play
+        (default: every player the game has; player 1 alone in a one-player game). A player whose fn failed with a
+        GameError gets the error instead (as in batch)."""
+        if players is None:
+            players = [1]
+            if "players" in self.features:
+                players = [int(p["player"]) for p in self._primary.context().get("players") or []] or [1]
+        bodies = [self.player(n) for n in players]
+        return dict(zip([b.index for b in bodies], self.batch([lambda b=b: fn(b) for b in bodies])))
+
+    def poses(self, players=None):
+        """{n: player n's pose()} for every player, read in one frame (each_player)."""
+        return self.each_player(lambda p: p.pose(), players)
 
     def _need_players(self, what):
         """Several players need a plugin that plays them (its hello's features say "players"): without one a request's
