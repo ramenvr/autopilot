@@ -1383,10 +1383,14 @@ def test_report_json_alerts_name_no_home_folder(monkeypatch, tmp_path):
     cli.keep_in_report(run_dir, shown, [{"player": 1, **shown}], None, report)
     with open(os.path.join(run_dir, "report.json"), encoding="utf-8") as f:
         kept = json.load(f)
+    # A run-folder path is always written with "/" (portable); the rest keeps the system's separator after ~
+    # (~/Games/Farm/Saved here, ~\Games\Farm\Saved on Windows)
     assert kept["alerts"] == [
         "Player 2's view wasn't recorded: the video couldn't be made (RuntimeError: x): its pictures are in "
-        "media/frames-1-p2.", "The game's log is in ~/Games/Farm/Saved, see there.",
+        "media/frames-1-p2.", f"The game's log is in {os.path.join('~', 'Games', 'Farm', 'Saved')}, see there.",
         "Nothing to change in this one."]
+    if os.sep == "/":
+        assert "~/Games/Farm/Saved" in kept["alerts"][1]  # (exact on macOS and Linux)
     assert kept["recording"]["video"] == "media/recording-1.mp4"
     assert no_absolute_path(kept, run_dir, str(home))
     assert report["alerts"][0].endswith(f"{pictures}.")  # (the result's own alerts keep the full path)
