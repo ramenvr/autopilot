@@ -449,6 +449,42 @@ def players_recordings(tel, recording, report):
     return [{"player": 1, **recording}] + list(others), report
 
 
+def keep_in_report(run_dir, recording, recordings, missing, report):
+    """Complete the run's report.json (the agent wrote it before the recording stopped: session.finish) with what the
+    result says of the recording: `recording`, `recordings` (a game of several players) and `no_recording`, as
+    run_prompt gives them, their paths relative to the run's folder (report.json is synced and shared: no home folder
+    in it, and it means the same on another machine), and the report's `alerts` as they ended (those added after the
+    agent ended too). A run with no report.json gets none; one that can't be read is left as it is."""
+    path = os.path.join(run_dir, "report.json")
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            kept = json.load(f)
+        if not isinstance(kept, dict):
+            return
+
+        def relative(item):
+            return dict(item, **{k: os.path.relpath(item[k], run_dir).replace(os.sep, "/")
+                                 for k in ("video", "frames") if isinstance(item.get(k), str)})
+
+        if recording:
+            kept["recording"] = relative(recording)
+            if recordings:
+                kept["recordings"] = [relative(r) for r in recordings]
+        elif missing:
+            kept["no_recording"] = missing
+        if isinstance(report, dict) and report.get("alerts"):
+            kept["alerts"] = [str(a) for a in report["alerts"]]
+        with open(path + ".part", "w", encoding="utf-8") as f:
+            json.dump(kept, f, indent=1)
+        os.replace(path + ".part", path)
+    except (OSError, ValueError) as e:
+        print(f"note: report.json doesn't list the recording: {type(e).__name__}: {e}")
+        with contextlib.suppress(OSError):
+            os.remove(path + ".part")
+
+
 def result_frame(report, prompt, kind=None):
     """The `result` the plugin is sent for a report (docs/protocol.md, Runs): a verdict for a claim, else a goal's.
     kind: the run's (verify, goal or explore), which decides the result's shape: a goal worded as a claim ("Confirm
@@ -881,6 +917,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             recording, report = shown_recording(tel, report)
             recordings, report = players_recordings(tel, recording, report)  # (a game of several players: each one's)
             missing = None if recording else tel.no_recording()
+            # (before the memory is saved and the run's data sent: both take report.json as it is now)
+            keep_in_report(tel.run_dir, recording, recordings, missing, report)
             if keep_game_open and not (stop and stop()):
                 keep_game(game)  # (the next run of the agent's goes on in it)
             else:

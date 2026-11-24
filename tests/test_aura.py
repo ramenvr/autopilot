@@ -1,6 +1,7 @@
 """Runs through Aura (autopilot/aura.py): the run started with Aura, the model settings pointed at its relay for the run
 only, the run finished; refusals in Aura's words; the connection's token and mode; OpenCode given the relay's URL."""
 
+import json
 import os
 import time
 import types
@@ -1223,3 +1224,107 @@ def test_the_describer_follows_the_vision_aura_names_before_and_after_the_run_go
     seen, _ = run_going_on(monkeypatch, tmp_path, GoingOnAura(), CUT_OFF)
     assert [(s["describer"], s["seen_by"]["model"], s["seen_by"]["named"]) for s in seen] == [
         ("anthropic", vision.MODEL, False)] * 2
+
+
+# -- report.json gets the run's recordings ---------------------------------------------------------------------------
+
+AGENTS_REPORT = {"outcome": "achieved", "summary": "Reached the gate", "evidence": ["at the gate"], "episode": 1,
+                 "run": "set by the run", "seconds": 12.5}
+
+
+def run_with_recordings(monkeypatch, tmp_path, recording, others=(), missing=None, no_recording=None, write=True,
+                        written=None, hello=None):
+    """run_prompt with an agent that writes report.json where the real one does (session.finish: the run's folder),
+    and a recording as RunTelemetry gives it once stopped: recording(run_dir) is player 1's (None: no video),
+    others(run_dir) the other players', missing {player: why}. written: report.json's text instead of the agent's
+    report. (report.json as the run left it, or None when there is none; the result frame; the run's folder)"""
+    monkeypatch.delenv("AUTOPILOT_AURA_URL", raising=False)
+    monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
+    monkeypatch.setattr(cli, "prepare", lambda link, *a, **k: ("Farm", object()))
+    monkeypatch.setattr(cli.runtime, "jev_client", lambda: None)
+    box = {}
+
+    def implement(game, project, prompt, run_id=None, **k):
+        box["run_dir"] = run_dir = os.path.join(cli.codexmod.project_dir(project), "runs", run_id)
+        if write:
+            os.makedirs(run_dir, exist_ok=True)
+            with open(os.path.join(run_dir, "report.json"), "w", encoding="utf-8") as f:
+                f.write(written if written is not None else json.dumps(AGENTS_REPORT, indent=1))
+        return dict(AGENTS_REPORT)
+
+    monkeypatch.setattr(cli.agents, "select", lambda name=None: types.SimpleNamespace(implement=implement))
+    tel = cli.telemetry.RunTelemetry
+    monkeypatch.setattr(tel, "recording", lambda self, episode=None: recording(self.run_dir) if recording else None)
+    monkeypatch.setattr(tel, "players_recordings", lambda self, episode: list(others(self.run_dir)) if others else [])
+    monkeypatch.setattr(tel, "players_missing", lambda self, episode: dict(missing or {}))
+    monkeypatch.setattr(tel, "no_recording", lambda self: None if recording else no_recording)
+    link = Plugin()
+    link.hello = hello or {"project": "Farm", "share": False}
+    cli.run_prompt(link, "Reach the gate", kind="goal")
+    path = os.path.join(box["run_dir"], "report.json")
+    kept = None
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            text = f.read()
+        try:
+            kept = json.loads(text)
+        except ValueError:
+            kept = text
+    return kept, link.sent[-1]["result"], box["run_dir"]
+
+
+def video(n, player=1, folder="media"):
+    """A video as media.Recorder.shown gives it: its path is absolute, in the run's folder."""
+    suffix = "" if player == 1 else f"-p{player}"
+    return lambda run_dir: {"video": os.path.join(run_dir, *folder.split("/"), f"recording-{n}{suffix}.mp4"),
+                            "seconds": 9.5, "episode": n}
+
+
+def test_report_json_lists_every_players_recording(monkeypatch, tmp_path):
+    def others(run_dir):
+        return [{"player": 2, **video(1, 2, "telemetry/media")(run_dir)},
+                {"player": 3, **video(1, 3, "telemetry/media")(run_dir)}]
+
+    kept, result, run_dir = run_with_recordings(monkeypatch, tmp_path, video(1, folder="telemetry/media"), others,
+                                                hello={"project": "Farm"})  # (a shared run: telemetry/media/)
+    # Paths relative to the run's folder, with "/": report.json is synced and shared, the user's home isn't in it
+    assert kept["recording"] == {"video": "telemetry/media/recording-1.mp4", "seconds": 9.5, "episode": 1}
+    assert kept["recordings"] == [
+        {"player": 1, "video": "telemetry/media/recording-1.mp4", "seconds": 9.5, "episode": 1},
+        {"player": 2, "video": "telemetry/media/recording-1-p2.mp4", "seconds": 9.5, "episode": 1},
+        {"player": 3, "video": "telemetry/media/recording-1-p3.mp4", "seconds": 9.5, "episode": 1}]
+    assert "no_recording" not in kept and "alerts" not in kept
+    assert {k: kept[k] for k in AGENTS_REPORT} == AGENTS_REPORT  # (every key it had, as it was)
+    # The result the plugin gets keeps its absolute paths: player 1's `recording`, and every player's `recordings`
+    assert result["recording"]["video"] == os.path.join(run_dir, "telemetry", "media", "recording-1.mp4")
+    assert [r["player"] for r in result["recordings"]] == [1, 2, 3]
+    assert result["recordings"][1]["video"] == os.path.join(run_dir, "telemetry", "media", "recording-1-p2.mp4")
+
+
+def test_report_json_says_which_player_was_not_recorded(monkeypatch, tmp_path):
+    why = "the plugin sent no picture of player 2 (a plugin that records player 1 only: an older Unreal plugin)"
+    kept, result, _ = run_with_recordings(monkeypatch, tmp_path, video(1), missing={2: why})
+    assert kept["recordings"] == [{"player": 1, "video": "media/recording-1.mp4", "seconds": 9.5, "episode": 1}]
+    assert kept["alerts"][-1] == f"Player 2's view wasn't recorded: {why}."
+    assert kept["alerts"] == result["alerts"]  # (the same alerts the result has)
+
+
+def test_a_single_player_report_json_gets_only_player_ones_recording(monkeypatch, tmp_path):
+    kept, result, _ = run_with_recordings(monkeypatch, tmp_path, video(2))
+    assert kept["recording"] == {"video": "media/recording-2.mp4", "seconds": 9.5, "episode": 2}
+    assert "recordings" not in kept and "recordings" not in result and "no_recording" not in kept
+    # A run with no video says why, as the result does
+    kept, result, _ = run_with_recordings(monkeypatch, tmp_path, None, no_recording="no picture came from the game")
+    assert kept["no_recording"] == result["no_recording"] == "no picture came from the game"
+    assert "recording" not in kept and "recordings" not in kept
+
+
+def test_report_json_is_left_alone_when_it_is_missing_or_broken(monkeypatch, tmp_path):
+    kept, result, _ = run_with_recordings(monkeypatch, tmp_path, video(1), write=False)
+    assert kept is None  # (none is made)
+    assert result["recording"]["episode"] == 1
+    kept, broken, _ = run_with_recordings(monkeypatch, tmp_path, video(1), written="{not json")
+    assert kept == "{not json"  # (left as it was)
+    # (the run's result the same, but for the run's folder in the video's path: each run has its own)
+    assert dict(broken, recording=None) == dict(result, recording=None)
+    assert broken["recording"]["video"].endswith(os.path.join("media", "recording-1.mp4"))
