@@ -2262,19 +2262,27 @@ def index_alert(session):
 
 
 def exported_after(session, cutoff):
-    """{kind: how many} of the game's files the export brought after time.time() cutoff (a harness's start), the
-    codex's own files (codex.VOLATILE: the level's snapshot, the index) excepted, as codex.codex_kinds counts them."""
+    """{kind: how many} of the game's files the export brought after time.time() cutoff (a harness's start), each file
+    once however many batches rewrote it, and none that ended as it was when the harness started (Unreal's re-export
+    writes maps.txt again after every map: one that changes nothing ends where it began). The codex's own files
+    (codex.VOLATILE: the level's snapshot, the index) are left out, as codex.codex_kinds counts them."""
     late = {}
     idx = session.indexer() if callable(getattr(session, "indexer", None)) else None
     if idx is None or cutoff is None:
         return late
+    first, last = {}, {}  # (each file's first arrival after the cutoff, and its last)
     for batch in idx.since(0):
         if batch.get("at", 0) > cutoff:
             for f in batch.get("files") or []:
                 path = str(f.get("path", "")).replace("\\", "/")
                 if path in codexmod.VOLATILE or os.path.basename(path).startswith("."):
                     continue
-                late[codexmod.kind_of(path)] = late.get(codexmod.kind_of(path), 0) + 1
+                first.setdefault(path, f)
+                last[path] = f
+    for path, f in first.items():
+        if f.get("kind") != "new" and f.get("was") is not None and last[path].get("hash") == f.get("was"):
+            continue  # (back as the harness had it)
+        late[codexmod.kind_of(path)] = late.get(codexmod.kind_of(path), 0) + 1
     return late
 
 

@@ -186,8 +186,9 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
     first_map: the level the run plays, which an export started now does first.
     follow: asking again about the export an earlier answer said runs: the plugin never starts one for this, so an
     export the user stopped stays stopped while the run finishes up.
-    Returns {"files", "fetched", "removed", "export", "arrived": [(codex path, "new" or "changed")]}, or None when the
-    plugin has no such ops (an older build)."""
+    Returns {"files", "fetched", "removed", "export", "arrived": [(codex path, "new" or "changed")], "hashes": {codex
+    path: [the plugin's hash of it before (None: none), now]}}, or None when the plugin has no such ops (an older
+    build)."""
     from .kit.game import GameError
 
     codex_path = engines.of(game).codex_path
@@ -216,6 +217,7 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
               if have.get(p) != h or not os.path.exists(os.path.join(codex_root, codex_path(p)))]
     fetched = 0
     arrived = []
+    hashes = {}
     while wanted:
         batch, size = [], 0
         sizes = {f["path"]: int(f.get("size") or 0) for f in manifest.get("files", [])}
@@ -235,6 +237,7 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
             arrived.append((dest, "changed" if os.path.exists(full) else "new"))
             with open(full, "w", encoding="utf-8", newline="") as f:
                 f.write(text)
+            hashes[dest] = [have.get(p), listed[p]]
             have[p] = listed[p]
             fetched += 1
         skipped = set(res.get("missing") or []) | set(res.get("too_big") or [])
@@ -256,7 +259,7 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
     with open(index_file, "w", encoding="utf-8") as f:
         json.dump(have, f)
     return {"files": len(listed), "fetched": fetched, "removed": removed, "export": manifest.get("export"),
-            "arrived": arrived}
+            "arrived": arrived, "hashes": hashes}
 
 
 # What the export brought while a run worked (Indexer): in the project's folder beside codex/, started over by each
@@ -342,7 +345,9 @@ class Indexer:
         self.first_map = first_map
         self.on_done = on_done or (lambda: None)  # (once the export is in: the codex's index written again)
         self.lock = threading.Lock()
-        self.batches = []  # [{"n", "at": time.time(), "files": [{"path", "kind", "line"}]}]
+        # [{"n", "at": time.time(), "files": [{"path", "kind", "line", "was", "hash"}]}]; was, hash: the plugin's hash
+        # of the file before this batch and after it (None: not known, as for the level's snapshot)
+        self.batches = []
         self.listeners = []  # callables(batch), called from the indexer's thread (the background researcher)
         self.running = False
         self.done = 0  # the export's files written, of total
@@ -407,12 +412,15 @@ class Indexer:
             elif export.get("ran") and not self.running:
                 self.done = self.total  # (the end's answer has no progress: an export that ended well wrote it all)
         if announce and res.get("arrived"):
-            self._arrive(res["arrived"])
+            self._arrive(res["arrived"], res.get("hashes"))
         self._write_status()
 
-    def _arrive(self, arrived):
-        """A batch of files ([(codex path, "new" or "changed")]): kept, written down, told to the listeners."""
-        files = [{"path": p, "kind": kind, "line": digest(self.root, p)} for p, kind in arrived]
+    def _arrive(self, arrived, hashes=None):
+        """A batch of files ([(codex path, "new" or "changed")], with {codex path: [hash before, after]}): kept, written
+        down, told to the listeners."""
+        hashes = hashes or {}
+        files = [{"path": p, "kind": kind, "line": digest(self.root, p), "was": (hashes.get(p) or [None, None])[0],
+                  "hash": (hashes.get(p) or [None, None])[1]} for p, kind in arrived]
         with self.lock:
             batch = {"n": len(self.batches) + 1, "at": time.time(), "files": files}
             self.batches.append(batch)

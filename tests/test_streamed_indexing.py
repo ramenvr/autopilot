@@ -554,6 +554,60 @@ def test_no_partial_index_alert_when_nothing_was_exported_after_the_harness_star
     assert session.index_alert(s) == ""
 
 
+def test_a_file_rewritten_after_the_harness_started_counts_once_and_only_if_it_ended_changed(tmp_path, monkeypatch):
+    # (Unreal's export writes maps.txt again after every map, with the maps so far: a re-export that changes nothing
+    # rewrites it many times and ends where it began)
+    s = crate_run(tmp_path, monkeypatch, running=True)
+    idx = s.game.codex.indexer
+    s.run_harness(15)
+
+    def late(n, path, was, now, kind="changed"):
+        idx.batches.append({"n": n, "at": time.time() + 1,
+                            "files": [{"path": path, "kind": kind, "line": "x", "was": was, "hash": now}]})
+
+    late(1, "maps.txt", "full", "part-1")
+    late(2, "maps.txt", "part-1", "part-2")
+    late(3, "maps.txt", "part-2", "full")  # (back to what the harness had)
+    idx.running = False
+    assert session.exported_after(s, s.harness_started[1]) == {}
+    assert session.index_alert(s) == ""
+    # One file in many batches is one file
+    late(4, "data/DT_Late.csv", None, "a", kind="new")
+    late(5, "data/DT_Late.csv", "a", "b")
+    late(6, "data/DT_Late.csv", "b", "c")
+    assert session.exported_after(s, s.harness_started[1]) == {"data": 1}
+    assert session.index_alert(s) == PARTIAL_ALERT
+    report = session.finish(s, time.time(), None, "")
+    assert report["read"]["after"] == {"files": 1, "kinds": {"data": 1}}
+    assert report["read"]["lines"][2] == "Exported after it started, so not read for it: 1 file (1 data file)."
+    # A map list that ended other than the harness had it (it started inside the maps' part): counted, once
+    late(7, "maps.txt", "full", "longer")
+    assert session.exported_after(s, s.harness_started[1]) == {"data": 1, "other": 1}
+    # A batch with no hashes (the level's snapshot, an older record) counts as changed
+    idx.batches[:] = []
+    late(8, "data/DT_Old.csv", None, None)
+    late(9, "data/DT_Old.csv", None, None)
+    assert session.exported_after(s, s.harness_started[1]) == {"data": 1}
+
+
+def test_each_arrival_says_its_hash_before_and_after(tmp_path, monkeypatch):
+    plugin = ExportingPlugin({"Saved/AutopilotCodex/maps.txt": "Map A\nMap B\n"}, [])
+    idx = make_indexer(tmp_path, plugin, monkeypatch)
+    codex.fetch_from_plugin(plugin, idx.root)  # (the last run's export)
+    full = str(hash("Map A\nMap B\n"))
+    # The re-export writes the map list again, map by map, and ends where it began
+    plugin.steps = [{"Saved/AutopilotCodex/maps.txt": "Map A\n"}, {"Saved/AutopilotCodex/maps.txt": "Map A\nMap B\n"}]
+    plugin.total, plugin.done = 2, 0
+    idx.start()
+    wait_for(idx)
+    files = [f for b in idx.batches for f in b["files"]]
+    assert [(f["path"], f["kind"]) for f in files] == [("maps.txt", "changed")]
+    # (the first ask's rewrite is the run's start, not a batch; the second's is)
+    assert files[0]["hash"] == full and files[0]["was"] == str(hash("Map A\n"))
+    res = codex.fetch_from_plugin(ExportingPlugin({"Saved/AutopilotCodex/maps.txt": "Map C\n"}, []), idx.root)
+    assert res["hashes"] == {"maps.txt": [full, str(hash("Map C\n"))]}
+
+
 def test_with_no_indexer_the_report_says_whole_codex_only_when_this_run_got_it(tmp_path, monkeypatch):
     def line(s):
         return session.read_summary(s)["lines"][0]
