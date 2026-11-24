@@ -246,3 +246,86 @@ def test_the_agent_is_told_to_drive_and_read_players_together():
         assert "together(" in note and "each_player(" in note, note
     for net in ({"mode": "listen_server"}, {"mode": "listen_server", "players": 1}):
         assert "together(" not in session.network_note(net)
+
+
+def kit_example(name):
+    """The code of KIT.md's example `def name(...)` (indented under its paragraph), dedented."""
+    import textwrap
+
+    from autopilot.agents import session
+
+    with open(os.path.join(os.path.dirname(session.__file__), "..", "KIT.md"), encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith(f"def {name}("))
+    indent = len(lines[start]) - len(lines[start].lstrip())
+    block = [lines[start]]
+    for line in lines[start + 1:]:
+        if line.strip() and len(line) - len(line.lstrip()) <= indent:
+            break
+        block.append(line)
+    return textwrap.dedent("\n".join(block))
+
+
+def run_meet(game):
+    """KIT.md's `meet` example run on game with a walk_to that records its target: (steps, Result, targets)."""
+    import autopilot.kit as kit
+    from autopilot.kit import Result, Vec
+
+    targets = {}
+
+    def walk_to(game, target, within=120.0, **_):
+        targets[game.index] = Vec.of(target)
+        yield
+        return Result(True, "there")
+
+    scope = {**vars(kit), "walk_to": walk_to}
+    exec(kit_example("meet"), scope)
+    steps, out = drive(scope["meet"](game))
+    return steps, out, targets
+
+
+def test_kit_md_meet_example_walks_both_players_to_one_point():
+    """Both players walk to the same point between them: walking each to the other's starting spot (a Vec target
+    is fixed) only swaps them, and both would report there."""
+    with FrameLink(players=2) as link:
+        steps, out, targets = run_meet(Game(link))
+        assert out and out.why == "met" and steps == 1
+        assert sorted(targets) == [1, 2]
+        assert targets[1].dist(targets[2]) < 1.0, targets  # (one point: players 1 and 2 stand at x = 100 and 200)
+        assert 100.0 < targets[1].x < 200.0, targets
+
+
+def test_kit_md_meet_example_says_when_a_players_pose_failed():
+    """A player whose pose failed (no pawn, respawning) comes back from poses() as its GameError, as in batch: the
+    example ends with a failed Result saying so, not a TypeError from indexing the error."""
+    from autopilot.kit import GameError
+
+    def no_pawn():
+        raise GameError("pose: player 2 has no pawn")
+
+    with FrameLink(players=2) as link:
+        game = Game(link)
+        game.player(2).pose = no_pawn
+        steps, out, targets = run_meet(game)
+        assert not out and "no pawn" in out.why and targets == {}
+
+
+def test_a_players_sequence_holds_are_its_own():
+    """Each player's sequences and the keys they hold are its own: player 1's release(key) doesn't let go of a key
+    player 2's sequence holds (nor post a release for player 1), and player 2's release_all doesn't drop player 1's
+    sequences (player 1 still renews it). Shared, the players' steps in together's threads raced on one dict."""
+    with FrameLink(players=2, features=("players", "sequence")) as link:
+        game = Game(link)
+        two = game.player(2)
+        mine = game.sequence([{"key": "D", "mode": "hold"}])
+        theirs = two.sequence([{"key": "W", "mode": "hold"}])
+        assert mine and theirs and mine != theirs
+        n = len(link.posts)
+        game.release("W")  # (player 1 holds no W)
+        assert link.posts[n:] == []
+        two.release_all()
+        n = len(link.posts)
+        game.renew()
+        renewed = [a["ids"] for op, a in link.posts[n:] if op == "sequence" and a.get("action") == "renew"
+                   and "player" not in a]
+        assert renewed == [[mine]], link.posts[n:]
