@@ -1,4 +1,5 @@
-"""llm.Model's fallback: a helper model the provider (or Aura's relay) refuses gives way to the run's own model."""
+"""llm.Model's model: through Aura the run's own (Aura's relay serves no other), standalone the provider's cheaper
+helper; a helper the provider refuses gives way to the run's own model."""
 
 import pytest
 import requests
@@ -33,6 +34,7 @@ def relay(monkeypatch):
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.delenv("AUTOPILOT_HELPER_MODEL", raising=False)
     monkeypatch.delenv("AUTOPILOT_VISION_MODEL", raising=False)
+    monkeypatch.delenv("AUTOPILOT_AURA_URL", raising=False)  # (standalone unless a test says through Aura)
     state = {"asked": [], "refuse": lambda model: None}
 
     def post(url, headers=None, json=None, timeout=None):
@@ -70,3 +72,38 @@ def test_bad_request_that_does_not_name_the_model_still_raises(relay):
     with pytest.raises(RuntimeError, match="HTTP 400"):
         model.ask("what does this do?")
     assert relay["asked"] == [HELPER] and model.name == HELPER
+
+
+AURA = "https://aura.example"
+
+
+def test_through_aura_reading_asks_the_runs_own_model_first(relay, monkeypatch):
+    monkeypatch.setenv("AUTOPILOT_AURA_URL", AURA)
+    relay["refuse"] = lambda model: Reply(400, REFUSED) if model != OWN else None
+    model = llm.Model("openrouter", agent_model=OWN)
+    assert model.name == OWN
+
+    assert model.ask("what does this do?") == "ok"
+    assert relay["asked"] == [OWN]  # (no refused call for the helper)
+    assert set(model.tokens) == {OWN}
+
+
+def test_through_aura_a_claude_run_reads_with_its_own_model(monkeypatch):
+    monkeypatch.setenv("AUTOPILOT_AURA_URL", AURA)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.delenv("AUTOPILOT_HELPER_MODEL", raising=False)
+    assert llm.Model("anthropic", agent_model="claude-opus-5-5").name == "claude-opus-5-5"
+
+
+def test_through_aura_the_helper_model_setting_is_ignored(relay, monkeypatch):
+    monkeypatch.setenv("AUTOPILOT_AURA_URL", AURA)
+    monkeypatch.setenv("AUTOPILOT_HELPER_MODEL", "openai/gpt-5-mini")
+    assert llm.Model("openrouter", agent_model=OWN).name == OWN
+
+
+def test_standalone_reading_keeps_the_cheaper_helper(relay, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    assert llm.Model("openrouter", agent_model=OWN).name == HELPER
+    assert llm.Model("anthropic", agent_model="claude-opus-5-5").name == llm.HELPER["anthropic"]
+    monkeypatch.setenv("AUTOPILOT_HELPER_MODEL", "openai/gpt-5-mini")
+    assert llm.Model("openrouter", agent_model=OWN).name == "openai/gpt-5-mini"  # (standalone, the setting counts)

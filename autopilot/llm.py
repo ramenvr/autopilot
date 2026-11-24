@@ -8,8 +8,9 @@ reads what the export brings and what each episode raises while the agent plays.
     Jobs        llm_map's background work: one question over many files, each file's answer kept whole in a results
                 file of the run, the agent collecting them when it likes (Job.result()).
 
-The model is the provider's cheaper one (HELPER) unless AUTOPILOT_HELPER_MODEL names another; one the provider (or
-Aura's relay) refuses gives way to the agent's own for the rest of the run.
+The model is the agent's own in a run through Aura (Aura's relay serves the run's model, whatever
+AUTOPILOT_HELPER_MODEL says); otherwise the provider's cheaper one (HELPER) unless AUTOPILOT_HELPER_MODEL names
+another. One the provider (or Aura's relay) refuses gives way to the agent's own for the rest of the run.
 """
 
 import concurrent.futures as futures
@@ -20,7 +21,7 @@ import time
 
 import requests
 
-from . import vision
+from . import aura, vision
 
 # The cheaper model of each provider's family that reads code well enough to answer about it (None: the agent's own)
 HELPER = {"anthropic": "claude-sonnet-5-5", "opencode": "claude-sonnet-5-5",
@@ -42,7 +43,8 @@ class Model:
         self.route, self.unavailable = vision.route(provider, agent_model)
         if self.route is not None:
             wire, root, key, _, path = self.route
-            chosen = (os.environ.get("AUTOPILOT_HELPER_MODEL") or "").strip() or HELPER.get(provider) or agent_model
+            chosen = agent_model if aura.enabled() and agent_model else \
+                (os.environ.get("AUTOPILOT_HELPER_MODEL") or "").strip() or HELPER.get(provider) or agent_model
             self.route = (wire, root, key, chosen or agent_model, path)
         self.usage = usage
         self.proxied = proxied
