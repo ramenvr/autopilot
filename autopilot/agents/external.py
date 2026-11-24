@@ -90,7 +90,8 @@ reading frames while you know what you hope to see colours what you see. Brief i
 else (never the request, the claim, the harness or what you expect); each <t> is seconds from the episode's start, as
 its run_harness summary's t= gives them:
 
-    Call the autopilot tool `frames` with run="{marker}", episode=<n>, start=<t>, end=<t>, count=<up to {max_frames}>.
+    Call the autopilot tool `frames` with run="{marker}", episode=<n>, start=<t>, end=<t>, count=<up to {max_frames}>,
+    player=<n: only for another player's view>.
     Then describe the frames. {describer}
     Questions:
     1. <an open question: what moves and how, what is at a spot, what the text says; never yes/no>
@@ -138,10 +139,12 @@ FRAMES_SPEC = (
     "frames",
     "For a describer subagent only (not the agent working on the request): up to 12 of an episode's frames, as "
     "images, spread over times start-end of it. episode: its number (default: the latest); start, end: times in it, "
-    "in seconds from its start, as its summary's t= gives them (default: all of it); count: how many (default 8). "
-    "It works after the run has ended too, on the frames the run kept.",
+    "in seconds from its start, as its summary's t= gives them (default: all of it); count: how many (default 8); "
+    "player: whose view, in a game of several players (default 1). It works after the run has ended too, on the "
+    "frames the run kept.",
     {"type": "object", "properties": {"episode": {"type": "integer"}, "start": {"type": "number"},
-                                      "end": {"type": "number"}, "count": {"type": "integer"}}})
+                                      "end": {"type": "number"}, "count": {"type": "integer"},
+                                      "player": {"type": "integer"}}})
 
 
 # describe_frames' fallback (Autopilot's own vision model): the first provider the user has a key for (Anthropic's
@@ -242,7 +245,7 @@ class Desk:
             try:
                 if tool == "frames":
                     text, images = s.frames(args.get("episode"), args.get("start"), args.get("end"),
-                                            args.get("count"))
+                                            args.get("count"), player=args.get("player"))
                 else:
                     text = self._game_tool(tool, args)
             except Exception:
@@ -262,7 +265,7 @@ class Desk:
         with self.lock:
             try:
                 text, images = self.session.frames(args.get("episode"), args.get("start"), args.get("end"),
-                                                   args.get("count"), live=False)
+                                                   args.get("count"), live=False, player=args.get("player"))
             except Exception:
                 text, images = "Tool failed:\n" + traceback.format_exc(limit=5), []
         if self.marker and self.marker not in text:
@@ -280,7 +283,7 @@ class Desk:
             return s.snapshot()
         if tool == "describe_frames":
             return s.describe_frames(args.get("questions") or [], args.get("episode"), args.get("start"),
-                                     args.get("end"), args.get("frames"))
+                                     args.get("end"), args.get("frames"), player=args.get("player"))
         if tool == "restart_level":
             return s.restart_level(args.get("level"))
         return s.do_report({k: args[k] for k in REPORT_FIELDS if k in args})

@@ -97,7 +97,8 @@ def _tools(session):
                                                      frames_fps=a.get("frames_fps")),
         "snapshot": lambda a: session.snapshot(),
         "describe_frames": lambda a: session.describe_frames(a.get("questions") or [], a.get("episode"),
-                                                             a.get("start"), a.get("end"), a.get("frames")),
+                                                             a.get("start"), a.get("end"), a.get("frames"),
+                                                             player=a.get("player")),
         "restart_level": lambda a: session.restart_level(a.get("level")),
         "report": lambda a: session.do_report(a),
     }

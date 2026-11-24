@@ -429,6 +429,33 @@ def test_describe_frames_looks_at_the_episode_asked_for(game, tmp_path, monkeypa
     assert len(s.alerts) == 1 and "minimized or hidden" in s.alerts[0] and "window shown" in s.alerts[0]
 
 
+def test_describe_frames_looks_at_another_players_frames_when_asked(game, tmp_path, monkeypatch, upstream):
+    keys(monkeypatch, ANTHROPIC_API_KEY="sk-a", ANTHROPIC_BASE_URL=upstream.url)
+    rec = FakeRecorder()
+    frames(rec)  # (episode 2's, player 1's)
+    rec.others = {2: FakeRecorder()}
+    for i in range(20):  # (player 2's: its own game clock, 2 s behind player 1's at the same moment)
+        rec.others[2].frames.add(f"p2-{i}".encode(), 3.0 + i * 0.2, 100.0 + i * 0.2, 960, 540)
+    s = played(game, tmp_path, monkeypatch, vision.Describer(rec, "anthropic"))
+    text = s.describe_frames(["How does the guard's hand move?"], start=1.0, end=2.0, player=2)
+    assert "frames of 6 (episode 2, player 2), at t= 1.00, " in text and s.described == 1
+    sent = upstream.seen[-1][2]["messages"][0]["content"]
+    images = [base64.b64decode(p["source"]["data"]) for p in sent if p.get("type") == "image"]
+    assert images and all(i.startswith(b"p2-") for i in images) and images[0] == b"p2-5"
+    assert "Frame 1: time 1.00 s" in [p.get("text") for p in sent]  # (player 1's clock, as the agent asked)
+    assert s.events[-1]["text"] == "Looked at player 2's frames of episode 2"
+    # A player not filmed: said, no model called
+    calls = len(upstream.seen)
+    assert s.describe_frames(["?"], player=3) == "No frames of player 3: only players 1 and 2 are filmed in this run."
+    assert len(upstream.seen) == calls
+    # Player 1's, as before
+    text = s.describe_frames(["?"], start=1.0, end=2.0, player=1)
+    assert "frames of 6 (episode 2), at t= 1.00, " in text
+    images = [base64.b64decode(p["source"]["data"]) for p in upstream.seen[-1][2]["messages"][0]["content"]
+              if p.get("type") == "image"]
+    assert images[0] == b"jpeg5"
+
+
 def test_frames_after_the_run_read_what_it_kept_and_say_nothing(game, tmp_path, monkeypatch):
     rec = FakeRecorder()
     frames(rec)  # (episode 2's)

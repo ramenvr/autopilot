@@ -3,6 +3,7 @@
 that take long answered "still going" and given to `wait`, frames handed over as images, the decision model's key,
 brain.json, and the agent's transcript kept with a shared run (autopilot/transcripts.py)."""
 
+import base64
 import io
 import json
 import os
@@ -390,6 +391,116 @@ def test_a_one_player_or_inner_agents_report_answer_is_as_before(tmp_path, monke
     session, recorder = players_session(tmp_path, monkeypatch, players=2)
     recorder.others[2].confirmed = False
     assert session.do_report(dict(report)) == "Reported. You can stop now."
+
+
+def filmed_players(tmp_path, monkeypatch, **k):
+    """players_session with episode 1 played and filmed: player 1's frames at game times 30.0, 30.25... (its summary's
+    t=0 is 30.0), player 2's a little after each (0.1 s) on a game clock of its own, 0.83 s behind player 1's (each
+    player's world keeps its own time). (session, recorder)"""
+    session, recorder = players_session(tmp_path, monkeypatch, **k)
+    t0 = time.time()
+    for i in range(20):
+        recorder.frames.add(f"p1-{i}".encode(), t=30.0 + i * 0.25, wall=t0 + i * 0.25)
+        if 2 in recorder.others:
+            recorder.others[2].frames.add(f"p2-{i}".encode(), t=29.17 + 0.1 + i * 0.25, wall=t0 + 0.1 + i * 0.25)
+    with open(os.path.join(session.run_dir, "trace1.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"kind": "start", "wall": t0}) + "\n")
+        f.write(json.dumps({"kind": "obs", "wall": t0, "t": 30.0}) + "\n")
+        f.write(json.dumps({"kind": "end", "wall": t0 + 5, "t": 34.75}) + "\n")
+    return session, recorder
+
+
+def test_frames_of_another_player_are_that_players(tmp_path, monkeypatch):
+    session, recorder = filmed_players(tmp_path, monkeypatch)
+    # Player 2's frames of the same stretch, its times on player 1's clock (the summary's t=, the only one the agent
+    # knows): player 2's frame 0.1 s after player 1's t=1.00 is at t=1.10
+    text, jpegs = session.frames(1, start=0.9, end=3.0, count=4, player=2)
+    assert jpegs == [b"p2-4", b"p2-6", b"p2-9", b"p2-11"]
+    assert text == ("4 frames of 8 (episode 1, player 2), in order, at t= 1.10, 1.60, 2.35, 2.85 s (seconds from the "
+                    "episode's start, as its summary's t=) (run r1-abcd):")
+    assert session.events[-1]["text"] == "Took 4 frames of episode 1, player 2"
+    # Without player 1's frames to set the clocks side by side, the episode's start does it
+    recorder.frames.items.clear()
+    assert session.frames(1, start=0.9, end=3.0, count=4, player=2) == (text, jpegs)
+    # Through the tool, while the run goes and once it has ended
+    desk = external.Desk("codex")
+    desk.marker = session.marker
+    desk.open(session, None, "opening")
+    result = desk.call("frames", {"episode": 1, "start": 0.9, "end": 3.0, "count": 2, "player": 2})
+    images = [base64.b64decode(c["data"]) for c in result["content"] if c["type"] == "image"]
+    assert images == [b"p2-4", b"p2-11"] and "player 2" in text_of(result)
+    desk.end("reported")
+    after = desk.call("frames", {"episode": 1, "start": 0.9, "end": 3.0, "count": 2, "player": 2})
+    images = [base64.b64decode(c["data"]) for c in after["content"] if c["type"] == "image"]
+    assert images == [b"p2-4", b"p2-11"] and "has ended" in text_of(after)
+
+
+def test_frames_of_a_player_not_filmed_says_so(tmp_path, monkeypatch):
+    session, recorder = filmed_players(tmp_path, monkeypatch)
+    events = len(session.events)
+    assert session.frames(1, player=3) == ("No frames of player 3: only players 1 and 2 are filmed in this run.", [])
+    for wrong in (0, -1, "two", 1.5, True):
+        text, jpegs = session.frames(1, player=wrong)
+        assert text.startswith(f"No player {wrong!r} here: player is a player's number") and not jpegs
+    assert not session.alerts  # (the agent's to fix)
+    # The reason the run knows, when it knows one: a plugin that records player 1 only
+    session, recorder = filmed_players(tmp_path, monkeypatch, players=1)
+    why = "this plugin records player 1 only (an Autopilot plugin built before per-player recording, or Roblox Studio)"
+    recorder.players_missing = lambda episode=None: {2: why}
+    assert session.frames(1, player=2) == (f"No frames of player 2: {why}.", [])
+    assert session.frames(1, player=3) == ("No frames of player 3: only player 1 is filmed in this run.", [])
+    assert len(session.events) >= events
+    # A player recorded but not seen in the stretch: no alert about the game's window (player 1's picture came)
+    session, recorder = filmed_players(tmp_path, monkeypatch, players=3)
+    text, jpegs = session.frames(1, player=3)
+    assert text.startswith("No frames of episode 1, player 3") and not jpegs and not session.alerts
+
+
+def test_frames_without_player_are_player_ones_as_before(tmp_path, monkeypatch):
+    session, _ = filmed_players(tmp_path, monkeypatch)
+    text, jpegs = session.frames(1, start=0.9, end=3.0, count=4)
+    assert jpegs == [b"p1-4", b"p1-7", b"p1-9", b"p1-12"]
+    assert text == ("4 frames of 9 (episode 1), in order, at t= 1.00, 1.75, 2.25, 3.00 s (seconds from the episode's "
+                    "start, as its summary's t=) (run r1-abcd):")
+    shown = {k: session.events[-1][k] for k in ("kind", "text", "detail")}
+    assert shown == {"kind": "look", "text": "Took 4 frames of episode 1",
+                     "detail": "At t= 1.00, 1.75, 2.25, 3.00 s of it"}
+    assert session.frames(1, start=0.9, end=3.0, count=4, player=1) == (text, jpegs)
+    assert {k: session.events[-1][k] for k in ("kind", "text", "detail")} == shown
+    assert session.frames(1, start=0.9, end=3.0, count=4, player=None) == (text, jpegs)
+
+
+def test_frames_and_describe_frames_take_a_player():
+    tools = {t["name"]: t for t in mcp.tools()}
+    for name in ("frames", "describe_frames"):
+        assert tools[name]["inputSchema"]["properties"]["player"] == {"type": "integer"}
+        assert "player: whose view, in a game of several players (default 1)" in tools[name]["description"]
+        assert "player" not in tools[name]["inputSchema"].get("required", [])
+    assert "player" in dict((n, s) for n, _, s in sessionmod.TOOL_SPECS)["describe_frames"]["properties"]
+    assert unknown_args_none("frames", {"episode": 1, "player": 2})
+    assert unknown_args_none("describe_frames", {"questions": ["?"], "player": 2})
+    # The describer is briefed how to ask for another player's view
+    assert "player=<n: only for another player's view>" in external.EXTERNAL_TOOLS
+
+
+def unknown_args_none(tool, args):
+    return sessionmod.unknown_args(tool, args, sessionmod.TOOL_SPECS + (external.FRAMES_SPEC,)) is None
+
+
+def test_the_players_note_says_each_player_is_filmed_when_the_plugin_records_each():
+    net = {"mode": "listen_server", "players": 2, "player": 1}
+    before = sessionmod.players_note(net)
+    filmed = sessionmod.players_note(net, ["media", "players", "instances"])
+    assert filmed == before + " Each player is filmed: frames and describe_frames take player=n for player n's view."
+    # A plugin that records player 1 only, or one player: as before
+    assert sessionmod.players_note(net, ["media", "players"]) == before
+    assert sessionmod.players_note({"mode": "listen_server", "players": 1}, ["players", "instances"]) == ""
+    host = sessionmod.network_note(net, None, ["players", "instances"])
+    assert host.endswith("Each player is filmed: frames and describe_frames take player=n for player n's view.")
+    assert sessionmod.network_note(net) == sessionmod.network_note(net, None, ["players"])
+    client = sessionmod.network_note({"mode": "client", "server_world": "/Game/UEDPIE_0_Map.Map", "clients": 2,
+                                      "players": 2}, None, ["players", "instances"])
+    assert "Each player is filmed" in client
 
 
 def test_the_mcp_front_lists_its_tools_and_finds_the_service(tmp_path, monkeypatch):

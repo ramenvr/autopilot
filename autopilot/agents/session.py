@@ -345,10 +345,12 @@ TOOL_SPECS = (
      "its number (default: the latest); start, end: times in it, in seconds from its start, as its summary's t= "
      "gives them (default: all of it; narrow them to the moment); questions: "
      f"1-{vision.MAX_QUESTIONS} open questions (what moves and how, what is at a spot, what the text says), never "
-     f"yes/no and never what you hope to see; frames: how many (default {vision.DEFAULT_FRAMES}).",
+     f"yes/no and never what you hope to see; frames: how many (default {vision.DEFAULT_FRAMES}); player: whose "
+     "view, in a game of several players (default 1).",
      {"type": "object", "properties": {
          "episode": {"type": "integer"}, "start": {"type": "number"}, "end": {"type": "number"},
-         "questions": {"type": "array", "items": {"type": "string"}}, "frames": {"type": "integer"}},
+         "questions": {"type": "array", "items": {"type": "string"}}, "frames": {"type": "integer"},
+         "player": {"type": "integer"}},
       "required": ["questions"]}),
     ("restart_level",
      "Start the level over (fresh state, the player respawned, all that probes and episodes did to it gone). level: "
@@ -1477,7 +1479,7 @@ class Session:
             except Exception:
                 pass
         if net.get("mode") in ("client", "listen_server"):
-            out["network"] = network_note(net, paused)
+            out["network"] = network_note(net, paused, (getattr(g.link, "hello", None) or {}).get("features") or ())
         out = runtime.jsonable(out)
         # (whole: the briefing quotes what fits of it and keeps all of it in a file of the run)
         return "\n".join(f"{k}: {json.dumps(v, default=str)}" for k, v in out.items())
@@ -1507,9 +1509,10 @@ class Session:
                 f"run_harness frames_fps films an episode at up to {vision.FILM_FPS[1]}): describe_frames describes "
                 "an episode's frames.")
 
-    def describe_frames(self, questions, episode=None, start=None, end=None, frames=None):
+    def describe_frames(self, questions, episode=None, start=None, end=None, frames=None, player=None):
         """describe_frames: an episode's frames (between times start and end of it: seconds from its start, as its
-        summary's t=), described with questions."""
+        summary's t=), described with questions. player: whose view, in a game of several players (default 1);
+        another player's times are on player 1's clock too."""
         if self.describer is None:
             return "describe_frames isn't available in this run."
         if self.looks_itself and self.describer.route is None:
@@ -1525,26 +1528,81 @@ class Session:
                     "INCONCLUSIVE here (report visual: true); the user is told why.")
         if isinstance(questions, str):
             questions = [questions]
+        k, other, refused = self._player(player)
+        if refused:
+            return refused
         n, span = self._episode_span(episode)
         if span is None:
             return n
         wall1 = span.get("wall_end") or time.time()
-        label = f"episode {n}"
+        label, kept, base, why = self._view(k, other, n, span)
+        if why:
+            return why
         self.say(RESULTS)
         text, ok = self.describer.describe(span["wall_start"] - 0.5, wall1 + 0.5, questions, frames or
-                                           vision.DEFAULT_FRAMES, t0=start, t1=end, label=label,
-                                           base=span.get("t_start") or 0.0)
+                                           vision.DEFAULT_FRAMES, t0=start, t1=end, label=label, base=base, kept=kept)
         if ok:
             self.described += 1
             self.look_failed = None
         else:
             self.look_failed = text
-            if self.describer.no_picture:  # (the game drew no picture while the episode played)
+            if self.describer.no_picture and other is None:  # (the game drew no picture while the episode played)
                 self.alert(self.describer.alert("no picture came from the game while it played (its window was "
                                                 "minimized or hidden)"))
-        self.activity("look", f"Looked at {label}'s frames" if ok else f"Couldn't look at {label}'s frames",
+        whose = f"{label}'s frames" if other is None else f"player {k}'s frames of episode {n}"
+        self.activity("look", f"Looked at {whose}" if ok else f"Couldn't look at {whose}",
                       detail=text, ends="look", log=f"describe_frames ({label}): {questions} -> {text}")
         return text
+
+    def _player(self, player):
+        """(the player, its media.Recorder, None) for another player whose view is filmed (the recording's `others`);
+        (1, None, None) for player 1, or none given (the recording's own frames, as always); (None, None, why there
+        are no frames of it) for a player not filmed, or not a player's number."""
+        if player is None:
+            return 1, None, None
+        k = None
+        if not isinstance(player, bool):
+            try:
+                k = int(player) if float(player) == int(float(player)) else None
+            except (TypeError, ValueError, OverflowError):
+                k = None
+        if k is None or k < 1:
+            return None, None, f"No player {player!r} here: player is a player's number (1: the one you play)."
+        if k == 1:
+            return 1, None, None
+        recorder = getattr(self.describer, "recorder", None)
+        others = getattr(recorder, "others", None) or {}
+        if k in others:
+            return k, others[k], None
+        try:  # (why the run knows: a plugin that records player 1 only)
+            why = (recorder.players_missing() or {}).get(k)
+        except Exception:  # noqa: BLE001 - no reason, then
+            why = None
+        filmed = [1, *sorted(others)]
+        why = why or ("only player 1 is filmed in this run" if len(filmed) == 1 else
+                      f"only players {', '.join(map(str, filmed[:-1]))} and {filmed[-1]} are filmed in this run")
+        return None, None, f"No frames of player {k}: {why}."
+
+    def _view(self, k, other, n, span):
+        """(label, the Frames to look at, the base their times are told from, None) for player k's view of episode n
+        (its span), or (.., why there are none). Player 1's (other None): the recording's own frames from the
+        episode's first game time, as always. Another player's: its frames, from the game time of its own that is
+        the same moment (vision.clock_base: its times are on player 1's clock, the summary's t=)."""
+        base = span.get("t_start") or 0.0
+        if other is None:
+            return f"episode {n}", None, base, None
+        label = f"episode {n}, player {k}"
+        wall0, wall1 = span["wall_start"] - 0.5, (span.get("wall_end") or time.time()) + 0.5
+        theirs = vision.clock_base(other.frames, getattr(self.describer, "frames", None), wall0, wall1,
+                                   span["wall_start"], base)
+        if theirs is None:
+            try:
+                why = (self.describer.recorder.players_missing(n) or {}).get(k)
+            except Exception:  # noqa: BLE001
+                why = None
+            why = why or f"no picture of player {k} came while it played"
+            return label, None, base, f"No frames of {label}: {why}."
+        return label, other.frames, theirs, None
 
     def _episode_span(self, episode=None):
         """(its number, the span episode_spans() has of it) for an episode (default: the latest), or (why there is
@@ -1559,12 +1617,13 @@ class Session:
                     "No episode has been played yet: run_harness first (its frames are what can be looked at)."), None
         return n, span
 
-    def frames(self, episode=None, start=None, end=None, count=None, live=True):
+    def frames(self, episode=None, start=None, end=None, count=None, live=True, player=None):
         """frames, for the user's own agent (autopilot/agents/external.py), whose describer subagent looks at them
         itself: (text, [JPEG bytes]) of up to vision.MAX_FRAMES of an episode's frames (between times start and end of
         it: seconds from its start, as its summary's t=), or (why there are none, []). Frames had count as a
         description for report's visual rule. live False: the run has ended (reported, stopped): the frames it kept
-        are read and nothing else happens (no feed line, no alert, no status for the tab)."""
+        are read and nothing else happens (no feed line, no alert, no status for the tab). player: whose view, in a
+        game of several players (default 1); another player's times are on player 1's clock too."""
         if self.describer is None:
             return "The game isn't filmed in this run.", []
         why = self.describer.unfilmed()
@@ -1574,19 +1633,23 @@ class Session:
                 self.alert(self.describer.alert(why, filming=True))
             return (f"Can't look at the game's picture in this run: {why}. A request about how something looks is "
                     "INCONCLUSIVE here (report visual: true)" + ("; the user is told why." if live else ".")), []
+        k, other, refused = self._player(player)
+        if refused:
+            return refused, []
         n, span = self._episode_span(episode)
         if span is None:
             return n, []
-        label = f"episode {n}"
-        base = span.get("t_start") or 0.0
+        label, kept, base, why = self._view(k, other, n, span)
+        if why:
+            return why, []
         if live:
             self.say(RESULTS)
         chosen, frames, why = self.describer.frames_of(span["wall_start"] - 0.5, (span.get("wall_end") or time.time())
                                                        + 0.5, count or vision.DEFAULT_FRAMES, start, end, label,
-                                                       base, live)
+                                                       base, live, kept=kept)
         if why:
             self.look_failed = why
-            if live and self.describer.no_picture:
+            if live and self.describer.no_picture and other is None:
                 self.alert(self.describer.alert("no picture came from the game while it played (its window was "
                                                 "minimized or hidden)", filming=True))
             if live:
@@ -1736,7 +1799,7 @@ class Session:
         return n
 
 
-def network_note(net, paused=None):
+def network_note(net, paused=None, features=()):
     """The opening's line on a multiplayer game (the plugin's context `net`): whose player the run plays, where the
     truth is kept, and whether the game pauses. A single-player game has none; a Roblox game (`rc_side` "server": a
     client of the game's server, its reads made on the server) has its own, one player or several. Several players in
@@ -1744,7 +1807,7 @@ def network_note(net, paused=None):
     if net.get("mode") == "listen_server":
         return " ".join(n for n in ["Multiplayer: the game is hosted by the player you play (a listen server), so this "
                                     "world has authority: what you read is the game's truth and a change from a probe "
-                                    "sticks.", players_note(net)] if n)
+                                    "sticks.", players_note(net, features)] if n)
     if net.get("rc_side") == "server":
         # (Roblox: every play session is a client of the game's server, and the plugin's reads go to the server)
         clients = int(net.get("clients") or 1)
@@ -1775,19 +1838,23 @@ def network_note(net, paused=None):
                     "client.")
     if isinstance(paused, dict) and paused.get("why"):
         note.append(f"The game can't be paused ({paused['why']}): it runs on while you read or think.")
-    if players_note(net):
-        note.append(players_note(net))
+    if players_note(net, features):
+        note.append(players_note(net, features))
     note.append("Play the game as the editor is set up to play it: don't change the editor's Play settings (the net "
                 "mode is the user's).")
     return " ".join(note)
 
 
-def players_note(net):
+def players_note(net, features=()):
     """The opening's line on the other players an editor plays (the plugin's context `net` with `players` above 1:
-    Unreal's multiplayer Play In Editor, every player in one process): how to drive them; "" for one player."""
+    Unreal's multiplayer Play In Editor, every player in one process): how to drive them, and, when the plugin records
+    each player (its hello's features have "players" and "instances": media.Recorder), how to look at their views;
+    "" for one player."""
     players = int(net.get("players") or 1)
     if players <= 1:
         return ""
+    filmed = (" Each player is filmed: frames and describe_frames take player=n for player n's view."
+              if {"players", "instances"} <= set(features or ()) else "")
     return (f"The editor plays {players} players, as its Play settings start them: you are player 1 (game), "
             "and game.player(n) is player n as a game of its own: its pawn, pose, view, screen, keys, ui_act and every "
             "controller (walk_to(game.player(2), ...)); game.players() lists them. A player nobody drives stands idle "
@@ -1795,7 +1862,7 @@ def players_note(net):
             "seeing another) or when the game needs every player to go on (a door for two, a revive); otherwise play "
             "player 1 and leave them be. The pointer (a click at a place on the view) is player 1's only: another "
             "player's UI takes game.player(n).ui_act. The number of players is the user's: game.restart(players=N) "
-            "can't change it.")
+            "can't change it." + filmed)
 
 
 def _whole(path):
