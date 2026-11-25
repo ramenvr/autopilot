@@ -693,11 +693,15 @@ class Session:
         self.findings = []  # [{"n", "at", "text", "files", "source", "told": the tool result that carried it}]
         self.findings_lock = threading.Lock()
         self.news_lock = threading.Lock()
-        self.news_batches = 0  # the indexer's batches told so far
+        # the indexer's batches told so far (those that came while the run waited for the export count as told)
+        self.news_batches = getattr(self.indexer(), "waited_batches", 0) or 0
         self.news_findings = 0  # the findings told so far
         self.index_was_running = False  # (the export was still running when the run started: its end is told)
         self.index_told_done = False
         self.harness_started = {}  # episode n -> time.time() its harness started playing
+        # episode n -> the indexer's status when its harness started: a harness written while the export still ran
+        # was built on part of the game's files (finish() alerts the user when the last one played was)
+        self.harness_index = {}
 
     def indexer(self):
         """The codex's Indexer (codex.Indexer) when the export streamed in for this run, else None."""
@@ -764,7 +768,7 @@ class Session:
                     self.index_told_done = True
                     parts.append(self._indexed_text(status))
                 elif status["running"]:
-                    parts.append(f"[indexing the game's files: the export {codexmod.progress(status)}; "
+                    parts.append(f"[indexing the game's files: {codexmod.export_words(status)}; "
                                  f"{status['files']} files in the codex now]")
                 if status.get("working"):
                     parts.append(f"[still being written: {', '.join(status['working'])}]")
@@ -1157,7 +1161,7 @@ class Session:
                 found = searched(*a, **k)
                 status = view.status()
                 if status.get("running") and isinstance(found, list):
-                    found.append(f"(searched what is indexed so far: the export {codexmod.progress(status)}; what is "
+                    found.append(f"(searched what is indexed so far: {codexmod.export_words(status)}; what is "
                                  "still coming may match too)")
                 return found
 
@@ -1308,6 +1312,12 @@ class Session:
         n = self.episodes + 1
         if os.path.exists(os.path.join(self.run_dir, file)):
             self.harness_started[n] = t0
+            idx = self.indexer()
+            if idx is not None:
+                status = idx.status()
+                if status.get("running"):  # (what a harness written on part of the game's files had: read_summary)
+                    status["kinds"] = codexmod.codex_kinds(os.path.join(self.root, "codex"))
+                self.harness_index[n] = status
             if self.researcher is not None:  # (it checks the harness against the code while it plays)
                 self.researcher.playing(n)
         if self.sandbox:
@@ -2061,6 +2071,7 @@ def briefing(session, opening=None, short=False, room=None):
     if since and (notes or lib or runs):  # (with nothing learned yet, nothing can be out of date)
         add("codex since", since)
     idx = session.indexer()
+    status = None  # (the export's, when it streams in: while it runs, a word in no file may still come)
     if idx is not None:
         with session.news_lock:  # (what arrived before now is in the codex the briefing reads: not news)
             session.news_batches = len(idx.batches)
@@ -2093,7 +2104,13 @@ def briefing(session, opening=None, short=False, room=None):
         text, _ = _listing(session, "## Where the request's words appear in the codex (files, with how often)",
                            ranked, "request_words", "files have some of the request's words, the most first",
                            budget=WORDS_PART if short else None)
-        add("request words", "\n".join([text, *(line for line in hits if not line.startswith("- "))]))
+        asides = [line for line in hits if not line.startswith("- ")]
+        if status and status["running"]:
+            missing = "(not in the codex: "
+            later = f"; {codexmod.export_words(status)}, it may still come)"
+            asides = [f"(not in the codex yet: {line[len(missing):-1]}{later}" if line.startswith(missing) else line
+                      for line in asides]
+        add("request words", "\n".join([text, *asides]))
     try:  # (the workflow for this kind of request: the package's, or this game's own: autopilot/workflows.py)
         from .. import workflows
         from ..cli import kind_by_words
@@ -2417,6 +2434,194 @@ def watch_steering(session):
     return done
 
 
+def last_harness_index(session):
+    """(n, the indexer's status when harness n started) for the last harness played, or (None, None) when none played
+    or the export didn't stream in for it."""
+    statuses = getattr(session, "harness_index", None) or {}
+    played = [k for k in statuses if k <= session.episodes]
+    if not played:
+        return None, None
+    return max(played), statuses[max(played)]
+
+
+def index_alert(session):
+    """The result's alert when the last harness played was written while the game's files were still being indexed
+    (the files exported after it started were never read for it), else "". A harness that had the whole codex, or
+    after whose start the export brought none of the game's files (a re-export of what the codex had), says nothing:
+    the alert would show on every run."""
+    n, status = last_harness_index(session)
+    if not status or not status.get("running"):
+        return ""
+    if not exported_after(session, (getattr(session, "harness_started", None) or {}).get(n)):
+        return ""  # (nothing of the game's came after it started, e.g. a re-export that brought nothing new)
+    counted = (f"{status.get('done')} of {status['total']} exported" if status.get("total")
+               else "the export hadn't counted its files yet")
+    return (f"Harness {n}, the last one played, was written while the game's files were still being indexed "
+            f"({counted}). Files exported after that were not read for it.")
+
+
+def exported_after(session, cutoff):
+    """{kind: how many} of the game's files the export brought after time.time() cutoff (a harness's start), each file
+    once however many batches rewrote it, and none that ended as it was when the harness started (Unreal's re-export
+    writes maps.txt again after every map: one that changes nothing ends where it began). The codex's own files
+    (codex.VOLATILE: the level's snapshot, the index) are left out, as codex.codex_kinds counts them."""
+    late = {}
+    idx = session.indexer() if callable(getattr(session, "indexer", None)) else None
+    if idx is None or cutoff is None:
+        return late
+    first, last = {}, {}  # (each file's first arrival after the cutoff, and its last)
+    for batch in idx.since(0):
+        if batch.get("at", 0) > cutoff:
+            for f in batch.get("files") or []:
+                path = str(f.get("path", "")).replace("\\", "/")
+                if path in codexmod.VOLATILE or os.path.basename(path).startswith("."):
+                    continue
+                first.setdefault(path, f)
+                last[path] = f
+    for path, f in first.items():
+        if f.get("kind") != "new" and f.get("was") is not None and last[path].get("hash") == f.get("was"):
+            continue  # (back as the harness had it)
+        late[codexmod.kind_of(path)] = late.get(codexmod.kind_of(path), 0) + 1
+    return late
+
+
+# The words for the codex's kinds (codex.kind_of) in what the report says was read, in this order; others count as
+# others (the files at the codex's top, maps.txt among them, too)
+KIND_WORDS = {"blueprints": ("Blueprint", "Blueprints"), "data": ("data file", "data files"),
+              "source": ("source file", "source files"), "script": ("script", "scripts"),
+              "input": ("input file", "input files"), "config": ("config file", "config files")}
+
+
+def _count(n, one, many):
+    return f"{n} {one if n == 1 else many}"
+
+
+def _kinds_text(kinds):
+    """{kind: how many} in words: "41 Blueprints, 80 data files, 5 others"."""
+    parts = [_count(kinds[k], *KIND_WORDS[k]) for k in KIND_WORDS if kinds.get(k)]
+    others = sum(v for k, v in kinds.items() if k not in KIND_WORDS)
+    if others:
+        parts.append(_count(others, "other", "others"))
+    return ", ".join(parts)
+
+
+def read_summary(session):
+    """What the run had read for the last harness played (for the whole run when none played): how far the game's
+    files were indexed when it started; the game's files the agent read and its searches before then, and the
+    background researcher's file reads and findings (with its passes, and those that failed); and, for a harness
+    written while the export still ran, the codex's files by kind then and those exported after it started (never
+    read for it). The report's `read`: {"harness", "index", "agent", "researcher", "lines"}, with "had" and "after"
+    when the index was partial; lines: the same said for the user, one when the index was complete, else three."""
+    episodes = getattr(session, "episodes", 0) or 0
+    began = {k: t for k, t in (getattr(session, "harness_started", None) or {}).items() if k <= episodes}
+    n = max(began) if began else None
+    cutoff = began.get(n)  # (time.time() the harness started; None: the whole run)
+    since = getattr(session, "started", 0.0) or 0.0
+    status = (getattr(session, "harness_index", None) or {}).get(n) if n is not None else None
+
+    def before(t):
+        # (an event's t is rounded to 0.1 s: one sent as the harness started counts as before it)
+        return cutoff is None or (isinstance(t, (int, float)) and t <= round(cutoff - since, 1))
+
+    events = list(getattr(session, "events", None) or [])
+    agent = {"files": len({e.get("detail") for e in events if e.get("kind") == "read" and before(e.get("t"))
+                           and str(e.get("detail") or "").startswith("codex/")}),
+             "searches": sum(1 for e in events if e.get("kind") == "search" and before(e.get("t")))}
+    out = {"harness": n}
+    # With no indexer: whole only when this run got the codex (from the plugin, or the project's own files); else it is
+    # what an earlier run left (maybe stale), or there is none (a plugin without the codex ops, a failed fetch). The
+    # project's own files read after a failed fetch aren't whole either: its source, and only what an earlier export
+    # left of its Blueprints and data (engines' build_local)
+    cx = getattr(getattr(session, "game", None), "codex", None)
+    source, fetch_error = getattr(cx, "source", None), getattr(cx, "fetch_error", None)
+    whole = source is not None and not fetch_error
+    on_disk = 0
+    if status is None and n is not None and not whole and getattr(session, "root", None):
+        on_disk = sum(codexmod.codex_kinds(os.path.join(session.root, "codex")).values())
+    if status is None:
+        if n is None:
+            out["index"] = None
+        elif whole:
+            out["index"] = {"complete": True}
+        else:
+            out["index"] = {"complete": False, "files": on_disk, "fetched": False,
+                            **({"from": source} if source else {}), **({"error": fetch_error} if fetch_error else {})}
+    else:
+        out["index"] = {"complete": not status.get("running") and not status.get("error"),
+                        **{k: status.get(k) for k in ("done", "total", "files")}}
+    out["agent"] = agent
+    r = getattr(session, "researcher", None)
+    if r is None:
+        out["researcher"] = None
+    else:
+        found = [f for f in getattr(session, "findings", None) or [] if cutoff is None or f.get("at", 0) <= cutoff]
+        out["researcher"] = {"files": len({p for t, p in getattr(r, "read", None) or []
+                                           if (cutoff is None or t <= cutoff) and str(p).startswith("codex/")}),
+                             "findings": len(found), "passes": int(getattr(r, "passes", 0) or 0),
+                             "failed": int(getattr(r, "failed", 0) or 0)}
+    # The words
+    if agent["files"] or agent["searches"]:
+        by_agent = (f"{agent['files']} of the game's files and {_count(agent['searches'], 'search', 'searches')} "
+                    "by the agent")
+    else:
+        by_agent = "nothing by the agent"
+    res = out["researcher"]
+    if res is None:
+        by_researcher = "the background researcher was off"
+    else:
+        by_researcher = (f"{_count(res['files'], 'file', 'files')} and {_count(res['findings'], 'finding', 'findings')}"
+                         " by the background researcher" if res["files"] or res["findings"]
+                         else "nothing by the background researcher")
+        if res["failed"] and res["failed"] >= res["passes"]:
+            by_researcher += f" (its {_count(res['failed'], 'pass', 'passes')} failed)"
+        elif res["failed"]:
+            by_researcher += f" ({res['failed']} of {res['passes']} passes failed)"
+    if n is None:
+        out["lines"] = [f"No harness was played. Read: {by_agent}; {by_researcher}."]
+        return out
+    read_for = f"Read for it: {by_agent}; {by_researcher}."
+    head = f"Harness {n}, the last one played, was written"
+    if status is None:
+        if whole:
+            had_codex = "the game's whole codex (" + ("fetched by this run" if source == "plugin"
+                                                      else "read from the project's folder this run") + ")"
+        elif source == "project":
+            had_codex = (f"the project's own files, read from its folder ({_count(on_disk, 'file', 'files')}; this run "
+                         f"couldn't fetch the game's files from the plugin: {fetch_error}, so the Blueprints and data "
+                         "may be an earlier export's, or missing)")
+        elif on_disk:
+            why = (f"this run couldn't fetch the game's files: {fetch_error}" if fetch_error
+                   else "the plugin sent none this run")
+            had_codex = f"the codex an earlier run left ({_count(on_disk, 'file', 'files')}; {why})"
+        else:
+            had_codex = ("no codex of the game's files ("
+                         + (f"this run couldn't fetch them: {fetch_error}" if fetch_error else "the plugin sent none")
+                         + ")")
+        out["lines"] = [f"{head} with {had_codex}. {read_for}"]
+        return out
+    counted = (f"{status.get('done')} of {status['total']} exported" if status.get("total")
+               else f"{status.get('files')} files in the codex")
+    if not status.get("running"):
+        if status.get("error"):
+            out["lines"] = [f"{head} after the indexing of the game's files stopped early ({counted}). {read_for}"]
+        else:
+            out["lines"] = [f"{head} with all of the game's files indexed ({counted}). {read_for}"]
+        return out
+    # Written while the export ran: what the codex had then, and what came after it started
+    had = dict(status.get("kinds") or {})
+    out["had"] = had
+    late = exported_after(session, cutoff)
+    out["after"] = {"files": sum(late.values()), "kinds": late}
+    so_far = (f"{status.get('done')} of {status['total']} exported" if status.get("total")
+              else "the export hadn't counted its files yet")
+    codex_now = (f"{_count(sum(had.values()), 'file', 'files')} in the codex ({_kinds_text(had)})" if had
+                 else "no files in the codex yet")
+    after = (f"{_count(out['after']['files'], 'file', 'files')} ({_kinds_text(late)})" if late else "none")
+    out["lines"] = [f"{head} while the game's files were still being indexed: {so_far}, {codex_now}.", read_for,
+                    f"Exported after it started, so not read for it: {after}."]
+    return out
+
+
 def finish(session, started, stopped, last_text, **facts):
     """The request's report: what the agent reported (or, when it reported nothing, a fallback saying why), with the
     run's facts added. Saved as report.json in the run's folder. started: time.time() when the agent started;
@@ -2442,6 +2647,9 @@ def finish(session, started, stopped, last_text, **facts):
     })
     if session.reported_at_time_up:  # (the run's own fact: an agent's words about its time aren't taken for it)
         report["time_up"] = True
+    partial = index_alert(session)
+    if partial:
+        session.alert(partial)
     if session.alerts:
         report["alerts"] = list(session.alerts)
     if session.researcher is not None:
@@ -2454,8 +2662,15 @@ def finish(session, started, stopped, last_text, **facts):
             idx.listeners.remove(session.researcher.arrived)
         # How much of the export the run had (it streamed in while the run worked), and what the researcher found
         report["indexing"] = dict(idx.status(), batches_told=session.news_batches)
+        n, status = last_harness_index(session)
+        if status:  # (what the last harness played could read)
+            report["indexing"]["last_harness"] = dict(status, n=n)
     if session.findings:
         report["background_findings"] = len(session.findings)
+    try:  # (what the last harness was written on, said for the user; never at the cost of the report)
+        report["read"] = read_summary(session)
+    except Exception as e:
+        session.note(f"couldn't say what was read: {type(e).__name__}: {e}")
     if session.reader is not None and session.reader.model.tokens:  # (llm, llm_map and the researcher, by model)
         report["reading_usage"] = session.reader.model.tokens
     with open(os.path.join(session.run_dir, "report.json"), "w", encoding="utf-8") as f:
