@@ -178,7 +178,7 @@ func _send_hello() -> void:
 		# running, headless or not)
 		"input": Keys.input_caps(false)}
 	# whether the agent service runs its research agent, only once the user chose (preferences.json research_agent);
-	# left out, the agent service decides (off for the Aura app's, on for this plugin's own)
+	# left out, the agent service decides (on, the Aura app's and this plugin's own alike)
 	var research = Prefs.research_agent(prefs)
 	if typeof(research) == TYPE_BOOL:
 		h.research = research

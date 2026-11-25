@@ -116,7 +116,7 @@ static func share_data(prefs: Dictionary) -> bool:
 
 ## The user's choice of the research agent (the agent service reading the game's code while harnesses play): true or
 ## false once they flipped the Settings page's switch, null while they haven't (absent or not a boolean). Not chosen,
-## the agent service decides: off for the Aura app's (Use with Aura), on for the plugin's own.
+## the agent service decides: on, the Aura app's (Use with Aura) and the plugin's own alike.
 static func research_agent(prefs: Dictionary):
 	return prefs.research_agent if typeof(prefs.get("research_agent")) == TYPE_BOOL else null
 

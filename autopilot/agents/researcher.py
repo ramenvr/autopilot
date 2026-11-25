@@ -13,9 +13,9 @@ events, one pass each (several waiting at once are one pass):
 
 Each pass is a fresh conversation (the request, the harness as it is, notes.md, the findings so far and the event),
 of at most TURNS model turns. The user chooses on the plugin's Settings page (the hello's `research`, from
-preferences.json research_agent); until they do, runs from the Aura app's Autopilot go without it and runs from the
-user's own (the plugin's agent service, signed in to Aura or on their own keys) have it. AUTOPILOT_RESEARCHER=0 turns it
-off whatever was chosen.
+preferences.json research_agent), and Aura's switch can choose for one run (the start frame's `research`, which wins);
+until either chooses, every run has it: from the Aura app's Autopilot and from the user's own alike.
+AUTOPILOT_RESEARCHER=0 turns it off whatever was chosen.
 """
 
 import fnmatch
