@@ -9,7 +9,8 @@ shared, every call in full (docs/run-data.md).
                 response as the model gave it).
     RunTelemetry one run's: the above, the plugin told the usage as it grows, the recording (autopilot/media.py: every
                 run's, for the plugin's report; kept with the data when shared), and at the end telemetry/run.json,
-                the run's manifest.
+                the run's manifest (its `recording`: media.Recorder.summary; in a game of several players
+                `recording.players`, each other player's recording by player, with its `player` and `fps`).
 
 The decision model's calls are written by the runtime itself (autopilot/runtime.py, telemetry/decisions<n>.jsonl),
 beside the episode's trace: it is where each call's observation and the action taken are known.
@@ -495,6 +496,24 @@ class RunTelemetry:
             print(f"note: the recording isn't shown: {type(e).__name__}: {e}")
             return None
 
+    def players_recordings(self, episode):
+        """The other players' videos of an episode, in a game that plays several (media.Recorder.players_shown); []
+        when there are none."""
+        try:
+            return self.recorder.players_shown(episode) if self.recorder is not None else []
+        except Exception as e:  # noqa: BLE001
+            print(f"note: the other players' recordings aren't shown: {type(e).__name__}: {e}")
+            return []
+
+    def players_missing(self, episode):
+        """Why other players of a game that plays several have no video of an episode, {player: why}
+        (media.Recorder.players_missing); {} when none is missing."""
+        try:
+            return self.recorder.players_missing(episode) if self.recorder is not None else {}
+        except Exception as e:  # noqa: BLE001
+            print(f"note: the other players' recordings couldn't be read: {type(e).__name__}: {e}")
+            return {}
+
     def no_recording(self):
         """Why the run has no recording, in plain words (the result's `no_recording`); None when it has one."""
         if self.recorder is None:
@@ -564,7 +583,9 @@ class RunTelemetry:
 
     def write_manifest(self):
         """telemetry/run.json: what the run was, what it used, and its files (docs/run-data.md). Its being there
-        says the run's data was shared: only such runs are sent (autopilot/training.py)."""
+        says the run's data was shared: only such runs are sent (autopilot/training.py). Its `recording` is player
+        1's (counts and each episode's video), with `players` (each other player's, by player) in a game of several
+        players."""
         from . import __version__, dataset
 
         hello = getattr(self.link, "hello", None) or {}

@@ -100,6 +100,29 @@ def test_each_games_frames_and_events_go_to_its_run():
     assert len(frames[2]) == 1  # (its run has ended: nobody records it)
 
 
+def test_a_lanes_recording_keeps_its_own_players_frames(tmp_path):
+    import base64
+    import os
+
+    from test_telemetry import jpeg
+
+    from autopilot import media
+
+    link, sent = answering_link()
+    lane = bridge.Lane(link, 2, 3).attach()
+    now = time.time() - 60
+    with media.Recorder(lane, str(tmp_path)) as rec:
+        rec.begin(1)
+        for n in range(3):  # (the game side by side's frames say its player: they are this run's own)
+            link.feed({"type": "frame", "n": n, "t": n, "wall": now + n * 0.2, "player": 2,
+                       "jpeg": base64.b64encode(jpeg()).decode()})
+        rec.end(1)
+    assert rec.kept == 3 and rec.received == 3
+    assert os.path.exists(tmp_path / "media" / "recording-1.mp4")
+    assert not requests_of(sent, "context")  # (a lane's game plays one player)
+    assert {f["args"]["player"] for f in requests_of(sent, "record")} == {2}
+
+
 class Alive:
     def __init__(self):
         self.alive = True

@@ -6,7 +6,9 @@ tools/training_data.py reads it.
         run.json                       the manifest: what the run was, its outcome and usage, the id of the codex it
                                        saw, how much was redacted, and every other file with its size and MD5 (sent
                                        last: a run without it hasn't arrived whole)
-        prompt.txt, report.json        the request and the agent's report
+        prompt.txt, report.json        the request and the agent's report (its `recording` and `recordings` name the
+                                       videos where the run kept them, relative to its folder: telemetry/media/...,
+                                       not this layout)
         harness.py                     the agent's final harness
         agent/llm.jsonl.gz             every call to the agent's language model, whole (but for pictures' data)
         agent/describe.jsonl.gz        every describe_frames description: its questions, its frames (by time) and
@@ -19,7 +21,8 @@ tools/training_data.py reads it.
         episodes/<n>/decisions.jsonl.gz  every decision model call of episode n, whole
         episodes/<n>/harness.py        the harness episode n ran
         episodes/<n>/summary.txt       the summary of episode n the agent read
-        episodes/<n>/recording.mp4     what the game showed while episode n played, to its end (held a second)
+        episodes/<n>/recording.mp4     what the game showed while episode n played, to its end (held a second): player
+                                       1's (other players' videos, recording-<n>-p<k>.mp4, aren't sent)
         episodes/<n>/frames.jsonl.gz   each of its video frames' game and wall time (episodes/<n>/frames/: the
                                        pictures as JPEGs, for a run that couldn't make a video)
         memory/before/, memory/after/  notes.md and lib.py as the run found and left them

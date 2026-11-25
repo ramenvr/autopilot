@@ -72,7 +72,8 @@ class ToolServer:
                                                  frames_fps=args.get("frames_fps")),
             "snapshot": s.snapshot,
             "describe_frames": lambda: s.describe_frames(args.get("questions") or [], args.get("episode"),
-                                                         args.get("start"), args.get("end"), args.get("frames")),
+                                                         args.get("start"), args.get("end"), args.get("frames"),
+                                                         player=args.get("player")),
             "restart_level": lambda: s.restart_level(args.get("level")),
             "report": lambda: s.do_report({k: args[k] for k in REPORT_FIELDS if k in args}),
         }
