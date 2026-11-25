@@ -14,6 +14,7 @@
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerState.h"
 #include "PlaytestJson.h"
+#include "UObject/Package.h"
 
 namespace PlaytestOps
 {
