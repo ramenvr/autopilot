@@ -1778,7 +1778,10 @@ def players_note(net):
             "seeing another) or when the game needs every player to go on (a door for two, a revive); otherwise play "
             "player 1 and leave them be. The pointer (a click at a place on the view) is player 1's only: another "
             "player's UI takes game.player(n).ui_act. The number of players is the user's: game.restart(players=N) "
-            "can't change it.")
+            "can't change it. Every read waits for a frame and reads sent together share one: step the players at "
+            "once with yield from together([gen1, gen2]) and read them at once with game.each_player(fn) or "
+            "game.poses(), once a tick, rather than one player after another (each player then costs another frame "
+            "a tick).")
 
 
 def _whole(path):

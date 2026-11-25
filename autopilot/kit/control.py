@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 
 from .clock import Clock, uptime
-from .game import GameError
+from .game import GameError, Pools, _count, counting
 from .geom import Vec, bearing, wrap
 
 TURN_GAIN = 0.8  # share of the aim error corrected per tick (the rest next tick: no overshoot)
@@ -92,6 +92,46 @@ def until(game, condition, timeout=5.0):
             return Result(True, "condition met")
         yield
     return Result(False, "timed out")
+
+
+_together = Pools("together")  # (the threads together steps generators on: not the game's, which run their reads)
+
+
+def together(gens):
+    """Step several generators (controllers, executors: one per player) at the same time, each tick: every one's step
+    runs in a thread of its own, so their reads go out together and share game frames. Stepped one after another,
+    player 2's reads would start only after player 1's are answered: twice the frames a tick. `yield from` it; it
+    yields once a tick until the longest ends, and returns their results in the order given. A generator that ended is
+    stepped no more. The first error one raised (in the order given) is raised here, and the others are closed. A
+    tick's waits on the game are the most any one of them waited.
+        a, b = yield from together([walk_to(game, door), walk_to(game.player(2), door)])"""
+    gens = list(gens)
+    results = [None] * len(gens)
+    live = list(range(len(gens)))
+    try:
+        while live:
+            steps = [_together.submit(counting, next, gens[i]) for i in live]
+            outs = [s.result() for s in steps]  # (all of them: none is stepped again while one still runs)
+            most = {}
+            for _, _, waits in outs:
+                for waited, n in waits.items():
+                    most[waited] = max(most.get(waited, 0), n)
+            for waited, n in most.items():
+                _count(waited, n)
+            ended = set()
+            for i, (_, error, _) in zip(live, outs):
+                if isinstance(error, StopIteration):
+                    results[i] = error.value
+                    ended.add(i)
+                elif error is not None:
+                    raise error
+            live = [i for i in live if i not in ended]
+            if live:
+                yield
+        return results
+    finally:
+        for i in live:
+            gens[i].close()
 
 
 # -- input sequences the game runs itself ----------------------------------------------------------------------------
