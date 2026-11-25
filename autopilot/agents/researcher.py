@@ -13,9 +13,9 @@ events, one pass each (several waiting at once are one pass):
 
 Each pass is a fresh conversation (the request, the harness as it is, notes.md, the findings so far and the event),
 of at most TURNS model turns. The user chooses on the plugin's Settings page (the hello's `research`, from
-preferences.json research_agent); until they do, runs from the Aura app's Autopilot go without it and runs from the
-user's own (the plugin's agent service, signed in to Aura or on their own keys) have it. AUTOPILOT_RESEARCHER=0 turns it
-off whatever was chosen.
+preferences.json research_agent), and Aura's switch can choose for one run (the start frame's `research`, which wins);
+until either chooses, every run has it: from the Aura app's Autopilot and from the user's own alike.
+AUTOPILOT_RESEARCHER=0 turns it off whatever was chosen.
 """
 
 import fnmatch
@@ -65,17 +65,16 @@ TOOLS = (
 )
 
 
-def enabled(hello=None):
-    """Whether a run has the researcher: what the user chose in the plugin (hello `research`), else off in the Aura
-    app's Autopilot (aura.from_app) and on in the user's own; never with AUTOPILOT_RESEARCHER=0."""
-    from .. import aura
-
+def enabled(hello=None, chosen=None):
+    """Whether a run has the researcher: never with AUTOPILOT_RESEARCHER=0; else what the run chose (chosen: the start
+    frame's run `research`, Aura's Research agent switch), else what the user chose in the plugin (hello `research`),
+    else on. Only a bool is a choice."""
     if (os.environ.get("AUTOPILOT_RESEARCHER") or "").strip() == "0":
         return False
-    chosen = (hello or {}).get("research")
-    if isinstance(chosen, bool):
-        return chosen
-    return not aura.from_app()
+    for choice in (chosen, (hello or {}).get("research")):
+        if isinstance(choice, bool):
+            return choice
+    return True
 
 
 class Researcher:

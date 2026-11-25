@@ -350,7 +350,7 @@ Three choices are machine-wide rather than per project, in `Autopilot/preference
 | key | what it does |
 |---|---|
 | `share_data` | Share runs' data (default `true`); see [Data sharing](#data-sharing). Sent as `share` in every connection's hello. `-PlaytestShare=0` or `1` overrides it for a command-line run. |
-| `research_agent` | Runs have the research agent: while the agent works, and above all while a harness plays, a second model reads the game's code and tells the agent what it finds, for the next harness. It reaches harder goals in fewer attempts, at a higher cost. Absent until you choose on the Settings page (**Research agent**); until then runs through the Aura app (**Use with Aura**) go without it and runs on this plugin's own agent service have it, signed in to Aura or on your own keys. Sent as `research` in a connection's hello once chosen. `-PlaytestResearch=0` or `1` overrides it for a command-line run. |
+| `research_agent` | Runs have the research agent: while the agent works, and above all while a harness plays, a second model reads the game's code and tells the agent what it finds, for the next harness. It reaches harder goals in fewer attempts, at a higher cost. Absent until you choose on the Settings page (**Research agent**); until then runs have it, through the Aura app (**Use with Aura**) and on this plugin's own agent service alike, and the switch shows on. Sent as `research` in a connection's hello once chosen. `-PlaytestResearch=0` or `1` overrides it for a command-line run. |
 | `access` | How you chose to run the agent in the setup: `aura` or `own_keys`. The agent service reads it before every run (`aura`: runs go through Aura, on the sign-in it keeps). |
 | `onboarded` | The setup was finished or skipped. |
 
@@ -523,7 +523,7 @@ UnrealEditor-Cmd.exe C:/Path/To/MyGame.uproject -game -nullrhi -unattended -nosp
 | `-PlaytestConnectTimeout=<seconds>` | how long to wait for the agent service to take the run (its welcome), default 120; `0` waits forever. When it passes, `result.json` gets the `error` and the game exits with 1 |
 | `-PlaytestStayOpen` | don't exit when the run is over |
 | `-PlaytestShare=0\|1` | whether this run's data is shared (default: `share_data` in `preferences.json`, else on); see [Data sharing](#data-sharing) |
-| `-PlaytestResearch=0\|1` | whether this run has the research agent (default: `research_agent` in `preferences.json`; not chosen: off with Use with Aura, else on) |
+| `-PlaytestResearch=0\|1` | whether this run has the research agent (default: `research_agent` in `preferences.json`; not chosen: on) |
 | `-PlaytestSteps=N`, `-PlaytestAttempts=N` | passed on to the agent service; the current one ignores them |
 
 The report folder gets `result.json`: the run's result (verdict or goal, the reason, the evidence, the

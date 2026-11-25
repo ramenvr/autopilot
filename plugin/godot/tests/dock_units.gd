@@ -1016,8 +1016,8 @@ func run_checks() -> void:
 	check("sharing box: toggled on, it says Data sharing on", box.text == "Data sharing on", box.text)
 	check("sharing box writes share_data", Prefs.load_preferences().get("share_data") == true and Prefs.load_preferences().get("access") == "own_keys")
 	# the Research agent switch: preferences.json research_agent, written only when flipped; not chosen, it shows what the
-	# agent service then does: off through the Aura app's (Use with Aura), on with this plugin's own (signed in to Aura or
-	# on the user's own keys alike)
+	# agent service then does: on, through the Aura app's (Use with Aura) and this plugin's own (signed in to Aura or on
+	# the user's own keys) alike
 	var account_was: Dictionary = bridge.account
 	var with_aura_was: bool = dock._with_aura()
 	dock._set_meta("use_with_aura", false)  # (the setting itself: no reconnecting here)
@@ -1045,35 +1045,43 @@ func run_checks() -> void:
 		_research_switch().button_pressed and _research_switch().text == "Research agent on", _research_switch().text)
 	dock._set_meta("use_with_aura", true)
 	dock._render_usage()
-	check("research switch: nothing chosen, Use with Aura on (the Aura app's agent service): off",
-		not _research_switch().button_pressed and _research_switch().text == "Research agent off", _research_switch().text)
+	check("research switch: nothing chosen, Use with Aura on (the Aura app's agent service): on",
+		_research_switch().button_pressed and _research_switch().text == "Research agent on", _research_switch().text)
 	check("research switch: shown, not chosen (no research_agent in preferences.json)", not Prefs.load_preferences().has("research_agent"),
 		Prefs.load_preferences())
 	var hello := _editor_hello()
 	check("the editor's hello: no research while not chosen, share there", not hello.has("research") and hello.get("share") == true, hello)
-	_research_switch().button_pressed = true
-	var rp := Prefs.load_preferences()
-	check("research switch: flipped on with Use with Aura on, research_agent true saved, merged (sharing and access kept)",
-		typeof(rp.get("research_agent")) == TYPE_BOOL and rp.research_agent == true and rp.get("share_data") == true
-		and rp.get("access") == "aura", rp)
-	check("research switch: the choice beats Use with Aura: on", _research_switch().button_pressed
-		and _research_switch().text == "Research agent on", _research_switch().text)
-	hello = _editor_hello()
-	check("the editor's hello: research true once chosen, next to share", hello.get("research") == true and hello.get("share") == true, hello)
-	dock._set_meta("use_with_aura", false)
-	dock._render_usage()
 	research = _research_switch()
 	research.button_pressed = false
-	check("research switch: flipped off, it says Research agent off", research.text == "Research agent off", research.text)
-	rp = Prefs.load_preferences()
-	check("research switch: research_agent false saved", typeof(rp.get("research_agent")) == TYPE_BOOL and rp.research_agent == false, rp)
-	check("research switch: the choice beats this plugin's own agent service: off", not _research_switch().button_pressed
+	check("research switch: flipped off with Use with Aura on, it says Research agent off", research.text == "Research agent off", research.text)
+	var rp := Prefs.load_preferences()
+	check("research switch: research_agent false saved, merged (sharing and access kept)",
+		typeof(rp.get("research_agent")) == TYPE_BOOL and rp.research_agent == false and rp.get("share_data") == true
+		and rp.get("access") == "aura", rp)
+	check("research switch: the choice beats the default with Use with Aura: off", not _research_switch().button_pressed
 		and _research_switch().text == "Research agent off", _research_switch().text)
 	hello = _editor_hello()
-	check("the editor's hello: research false once chosen", hello.get("research") == false and hello.has("research"), hello)
+	check("the editor's hello: research false once chosen, next to share", hello.get("research") == false and hello.has("research")
+		and hello.get("share") == true, hello)
+	dock._set_meta("use_with_aura", false)
+	dock._render_usage()
+	check("research switch: the choice kept with Use with Aura off: off", not _research_switch().button_pressed
+		and _research_switch().text == "Research agent off", _research_switch().text)
+	research = _research_switch()
+	research.button_pressed = true
+	check("research switch: flipped on, it says Research agent on", research.text == "Research agent on", research.text)
+	rp = Prefs.load_preferences()
+	check("research switch: research_agent true saved", typeof(rp.get("research_agent")) == TYPE_BOOL and rp.research_agent == true, rp)
+	check("research switch: the choice shown: on", _research_switch().button_pressed
+		and _research_switch().text == "Research agent on", _research_switch().text)
+	hello = _editor_hello()
+	check("the editor's hello: research true once chosen", hello.get("research") == true, hello)
 	Prefs.save_preferences({"research_agent": "no"})
 	dock._render_usage()
 	check("research switch: research_agent not a boolean is not chosen: on with Use with Aura off", _research_switch().button_pressed)
+	dock._set_meta("use_with_aura", true)
+	dock._render_usage()
+	check("research switch: research_agent not a boolean is not chosen: on with Use with Aura on", _research_switch().button_pressed)
 	check("the editor's hello: research_agent not a boolean, no research", not _editor_hello().has("research"))
 	Prefs.save_preferences({"research_agent": null, "access": "own_keys"})
 	dock._set_meta("use_with_aura", with_aura_was)

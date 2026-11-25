@@ -144,8 +144,8 @@ private:
 	/** The card "Research agent": whether runs have the brain's background reader of the game's code (preferences.json
 	 *  research_agent, said in every hello). */
 	TSharedRef<SWidget> MakeResearchAgent();
-	/** What the research agent's switch shows: the user's choice, else what the agent service does without one (off in
-	 *  the Aura app's, which Use with Aura reaches; on in the user's own, signed in to Aura or on their own keys). */
+	/** What the research agent's switch shows: the user's choice, else what the agent service does without one (on, in
+	 *  the Aura app's, which Use with Aura reaches, and in the user's own, signed in to Aura or on their own keys). */
 	bool ResearchShown() const;
 	/** The card "Bug detectors": whether the game's detectors run for this project (the agent service keeps it, in the
 	 *  project's detectors.json; its memory_state says it, the `detectors` message changes it). Not connected: greyed,

@@ -690,7 +690,7 @@ namespace Autopilot.Playtest
                 ["share"] = Preferences.Share(),
             };
             // whether runs use the research agent, only once chosen (preferences.json's research_agent; -PlaytestResearch
-            // overrides it): left out, the agent service decides (off for the Aura app's, on otherwise)
+            // overrides it): left out, the agent service decides (on, the Aura app's and this plugin's own alike)
             var research = Preferences.Research();
             if (research.HasValue) hello["research"] = research.Value;
             var id = Host.ProjectId;

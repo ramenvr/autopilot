@@ -1182,8 +1182,7 @@ namespace Autopilot.Playtest.Tests
             CollectionAssert.AreEqual(new[] { true, false }, got);
             host.Remove(lone);
 
-            // Research agent: the same switch, "Research agent on/off" (as it is now: nothing chosen, this plugin's
-            // own agent service, so on)
+            // Research agent: the same switch, "Research agent on/off" (as it is now: nothing chosen, so on)
             var research = host.Q(className: "research").Q(className: "setting-control").Q<Toggle>(className: "research-toggle");
             Assert.IsNotNull(research);
             Assert.AreEqual("Research agent", research.tooltip);
@@ -1238,16 +1237,15 @@ namespace Autopilot.Playtest.Tests
             Assert.AreEqual(6, rows[1].worldBound.yMin - rows[0].worldBound.yMax, 0.5f, "between the commands");
         }
 
-        /// <summary>What the Research agent switch shows with nothing chosen: off for runs through the Aura app (Use
-        /// with Aura), on for this plugin's own agent service, signed in to Aura or with the user's own keys; a choice
-        /// beats both. (SetUp turns Use with Aura off and TearDown puts it back.)</summary>
+        /// <summary>What the Research agent switch shows with nothing chosen: on, for runs through the Aura app (Use
+        /// with Aura) and on this plugin's own agent service alike, signed in to Aura or with the user's own keys; a
+        /// choice beats it. (SetUp turns Use with Aura off and TearDown puts it back.)</summary>
         [Test]
-        public void TheResearchAgentSwitchFollowsUseWithAuraUntilChosen()
+        public void TheResearchAgentSwitchShowsOnUntilChosen()
         {
-            Assert.IsFalse(AutopilotView.ResearchShown(null, true), "through the Aura app: off");
-            Assert.IsTrue(AutopilotView.ResearchShown(null, false), "this plugin's own agent service: on");
-            Assert.IsTrue(AutopilotView.ResearchShown(true, true), "the choice beats Use with Aura");
-            Assert.IsFalse(AutopilotView.ResearchShown(false, false), "the choice beats the own agent service");
+            Assert.IsTrue(AutopilotView.ResearchShown(null), "nothing chosen: on");
+            Assert.IsTrue(AutopilotView.ResearchShown(true), "chosen on");
+            Assert.IsFalse(AutopilotView.ResearchShown(false), "chosen off");
 
             Toggle Switch()
             {
@@ -1255,11 +1253,11 @@ namespace Autopilot.Playtest.Tests
                 return host.Q(className: "research").Q<Toggle>(className: "research-toggle");
             }
 
-            // Use with Aura on, nothing chosen: off
+            // Use with Aura on, nothing chosen: on
             PlaytestSettings.Get().UseWithAura = true;
             var toggle = Switch();
-            Assert.IsFalse(toggle.value, "Use with Aura, nothing chosen: off");
-            Assert.AreEqual("Research agent off", toggle.text);
+            Assert.IsTrue(toggle.value, "Use with Aura, nothing chosen: on");
+            Assert.AreEqual("Research agent on", toggle.text);
 
             // Use with Aura off: on, whatever the account (signed in to Aura, before any account frame, own keys)
             PlaytestSettings.Get().UseWithAura = false;
@@ -1274,15 +1272,16 @@ namespace Autopilot.Playtest.Tests
             Assert.IsTrue(Switch().value, "own keys: on");
             Assert.IsNull(Preferences.Current.ResearchAgent, "showing saves nothing");
 
-            // A choice beats both: on through the Aura app, off on the own agent service
-            Preferences.Update(new Dictionary<string, object> { ["research_agent"] = true });
-            PlaytestSettings.Get().UseWithAura = true;
-            Assert.IsTrue(Switch().value, "chosen on, Use with Aura");
+            // A choice beats it: off through the Aura app and on the own agent service, on again once chosen on
             Preferences.Update(new Dictionary<string, object> { ["research_agent"] = false });
-            PlaytestSettings.Get().UseWithAura = false;
+            PlaytestSettings.Get().UseWithAura = true;
             toggle = Switch();
-            Assert.IsFalse(toggle.value, "chosen off, own agent service");
+            Assert.IsFalse(toggle.value, "chosen off, Use with Aura");
             Assert.AreEqual("Research agent off", toggle.text);
+            PlaytestSettings.Get().UseWithAura = false;
+            Assert.IsFalse(Switch().value, "chosen off, own agent service");
+            Preferences.Update(new Dictionary<string, object> { ["research_agent"] = true });
+            Assert.IsTrue(Switch().value, "chosen on");
         }
 
         /// <summary>Flipping the Research agent switch saves the choice in preferences.json (merged: the other keys
@@ -1294,29 +1293,34 @@ namespace Autopilot.Playtest.Tests
             PlaytestSettings.Get().UseWithAura = true;  // (put back by TearDown)
             Show(new Vector2Int(560, 900), Settings);
             var toggle = host.Q(className: "research").Q<Toggle>(className: "research-toggle");
-            Assert.IsFalse(toggle.value, "Use with Aura, nothing chosen: off");
+            Assert.IsTrue(toggle.value, "Use with Aura, nothing chosen: on");
             Assert.IsNull(Preferences.Research(), "the hello leaves it out");
-            toggle.value = true;
+            toggle.value = false;
             var raw = Preferences.ReadRaw();
-            Assert.AreEqual(true, raw["research_agent"]);
+            Assert.AreEqual(false, raw["research_agent"]);
             Assert.AreEqual(true, raw["onboarded"], "the other keys stay");
             Assert.AreEqual(false, raw["share_data"], "the other keys stay");
-            Assert.AreEqual(true, Preferences.Research(), "the next hello says it");
-            Assert.AreEqual("Research agent on", toggle.text);
+            Assert.AreEqual(false, Preferences.Research(), "the next hello says it");
+            Assert.AreEqual("Research agent off", toggle.text);
 
-            // Shown again: on, as saved, though through the Aura app; then off, saved too, and kept with Use with
-            // Aura off
+            // Shown again: off, as saved, though on is the default; then on, saved too; then, with Use with Aura off,
+            // off again, saved and kept
             Show(new Vector2Int(560, 900), Settings);
             toggle = host.Q(className: "research").Q<Toggle>(className: "research-toggle");
-            Assert.IsTrue(toggle.value);
-            Assert.AreEqual("Research agent on", toggle.text);
-            toggle.value = false;
-            Assert.AreEqual(false, Preferences.ReadRaw()["research_agent"]);
-            Assert.AreEqual(false, Preferences.Research());
+            Assert.IsFalse(toggle.value, "the choice beats the default");
             Assert.AreEqual("Research agent off", toggle.text);
+            toggle.value = true;
+            Assert.AreEqual(true, Preferences.ReadRaw()["research_agent"]);
+            Assert.AreEqual(true, Preferences.Research());
+            Assert.AreEqual("Research agent on", toggle.text);
             PlaytestSettings.Get().UseWithAura = false;
             Show(new Vector2Int(560, 900), Settings);
-            Assert.IsFalse(host.Q(className: "research").Q<Toggle>(className: "research-toggle").value, "the choice beats the own agent service");
+            toggle = host.Q(className: "research").Q<Toggle>(className: "research-toggle");
+            Assert.IsTrue(toggle.value, "the choice kept with Use with Aura off");
+            toggle.value = false;
+            Assert.AreEqual(false, Preferences.ReadRaw()["research_agent"]);
+            Show(new Vector2Int(560, 900), Settings);
+            Assert.IsFalse(host.Q(className: "research").Q<Toggle>(className: "research-toggle").value, "the choice beats the own agent service's default");
         }
 
         /// <summary>The Bug detectors switch shows what the agent service's memory_state says ("detectors"; none, an
