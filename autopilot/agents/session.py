@@ -1454,6 +1454,11 @@ class Session:
         if self.most_decisions < MIN_JEV_DECISIONS:
             note += (f"Note: Jev made {decisions} decisions in this episode; report needs an episode with at least "
                      f"{MIN_JEV_DECISIONS} (decisions among 2+ options), so this one can't settle the request.\n")
+        elif result.get("reason") == "status done":
+            # (runs played again after the request was settled: the harness's "done" is checked against the request)
+            note += ("Note: the harness says done. Before playing again, check this episode's facts against each part "
+                     "of the request: if every part matches, report now; play again only for a part the facts don't "
+                     "show.\n")
         over = self.started_over()  # (first: it says how to read all below it)
         self.touched = True
         head = (over + note + f"Episode {n} ({self.run_rel}/trace{n}.jsonl; harness saved as harness{n}.py; this "
