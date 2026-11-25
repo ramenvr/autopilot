@@ -6,6 +6,7 @@ brain.json, and the agent's transcript kept with a shared run (autopilot/transcr
 import io
 import json
 import os
+import re
 import threading
 import time
 import types
@@ -118,6 +119,101 @@ def test_a_run_is_worked_on_through_the_mcp_front(started, tmp_path):
     # (frames still answers: a describer may still be looking; this game isn't filmed)
     looked = settled(front, front.call("frames", {"episode": 1}))
     assert not looked["isError"] and "isn't filmed" in text_of(looked)
+
+
+def test_an_outside_run_logs_what_its_agent_is_given(started, tmp_path):
+    front, control, box = started
+    settled(front, front.call("start_run", {"request": "Verify that the crate opens"}))
+    desk = control.desk
+    run = tmp_path / "memory" / "fake" / "runs" / "r1"
+    instructions = (run / "INSTRUCTIONS.md").read_text(encoding="utf-8")
+    request = (run / "REQUEST.md").read_text(encoding="utf-8")
+    with open(desk.session.log, encoding="utf-8") as f:
+        lines = [line for line in f.read().splitlines() if "] instructions sizes: " in line]
+    assert len(lines) == 1, lines
+    sizes = json.loads(lines[0].split("] instructions sizes: ", 1)[1])
+    assert sizes == {"instructions": len(instructions), "request": len(request), "start": len(desk.opening),
+                     "inline": request in desk.opening}
+    assert sizes["inline"] is True  # (the fake game's briefing is short)
+    assert "crate" not in lines[0] and "Verify" not in lines[0]  # (numbers only, never the text)
+    desk.session.stop = lambda: True  # (the tab's Stop)
+    box["thread"].join(30)
+
+
+def test_an_outside_agent_gets_the_shorter_briefing_and_instructions(started, tmp_path):
+    front, control, box = started
+    folder = tmp_path / "memory" / "fake" / "codex"
+    folder.mkdir(parents=True)
+    (folder / "README.md").write_text("".join(f"- Parent_{i} (25): " + "b" * 150 + "\n" for i in range(120)),
+                                      encoding="utf-8")
+    settled(front, front.call("start_run", {"request": "Verify that the crate opens"}))
+    run = tmp_path / "memory" / "fake" / "runs" / "r1"
+    request = (run / "REQUEST.md").read_text(encoding="utf-8")
+    part = request[request.index("## codex/README.md"):].split("\n\n")[0]
+    assert len(part) <= sessionmod.README_PART + 200 and "all of it (120 lines) is in codex/README.md" in part
+    # The kit's longer parts are there to read when the instructions say so
+    instructions = (run / "INSTRUCTIONS.md").read_text(encoding="utf-8")
+    assert "runs/r1/KIT_MORE.md" in instructions and "## Reacting in time" not in instructions
+    assert "## Reacting in time" in (run / "KIT_MORE.md").read_text(encoding="utf-8")
+    assert "## Reacting in time" in text_of(front.call("read_file", {"path": "runs/r1/KIT_MORE.md"}))
+    assert "class Harness" in text_of(front.call("read_file", {"path": "autopilot/kit/harness.py"}))
+    control.desk.session.stop = lambda: True  # (the tab's Stop)
+    box["thread"].join(30)
+
+
+def reads(text, tmp_path):
+    """How many read_file calls read all of text, as an agent reads INSTRUCTIONS.md."""
+    from autopilot.agents.files import FileTools
+
+    (tmp_path / "runs" / "r").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "runs" / "r" / "I.md").write_text(text, encoding="utf-8", newline="\n")
+    files, calls, offset = FileTools(str(tmp_path), "runs/r", sessionmod.PACKAGE), 0, 1
+    while True:
+        answer = files.read_file("runs/r/I.md", offset=offset)
+        calls += 1
+        on = re.search(r"read on from line (\d+)\)$", answer.rsplit("\n", 1)[-1])
+        if not on or calls > 20:
+            return calls
+        offset = int(on.group(1))
+
+
+def test_an_outside_agents_instructions_are_shorter_and_say_where_the_rest_is(tmp_path):
+    from autopilot import engines
+
+    assert sessionmod.CONTRACT in sessionmod.SYSTEM
+    for name, engine in engines.ENGINES.items():
+        own = sessionmod.system_prompt(engine, "runs/r")
+        text = external.instructions_text(engine, "runs/r", "r-1")
+        more = sessionmod.kit_more(engine)
+        assert len(own) - len(sessionmod.system_prompt(engine, "runs/r", short=True)) >= 21000, name
+        # the contract: read in the kit, not quoted
+        assert "autopilot/kit/harness.py with read_file" in text and "class Harness" not in text
+        assert "The contract's docstrings" not in text
+        # the kit's reference sections read on demand: listed, with where they are, and whole in KIT_MORE.md
+        assert "runs/r/KIT_MORE.md" in text
+        for start in sessionmod.KIT_ON_DEMAND:
+            title = next(line[3:] for line in more.splitlines() if line.startswith("## " + start))
+            assert f"\n- {title}: " in text and f"\n## {title}\n" not in text, (name, title)
+        for kept in ("## Controllers", "## The harness (kit.harness", "## The plan (", "## What makes a harness"):
+            assert kept in text and kept not in more, (name, kept)
+        if name != "unreal":
+            assert "## The engine: " in text
+        # nothing of the kit is lost: each of its lines is in the instructions or in KIT_MORE.md
+        lost = [line for line in sessionmod.kit_doc(engine).splitlines() if line.strip() and line not in text
+                and line not in more]
+        assert not lost, (name, lost[:3])
+    unreal = external.instructions_text(engines.get("unreal"), "runs/20261124-060037", "20261124-060037-0000abcd")
+    assert reads(unreal, tmp_path) == 3  # (it was 4 when the instructions quoted all of the kit)
+
+
+def test_the_agent_is_told_where_the_rest_of_the_kit_is():
+    short = external.start_text("r1-ab", "fake", "Open the crate", "Request: Open the crate\n\nbrief", "runs/r1")
+    long = external.start_text("r1-ab", "fake", "Open the crate", "b" * 60000, "runs/r1")
+    for text in (short, long):
+        assert "runs/r1/KIT_MORE.md" in text and "autopilot/kit/harness.py" in text
+    with open(os.path.join(sessionmod.PACKAGE, "assistants", "SKILL.md"), encoding="utf-8") as f:
+        skill = f.read()
+    assert "KIT_MORE.md" in skill and "autopilot/kit/harness.py" in skill
 
 
 def test_file_calls_are_never_held_up_by_a_call_still_going(started):
