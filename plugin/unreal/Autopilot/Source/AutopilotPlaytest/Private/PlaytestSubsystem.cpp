@@ -584,7 +584,7 @@ void UPlaytestSubsystem::SendHello()
 	// Settings page holds from the next connection
 	Hello->SetBoolField(TEXT("share"), PlaytestPreferences::ShareData());
 	// Whether runs have the research agent, once the user chose (the Settings page's switch; -PlaytestResearch): until
-	// then the agent service decides (off in the Aura app's, Use with Aura; on in the user's own, signed in to Aura or not)
+	// then the agent service decides (on, the Aura app's and the user's own alike)
 	const TOptional<bool> Research = PlaytestPreferences::ResearchAgent();
 	if (Research.IsSet())
 	{

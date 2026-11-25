@@ -3472,7 +3472,7 @@ bool SPlaytestPanel::ResearchShown() const
 	{
 		return Prefs.ResearchChoice.GetValue();
 	}
-	return !GetDefault<UPlaytestSettings>()->bUseWithAura;
+	return true;
 }
 
 TSharedRef<SWidget> SPlaytestPanel::MakeBugDetectors()

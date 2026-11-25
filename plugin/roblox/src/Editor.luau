@@ -198,7 +198,7 @@ function Editor:_hello()
 		h.project_id = pid
 	end
 	-- whether the agent service runs its research agent, only once the user chose (the dock's Research agent switch);
-	-- left out, the agent service decides (off for the Aura app's, on for its own)
+	-- left out, the agent service decides (on, the Aura app's and its own alike)
 	local research = Settings.get(self.plugin, "research")
 	if type(research) == "boolean" then
 		h.research = research

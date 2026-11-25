@@ -216,8 +216,8 @@ Code or Codex, the agent traces are its conversation during the run.*, as in the
 connection). Then **Research agent**, where the research agent (a model that reads the game's code while harnesses
 play) is turned on or off with the same switch, *Research agent on* or *Research agent off* beside it (*Enabling the
 research agent allows Autopilot to achieve more difficult goals with fewer attempts, but at a higher cost.*). Until
-you flip it, it shows what runs do by default: until you choose, runs through the Aura app (Use with Aura) go without
-it; runs on this plugin's own agent service have it, signed in to Aura or on your own keys. Once flipped, your choice
+you flip it, it shows what runs do by default: on, through the Aura app (Use with Aura) and on this plugin's own
+agent service alike, signed in to Aura or on your own keys. Once flipped, your choice
 is saved and wins either way; a change applies from the next connection). Then **Bug detectors**, a switch (*Bug
 detectors on* / *Bug detectors off*; *During gameplay, Autopilot watches for potential bugs and reports them. You can enable/disable this per-project.*): whether the game's
 detectors run for this project. The agent service keeps it (the project's `detectors.json`) and says it in every
@@ -303,8 +303,8 @@ optionally, a first exploration run (10 minutes unless changed), which is safe t
 `{"version": 1, "onboarded": true, "share_data": true|false, "access": "aura"|"own_keys"}` (merged with what is
 there), shared by the Unreal, Unity and Godot plugins, then connects. `"research_agent": true|false` is absent until
 you choose on the Settings page's Research agent switch (merged the same way; a value that isn't a boolean counts as
-not chosen); until you choose, runs through the Aura app (Use with Aura) go without it; runs on this plugin's own
-agent service have it, signed in to Aura or on your own keys. Every connection's hello
+not chosen); until you choose, runs have it, through the Aura app (Use with Aura) and on this plugin's own agent
+service alike, signed in to Aura or on your own keys. Every connection's hello
 says `share` from it, and `research` only once you have chosen (left out, the agent service decides); a change applies from the next connection (the window connects again by itself when no run is going). Until the setup is
 done the editor doesn't connect by itself; from then on it always does (see [Connecting](#connecting)).
 
@@ -504,7 +504,7 @@ A batch-mode editor started with `-Playtest=...` does the same even without `-ex
 | `-PlaytestConnectTimeout=seconds` | how long to wait for the brain's welcome (default `120`; `0` waits for ever). With none in that time the game writes `result.json` (`{"error": "Couldn’t connect to the playtest service at <url> within <n> s (<why>)", "exit_code": 1}`) to the report folder and exits 1, instead of retrying for ever. In the editor the time counts from entering play mode, across the script reload |
 | `-PlaytestProject=path`, `-PlaytestUnity=path` | player only: the project folder and the Unity editor used to build the project index (default: the ones recorded at build time) |
 | `-PlaytestShare=0\|1` | whether this run's data is sent to the developers of Autopilot; without it, `share_data` in `Autopilot/preferences.json` (on when the file doesn't say). A headless game never shows the first-run setup |
-| `-PlaytestResearch=0\|1` | whether this run uses the research agent (sent as the hello's `research`, a choice); without it, `research_agent` in `Autopilot/preferences.json`, and when that is absent the hello leaves `research` out: off through the Aura app (Use with Aura), on with this plugin's own agent service |
+| `-PlaytestResearch=0\|1` | whether this run uses the research agent (sent as the hello's `research`, a choice); without it, `research_agent` in `Autopilot/preferences.json`, and when that is absent the hello leaves `research` out: on, through the Aura app (Use with Aura) and with this plugin's own agent service alike |
 | `-PlaytestSteps=`, `-PlaytestAttempts=` | passed on to the brain for brains that use them; Autopilot ignores them |
 
 Exit codes:

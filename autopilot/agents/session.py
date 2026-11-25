@@ -2156,14 +2156,17 @@ def looker_for(describer, client):
 
 
 def start_reading(session, describer=None):
-    """The brain's own reading for the run: llm and llm_map in probes (an llm.Reader on the describer's provider, its
-    calls counted in the run's usage) and the background researcher (agents/researcher.py), told of each batch the
-    export brings (codex.Indexer). Neither when no model can be reached; the researcher only when the run has it
-    (researcher.enabled: the user's choice on the plugin's Settings page, else off in the Aura app's Autopilot)."""
+    """The brain's own reading for the run: llm and llm_map in probes (an llm.Reader on the agent's provider, which
+    the run gives the describer as agent_provider, else the describer's; its calls counted in the run's usage) and
+    the background researcher (agents/researcher.py), told of each batch the export brings (codex.Indexer). Neither
+    when no model can be reached; the researcher unless the run turns it off (researcher.enabled:
+    AUTOPILOT_RESEARCHER=0, else the run's choice, which the run gives the describer as research, else the plugin's
+    Settings page's, else on)."""
     from .. import llm
     from . import researcher
 
-    provider = getattr(describer, "provider", None) or "anthropic"
+    # (not the describer's: through Aura a text-only model's frames are described by another provider's, Google's)
+    provider = getattr(describer, "agent_provider", None) or getattr(describer, "provider", None) or "anthropic"
     reading = llm.Model(provider, agent_model=model(provider), usage=getattr(describer, "usage", None),
                         proxied=getattr(describer, "proxied", None))
     idx = session.indexer()
@@ -2175,8 +2178,8 @@ def start_reading(session, describer=None):
     if session.sandbox is not None:
         session.sandbox.reader = session.reader
     hello = getattr(getattr(session.game, "link", None), "hello", None)
-    if not researcher.enabled(hello):
-        session.note("researcher: off (the user's choice, or the Aura app's Autopilot with none)")
+    if not researcher.enabled(hello, getattr(describer, "research", None)):
+        session.note("researcher: off (the run's or the plugin's choice, or AUTOPILOT_RESEARCHER=0)")
     else:
         session.researcher = researcher.Researcher(session, reading)
         if idx is not None:

@@ -29,8 +29,8 @@ namespace Autopilot.Playtest
         /// <summary>Runs' data is sent to the developers of Autopilot (absent: true).</summary>
         public bool ShareData = true;
         /// <summary>Runs use the research agent, which reads the game's code while harnesses play: the user's choice,
-        /// or null when not chosen (absent, or not a boolean: the agent service decides, off for the Aura app's
-        /// Autopilot, on for this plugin's own agent service).</summary>
+        /// or null when not chosen (absent, or not a boolean: the agent service decides, on for the Aura app's
+        /// Autopilot and this plugin's own agent service alike).</summary>
         public bool? ResearchAgent;
         /// <summary>"aura", "own_keys" or "" (never chosen).</summary>
         public string Access = "";
