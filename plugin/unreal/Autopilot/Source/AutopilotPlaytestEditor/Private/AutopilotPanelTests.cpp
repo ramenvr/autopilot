@@ -2733,7 +2733,7 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 		TestEqual(TEXT("research agent: off, its words"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent off")));
 		Panel->Prefs.ResearchChoice = true;
 		TestEqual(TEXT("research agent: on, its words"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
-		// Never chosen: what the agent service does without a choice, off in the Aura app's (Use with Aura) and on in the
+		// Never chosen: what the agent service does without a choice, on in the Aura app's (Use with Aura) and in the
 		// user's own, also when it runs through Aura (signed in)
 		UPlaytestSettings* Settings = GetMutableDefault<UPlaytestSettings>();
 		const bool bWasAura = Settings->bUseWithAura;
@@ -2742,9 +2742,9 @@ bool FAutopilotSettingCardsTest::RunTest(const FString& Parameters)
 		Settings->bUseWithAura = false;  // (not saved: put back below)
 		TestEqual(TEXT("research agent: the plugin's own agent service, signed in to Aura: on"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
 		Settings->bUseWithAura = true;
-		TestEqual(TEXT("research agent: Use with Aura: off"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent off")));
-		Panel->Prefs.ResearchChoice = true;
-		TestEqual(TEXT("research agent: the choice beats the Aura app's default"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
+		TestEqual(TEXT("research agent: Use with Aura, never chosen: on"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent on")));
+		Panel->Prefs.ResearchChoice = false;
+		TestEqual(TEXT("research agent: the choice beats the Aura app's default"), AllWords(ResearchToggle.ToSharedRef()), FString(TEXT("Research agent off")));
 		Settings->bUseWithAura = bWasAura;
 	}
 	// The bug detectors' switch: its name is its tooltip too (what it shows and sends: the DetectorsSwitch test)
