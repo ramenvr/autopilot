@@ -416,8 +416,9 @@ actor. The agent can find an actor's copy in another world (`counterpart`: match
 network GUID, or its name for an actor loaded with the map; none when that world has no copy) and read the same
 fields of every copy in one call, all from the same engine frame (`read_worlds`, with the frame number and each
 world's net mode and game time). So a gap between the host's value and a client's is the game's own, not two reads a
-frame apart: a gap that closes again is replication lag, one that stays is a desync. The plugin's `welcome` lists
-`"worlds"` in its `features` when it has both.
+frame apart: a gap that closes again is replication lag, one that stays is a desync. The plugin's `hello` lists
+`"worlds"` in its `features` when it has both. A world with no copy (a client the actor isn't replicated to, a
+player's controller on another player's client) answers why, and the other worlds are read as usual.
 
 **Several runs at once: games side by side.** Your own Claude Code or Codex (through `autopilot mcp`) can keep up to
 three runs going at once when it works through several requests (a list or a spreadsheet of prompts): its first run
