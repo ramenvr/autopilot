@@ -1162,6 +1162,62 @@ def test_the_implementer_hears_how_many_decisions_a_report_needs(game, tmp_path,
     assert "Not reported: in no episode did Jev make" in log
 
 
+def test_a_done_episode_asks_to_check_its_facts_against_the_request(game, tmp_path, monkeypatch):
+    """After an episode that ended "done" in a run that can report, the note says to check the facts against each
+    part of the request and report if they all match (agents played again after the request was settled)."""
+    from autopilot import codex
+    from autopilot.agents import session
+
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path))
+    told = "check this episode's facts against each part of the request"
+    src = open(__file__, encoding="utf-8").read()
+    crate = "from autopilot.kit import *\n\n" + src[src.index("class CrateHarness"):src.index("@pytest.fixture")]
+    failing = ("from autopilot.kit import *\n\n"
+               "class Fails(Harness):\n"
+               "    goal = 'Fall'\n"
+               "    def observe(self, game):\n"
+               "        return {}\n"
+               "    def options(self, obs):\n"
+               "        return [Option('a', 'Stand', lambda g, o: (x for x in range(3))),\n"
+               "                Option('b', 'Wait', lambda g, o: (x for x in range(3)))]\n"
+               "    def status(self, obs):\n"
+               "        return Status('failed', 'fell')\n")
+    # one option: it runs without asking Jev, so the episode ends "done" with no decisions
+    one = ("from autopilot.kit import *\n\n"
+           "class One(Harness):\n"
+           "    goal = 'Stand'\n"
+           "    def observe(self, game):\n"
+           "        return {}\n"
+           "    def options(self, obs):\n"
+           "        return [Option('stand', 'Stand still', lambda g, o: (x for x in range(3)))]\n"
+           "    def status(self, obs):\n"
+           "        return Status('done', 'stood')\n")
+
+    def session_with(run, harness, likes, decisions):
+        s = session.Session(game, "fake", "Open the crate", run, client=FakeJev(likes))
+        (tmp_path / "fake" / "runs" / run).mkdir(parents=True, exist_ok=True)
+        (tmp_path / "fake" / "runs" / run / "harness.py").write_text(harness, encoding="utf-8")
+        s.most_decisions = decisions
+        return s
+
+    # Not after an episode that ran out of time, or failed, even in a run that can report
+    out = session_with("r1", crate, "wait", session.MIN_JEV_DECISIONS).run_harness(2)
+    assert "time limit" in out and told not in out, out
+    out = session_with("r2", failing, "a", session.MIN_JEV_DECISIONS).run_harness(5)
+    assert "status=failed" in out and told not in out, out
+    # Not after a "done" episode in a run that can't report yet (too few decisions): that note is the one it reads
+    s = session_with("r3", one, "stand", 0)
+    out = s.run_harness(5)
+    assert "status=done" in out and s.most_decisions < session.MIN_JEV_DECISIONS, out
+    assert "report needs an episode with at least" in out and told not in out, out
+    # After a "done" episode in a run that can report: check each part, report if all match, else play that part
+    s = session_with("r4", crate, "open_crate", session.MIN_JEV_DECISIONS)
+    out = s.run_harness(15)
+    assert "status=done" in out and told in out, out
+    assert "report now" in out and "play again only for a part" in out, out
+    assert out.index(told) < out.index("Episode 1 ("), out  # (a note, above the summary)
+
+
 def drive(game, gen, seconds=20):
     t0 = time.monotonic()
     while time.monotonic() - t0 < seconds:
