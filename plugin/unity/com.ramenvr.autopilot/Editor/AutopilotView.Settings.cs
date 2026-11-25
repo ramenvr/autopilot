@@ -166,18 +166,18 @@ namespace Autopilot.Playtest.Editor
         public static string ResearchState(bool on) => on ? "Research agent on" : "Research agent off";
 
         /// <summary>What the research agent switch shows: the user's choice (preferences.json's research_agent) when
-        /// made; else what the agent service does by default: off for runs through the Aura app (Use with Aura), on
-        /// for this plugin's own agent service (signed in to Aura or with the user's own keys).</summary>
-        public static bool ResearchShown(bool? chosen, bool useWithAura)
+        /// made; else what the agent service does by default: on, for runs through the Aura app (Use with Aura) and
+        /// for this plugin's own agent service (signed in to Aura or with the user's own keys) alike.</summary>
+        public static bool ResearchShown(bool? chosen)
         {
-            return chosen ?? !useWithAura;
+            return chosen ?? true;
         }
 
         /// <summary>Whether runs use the research agent (ResearchShown): the sharing card's look, its switch.</summary>
         VisualElement ResearchCard()
         {
             var card = SettingCard(ResearchTitle, ResearchLine, "research", out var control);
-            control.Add(ResearchSwitch(ResearchShown(Preferences.Current.ResearchAgent, PlaytestSettings.Get().UseWithAura), SetResearch));
+            control.Add(ResearchSwitch(ResearchShown(Preferences.Current.ResearchAgent), SetResearch));
             return card;
         }
 
