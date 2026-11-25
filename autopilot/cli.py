@@ -656,6 +656,14 @@ def describer_model(run, provider):
     return "anthropic", None
 
 
+def reading_on(describer, provider):
+    """describer, told the agent's provider (agent_provider): the brain's own reading (session.start_reading) is on
+    it, with the run's model, not on the describer's (through Aura a text-only model's frames are described by
+    another provider's, Google's Gemini, whose API reading doesn't speak)."""
+    describer.agent_provider = provider
+    return describer
+
+
 def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, activity, stop, steering,
                     play_seconds, model):
     """When Aura says the run's premium credits stopped its agent (the relay's 402: aura.Run.go_on_free), the run goes
@@ -682,7 +690,8 @@ def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, 
                             activity=activity, client=tel.jev(runtime.jev_client()), model=model, timeout=left,
                             stop=stop, steering=steering,
                             play_seconds=min(play_seconds, left) if play_seconds else play_seconds,
-                            describer=tel.describer(model or agent_model(seen_by), provider=seen_by, model=named))
+                            describer=reading_on(tel.describer(model or agent_model(seen_by), provider=seen_by,
+                                                               model=named), run.agent["provider"]))
     # (the run's time is both sessions'; its episodes are counted on from the first's already)
     for field in ("seconds", "tool_seconds"):
         if isinstance(later.get(field), (int, float)) and isinstance(report.get(field), (int, float)):
@@ -841,6 +850,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 # (describe_frames: the recording's frames, described by a vision model of the agent's provider, or
                 # the one Aura named)
                 describer = tel.describer(model or agent_model(seen_by), provider=seen_by, model=named)
+                if desk is None:  # (the user's own agent reads as before, on the describer's provider)
+                    reading_on(describer, provider)
                 started = time.time()
                 report = agent.implement(game, project, asked, run_id=run_id,
                                          say=lambda text: link.status(plain_words(text)), activity=activity,

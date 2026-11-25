@@ -1,6 +1,8 @@
 """llm.Model's model: through Aura the run's own (Aura's relay serves no other), standalone the provider's cheaper
 helper; a helper the provider refuses gives way to the run's own model."""
 
+import types
+
 import pytest
 import requests
 
@@ -107,3 +109,75 @@ def test_standalone_reading_keeps_the_cheaper_helper(relay, monkeypatch):
     assert llm.Model("anthropic", agent_model="claude-opus-5-5").name == llm.HELPER["anthropic"]
     monkeypatch.setenv("AUTOPILOT_HELPER_MODEL", "openai/gpt-5-mini")
     assert llm.Model("openrouter", agent_model=OWN).name == "openai/gpt-5-mini"  # (standalone, the setting counts)
+
+
+# -- reading on the agent's provider, not the frame describer's ------------------------------------------------------
+
+def test_a_gemini_route_has_no_reading_model_instead_of_crashing(monkeypatch):
+    """Google's route is Gemini's own API, which Model doesn't speak: no route, a reason, no TypeError."""
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("GOOGLE_BASE_URL", raising=False)
+    model = llm.Model("google", agent_model="gemini-3.1-pro")
+    assert model.route is None and model.name is None
+    assert "gemini" in model.unavailable.lower()
+    with pytest.raises(RuntimeError, match="no model to read with"):
+        model.ask("what does this do?")
+
+
+class FakeSession:
+    """What session.start_reading uses of a session: its notes, no index, no sandbox, a plugin whose hello turns the
+    researcher off (reading only)."""
+
+    def __init__(self, tmp_path):
+        self.root = str(tmp_path)
+        self.run_dir = str(tmp_path / "run")
+        self.notes = []
+        self.sandbox = None
+        self.reader = self.researcher = None
+        self.game = types.SimpleNamespace(link=types.SimpleNamespace(hello={"research": False}))
+
+    def note(self, text):
+        self.notes.append(text)
+
+    def indexer(self):
+        return None
+
+
+def test_through_aura_reading_is_on_the_agents_provider_not_the_describers(relay, monkeypatch, tmp_path):
+    """A text-only run's frames are described by Google (Aura names Gemini): reading stays on the agent's provider
+    (openrouter) with the run's model, never on Gemini."""
+    from autopilot import cli
+    from autopilot.agents import session as sessionmod
+
+    monkeypatch.setenv("AUTOPILOT_AURA_URL", AURA)
+    monkeypatch.setenv("AUTOPILOT_MODEL", OWN)
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    describer = cli.reading_on(types.SimpleNamespace(provider="google", usage=None, proxied=None), "openrouter")
+    s = FakeSession(tmp_path)
+    sessionmod.start_reading(s, describer)
+    assert not any(n.startswith("reading: no model") for n in s.notes), s.notes
+    assert s.reader.model.provider == "openrouter" and s.reader.model.name == OWN
+    assert s.reader.model.ask("what does this do?") == "ok"
+    assert relay["asked"] == [OWN]
+
+
+def test_a_describer_without_the_agents_provider_reads_on_its_own(relay, monkeypatch, tmp_path):
+    """The user's own agent (agents/external.py) keeps today's reading: on the describer's provider."""
+    from autopilot.agents import session as sessionmod
+
+    monkeypatch.setenv("AUTOPILOT_MODEL", OWN)
+    s = FakeSession(tmp_path)
+    sessionmod.start_reading(s, types.SimpleNamespace(provider="openrouter", usage=None, proxied=None))
+    assert s.reader.model.provider == "openrouter"
+
+
+def test_a_gemini_reading_route_is_noted_not_raised(monkeypatch, tmp_path):
+    """Reading whose provider is Google says so in the run log and starts no reader, no TypeError."""
+    from autopilot.agents import session as sessionmod
+
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.delenv("GOOGLE_BASE_URL", raising=False)
+    s = FakeSession(tmp_path)
+    sessionmod.start_reading(s, types.SimpleNamespace(provider="google", usage=None, proxied=None))
+    assert s.reader is None
+    assert any(n.startswith("reading: no model (") and "gemini" in n.lower() for n in s.notes), s.notes

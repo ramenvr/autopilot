@@ -41,6 +41,9 @@ class Model:
         self.provider = provider
         self.agent_model = agent_model
         self.route, self.unavailable = vision.route(provider, agent_model)
+        if self.route is not None and self.route[0] not in ("anthropic", "openai"):
+            # (Google's route is Gemini's own API, which turn() doesn't speak: no reading, rather than a crash)
+            self.route, self.unavailable = None, f"reading doesn't speak {provider}'s API ({self.route[0]})"
         if self.route is not None:
             wire, root, key, _, path = self.route
             chosen = agent_model if aura.enabled() and agent_model else \
