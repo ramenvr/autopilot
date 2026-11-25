@@ -3230,8 +3230,8 @@ func _render_usage() -> void:
 		if not r.usage.is_empty() or not r.bill.is_empty():
 			_usage_runs = Usage.upsert(_usage_runs, r.usage_record())
 	var prefs := Prefs.load_preferences()
-	# (the Research agent switch: the user's choice, else off through the Aura app (Use with Aura), on otherwise)
-	var research := SettingsPage.research_shown(Prefs.research_agent(prefs), _with_aura())
+	# (the Research agent switch: the user's choice, else on, the agent service's default)
+	var research := SettingsPage.research_shown(Prefs.research_agent(prefs))
 	_settings_page.show_data(_usage_runs, Prefs.share_data(prefs), _usage_note, account_view(prefs),
 		{"design_brief": str(_meta("design_brief", "")), "show_policy_log": show_policy_log()}, research,
 		bridge.shown_detectors(), bridge.can_set_detectors(), bridge.detectors_fixed_on())

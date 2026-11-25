@@ -512,12 +512,12 @@ static func account_view(frame: Dictionary, access, with_aura: bool, service_lin
 
 
 ## What the Research agent switch shows: choice (preferences.json research_agent: a boolean once the user flipped it,
-## null before) when made; otherwise what the agent service does then: off through the Aura app's agent service (with_aura:
-## Use with Aura), on with this plugin's own (signed in to Aura or on the user's own keys alike).
-static func research_shown(choice, with_aura: bool) -> bool:
+## null before) when made; otherwise what the agent service does then: on, through the Aura app's agent service (Use
+## with Aura) and this plugin's own (signed in to Aura or on the user's own keys) alike.
+static func research_shown(choice) -> bool:
 	if typeof(choice) == TYPE_BOOL:
 		return choice
-	return not with_aura
+	return true
 
 
 ## The Account plate's tag for the kind: [text, tag kind].
