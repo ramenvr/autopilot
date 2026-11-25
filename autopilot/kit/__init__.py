@@ -22,6 +22,7 @@ from .control import (  # noqa: F401
     run,
     sonar,
     strike_and_retreat,
+    together,
     track,
     until,
     wait,
