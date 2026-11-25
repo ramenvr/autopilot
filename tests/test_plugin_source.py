@@ -126,3 +126,38 @@ def test_the_number_of_players_is_the_editors():
                    "AutopilotPlaytestEditorModule.cpp")
     assert "GetPlayNumberOfClients(Clients)" in editor and "GetRunUnderOneProcess(bOneProcess)" in editor
     assert "WaitForPlayers(" in editor[editor.index("void StartPie("):]
+
+
+def test_the_plugin_reads_every_world_in_one_call_and_finds_an_actor_in_another_world():
+    """Comparing host and client (tests/test_host_vs_client.py): `counterpart` finds an actor's copy in another world
+    (in this order: a player's own actors by its player id, a replicated actor by its network GUID, an actor loaded with
+    the map by its name, else none and why); `read_worlds` reads the same fields on every world and answers in the same
+    game-thread call (never a pending op that answers in a later frame), with the engine frame it ran in. The hello says
+    "worlds"; Unity's and Godot's don't (Unreal only for now)."""
+    ops = _private("PlaytestOps.cpp")
+    handle = ops[ops.index("void Handle("):]
+    for op, fn in (("counterpart", "Counterpart"), ("read_worlds", "ReadWorlds")):
+        branch = handle[handle.index(f'Op == TEXT("{op}")'):]
+        assert branch[:branch.index("}")].count(f"{fn}(Bridge, Id, Args);") == 1, op
+    header = _private("PlaytestOps.h")
+    assert "PlaytestOpsWorlds.cpp" in header[:header.index("#pragma once")]
+    for fn in ("Counterpart", "ReadWorlds"):
+        assert f"void {fn}(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);" in header, fn
+    subsystem = _private("PlaytestSubsystem.cpp")
+    hello = subsystem[subsystem.index("void UPlaytestSubsystem::SendHello()"):]
+    assert 'TEXT("worlds")' in hello[:hello.index("\n}\n")]
+    worlds = _private("PlaytestOpsWorlds.cpp")
+    assert len(worlds.splitlines()) < 1000
+    # The match order, as `how` says it
+    order = [worlds.index(f'How = TEXT("{how}")') for how in ("player", "guid", "name", "none")]
+    assert order == sorted(order)
+    assert "GetPlayerId()" in worlds and "GuidCache" in worlds
+    read = worlds[worlds.index("void ReadWorlds("):]
+    read = read[:read.index("\n\t}\n")]
+    assert "AddPending" not in read and "Pending.Tick" not in read
+    assert 'SetNumberField(TEXT("frame"), GFrameCounter)' in read
+    assert read.count("Bridge.Respond(Id,") == 1
+    unity = _read("plugin", "unity", "com.ramenvr.autopilot", "Runtime", "PlaytestClient.cs")
+    godot = _read("plugin", "godot", "addons", "autopilot", "playtest.gd")
+    for hello in (unity[unity.index('["features"]'):][:200], godot[godot.index('"features":'):][:120]):
+        assert '"worlds"' not in hello

@@ -156,6 +156,14 @@ namespace PlaytestOps
 		{
 			Trace(Bridge, Id, Args);
 		}
+		else if (Op == TEXT("counterpart"))
+		{
+			Counterpart(Bridge, Id, Args);
+		}
+		else if (Op == TEXT("read_worlds"))
+		{
+			ReadWorlds(Bridge, Id, Args);
+		}
 		else if (Op == TEXT("rc"))
 		{
 			Rc(Bridge, Id, Args);

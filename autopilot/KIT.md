@@ -158,6 +158,35 @@ Each does one tick of control per step and returns a `Result` (truthy when it wo
 - Write your own controllers the same way when the game needs one (aim leading a moving target, timing a jump off an
   edge, circling an enemy): a loop that reads, acts, `yield`s, and returns a Result.
 
+## Comparing host and client
+In Play In Editor every world (the server's, each client's) has its own copy of a replicated actor, under its own path
+(its world's PIE prefix). Unreal's plugin finds and reads them when `game.features` has "worlds":
+- `game.counterpart(path, player=2)` (or `player="server"`): the same actor's path in that world, or None (not
+  replicated, not replicated to that client yet, destroyed).
+- `game.read_worlds(actor, ["location", "velocity", "Health"], worlds=[2, "server"])`: the fields on every world in one
+  game frame -> {"frame", "same_frame": True, "by_world": {2: {"path", "how", "net_mode", "time", "values": {...}},
+  "server": {...}}}; location and velocity as Vec, any property by name; default worlds: every player and the server.
+  A world whose read failed holds its GameError: check before you index it.
+- Reads sent one after another come from different frames, so part of their gap is sampling. Read in one frame, a gap
+  is the game's own: a gap that shrinks back within a few ticks is lag (replication catching up), one that grows or
+  stays is desync. Sample it over seconds of play; one tick decides nothing.
+- An older plugin (no "worlds"): `read_worlds` has each player read the same name in its own world, together (likely
+  one frame, not promised: `same_frame` and `frame` None, `how` "name"; an actor spawned in play may be named apart),
+  it can't read "server", and `counterpart` raises GameError. Other engines: GameError for both.
+      def host_vs_client(game):  # an executor: player 2's pawn on the server against its own client, each tick
+          two, clock, gaps = game.player(2), Clock(game), []
+          two.hold(two.keys["forward"])
+          while clock.elapsed() < 6.0:  # 5 s walking, then 1 s standing: replication catches up
+              if clock.elapsed() >= 5.0:
+                  two.release(two.keys["forward"])
+              r = game.read_worlds(two.pawn, ["location"], worlds=[2, "server"])
+              mine, server = r["by_world"][2], r["by_world"]["server"]
+              if not isinstance(mine, GameError) and not isinstance(server, GameError):
+                  gaps.append(round(mine["values"]["location"].dist(server["values"]["location"]), 1))
+              yield
+          closed = bool(gaps) and gaps[-1] < 10.0
+          return Result(closed, f"gap per tick (cm) {gaps}: " + ("lag, it closed" if closed else "desync? it stayed"))
+
 ## Geometry
 `Vec(x, y, z)` (`Vec.of(dict)`, `.dist`, `.dist2d`, `.length`, `.unit`, `.flat`, `.rounded()`), `bearing(at, yaw, point)`
 (degrees right), `clock(bearing)` (ahead / ahead-left / left / behind...), `forward(yaw, pitch)`, `right_of(yaw)`,

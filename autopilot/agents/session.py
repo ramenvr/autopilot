@@ -1895,10 +1895,13 @@ def network_note(net, paused=None, features=()):
     truth is kept, and whether the game pauses. A single-player game has none; a Roblox game (`rc_side` "server": a
     client of the game's server, its reads made on the server) has its own, one player or several. Several players in
     one editor (Unreal's `players`: its Play settings' Number of Players) get a line on driving them."""
+    compare = ("To compare host and client, read an actor on every world in one frame with game.read_worlds (KIT.md: "
+               "a gap that closes is lag, one that stays is desync).")
     if net.get("mode") == "listen_server":
         return " ".join(n for n in ["Multiplayer: the game is hosted by the player you play (a listen server), so this "
                                     "world has authority: what you read is the game's truth and a change from a probe "
-                                    "sticks.", players_note(net, features)] if n)
+                                    "sticks.", compare if int(net.get("players") or 1) > 1 else "",
+                                    players_note(net, features)] if n)
     if net.get("rc_side") == "server":
         # (Roblox: every play session is a client of the game's server, and the plugin's reads go to the server)
         clients = int(net.get("clients") or 1)
@@ -1924,6 +1927,7 @@ def network_note(net, paused=None, features=()):
                     f"(controller {net.get('server_controller') or '-'}); "
                     f"find other server actors with game.call(GAMEPLAY, \"GetAllActorsOfClass\", "
                     f"WorldContextObject=\"{server}\", ActorClass=...).")
+        note.append(compare)
     else:
         note.append("The server runs in another process: its state can't be read from here, only what it sent the "
                     "client.")

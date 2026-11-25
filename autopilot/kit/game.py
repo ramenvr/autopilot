@@ -696,6 +696,47 @@ class Game:
         """{n: player n's pose()} for every player, read in one frame (each_player)."""
         return self.each_player(lambda p: p.pose(), players)
 
+    # -- host and client: the same object on every world -------------------------------------------------
+
+    def counterpart(self, path, player):
+        """The path of the same actor in another world: player n's (its client's copy) or "server"'s. Each Play In
+        Editor world has its own copy of a replicated actor under its own path. None when it has none there (not
+        replicated, not replicated to that client yet, destroyed). Needs a plugin whose features say "worlds"
+        (Unreal's), else GameError."""
+        return self.engine.counterpart(self, path, _world_key(player))
+
+    def read_worlds(self, actor, fields, worlds=None):
+        """The same fields of an actor on every world, read in one game frame: {"frame", "same_frame", "by_world":
+        {1: {...}, 2: {...}, "server": {...}}}. Each world's entry: {"path" (its copy there), "how" (how it was
+        matched: player, guid, name, none), "net_mode", "time" (that world's game time), "values": {field: value}}
+        ("location", "velocity" as Vec; "rotation"; any property by name). worlds: player numbers and "server"
+        (default: every player and the server). A plugin without "worlds" in its features: every player reads the
+        actor's same name in its own world, together (each_player: likely one frame, not promised: same_frame and
+        frame None); it can't read the server's. A world whose read failed gets its GameError instead (as in batch).
+        Unreal only for now: other engines raise GameError."""
+        ws = None if worlds is None else [_world_key(w) for w in worlds]
+        return self.engine.read_worlds(self, actor, list(fields), ws)
+
+    def _read_each_world(self, path, fields, players=None):
+        """read_worlds without the plugin's op: each player reads the object of the same name in its own world (an
+        actor loaded with the map has it; a spawned one may not), every player at once (each_player)."""
+        if any(w == "server" for w in players or []):
+            raise GameError("game.read_worlds: reading the server's world needs a plugin whose features include "
+                            "'worlds' (update the Autopilot plugin)")
+        level = path.split(":", 1)[1] if ":" in path else ""
+
+        def one(p):
+            own = f"{p.context()['world']}:{level}" if level else path
+            reads = {"location": lambda: p.loc(own), "velocity": lambda: p.velocity(own),
+                     "rotation": lambda: p.rot(own)}
+            values = p.batch([reads.get(f) or (lambda f=f: p.get(own, f)) for f in fields])
+            failed = next((v for v in values if isinstance(v, GameError)), None)
+            if failed:
+                raise failed
+            return {"path": own, "how": "name", "values": dict(zip(fields, values))}
+
+        return {"frame": None, "same_frame": None, "by_world": self.each_player(one, players)}
+
     def _need_players(self, what):
         """Several players need a plugin that plays them (its hello's features say "players"): without one a request's
         "player" would go unread, and player 1 would be played for player 2."""
@@ -735,6 +776,16 @@ class Body(Game):
 def name_of(path):
     """An object's name from its path: /Game/Map.Map:PersistentLevel.BP_Tree_C_3 -> BP_Tree_C_3."""
     return path.rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+
+
+def _world_key(w):
+    """A world as read_worlds keys it: a player's number (an int: 2.0 from JSON is 2) or "server"."""
+    if isinstance(w, str) and w.strip().lower() == "server":
+        return "server"
+    try:
+        return int(w)
+    except (TypeError, ValueError):
+        raise GameError(f"not a world: {w!r} (a player's number or \"server\")") from None
 
 
 def _when_native(when):

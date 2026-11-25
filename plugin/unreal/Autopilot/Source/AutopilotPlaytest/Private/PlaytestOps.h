@@ -11,6 +11,7 @@
 //   PlaytestOpsLook.cpp       how a thing is drawn, and its visible body: for `view` and `watch`
 //   PlaytestOpsWatch.cpp      `watch`: what changes over a stretch of game time
 //   PlaytestOpsTrace.cpp      `trace`: the first thing a line or a swept ball meets, by the world's collision
+//   PlaytestOpsWorlds.cpp     `counterpart`, `read_worlds`: an actor's copy in another world; every copy read in one frame
 //   PlaytestMedia.cpp         `record` and `capture`: the game's picture (FPlaytestMedia, PlaytestInternal.h)
 //
 // Handle and TickKeys, which the subsystem calls, are declared in PlaytestInternal.h.
@@ -86,6 +87,10 @@ namespace PlaytestOps
 	void Watch(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 	/** `trace` (PlaytestOpsTrace.cpp): the first thing a line or a swept ball meets, by the world's collision. */
 	void Trace(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** `counterpart` (PlaytestOpsWorlds.cpp): an actor's copy in another world (player n's, or the server's). */
+	void Counterpart(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
+	/** `read_worlds` (PlaytestOpsWorlds.cpp): the same fields of an actor's copy in every world, in one engine frame. */
+	void ReadWorlds(UPlaytestSubsystem& Bridge, int64 Id, const TSharedPtr<FJsonObject>& Args);
 
 	// --- how a thing looks (PlaytestOpsLook.cpp; see the comments there) ----------------------------------------
 
