@@ -1069,6 +1069,53 @@ def test_the_serve_loop_takes_the_thinking_level_from_the_start_frames_run(monke
     assert asked and asked[0]["thinking_level"] == "xhigh"
 
 
+def test_the_start_frames_research_choice_reaches_the_runs_reading(through_aura, monkeypatch, tmp_path):
+    """The run's `research` (Aura's Research agent switch) goes from the start frame to run_prompt (a bool only), and
+    on with the run's describer to session.start_reading (researcher.enabled's `chosen`)."""
+    asked = []
+    monkeypatch.setattr(cli, "run_prompt", lambda *a, **k: asked.append(k))
+    monkeypatch.setattr(cli, "send_memory_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "send_state", lambda *a, **k: None)
+    monkeypatch.setattr(cli.account, "SignIn", lambda link: None)
+    for chosen, passed in ((False, False), (True, True), ("yes", None), (None, None)):
+        link = Plugin()
+        run = {"kind": "goal", "goal": "Open the gate"}
+        if chosen is not None:
+            run["research"] = chosen
+        link.hello = {"project": "Farm", "research": True, "run": run}
+        link.current = link
+        link.next_message = lambda timeout=None: (_ for _ in ()).throw(KeyboardInterrupt)
+        asked.clear()
+        with pytest.raises(KeyboardInterrupt):
+            cli.cmd_serve(link, types.SimpleNamespace(path=None, model=None))
+        for _ in range(100):  # (the run goes in its own thread)
+            if asked:
+                break
+            time.sleep(0.02)
+        assert asked and asked[0]["research"] is passed
+    monkeypatch.undo()
+    # run_prompt gives it to the describer the agent's session reads with
+    monkeypatch.setenv("AUTOPILOT_AURA_URL", "https://aura.test/")
+    for k in aura.RUN_ENV:
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setattr(aura, "bun_ready", lambda: True)
+    monkeypatch.setattr(cli.codexmod, "MEMORY", str(tmp_path))
+    http = picked_model_aura({"name": "opencode", "provider": "openrouter", "model": "deepseek/deepseek-v4-pro"})
+    monkeypatch.setattr(cli.aura.requests, "Session", lambda: http)
+    monkeypatch.setattr(cli, "prepare", lambda link, *a, **k: ("Farm", object()))
+    monkeypatch.setattr(cli.runtime, "jev_client", lambda: None)
+    seen = {}
+
+    def implement(*a, describer=None, **k):
+        seen.update(research=getattr(describer, "research", "unset"), reads_on=describer.agent_provider)
+        return {"outcome": "achieved", "summary": "", "evidence": []}
+
+    monkeypatch.setattr(cli.agents, "select", lambda name=None: types.SimpleNamespace(
+        implement=implement, current_provider=opencode.current_provider))
+    assert cli.run_prompt(Plugin(), "Sell three crops", aura_model="deepseek-v4-pro", research=False) == 0
+    assert seen == {"research": False, "reads_on": "openrouter"}
+
+
 def test_the_thinking_level_goes_to_aura_with_the_model_only(through_aura):
     http = FakeAura()
     aura.Run("aura-session", "goal", http=http, model="opus-5.5", thinking_level="xhigh").start()

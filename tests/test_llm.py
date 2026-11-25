@@ -181,3 +181,21 @@ def test_a_gemini_reading_route_is_noted_not_raised(monkeypatch, tmp_path):
     sessionmod.start_reading(s, types.SimpleNamespace(provider="google", usage=None, proxied=None))
     assert s.reader is None
     assert any(n.startswith("reading: no model (") and "gemini" in n.lower() for n in s.notes), s.notes
+
+
+def test_the_runs_research_choice_on_the_describer_wins_over_the_hello(relay, monkeypatch, tmp_path):
+    """start_reading asks researcher.enabled with the run's choice (the describer's `research`, from the start
+    frame): False turns the researcher off whatever the hello says."""
+    from autopilot.agents import researcher
+    from autopilot.agents import session as sessionmod
+
+    monkeypatch.delenv("AUTOPILOT_RESEARCHER", raising=False)
+    monkeypatch.setenv("AUTOPILOT_MODEL", OWN)
+    asked = []
+    monkeypatch.setattr(researcher, "enabled", lambda hello=None, chosen=None: asked.append((hello, chosen)) or False)
+    s = FakeSession(tmp_path)
+    s.game.link.hello = {"research": True}
+    describer = types.SimpleNamespace(provider="openrouter", usage=None, proxied=None, research=False)
+    sessionmod.start_reading(s, describer)
+    assert asked == [({"research": True}, False)]
+    assert s.researcher is None and any(n.startswith("researcher: off") for n in s.notes), s.notes

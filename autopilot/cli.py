@@ -656,16 +656,18 @@ def describer_model(run, provider):
     return "anthropic", None
 
 
-def reading_on(describer, provider):
-    """describer, told the agent's provider (agent_provider): the brain's own reading (session.start_reading) is on
-    it, with the run's model, not on the describer's (through Aura a text-only model's frames are described by
-    another provider's, Google's Gemini, whose API reading doesn't speak)."""
+def reading_on(describer, provider, research=None):
+    """describer, told what the brain's own reading (session.start_reading) needs of the run: the agent's provider
+    (agent_provider; None: the describer's), which reading is on, with the run's model, not the describer's (through
+    Aura a text-only model's frames are described by another provider's, Google's Gemini, whose API reading doesn't
+    speak); and research, the run's choice of the background researcher (None: none, researcher.enabled)."""
     describer.agent_provider = provider
+    describer.research = research
     return describer
 
 
 def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, activity, stop, steering,
-                    play_seconds, model):
+                    play_seconds, model, research=None):
     """When Aura says the run's premium credits stopped its agent (the relay's 402: aura.Run.go_on_free), the run goes
     on on the team's free allowance: a new session of the agent Aura names (Auto's free-tier model) picks it up from
     its folder (agents/session.go_on), with `left` seconds of its time limit. Nothing tells the user. Returns the
@@ -691,7 +693,7 @@ def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, 
                             stop=stop, steering=steering,
                             play_seconds=min(play_seconds, left) if play_seconds else play_seconds,
                             describer=reading_on(tel.describer(model or agent_model(seen_by), provider=seen_by,
-                                                               model=named), run.agent["provider"]))
+                                                               model=named), run.agent["provider"], research))
     # (the run's time is both sessions'; its episodes are counted on from the first's already)
     for field in ("seconds", "tool_seconds"):
         if isinstance(later.get(field), (int, float)) and isinstance(report.get(field), (int, float)):
@@ -731,7 +733,7 @@ LAST_REPORT = {}  # the report of the run run_prompt finished last (`play --even
 def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sent=None, steering=None, kind=None,
                play_minutes=None, trace=None, desk=None, level=None, aura_model=None, disable_premium_models=False,
                feed=None, explore_minutes=None, design_brief=None, thinking_level=None, keep_game_open=False,
-               restart_in_place=False):
+               restart_in_place=False, research=None):
     """Research, write and run a harness for prompt; send the plugin the result and return the exit code.
 
     path: the project on this machine (--project); model: the language model; timeout: the agent's budget in
@@ -755,7 +757,9 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     keeps the run's activity events for a plugin that asks for them again (by default they are only sent);
     keep_game_open: the play session stays open once the run has reported (paused, for the next run of the same agent:
     start_run's keep_game_open), unless the run was stopped; restart_in_place: the run's restarts reopen the level in
-    the game playing, never stopping play (a run of several in one game).
+    the game playing, never stopping play (a run of several in one game); research: the start frame's run `research`
+    (Aura's Research agent switch), whether the run has the background researcher (None: the plugin's choice, else
+    on: agents/researcher.enabled).
 
     The plugin is told the tokens the run uses as it goes (telemetry.RunTelemetry). When the run's data is shared
     (telemetry.sharing, and for a run through Aura the user's Aura account), it is kept whole in the run's
@@ -850,8 +854,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 # (describe_frames: the recording's frames, described by a vision model of the agent's provider, or
                 # the one Aura named)
                 describer = tel.describer(model or agent_model(seen_by), provider=seen_by, model=named)
-                if desk is None:  # (the user's own agent reads as before, on the describer's provider)
-                    reading_on(describer, provider)
+                # (the user's own agent reads as before, on the describer's provider)
+                reading_on(describer, provider if desk is None else None, research)
                 started = time.time()
                 report = agent.implement(game, project, asked, run_id=run_id,
                                          say=lambda text: link.status(plain_words(text)), activity=activity,
@@ -864,7 +868,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                     left = (timeout or default_timeout()) - (time.time() - started)
                     report = go_on_aura_free(link, run, tel, report, left, game=game, project=project, asked=asked,
                                              run_id=run_id, activity=activity, stop=stop, steering=steering,
-                                             play_seconds=play_seconds, model=model) or report
+                                             play_seconds=play_seconds, model=model, research=research) or report
                 alert = level_alert(getattr(game, "level_info", None))
                 if alert:  # (the user must know the run played another level than the one asked for)
                     report = dict(report, alerts=[alert] + list(report.get("alerts") or []))
@@ -1583,7 +1587,8 @@ def cmd_serve(link, args):
                            feed=feed if lane in (None, 1) else None, explore_minutes=explore_minutes(run),
                            design_brief=str(run.get("design_brief") or "").strip() or None,
                            keep_game_open=bool(run.get("keep_game_open")) and lane is None,
-                           restart_in_place=in_place)
+                           restart_in_place=in_place,
+                           research=run.get("research") if isinstance(run.get("research"), bool) else None)
         except Exception as e:
             print(f"The run failed: {type(e).__name__}: {e}")
             if desk is not None:

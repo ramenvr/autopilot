@@ -63,17 +63,16 @@ TOOLS = (
 )
 
 
-def enabled(hello=None):
-    """Whether a run has the researcher: what the user chose in the plugin (hello `research`), else off in the Aura
-    app's Autopilot (aura.from_app) and on in the user's own; never with AUTOPILOT_RESEARCHER=0."""
-    from .. import aura
-
+def enabled(hello=None, chosen=None):
+    """Whether a run has the researcher: never with AUTOPILOT_RESEARCHER=0; else what the run chose (chosen: the start
+    frame's run `research`, Aura's Research agent switch), else what the user chose in the plugin (hello `research`),
+    else on. Only a bool is a choice."""
     if (os.environ.get("AUTOPILOT_RESEARCHER") or "").strip() == "0":
         return False
-    chosen = (hello or {}).get("research")
-    if isinstance(chosen, bool):
-        return chosen
-    return not aura.from_app()
+    for choice in (chosen, (hello or {}).get("research")):
+        if isinstance(choice, bool):
+            return choice
+    return True
 
 
 class Researcher:
