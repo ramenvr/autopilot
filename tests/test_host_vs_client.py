@@ -62,6 +62,10 @@ class WorldsLink(FrameLink):
                 values = {}
                 for f in args["fields"]:
                     values[f] = {"X": 10.0 * k, "Y": 0.0, "Z": 0.0} if f == "location" else 100.0 - k
+                if "Ghost" in args["path"] and k > 1:  # (no copy on a client: the plugin says why, values empty)
+                    out.append({"world": float(w), "net_mode": "client", "time": self.game_time, "path": "",
+                                "how": "none", "values": {}, "error": "Ghost_1 isn't replicated: no copy there"})
+                    continue
                 out.append({"world": w if w == "server" else float(w),
                             "net_mode": "client" if k > 1 else "listen_server", "time": self.game_time,
                             "path": args["path"].replace(world(1), world(k)), "how": "guid", "values": values})
@@ -115,6 +119,16 @@ def test_read_worlds_is_one_request_answered_in_one_frame_for_every_world():
         assert by[2]["net_mode"] == "client" and by["server"]["net_mode"] == "listen_server"
         # Positions in the kit's frame (a Vec), other fields as the plugin read them
         assert by[2]["values"]["location"] == Vec(20.0, 0.0, 0.0) and by[2]["values"]["Health"] == 98.0
+        assert by[1]["values"]["location"] == Vec(10.0, 0.0, 0.0)
+
+
+def test_a_world_the_plugin_couldnt_read_holds_its_game_error():
+    """The plugin answers a world it couldn't read (no copy there, a property the actor hasn't) with its "error": that
+    world's entry is a GameError with the plugin's words (as KIT.md says), the other worlds read as usual."""
+    with WorldsLink() as link:
+        game = Game(link)
+        by = game.read_worlds(GHOST, ["location"], worlds=[1, 2])["by_world"]
+        assert isinstance(by[2], GameError) and "isn't replicated" in str(by[2])
         assert by[1]["values"]["location"] == Vec(10.0, 0.0, 0.0)
 
 

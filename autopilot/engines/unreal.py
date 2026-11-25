@@ -302,13 +302,17 @@ class Unreal(Engine):
         r = game.request("read_worlds", args) or {}
         by = {}
         for w in r.get("worlds") or []:
+            key = "server" if w.get("world") == "server" else int(w.get("world"))
+            if w.get("error"):  # (no copy in that world, or a field it hasn't: the plugin's words)
+                by[key] = GameError(w["error"])
+                continue
             entry = {k: v for k, v in w.items() if k != "world"}
             values = dict(entry.get("values") or {})
             for k in ("location", "velocity"):
                 if isinstance(values.get(k), dict):
                     values[k] = Vec.of(values[k])
             entry["values"] = values
-            by["server" if w.get("world") == "server" else int(w.get("world"))] = entry
+            by[key] = entry
         return {"frame": r.get("frame"), "same_frame": True, "by_world": by}
 
     # -- a headless game ---------------------------------------------------------------------------------
