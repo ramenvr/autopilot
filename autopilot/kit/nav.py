@@ -234,6 +234,8 @@ class NavMap:
         hi_i, hi_j = _ij(max(start.x, goal.x) + margin, max(start.y, goal.y) + margin, c)
         s = _ij(start.x, start.y, c)
         reach = self._reach(within)
+        # (what is open, the moves and arriving are walled_in's too: change them there as well, or plan's "no way"
+        # stops matching this search's)
         blocked = {}
         lingered = bool(self.lingered)
 
