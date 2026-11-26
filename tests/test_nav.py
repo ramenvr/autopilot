@@ -179,16 +179,19 @@ def test_walk_to_a_body_it_cant_get_near_never_holds_a_tick():
     worst = [0.0]
 
     def timed(gen):
-        while True:
-            t0 = time.perf_counter()
-            try:
-                next(gen)
-            except StopIteration as s:
-                return s.value
-            finally:
-                worst[0] = max(worst[0], time.perf_counter() - t0)
-            assert worst[0] < 0.5, f"one tick of the walk held the thread {worst[0]:.2f} s"
-            yield
+        try:
+            while True:
+                t0 = time.perf_counter()
+                try:
+                    next(gen)
+                except StopIteration as s:
+                    return s.value
+                finally:
+                    worst[0] = max(worst[0], time.perf_counter() - t0)
+                assert worst[0] < 0.5, f"one tick of the walk held the thread {worst[0]:.2f} s"
+                yield
+        finally:
+            gen.close()
 
     res, _ = world.run(timed(walk_to(world.game(), goal, within=40, timeout=6)), limit=8)
     assert res is not None and not res.ok, res  # (it can't get within 40 of the body's middle)
