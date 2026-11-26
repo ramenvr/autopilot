@@ -22,10 +22,57 @@ KEY_LEASE = 0.6  # seconds a held key stays down without renewal
 CHANGES_STATE = re.compile(r"^(K2_)?(Destroy|Set|Spawn|Apply|Add|Remove|Teleport|Launch|Kill|Damage|Give|Grant|"
                            r"Equip|Unequip|Use|Fire|Open|Close|Start|Stop|Reset|Respawn|Possess|Attach|Detach)", re.I)
 PLAYER_CALLS = set()  # (none: a harness acts through inputs)
+_tally = threading.local()  # the waits a piece of code made, while counted (counting())
 
 
 class GameError(RuntimeError):
     """The game refused a request (a missing object, a wrong function or argument)."""
+
+
+class Pools:
+    """Thread pools by depth: work submitted from a thread of depth k's pool runs on depth k+1's. A thread that waits
+    on work it submitted (a pose()'s batch inside an each_player) then never waits on its own pool, so no pool fills
+    up with threads that all wait on work queued behind them. pools[0] is the first pool; deeper ones start when
+    first needed."""
+
+    def __init__(self, prefix, workers=16):
+        self.prefix, self.workers = prefix, workers
+        self.pools = [futures.ThreadPoolExecutor(max_workers=workers, thread_name_prefix=prefix)]
+        self._depth = threading.local()
+        self._lock = threading.Lock()
+
+    def submit(self, fn, *args):
+        depth = getattr(self._depth, "n", 0)
+        with self._lock:
+            while len(self.pools) <= depth:
+                self.pools.append(futures.ThreadPoolExecutor(
+                    max_workers=self.workers, thread_name_prefix=f"{self.prefix}{len(self.pools)}"))
+            pool = self.pools[depth]
+        return pool.submit(self._at, depth + 1, fn, *args)
+
+    def _at(self, depth, fn, *args):
+        self._depth.n = depth
+        return fn(*args)
+
+
+def _count(waited, n=1):
+    """n more waits on the game for this thread (waited: a Game's _waited), seen by counting() too."""
+    waited.n = getattr(waited, "n", 0) + n
+    seen = getattr(_tally, "seen", None)
+    if seen is not None:
+        seen[waited] = seen.get(waited, 0) + n
+
+
+def counting(fn, *args):
+    """fn(*args) in this thread, and the waits it made on each game: (result, what it raised or None, {waited: n}).
+    kit.together adds the waits of steps made in other threads to its caller's by it."""
+    before, _tally.seen = getattr(_tally, "seen", None), {}
+    try:
+        return fn(*args), None, _tally.seen
+    except BaseException as e:  # (StopIteration too: a generator's end, with its value)
+        return None, e, _tally.seen
+    finally:
+        _tally.seen = before
 
 
 class Game:
@@ -37,7 +84,9 @@ class Game:
         self.engine = engine or for_link(link)
         self.codex = codex  # autopilot.codex.Codex or None: resolves class names
         self.log = log or (lambda *kind, **fields: None)  # the runtime's trace (runtime.Trace)
-        self._pool = futures.ThreadPoolExecutor(max_workers=16, thread_name_prefix="game")
+        # Reads run together (batch): a batch inside a batch (a pose() in each_player) runs on the next pool down
+        self._pools = Pools("game")
+        self._pool = self._pools.pools[0]
         self._ctx, self._ctx_at = None, 0.0
         self._classes = {}
         self._held = {}  # key -> value held
@@ -75,7 +124,7 @@ class Game:
     def request(self, op, args=None, timeout=None):
         from ..bridge import BridgeError
 
-        self._waited.n = getattr(self._waited, "n", 0) + 1
+        _count(self._waited)
         try:
             return self.link.request(op, args or {}, timeout=timeout)
         except BridgeError as e:
@@ -105,10 +154,10 @@ class Game:
     def batch(self, thunks):
         """Run several reads at once (they resolve in the same game frame): a list of zero-argument callables, e.g.
         [lambda: game.loc(a), lambda: game.get(b, "Health")]. Returns their results in order; a read that failed
-        gives its GameError instead of raising."""
-        futs = [self._pool.submit(f) for f in thunks]
+        gives its GameError instead of raising. A batch's reads may batch in turn (pose() is a batch)."""
+        futs = [self._pools.submit(f) for f in thunks]
         if futs:
-            self._waited.n = getattr(self._waited, "n", 0) + 1  # (one wait here, however many reads)
+            _count(self._waited)  # (one wait here, however many reads)
         out = []
         for f in futs:
             try:
@@ -630,6 +679,64 @@ class Game:
         self._need_players("players()")
         return list(self.context(fresh=True).get("players") or [])
 
+    def each_player(self, fn, players=None):
+        """{n: fn(game.player(n))} for every player at once: their reads go out together and share a game frame, one
+        wait however many players (reads one player after another take a frame each) while the players' context is
+        cached: it is read again each half second (context()), a frame or two more. players: the numbers to play
+        (default: every player the game has; player 1 alone in a one-player game). A player whose fn failed with a
+        GameError gets the error instead (as in batch)."""
+        if players is None:
+            players = [1]
+            if "players" in self.features:
+                players = [int(p["player"]) for p in self._primary.context().get("players") or []] or [1]
+        bodies = [self.player(n) for n in players]
+        return dict(zip([b.index for b in bodies], self.batch([lambda b=b: fn(b) for b in bodies])))
+
+    def poses(self, players=None):
+        """{n: player n's pose()} for every player, read in one frame (each_player)."""
+        return self.each_player(lambda p: p.pose(), players)
+
+    # -- host and client: the same object on every world -------------------------------------------------
+
+    def counterpart(self, path, player):
+        """The path of the same actor in another world: player n's (its client's copy) or "server"'s. Each Play In
+        Editor world has its own copy of a replicated actor under its own path. None when it has none there (not
+        replicated, not replicated to that client yet, destroyed). Needs a plugin whose features say "worlds"
+        (Unreal's), else GameError."""
+        return self.engine.counterpart(self, path, _world_key(player))
+
+    def read_worlds(self, actor, fields, worlds=None):
+        """The same fields of an actor on every world, read in one game frame: {"frame", "same_frame", "by_world":
+        {1: {...}, 2: {...}, "server": {...}}}. Each world's entry: {"path" (its copy there), "how" (how it was
+        matched: player, guid, name, none), "net_mode", "time" (that world's game time), "values": {field: value}}
+        ("location", "velocity" as Vec; "rotation"; any property by name). worlds: player numbers and "server"
+        (default: every player and the server). A plugin without "worlds" in its features: every player reads the
+        actor's same name in its own world, together (each_player: likely one frame, not promised: same_frame and
+        frame None); it can't read the server's. A world whose read failed gets its GameError instead (as in batch).
+        Unreal only for now: other engines raise GameError."""
+        ws = None if worlds is None else [_world_key(w) for w in worlds]
+        return self.engine.read_worlds(self, actor, list(fields), ws)
+
+    def _read_each_world(self, path, fields, players=None):
+        """read_worlds without the plugin's op: each player reads the object of the same name in its own world (an
+        actor loaded with the map has it; a spawned one may not), every player at once (each_player)."""
+        if any(w == "server" for w in players or []):
+            raise GameError("game.read_worlds: reading the server's world needs a plugin whose features include "
+                            "'worlds' (update the Autopilot plugin)")
+        level = path.split(":", 1)[1] if ":" in path else ""
+
+        def one(p):
+            own = f"{p.context()['world']}:{level}" if level else path
+            reads = {"location": lambda: p.loc(own), "velocity": lambda: p.velocity(own),
+                     "rotation": lambda: p.rot(own)}
+            values = p.batch([reads.get(f) or (lambda f=f: p.get(own, f)) for f in fields])
+            failed = next((v for v in values if isinstance(v, GameError)), None)
+            if failed:
+                raise failed
+            return {"path": own, "how": "name", "values": dict(zip(fields, values))}
+
+        return {"frame": None, "same_frame": None, "by_world": self.each_player(one, players)}
+
     def _need_players(self, what):
         """Several players need a plugin that plays them (its hello's features say "players"): without one a request's
         "player" would go unread, and player 1 would be played for player 2."""
@@ -641,13 +748,14 @@ class Game:
 
 class Body(Game):
     """Another player of a multiplayer game (Game.player): the same game, its requests sent as player n's (their
-    "player"), its keys held and its camera calibrated apart."""
+    "player"), its keys and sequences held and its camera calibrated apart."""
 
     def __init__(self, game, n):
         self.__dict__.update(game.__dict__)  # (the link, engine, codex, log, pool, writes and bodies are shared)
         self.index = n
         self._ctx, self._ctx_at = None, 0.0
         self._held = {}
+        self._sequences, self._seq_holds = 0, {}  # (its own: together steps players in threads at once)
         self._lock = threading.Lock()
         self.look = {"x": None, "y": None}
         self.turn_asked = 0.0
@@ -668,6 +776,16 @@ class Body(Game):
 def name_of(path):
     """An object's name from its path: /Game/Map.Map:PersistentLevel.BP_Tree_C_3 -> BP_Tree_C_3."""
     return path.rsplit(".", 1)[-1].rsplit(":", 1)[-1]
+
+
+def _world_key(w):
+    """A world as read_worlds keys it: a player's number (an int: 2.0 from JSON is 2) or "server"."""
+    if isinstance(w, str) and w.strip().lower() == "server":
+        return "server"
+    try:
+        return int(w)
+    except (TypeError, ValueError):
+        raise GameError(f"not a world: {w!r} (a player's number or \"server\")") from None
 
 
 def _when_native(when):

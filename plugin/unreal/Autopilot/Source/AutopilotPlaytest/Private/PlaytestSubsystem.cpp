@@ -569,6 +569,9 @@ void UPlaytestSubsystem::SendHello()
 	// A request's "player" n is for player n of the editor's multiplayer Play In Editor (its own world: its keys, view,
 	// screen, UI, watch and context); how many there are is the editor's Play settings' (context's `players`)
 	Features.Add(MakeShared<FJsonValueString>(TEXT("players")));
+	// `counterpart` (an actor's copy in another world) and `read_worlds` (every copy's fields in one engine frame):
+	// comparing host and client
+	Features.Add(MakeShared<FJsonValueString>(TEXT("worlds")));
 	// `session` start with "instances" N plays N games side by side (standalone Play In Editor instances, a window
 	// each): a request's "player" n is game n's, and that game alone is restarted, paused and recorded
 	if (GIsEditor)
@@ -584,7 +587,7 @@ void UPlaytestSubsystem::SendHello()
 	// Settings page holds from the next connection
 	Hello->SetBoolField(TEXT("share"), PlaytestPreferences::ShareData());
 	// Whether runs have the research agent, once the user chose (the Settings page's switch; -PlaytestResearch): until
-	// then the agent service decides (off in the Aura app's, Use with Aura; on in the user's own, signed in to Aura or not)
+	// then the agent service decides (on, the Aura app's and the user's own alike)
 	const TOptional<bool> Research = PlaytestPreferences::ResearchAgent();
 	if (Research.IsSet())
 	{

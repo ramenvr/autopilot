@@ -131,6 +131,24 @@ def times_of(frames, base=0.0):
     return ", ".join(f"{f['t'] - base:.2f}" if f["t"] is not None else "?" for f in frames)
 
 
+def clock_base(frames, player1, wall0, wall1, wall_start, base=0.0):
+    """Another player's base for an episode: the game time of its own that is the episode's t=0 on player 1's clock
+    (each player's world keeps its own time), so the same moment has the same t for every player. frames: that
+    player's Frames; player1: player 1's (or None); wall0, wall1: the episode's stretch (Unix seconds); wall_start:
+    its start; base: player 1's first game time of it (its summary's t=0). Set from the player's first frame of the
+    stretch against player 1's frame nearest it in wall time, else against the episode's start (game time taken to run
+    at the wall clock's pace). None when the player has no frame of the stretch."""
+    theirs = next((f for f in frames.between(wall0, wall1) if f["t"] is not None), None)
+    if theirs is None:
+        return None
+    ours = [f for f in (player1.between(theirs["wall"] - 1.0, theirs["wall"] + 1.0) if player1 is not None else [])
+            if f["t"] is not None]
+    if ours:
+        near = min(ours, key=lambda f: abs(f["wall"] - theirs["wall"]))
+        return round(float(base or 0.0) + (theirs["t"] - theirs["wall"]) - (near["t"] - near["wall"]), 3)
+    return round(theirs["t"] - (theirs["wall"] - wall_start), 3)
+
+
 def pick(frames, count):
     """count of frames, spread evenly from the first to the last."""
     if len(frames) <= count:
@@ -213,15 +231,17 @@ class Describer:
             if changed:
                 recorder.set_fps(before)
 
-    def describe(self, wall0, wall1, questions, count=DEFAULT_FRAMES, t0=None, t1=None, label="", base=0.0):
+    def describe(self, wall0, wall1, questions, count=DEFAULT_FRAMES, t0=None, t1=None, label="", base=0.0,
+                 kept=None):
         """The vision model's description of up to count frames captured from wall0 to wall1 (and, given, showing
-        times t0 to t1 of the episode: seconds from base, its first game time), with questions. Returns (text, ok): ok
-        False when nothing was described (text says why)."""
+        times t0 to t1 of the episode: seconds from base, its first game time), with questions. kept: the Frames to
+        look at (another player's), else the recording's. Returns (text, ok): ok False when nothing was described
+        (text says why)."""
         base = float(base or 0.0)
         why = self.unavailable()
         if why:
             return f"Can't look at the game's picture in this run: {why}.", False
-        chosen, frames, why = self.frames_of(wall0, wall1, count, t0, t1, label, base)
+        chosen, frames, why = self.frames_of(wall0, wall1, count, t0, t1, label, base, kept=kept)
         if why:
             return why, False
         questions = [str(q).strip() for q in (questions or []) if str(q).strip()][:MAX_QUESTIONS]
@@ -237,13 +257,16 @@ class Describer:
                 f"{times_of(chosen, base)} s (seconds from the episode's start, as its summary's t=):")
         return f"{head}\n{text}", True
 
-    def frames_of(self, wall0, wall1, count=DEFAULT_FRAMES, t0=None, t1=None, label="", base=0.0, live=True):
+    def frames_of(self, wall0, wall1, count=DEFAULT_FRAMES, t0=None, t1=None, label="", base=0.0, live=True,
+                  kept=None):
         """(up to count frames captured from wall0 to wall1, spread over them, and given times t0 to t1 shown (seconds
         from base: the episode's first game time, as its summary counts them); the frames there were to pick from;
         None) for describe() or the user's own agent to look at, or (None, None, why there are none). live: the run
-        is still going (the stretch can be played again)."""
+        is still going (the stretch can be played again). kept: the Frames to pick from (another player's: its base
+        is clock_base's), else the recording's."""
         base = float(base or 0.0)
-        frames = self.frames.between(wall0, wall1) if self.frames is not None else []
+        kept = kept if kept is not None else self.frames
+        frames = kept.between(wall0, wall1) if kept is not None else []
         if t0 is not None or t1 is not None:
             lo = -1e18 if t0 is None else base + float(t0)
             hi = 1e18 if t1 is None else base + float(t1)
@@ -256,7 +279,7 @@ class Describer:
             frames = shown
         self.no_picture = False
         if not frames:
-            dropped = self.frames.dropped_before if self.frames is not None else None
+            dropped = kept.dropped_before if kept is not None else None
             if dropped is not None and wall1 <= dropped:
                 return None, None, (f"The frames of {label or 'that stretch'} aren't kept any more (only the last "
                                     "minutes of play are): " + ("play it again, then look at it." if live else

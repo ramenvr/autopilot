@@ -282,6 +282,39 @@ class Unreal(Engine):
                 continue
         return out
 
+    # -- host and client (the plugin's `counterpart` and `read_worlds`, its features "worlds") ----------------
+
+    def counterpart(self, game, path, to):
+        if "worlds" not in game.features:
+            raise GameError("game.counterpart: this game's Autopilot plugin can't find an actor in another world (its "
+                            "features don't include 'worlds'): update the plugin")
+        r = game.request("counterpart", {"path": path, "to": to}) or {}
+        return r["path"] if r.get("path") and r.get("how") != "none" else None
+
+    def read_worlds(self, game, path, fields, worlds):
+        """One `read_worlds` request: the plugin finds the actor's copy in each world and reads them all in the same
+        game-thread call (frame: GFrameCounter). Without the op: Game._read_each_world."""
+        if "worlds" not in game.features:
+            return game._read_each_world(path, fields, worlds)
+        args = {"path": path, "fields": list(fields)}
+        if worlds is not None:
+            args["worlds"] = list(worlds)
+        r = game.request("read_worlds", args) or {}
+        by = {}
+        for w in r.get("worlds") or []:
+            key = "server" if w.get("world") == "server" else int(w.get("world"))
+            if w.get("error"):  # (no copy in that world, or a field it hasn't: the plugin's words)
+                by[key] = GameError(w["error"])
+                continue
+            entry = {k: v for k, v in w.items() if k != "world"}
+            values = dict(entry.get("values") or {})
+            for k in ("location", "velocity"):
+                if isinstance(values.get(k), dict):
+                    values[k] = Vec.of(values[k])
+            entry["values"] = values
+            by[key] = entry
+        return {"frame": r.get("frame"), "same_frame": True, "by_world": by}
+
     # -- a headless game ---------------------------------------------------------------------------------
 
     def launch_command(self, project, url, log, map=None, exe=None, headless=True):

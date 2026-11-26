@@ -237,7 +237,7 @@ func hello(host: String) -> Dictionary:
 		# how input reaches the game (as Unity's: point before clicking, what headless changes)
 		"input": Keys.input_caps(DisplayServer.get_name() == "headless")}
 	# whether the agent service runs its research agent, only when chosen (preferences.json, or -PlaytestResearch on the
-	# command line); left out, the agent service decides (off for the Aura app's, on for this plugin's own)
+	# command line); left out, the agent service decides (on, the Aura app's and this plugin's own alike)
 	var research = Prefs.research_for_run(cli_research)
 	if typeof(research) == TYPE_BOOL:
 		h.research = research

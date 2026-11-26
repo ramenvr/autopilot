@@ -21,7 +21,10 @@ on a slow call: Codex after 60 s) and gives the result to the next `wait`.
 
 Looking at the picture: the user's agent hands an episode's frames (`frames`, JPEGs) to a subagent of its own told
 only open questions (docs/architecture.md, "Looking at the picture"), so the description comes from the user's plan
-too. describe_frames (Autopilot's own vision model) stays a fallback, where the run has a key or Aura for one.
+too. describe_frames (Autopilot's own vision model) stays a fallback, where the run has a key or Aura for one. In a
+game of several players whose plugin records each one, both take `player` for another player's view (its times on
+player 1's clock, as the summary's t=), and the report's answer names each player's video of the episode
+(Session.players_videos), for the user's agent to tell the user.
 """
 
 import base64
@@ -37,6 +40,7 @@ from .. import engines, transcripts
 from . import whole
 from .files import FILE_TOOL_SPECS, FILE_TOOLS, FileTools
 from .session import (
+    KIT_MORE,
     PACKAGE,
     PROBING,
     READING,
@@ -45,6 +49,7 @@ from .session import (
     WRITING,
     finish,
     first_message,
+    kit_more,
     open_session,
     system_prompt,
     unknown_args,
@@ -90,7 +95,8 @@ reading frames while you know what you hope to see colours what you see. Brief i
 else (never the request, the claim, the harness or what you expect); each <t> is seconds from the episode's start, as
 its run_harness summary's t= gives them:
 
-    Call the autopilot tool `frames` with run="{marker}", episode=<n>, start=<t>, end=<t>, count=<up to {max_frames}>.
+    Call the autopilot tool `frames` with run="{marker}", episode=<n>, start=<t>, end=<t>, count=<up to {max_frames}>,
+    player=<n: only for another player's view>.
     Then describe the frames. {describer}
     Questions:
     1. <an open question: what moves and how, what is at a spot, what the text says; never yes/no>
@@ -116,8 +122,9 @@ before the harness takes it. Not needed for an episode the summary explains: the
 
 START = """Autopilot run {marker} started on {project}: the game is open in the user's editor and paused between your
 calls. Pass run="{marker}" with every Autopilot tool call (other runs may go at the same time). First read
-{instructions} with read_file, all of it (in parts: it is long): it is how to work and what the kit is. The request and
-its briefing follow (also in {request}).
+{instructions} with read_file, all of it (in parts: it is long): it is how to work and what the kit is, and it names
+what to read when you need it ({kit_more}, autopilot/kit/harness.py). The request and its briefing follow (also in
+{request}).
 
 {message}"""
 
@@ -130,7 +137,8 @@ The request: {prompt}
 Its briefing (what you would read first: notes.md, lib.py, earlier runs, what changed in the codex, where the request's
 words are, what the live game shows now) is {size:,} characters, more than one tool result holds, so it is in a file.
 Read, with read_file and all of each (in parts: a call says where to read on):
-1. {instructions}: how to work and what the kit is;
+1. {instructions}: how to work and what the kit is (it names what to read when you need it: {kit_more},
+   autopilot/kit/harness.py);
 2. then {request}: the request and its briefing, whole.
 Then work on the request."""
 
@@ -138,10 +146,12 @@ FRAMES_SPEC = (
     "frames",
     "For a describer subagent only (not the agent working on the request): up to 12 of an episode's frames, as "
     "images, spread over times start-end of it. episode: its number (default: the latest); start, end: times in it, "
-    "in seconds from its start, as its summary's t= gives them (default: all of it); count: how many (default 8). "
-    "It works after the run has ended too, on the frames the run kept.",
+    "in seconds from its start, as its summary's t= gives them (default: all of it); count: how many (default 8); "
+    "player: whose view, in a game of several players (default 1). It works after the run has ended too, on the "
+    "frames the run kept.",
     {"type": "object", "properties": {"episode": {"type": "integer"}, "start": {"type": "number"},
-                                      "end": {"type": "number"}, "count": {"type": "integer"}}})
+                                      "end": {"type": "number"}, "count": {"type": "integer"},
+                                      "player": {"type": "integer"}}})
 
 
 # describe_frames' fallback (Autopilot's own vision model): the first provider the user has a key for (Anthropic's
@@ -242,7 +252,7 @@ class Desk:
             try:
                 if tool == "frames":
                     text, images = s.frames(args.get("episode"), args.get("start"), args.get("end"),
-                                            args.get("count"))
+                                            args.get("count"), player=args.get("player"))
                 else:
                     text = self._game_tool(tool, args)
             except Exception:
@@ -262,7 +272,7 @@ class Desk:
         with self.lock:
             try:
                 text, images = self.session.frames(args.get("episode"), args.get("start"), args.get("end"),
-                                                   args.get("count"), live=False)
+                                                   args.get("count"), live=False, player=args.get("player"))
             except Exception:
                 text, images = "Tool failed:\n" + traceback.format_exc(limit=5), []
         if self.marker and self.marker not in text:
@@ -280,7 +290,7 @@ class Desk:
             return s.snapshot()
         if tool == "describe_frames":
             return s.describe_frames(args.get("questions") or [], args.get("episode"), args.get("start"),
-                                     args.get("end"), args.get("frames"))
+                                     args.get("end"), args.get("frames"), player=args.get("player"))
         if tool == "restart_level":
             return s.restart_level(args.get("level"))
         return s.do_report({k: args[k] for k in REPORT_FIELDS if k in args})
@@ -398,7 +408,7 @@ class Control:
 def instructions_text(engine, run_rel, marker=""):
     from .. import vision
 
-    return (system_prompt(engine, run_rel) + "\n" + EXTERNAL_TOOLS.replace("{run}", run_rel)
+    return (system_prompt(engine, run_rel, short=True) + "\n" + EXTERNAL_TOOLS.replace("{run}", run_rel)
             .replace("{marker}", marker or "<this run's id>")
             .replace("{max_frames}", str(vision.MAX_FRAMES))
             .replace("{describer}", " ".join(line.strip() for line in vision.SYSTEM.splitlines()
@@ -409,7 +419,8 @@ def instructions_text(engine, run_rel, marker=""):
 def start_text(marker, project, prompt, message, run_rel):
     """The start call's answer: the request message inline (START) when the answer fits one tool result, else
     START_LONG, which points to REQUEST.md (the message, whole) and to INSTRUCTIONS.md."""
-    paths = {"instructions": f"{run_rel}/{INSTRUCTIONS}", "request": f"{run_rel}/{REQUEST}"}
+    paths = {"instructions": f"{run_rel}/{INSTRUCTIONS}", "request": f"{run_rel}/{REQUEST}",
+             "kit_more": f"{run_rel}/{KIT_MORE}"}
     text = START.format(marker=marker, project=project, message=message, **paths)
     if len(text) <= whole.RESULT_CHARS:
         return text
@@ -441,12 +452,20 @@ def implement(game, project, prompt, run_id=None, say=None, client=None, model=N
     done = watch_steering(session)
     try:
         game.pause(True)  # (in the try: a game that doesn't answer still gets cleaned up and reported)
+        instructions = instructions_text(engines.of(game), session.run_rel, desk.marker)
         with open(os.path.join(session.run_dir, INSTRUCTIONS), "w", encoding="utf-8", newline="\n") as f:
-            f.write(instructions_text(engines.of(game), session.run_rel, desk.marker))
-        message = first_message(session)
+            f.write(instructions)
+        with open(os.path.join(session.run_dir, KIT_MORE), "w", encoding="utf-8", newline="\n") as f:
+            f.write(kit_more(engines.of(game)))  # (what the instructions list of the kit, read when needed)
+        message = first_message(session, short=True)  # (the shorter briefing: it is read in parts)
         with open(os.path.join(session.run_dir, REQUEST), "w", encoding="utf-8", newline="\n") as f:
             f.write(message)
-        desk.open(session, files, start_text(desk.marker, project, prompt, message, session.run_rel))
+        start = start_text(desk.marker, project, prompt, message, session.run_rel)
+        # (sizes only, never the text: what the user's agent reads before its first call, and whether REQUEST.md
+        # came inline in the start answer or must be read in parts)
+        session.note("instructions sizes: " + json.dumps({"instructions": len(instructions), "request": len(message),
+                                                          "start": len(start), "inline": message in start}))
+        desk.open(session, files, start)
         while True:
             if session.report is not None:
                 break

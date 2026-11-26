@@ -268,6 +268,18 @@ class Engine:
         "half_height", "step", "air_control", ...} in kit units; what it can't tell is left out or None."""
         raise NotImplementedError
 
+    def counterpart(self, game, path, to):
+        """Game.counterpart: the same actor in another world (to: a player's number or "server"), or None."""
+        raise GameError(self._no_worlds("counterpart"))
+
+    def read_worlds(self, game, path, fields, worlds):
+        """Game.read_worlds: the same fields of an actor on every world in one frame."""
+        raise GameError(self._no_worlds("read_worlds"))
+
+    def _no_worlds(self, what):
+        return (f"game.{what}: comparing worlds (host and client) is Unreal's only for now; this game's engine is "
+                f"{self.title or self.name}")
+
     # -- the implementer's prompt ------------------------------------------------------------------------
 
     def kit_doc(self, kit):

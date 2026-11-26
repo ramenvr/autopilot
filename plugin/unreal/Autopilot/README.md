@@ -350,7 +350,7 @@ Three choices are machine-wide rather than per project, in `Autopilot/preference
 | key | what it does |
 |---|---|
 | `share_data` | Share runs' data (default `true`); see [Data sharing](#data-sharing). Sent as `share` in every connection's hello. `-PlaytestShare=0` or `1` overrides it for a command-line run. |
-| `research_agent` | Runs have the research agent: while the agent works, and above all while a harness plays, a second model reads the game's code and tells the agent what it finds, for the next harness. It reaches harder goals in fewer attempts, at a higher cost. Absent until you choose on the Settings page (**Research agent**); until then runs through the Aura app (**Use with Aura**) go without it and runs on this plugin's own agent service have it, signed in to Aura or on your own keys. Sent as `research` in a connection's hello once chosen. `-PlaytestResearch=0` or `1` overrides it for a command-line run. |
+| `research_agent` | Runs have the research agent: while the agent works, and above all while a harness plays, a second model reads the game's code and tells the agent what it finds, for the next harness. It reaches harder goals in fewer attempts, at a higher cost. Absent until you choose on the Settings page (**Research agent**); until then runs have it, through the Aura app (**Use with Aura**) and on this plugin's own agent service alike, and the switch shows on. Sent as `research` in a connection's hello once chosen. `-PlaytestResearch=0` or `1` overrides it for a command-line run. |
 | `access` | How you chose to run the agent in the setup: `aura` or `own_keys`. The agent service reads it before every run (`aura`: runs go through Aura, on the sign-in it keeps). |
 | `onboarded` | The setup was finished or skipped. |
 
@@ -410,6 +410,15 @@ drives the others when the prompt is about players together (co-op, handing thin
 when the game needs every player to go on. Play In Editor plays as you set it up: the agent never changes the number of
 players or the net mode. Pointing the mouse at a place is player 1's only for now (another player's UI is clicked
 through its widgets directly), and the bug detectors follow player 1's world; each player is recorded apart.
+
+**Comparing host and client.** Each Play In Editor world (the server's, each client's) has its own copy of a replicated
+actor. The agent can find an actor's copy in another world (`counterpart`: matched by the player it belongs to, its
+network GUID, or its name for an actor loaded with the map; none when that world has no copy) and read the same
+fields of every copy in one call, all from the same engine frame (`read_worlds`, with the frame number and each
+world's net mode and game time). So a gap between the host's value and a client's is the game's own, not two reads a
+frame apart: a gap that closes again is replication lag, one that stays is a desync. The plugin's `hello` lists
+`"worlds"` in its `features` when it has both. A world with no copy (a client the actor isn't replicated to, a
+player's controller on another player's client) answers why, and the other worlds are read as usual.
 
 **Several runs at once: games side by side.** Your own Claude Code or Codex (through `autopilot mcp`) can keep up to
 three runs going at once when it works through several requests (a list or a spreadsheet of prompts): its first run
@@ -514,7 +523,7 @@ UnrealEditor-Cmd.exe C:/Path/To/MyGame.uproject -game -nullrhi -unattended -nosp
 | `-PlaytestConnectTimeout=<seconds>` | how long to wait for the agent service to take the run (its welcome), default 120; `0` waits forever. When it passes, `result.json` gets the `error` and the game exits with 1 |
 | `-PlaytestStayOpen` | don't exit when the run is over |
 | `-PlaytestShare=0\|1` | whether this run's data is shared (default: `share_data` in `preferences.json`, else on); see [Data sharing](#data-sharing) |
-| `-PlaytestResearch=0\|1` | whether this run has the research agent (default: `research_agent` in `preferences.json`; not chosen: off with Use with Aura, else on) |
+| `-PlaytestResearch=0\|1` | whether this run has the research agent (default: `research_agent` in `preferences.json`; not chosen: on) |
 | `-PlaytestSteps=N`, `-PlaytestAttempts=N` | passed on to the agent service; the current one ignores them |
 
 The report folder gets `result.json`: the run's result (verdict or goal, the reason, the evidence, the
@@ -657,6 +666,7 @@ The plugin has three modules:
 | `Private/PlaytestOpsTrace.cpp` | `trace`: a line trace or sphere sweep through the played world, on the pawn's own collision channel and responses (`sight`: Visibility) |
 | `Private/PlaytestOpsLook.cpp` | how a thing is drawn (meshes, effects, lights, animation), for `view` and `watch` |
 | `Private/PlaytestOpsWatch.cpp` | `watch`: what changes over a stretch of game time |
+| `Private/PlaytestOpsWorlds.cpp` | `counterpart` and `read_worlds`: an actor's copy in another Play In Editor world, and the same fields of every copy read in one frame |
 | `Private/PlaytestDetectors.cpp` | the in-engine bug detectors |
 | `Private/PlaytestScreen.cpp`, `Private/PlaytestUI.cpp` | reading what is on screen (widgets and text) and clicking or dragging game UI |
 | `Private/PlaytestCodex.cpp` | the codex ops: exporting the project's game logic and data for the agent to research, its AngelScript (`Script/**/*.as`) with its C++ |

@@ -13,6 +13,12 @@ The plugin captures the game's view (docs/protocol.md, "Recording, stills and us
                episode or not, are kept in memory too, for describe_frames (autopilot/vision.py). The run's report
                shows the video of the episode the agent's report names as the one that shows the result best (its
                `episode`), else the last episode's.
+               In a game that plays several players in one editor (the plugin's hello says "players" and "instances"),
+               each other player is recorded too, from an episode's begin, up to MAX_PLAYERS: player k's video is
+               media/recording-<n>-p<k>.mp4, with media/frames-<n>-p<k>.jsonl, at player 1's rate (FPS; set_fps
+               changes player 1's only, so a later set_fps leaves the others at FPS). The result's
+               `recordings` lists every player's video of the episode shown, player 1's first; a player with none
+               gets an alert in the report saying why (a plugin that records player 1 only, no picture of it).
     still()    one still: media/stills/<seq>-<reason>.jpg, with a line in media/stills.jsonl.
 
 Both only when the plugin says it can capture (hello `features` has "media"). Nothing here may slow the game or the
@@ -29,7 +35,13 @@ import threading
 import time
 from fractions import Fraction
 
-FPS = 5  # frames a second the plugin is asked for
+from .bridge import _player_of
+
+FPS = 5  # frames a second the plugin is asked for, for every player it records
+MAX_PLAYERS = 4  # players recorded in one run, at most (a game that plays more: the first MAX_PLAYERS)
+# Seconds an episode's end waits for another player's picture, one player after another: player 1's 10 and 3 others'
+# make 10 + 3 x 2 = 16, inside the 20 the sandbox gives the whole end (sandbox.py)
+OTHER_END_TIMEOUT = 2
 MAX_DIM = 960  # the recording's longer side, at most
 QUALITY = 75  # the plugin's JPEG quality, 1-100
 STILL_DIM = 1920
@@ -199,8 +211,9 @@ class Clip:
     """One episode's video (Recorder): media/recording-<n>.mp4 and media/frames-<n>.jsonl, made at its first frame;
     the JPEGs as they came, media/frames-<n>/, when there is no encoder."""
 
-    def __init__(self, folder, n, fps, flipbook):
+    def __init__(self, folder, n, fps, flipbook, suffix=""):
         self.folder, self.n, self.fps, self.flipbook = folder, n, fps, flipbook
+        self.suffix = suffix  # (after the episode's number in its files' names: "-p<k>" for player k > 1, Recorder)
         self.index = None  # (frames-<n>.jsonl, opened at the first frame: an episode with none leaves no file)
         self.encoder = None
         self.tried = False  # (whether the encoder was tried: once, at the first frame)
@@ -210,7 +223,7 @@ class Clip:
 
     @property
     def video(self):
-        return os.path.join(self.folder, f"recording-{self.n}.mp4")
+        return os.path.join(self.folder, f"recording-{self.n}{self.suffix}.mp4")
 
     def keep(self, jpeg, line):
         """A frame of the episode (line: its game and wall time, as frames-<n>.jsonl says it)."""
@@ -221,14 +234,14 @@ class Clip:
                 flipbook = None
                 if self.flipbook:
                     try:
-                        flipbook = Flipbook(os.path.join(self.folder, f"{FLIPBOOK}-{self.n}"))
+                        flipbook = Flipbook(os.path.join(self.folder, f"{FLIPBOOK}-{self.n}{self.suffix}"))
                     except Exception as e:  # noqa: BLE001 - the video without it
                         print(f"note: no flipbook ({type(e).__name__}: {e})")
                 self.encoder = Encoder(self.video, self.fps, flipbook)
             except Exception as e:  # noqa: BLE001 - no PyAV, or no H.264 encoder: the JPEGs are kept as they are
                 print(f"note: recording as JPEG frames ({type(e).__name__}: {e})")
                 self.problem = (f"the video couldn't be made ({type(e).__name__}: {e}): its pictures are in "
-                                f"{os.path.join(self.folder, f'frames-{self.n}')}")
+                                f"{os.path.join(self.folder, f'frames-{self.n}{self.suffix}')}")
         line = {"frame": self.kept, **line}
         if self.encoder is not None:
             if not self.encoder.add(jpeg, wall):
@@ -236,7 +249,7 @@ class Clip:
             line["pts_ms"] = self.encoder.last_pts
             self.wall0 = self.encoder.wall0
         else:
-            frames = os.path.join(self.folder, f"frames-{self.n}")
+            frames = os.path.join(self.folder, f"frames-{self.n}{self.suffix}")
             os.makedirs(frames, exist_ok=True)
             name = f"{self.kept:06d}.jpg"
             with open(os.path.join(frames, name), "wb") as f:
@@ -245,7 +258,7 @@ class Clip:
             self.wall0 = self.wall0 if self.wall0 is not None else wall
         self.wall_end = wall
         if self.index is None:
-            self.index = open(os.path.join(self.folder, f"frames-{self.n}.jsonl"), "a", encoding="utf-8")
+            self.index = open(os.path.join(self.folder, f"frames-{self.n}{self.suffix}.jsonl"), "a", encoding="utf-8")
         self.index.write(json.dumps(line) + "\n")
         self.index.flush()
         self.kept += 1
@@ -275,12 +288,19 @@ class Clip:
 class Recorder:
     """The run's recording, from `record start` to stop(), kept episode by episode (begin(n) to end(n)). Use as
     `with Recorder(link, folder):`. flipbook: keep its pictures as JPEGs too (media/flipbook-<n>/, Flipbook), for a
-    plugin that can't play the MP4."""
+    plugin that can't play the MP4.
 
-    def __init__(self, link, folder, fps=FPS, max_dim=MAX_DIM, quality=QUALITY, flipbook=False):
+    In a game that plays several players in one editor (Unreal's multiplayer Play In Editor), player 1's Recorder (this
+    one, player=1) starts one more for each other player at an episode's begin (Recorder(player=k), up to MAX_PLAYERS)
+    and passes begin, end and stop on to them. Player k's asks `record` and `capture` for "player" k, keeps only the
+    frames that say "player" k, and writes media/recording-<n>-p<k>.mp4 (frames-<n>-p<k>.jsonl...)."""
+
+    def __init__(self, link, folder, fps=FPS, max_dim=MAX_DIM, quality=QUALITY, flipbook=False, player=1):
         from .vision import Frames
 
         self.link = link
+        self.player = player
+        self.base = folder  # (the run's folder: the other players' Recorders keep theirs in it too)
         self.folder = os.path.join(folder, MEDIA)
         self.fps, self.max_dim, self.quality = fps, max_dim, quality
         self.flipbook = flipbook
@@ -296,6 +316,16 @@ class Recorder:
         self.problem = None  # why the game isn't recorded (the start refused, no encoder...), for missing()
         self._stopping = threading.Event()
         self._follower = None
+        # Whether the plugin pictures this player: player 1 always; player k once a frame that says "player" k has
+        # come. Until then player k's end `capture` isn't sent: it could answer with player 1's picture. (Its `record
+        # stop` is: player k is only recorded on a plugin that records each player apart, _players)
+        self.confirmed = player == 1
+        self.others = {}  # (player 1's: the other players' Recorders, by player)
+        # (player 1's: the other players of a game whose plugin records player 1 only, counted once a run; None: not
+        # counted)
+        self.one_only = None
+        self._apart = frozenset()  # (player 1's: the players whose frames aren't its own; replaced whole, read by the
+        # bridge's thread)
 
     def __enter__(self):
         self.start()
@@ -335,11 +365,15 @@ class Recorder:
             listeners.append(self.on_frame)
             self._listening = listeners
 
+    def _args(self, args):
+        """A request's args, for this Recorder's player ("player" k; player 1's say none, as before)."""
+        return {**args, "player": self.player} if self.player > 1 else args
+
     def _ask_start(self, quiet=False):
         """`record start`; True once the plugin records."""
         try:
-            answer = self.link.request("record", {"action": "start", "fps": self.fps, "max_dim": self.max_dim,
-                                                  "quality": self.quality})
+            answer = self.link.request("record", self._args({"action": "start", "fps": self.fps,
+                                                             "max_dim": self.max_dim, "quality": self.quality}))
         except Exception as e:  # (no picture: a headless game, a hidden window; an old plugin)
             if not quiet:
                 print(f"note: the game isn't recorded: {e}")
@@ -348,7 +382,7 @@ class Recorder:
             return False
         self.started = True
         self.problem = None
-        print(f"Recording the game: {answer}")
+        print(f"Recording the game: {answer}" if self.player == 1 else f"Recording player {self.player}: {answer}")
         return True
 
     def _follow(self):
@@ -376,7 +410,16 @@ class Recorder:
             self._ask_start(quiet=True)
 
     def on_frame(self, frame):
-        """A `frame` from the plugin (the bridge's thread: never blocks)."""
+        """A `frame` from the plugin (the bridge's thread: never blocks). Another player's frames aren't this
+        Recorder's: player k keeps only the frames that say "player" k; player 1 leaves out those of a player with a
+        Recorder of its own (and keeps the rest: a game side by side's frames say its player, bridge.Lane)."""
+        player = _player_of(frame)
+        if self.player > 1:
+            if player != self.player:
+                return
+            self.confirmed = True
+        elif player in self._apart:
+            return
         self.received += 1
         try:
             self.queue.put_nowait(frame)
@@ -384,9 +427,52 @@ class Recorder:
             self.dropped += 1
 
     def begin(self, n):
-        """Episode n starts playing: its frames from now on go into its own video (the session's run_harness)."""
-        if self.thread is not None:
-            self._mark(("begin", n))
+        """Episode n starts playing: its frames from now on go into its own video (the session's run_harness). Player
+        1's first starts a Recorder for each other player the game plays now (asked here: when the run starts, the game
+        isn't playing yet)."""
+        if self.thread is None:
+            return
+        if self.player == 1:
+            self._start_others()
+        self._mark(("begin", n))
+        for other in list(self.others.values()):
+            other.begin(n)
+
+    def _players(self):
+        """How many players the game plays now that can be recorded, up to MAX_PLAYERS; 1 when the plugin doesn't
+        record each player apart. A plugin that says "players" (several in one game) but not "instances" (built before
+        per-player recording: Unreal's, Roblox Studio) answers a `record start` for another player by starting player
+        1's again, so it is never asked: its game's players are counted once a run all the same, for players_missing."""
+        features = (getattr(self.link, "hello", None) or {}).get("features") or []
+        if "players" not in features:
+            return 1
+        if "instances" not in features:
+            if self.one_only is None:
+                self.one_only = list(range(2, self._count() + 1))
+            return 1
+        return self._count()
+
+    def _count(self):
+        """How many players the game plays now, up to MAX_PLAYERS (its context's `net.players` and `players`); 1 when
+        they can't be counted."""
+        try:
+            context = self.link.request("context", timeout=5) or {}
+            net = context.get("net") or {}
+            count = max(int(net.get("players") or 1), len(context.get("players") or []))
+        except Exception as e:  # noqa: BLE001 - player 1 is recorded as before
+            print(f"note: only player 1 is recorded: the game's players couldn't be counted ({type(e).__name__}: {e})")
+            return 1
+        return max(1, min(count, MAX_PLAYERS))
+
+    def _start_others(self):
+        """A Recorder for each other player the game plays now that has none yet (player 1's)."""
+        for k in range(2, self._players() + 1):
+            if k in self.others:
+                continue
+            other = Recorder(self.link, self.base, FPS, self.max_dim, self.quality, self.flipbook, player=k)
+            self._apart = frozenset([*self.others, k])  # (before it listens: player k's frames are never player 1's)
+            other.start()
+            self.others[k] = other
 
     def end(self, n):
         """Episode n has ended: its video ends on a picture of the game taken now, as the episode left it (the last
@@ -394,15 +480,19 @@ class Recorder:
         if self.thread is None:
             return
         last = None
-        if self.started:
+        if self.started and self.confirmed:
             try:
                 asked = time.time()  # (stamped as frames are: when the picture was asked for)
-                shot = self.link.request("capture", {"max_dim": self.max_dim, "quality": self.quality}, timeout=10)
+                shot = self.link.request("capture", self._args({"max_dim": self.max_dim, "quality": self.quality}),
+                                         timeout=10 if self.player == 1 else OTHER_END_TIMEOUT)
                 if shot.get("jpeg"):
                     last = {**shot, "n": "end", "wall": asked}
             except Exception as e:  # noqa: BLE001 - the video ends on its last frame
-                print(f"note: no picture of episode {n}'s end: {type(e).__name__}: {e}")
+                whose = "" if self.player == 1 else f" (player {self.player})"
+                print(f"note: no picture of episode {n}'s end{whose}: {type(e).__name__}: {e}")
         self._mark(("end", n, last))
+        for other in list(self.others.values()):
+            other.end(n)
 
     def _mark(self, mark):
         try:
@@ -427,7 +517,7 @@ class Recorder:
     def _episode(self, what, n, last=None):
         if what == "begin":
             self._close_clip()  # (one whose end never came)
-            self.clip = Clip(self.folder, n, self.fps, self.flipbook)
+            self.clip = Clip(self.folder, n, self.fps, self.flipbook, "" if self.player == 1 else f"-p{self.player}")
         elif self.clip is not None and self.clip.n == n:
             if last is not None:
                 self._keep(last, final=True)
@@ -465,12 +555,14 @@ class Recorder:
             self.kept += 1
 
     def stop(self):
+        for other in list(self.others.values()):  # (first: player 1's count line stays the log's last)
+            other.stop()
         self._stopping.set()
         if self._follower is not None:
             self._follower.join(timeout=30)
-        if self.started:
+        if self.started:  # (player k's too before its first frame: else the plugin records it on till it disconnects)
             try:
-                self.link.request("record", {"action": "stop"}, timeout=10)
+                self.link.request("record", self._args({"action": "stop"}), timeout=10)
             except Exception:
                 pass
         if self._listening is not None and self.on_frame in self._listening:
@@ -478,7 +570,8 @@ class Recorder:
         if self.thread is not None:
             self.queue.put(None)
             self.thread.join(timeout=60)
-            print(f"Recording: {self.kept} frames kept in {len(self.clips)} episode videos, of {self.received} "
+            whose = "" if self.player == 1 else f" (player {self.player}, {self.fps} fps)"
+            print(f"Recording{whose}: {self.kept} frames kept in {len(self.clips)} episode videos, of {self.received} "
                   f"received ({self.outside} outside the episodes, {self.dropped} dropped)")
 
     def last_clip(self):
@@ -490,9 +583,15 @@ class Recorder:
         return next((c for c in self.clips if c.n == episode and c.encoder is not None and c.encoder.frames), None)
 
     def summary(self):
-        """What run.json says of the recording: its counts and each episode's video."""
-        return {"frames": self.kept, "received": self.received, "dropped": self.dropped, "outside": self.outside,
-                "episodes": [c.summary() for c in self.clips if c.kept]}
+        """What run.json says of the recording: its counts and each episode's video; player 1's also "players", each
+        other player's recording by player (when the game played several), and those say their "player" and "fps"."""
+        summary = {"frames": self.kept, "received": self.received, "dropped": self.dropped, "outside": self.outside,
+                   "episodes": [c.summary() for c in self.clips if c.kept]}
+        if self.player > 1:
+            summary.update(player=self.player, fps=self.fps)
+        if self.others:
+            summary["players"] = {str(k): other.summary() for k, other in sorted(self.others.items())}
+        return summary
 
     def shown(self, episode=None):
         """The recording as the plugin's report shows it (the result's `recording`, docs/protocol.md), once stopped:
@@ -524,6 +623,40 @@ class Recorder:
         if not self.clips:
             return "no harness played the game, so there was nothing to record"
         return f"none of the game's {self.received} pictures could be recorded"
+
+    def players_shown(self, episode):
+        """The other players' videos of an episode (player 1's Recorder), once stopped: [{"player": k, "video": its
+        path, "seconds", "episode", and with a flipbook "frames", "frames_fps"}] in player order; a player with no video
+        of it is left out (players_missing says why)."""
+        shown = []
+        for k, other in sorted(self.others.items()):
+            clip = other.clip_of(episode)
+            if clip is None:
+                continue
+            item = {"player": k, "video": os.path.abspath(clip.video), "seconds": clip.seconds(), "episode": clip.n}
+            if clip.encoder.flipbook is not None and clip.encoder.flipbook.next:
+                item.update(frames=os.path.abspath(clip.encoder.flipbook.folder), frames_fps=clip.encoder.flipbook.fps)
+            shown.append(item)
+        return shown
+
+    def players_missing(self, episode=None):
+        """Why other players have no video (player 1's Recorder), once stopped: {k: why}, of an episode when given,
+        else of the whole run; {} when every other player has one (or the game played one player)."""
+        missing = {k: ("this plugin records player 1 only (an Autopilot plugin built before per-player recording, or "
+                       "Roblox Studio)") for k in self.one_only or []}
+        for k, other in sorted(self.others.items()):
+            if (other.clip_of(episode) if episode is not None else other.last_clip()) is not None:
+                continue
+            if other.problem:
+                missing[k] = other.problem
+            elif not other.confirmed:
+                missing[k] = (f"the plugin sent no picture of player {k} (a plugin that records player 1 only: an "
+                              "older Unreal plugin, Roblox Studio)")
+            elif episode is not None:
+                missing[k] = f"no frames of player {k} in episode {episode}"
+            else:
+                missing[k] = f"none of player {k}'s {other.received} pictures could be recorded"
+        return missing
 
 
 _seq = itertools.count(1)

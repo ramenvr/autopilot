@@ -307,6 +307,18 @@ The game: {project}. This run's folder: {run}/. Write {run}/harness.py, run it, 
 #  briefing says where all of it is (the file itself, or a file of the run it was written to whole)
 BRIEF_PART = 12000  # characters of one file it quotes: notes.md, lib.py, the codex README, what the live game shows
 BRIEF_LIST = 6000  # characters of one list: earlier runs, codex changes, where the request's words are, the levels
+# The shorter briefing (short=True) the user's own agent reads (`autopilot connect`, external.py): it reads REQUEST.md
+# with read_file, 20,000 characters a call, so its request message is kept within the start answer (whole.RESULT_CHARS)
+# and comes inline. Autopilot's own agents get the message at once and keep the budgets above
+SHORT_MESSAGE = 23000  # characters of the shorter request message: notes.md and lib.py are quoted as far as the rest
+# leaves room (it then fits the start answer with its own words). When the rest alone is longer (a long request, level
+# list or codex changes), they keep BRIEF_PART and the message is in REQUEST.md, read in parts
+README_PART = 3000  # characters of codex/README.md (its table and settings come first; the rest is read on in the file)
+WORDS_PART = 1500  # characters of where the request's words are (the files with the most first; all of them in a file)
+RUN_LINE = 300  # characters of one earlier run's line, made one line (its report.json has the rest)
+RUNS_PART = 2500  # characters of the earlier runs (the latest that fit; all of them in a file of the run)
+LIVE_LINE = 1200  # characters of one list or table of what the live game shows (its first items; a text is never cut)
+LIVE_PART = 4500  # characters of what the live game shows
 STOP_WORDS = set("""verify that this those these there their they them then than when what where which while with
 without from into onto over under after before about does doesn't should would could must will have has been being
 player player's players game games level levels make makes made keep keeps goes going still stays same each every
@@ -345,10 +357,12 @@ TOOL_SPECS = (
      "its number (default: the latest); start, end: times in it, in seconds from its start, as its summary's t= "
      "gives them (default: all of it; narrow them to the moment); questions: "
      f"1-{vision.MAX_QUESTIONS} open questions (what moves and how, what is at a spot, what the text says), never "
-     f"yes/no and never what you hope to see; frames: how many (default {vision.DEFAULT_FRAMES}).",
+     f"yes/no and never what you hope to see; frames: how many (default {vision.DEFAULT_FRAMES}); player: whose "
+     "view, in a game of several players (default 1).",
      {"type": "object", "properties": {
          "episode": {"type": "integer"}, "start": {"type": "number"}, "end": {"type": "number"},
-         "questions": {"type": "array", "items": {"type": "string"}}, "frames": {"type": "integer"}},
+         "questions": {"type": "array", "items": {"type": "string"}}, "frames": {"type": "integer"},
+         "player": {"type": "integer"}},
       "required": ["questions"]}),
     ("restart_level",
      "Start the level over (fresh state, the player respawned, all that probes and episodes did to it gone). level: "
@@ -465,10 +479,76 @@ def research_doc():
     return "\n".join(lines).strip()
 
 
-def system_prompt(engine, run_rel, agents=""):
+# The shorter instructions (short=True) the user's own agent reads (`autopilot connect`, external.py): it reads
+# INSTRUCTIONS.md with read_file, 20,000 characters a call, so the contract and the kit's reference sections below are
+# read when needed instead of quoted. Autopilot's own agents get the instructions as their system prompt, whole
+CONTRACT = "The contract's docstrings (autopilot/kit/harness.py):\n```python\n{contract}\n```"
+CONTRACT_SHORT = ("Before you write harness.py, read the contract, autopilot/kit/harness.py with read_file (its "
+                  "docstrings).")
+KIT_MORE = "KIT_MORE.md"  # in the run's folder: the kit's reference sections the shorter instructions list
+# Those sections, by how their heading starts, and what each is for (the list in their place says it)
+KIT_ON_DEMAND = {
+    "Geometry": "Vec, bearing, where() and the like",
+    "Time (": "Clock, game.now, game.lag for your own loops",
+    "Looking while playing": "game.watch, watch_questions, died",
+    "An example": "a whole harness",
+    "Reacting in time": "reflexes in executor code, faster than Jev decides",
+}
+
+
+def _sections(text):
+    """[(title, text)] of a markdown text cut at its level-2 headings outside code blocks (title None: what comes
+    before the first)."""
+    out, title, lines, fence = [], None, [], False
+    for line in text.splitlines(keepends=True):
+        if line.lstrip().startswith("```"):
+            fence = not fence
+        elif not fence and line.startswith("## "):
+            out.append((title, "".join(lines)))
+            title, lines = line[3:].strip(), []
+        lines.append(line)
+    out.append((title, "".join(lines)))
+    return out
+
+
+def _kit_split(engine, run_rel):
+    """(the kit's reference for the shorter instructions, KIT_MORE.md's text): the KIT_ON_DEMAND sections moved out
+    of the reference (the engine's own wording) into KIT_MORE.md, and a list of them, saying where they are, in the
+    place of the first."""
+    kit = kit_doc(engine)
+    kept, moved = [], []
+    for title, text in _sections(kit):
+        when = next((w for start, w in KIT_ON_DEMAND.items() if title and title.startswith(start)), None)
+        if when is None:
+            kept.append(text)
+            continue
+        if not moved:
+            kept.append(None)  # (the list goes here)
+        moved.append((title, when, text))
+    if not moved:
+        return kit, ""
+    listing = (f"## More of the kit: {run_rel}/{KIT_MORE} (read a section when you need it)\n"
+               + "".join(f"- {title}: {when}\n" for title, when, _ in moved) + "\n")
+    short = "".join(listing if text is None else text for text in kept)
+    short = short.rstrip() + kit[len(kit.rstrip()):]  # (it ends as the reference does)
+    more = ("# More of the kit (autopilot.kit)\n\nThe sections of the kit's reference that INSTRUCTIONS.md lists "
+            "under \"More of the kit\".\n\n" + "".join(text for _, _, text in moved))
+    return short, more
+
+
+def kit_more(engine):
+    """KIT_MORE.md: the kit's reference sections the shorter instructions list instead of quoting."""
+    return _kit_split(engine, "")[1]
+
+
+def system_prompt(engine, run_rel, agents="", short=False):
     """The instructions. agents: what this agent's subagents are and when to use them (the Claude Code agent's
-    researchers), as a paragraph of step 1; "" for an agent that has none."""
-    return (SYSTEM.replace("{engine}", engine.title).replace("{run}", run_rel).replace("{kit}", kit_doc(engine))
+    researchers), as a paragraph of step 1; "" for an agent that has none. short: the shorter instructions the
+    user's own agent reads (the contract and the KIT_ON_DEMAND sections pointed to, not quoted)."""
+    system, kit = SYSTEM, kit_doc(engine)
+    if short:
+        system, kit = SYSTEM.replace(CONTRACT, CONTRACT_SHORT), _kit_split(engine, run_rel)[0]
+    return (system.replace("{engine}", engine.title).replace("{run}", run_rel).replace("{kit}", kit)
             .replace("{research}", research_doc()).replace("{agents}", (" " + agents.strip()) if agents else "")
             .replace("{probe_seconds:.0f}", f"{PROBE_SECONDS:.0f}")
             .replace("{research_minutes:g}", f"{research_seconds() / 60:g}")
@@ -615,11 +695,15 @@ class Session:
         self.findings = []  # [{"n", "at", "text", "files", "source", "told": the tool result that carried it}]
         self.findings_lock = threading.Lock()
         self.news_lock = threading.Lock()
-        self.news_batches = 0  # the indexer's batches told so far
+        # the indexer's batches told so far (those that came while the run waited for the export count as told)
+        self.news_batches = getattr(self.indexer(), "waited_batches", 0) or 0
         self.news_findings = 0  # the findings told so far
         self.index_was_running = False  # (the export was still running when the run started: its end is told)
         self.index_told_done = False
         self.harness_started = {}  # episode n -> time.time() its harness started playing
+        # episode n -> the indexer's status when its harness started: a harness written while the export still ran
+        # was built on part of the game's files (finish() alerts the user when the last one played was)
+        self.harness_index = {}
 
     def indexer(self):
         """The codex's Indexer (codex.Indexer) when the export streamed in for this run, else None."""
@@ -686,7 +770,7 @@ class Session:
                     self.index_told_done = True
                     parts.append(self._indexed_text(status))
                 elif status["running"]:
-                    parts.append(f"[indexing the game's files: the export {codexmod.progress(status)}; "
+                    parts.append(f"[indexing the game's files: {codexmod.export_words(status)}; "
                                  f"{status['files']} files in the codex now]")
                 if status.get("working"):
                     parts.append(f"[still being written: {', '.join(status['working'])}]")
@@ -1079,7 +1163,7 @@ class Session:
                 found = searched(*a, **k)
                 status = view.status()
                 if status.get("running") and isinstance(found, list):
-                    found.append(f"(searched what is indexed so far: the export {codexmod.progress(status)}; what is "
+                    found.append(f"(searched what is indexed so far: {codexmod.export_words(status)}; what is "
                                  "still coming may match too)")
                 return found
 
@@ -1230,6 +1314,12 @@ class Session:
         n = self.episodes + 1
         if os.path.exists(os.path.join(self.run_dir, file)):
             self.harness_started[n] = t0
+            idx = self.indexer()
+            if idx is not None:
+                status = idx.status()
+                if status.get("running"):  # (what a harness written on part of the game's files had: read_summary)
+                    status["kinds"] = codexmod.codex_kinds(os.path.join(self.root, "codex"))
+                self.harness_index[n] = status
             if self.researcher is not None:  # (it checks the harness against the code while it plays)
                 self.researcher.playing(n)
         if self.sandbox:
@@ -1364,6 +1454,11 @@ class Session:
         if self.most_decisions < MIN_JEV_DECISIONS:
             note += (f"Note: Jev made {decisions} decisions in this episode; report needs an episode with at least "
                      f"{MIN_JEV_DECISIONS} (decisions among 2+ options), so this one can't settle the request.\n")
+        elif result.get("reason") == "status done":
+            # (runs played again after the request was settled: the harness's "done" is checked against the request)
+            note += ("Note: the harness says done. Before playing again, check this episode's facts against each part "
+                     "of the request: if every part matches, report now; play again only for a part the facts don't "
+                     "show.\n")
         over = self.started_over()  # (first: it says how to read all below it)
         self.touched = True
         head = (over + note + f"Episode {n} ({self.run_rel}/trace{n}.jsonl; harness saved as harness{n}.py; this "
@@ -1477,7 +1572,7 @@ class Session:
             except Exception:
                 pass
         if net.get("mode") in ("client", "listen_server"):
-            out["network"] = network_note(net, paused)
+            out["network"] = network_note(net, paused, (getattr(g.link, "hello", None) or {}).get("features") or ())
         out = runtime.jsonable(out)
         # (whole: the briefing quotes what fits of it and keeps all of it in a file of the run)
         return "\n".join(f"{k}: {json.dumps(v, default=str)}" for k, v in out.items())
@@ -1507,9 +1602,10 @@ class Session:
                 f"run_harness frames_fps films an episode at up to {vision.FILM_FPS[1]}): describe_frames describes "
                 "an episode's frames.")
 
-    def describe_frames(self, questions, episode=None, start=None, end=None, frames=None):
+    def describe_frames(self, questions, episode=None, start=None, end=None, frames=None, player=None):
         """describe_frames: an episode's frames (between times start and end of it: seconds from its start, as its
-        summary's t=), described with questions."""
+        summary's t=), described with questions. player: whose view, in a game of several players (default 1);
+        another player's times are on player 1's clock too."""
         if self.describer is None:
             return "describe_frames isn't available in this run."
         if self.looks_itself and self.describer.route is None:
@@ -1525,26 +1621,84 @@ class Session:
                     "INCONCLUSIVE here (report visual: true); the user is told why.")
         if isinstance(questions, str):
             questions = [questions]
+        k, other, refused = self._player(player)
+        if refused:
+            return refused
         n, span = self._episode_span(episode)
         if span is None:
             return n
         wall1 = span.get("wall_end") or time.time()
-        label = f"episode {n}"
+        label, kept, base, why = self._view(k, other, n, span)
+        if why:
+            return why
         self.say(RESULTS)
         text, ok = self.describer.describe(span["wall_start"] - 0.5, wall1 + 0.5, questions, frames or
-                                           vision.DEFAULT_FRAMES, t0=start, t1=end, label=label,
-                                           base=span.get("t_start") or 0.0)
+                                           vision.DEFAULT_FRAMES, t0=start, t1=end, label=label, base=base, kept=kept)
         if ok:
             self.described += 1
             self.look_failed = None
         else:
             self.look_failed = text
-            if self.describer.no_picture:  # (the game drew no picture while the episode played)
+            if self.describer.no_picture and other is None:  # (the game drew no picture while the episode played)
                 self.alert(self.describer.alert("no picture came from the game while it played (its window was "
                                                 "minimized or hidden)"))
-        self.activity("look", f"Looked at {label}'s frames" if ok else f"Couldn't look at {label}'s frames",
+        whose = f"{label}'s frames" if other is None else f"player {k}'s frames of episode {n}"
+        self.activity("look", f"Looked at {whose}" if ok else f"Couldn't look at {whose}",
                       detail=text, ends="look", log=f"describe_frames ({label}): {questions} -> {text}")
         return text
+
+    def _player(self, player):
+        """(the player, its media.Recorder, None) for another player whose view is filmed (the recording's `others`);
+        (1, None, None) for player 1, or none given (the recording's own frames, as always); (None, None, why there
+        are no frames of it) for a player not filmed, or not a player's number."""
+        if player is None:
+            return 1, None, None
+        k = None
+        if not isinstance(player, bool):
+            try:
+                k = int(player) if float(player) == int(float(player)) else None
+            except (TypeError, ValueError, OverflowError):
+                k = None
+        if k is None or k < 1:
+            return None, None, f"No player {player!r} here: player is a player's number (1: the one you play)."
+        if k == 1:
+            return 1, None, None
+        recorder = getattr(self.describer, "recorder", None)
+        others = getattr(recorder, "others", None) or {}
+        if k in others:
+            return k, others[k], None
+        try:  # (why the run knows: a plugin that records player 1 only)
+            why = (recorder.players_missing() or {}).get(k)
+        except Exception:  # noqa: BLE001 - no reason, then
+            why = None
+        filmed = [1, *sorted(others)]
+        why = why or ("only player 1 is filmed in this run" if len(filmed) == 1 else
+                      f"only players {', '.join(map(str, filmed[:-1]))} and {filmed[-1]} are filmed in this run")
+        return None, None, f"No frames of player {k}: {why}."
+
+    def _view(self, k, other, n, span):
+        """(label, the Frames to look at, the base their times are told from, None) for player k's view of episode n
+        (its span), or (.., why there are none). Player 1's (other None): the recording's own frames from the
+        episode's first game time, as always. Another player's: its frames, from the game time of its own that is
+        the same moment (vision.clock_base: its times are on player 1's clock, the summary's t=)."""
+        base = span.get("t_start") or 0.0
+        if other is None:
+            return f"episode {n}", None, base, None
+        label = f"episode {n}, player {k}"
+        wall0, wall1 = span["wall_start"] - 0.5, (span.get("wall_end") or time.time()) + 0.5
+        theirs = vision.clock_base(other.frames, getattr(self.describer, "frames", None), wall0, wall1,
+                                   span["wall_start"], base)
+        if theirs is None:
+            try:
+                why = (self.describer.recorder.players_missing(n) or {}).get(k)
+            except Exception:  # noqa: BLE001
+                why = None
+            if why:  # (it may say where the pictures are: named in the game's folder, as the agent's tools do)
+                from .. import cli
+                why = cli.portable(why, self.run_dir, self.run_rel)
+            why = why or f"no picture of player {k} came while it played"
+            return label, None, base, f"No frames of {label}: {why}."
+        return label, other.frames, theirs, None
 
     def _episode_span(self, episode=None):
         """(its number, the span episode_spans() has of it) for an episode (default: the latest), or (why there is
@@ -1559,12 +1713,13 @@ class Session:
                     "No episode has been played yet: run_harness first (its frames are what can be looked at)."), None
         return n, span
 
-    def frames(self, episode=None, start=None, end=None, count=None, live=True):
+    def frames(self, episode=None, start=None, end=None, count=None, live=True, player=None):
         """frames, for the user's own agent (autopilot/agents/external.py), whose describer subagent looks at them
         itself: (text, [JPEG bytes]) of up to vision.MAX_FRAMES of an episode's frames (between times start and end of
         it: seconds from its start, as its summary's t=), or (why there are none, []). Frames had count as a
         description for report's visual rule. live False: the run has ended (reported, stopped): the frames it kept
-        are read and nothing else happens (no feed line, no alert, no status for the tab)."""
+        are read and nothing else happens (no feed line, no alert, no status for the tab). player: whose view, in a
+        game of several players (default 1); another player's times are on player 1's clock too."""
         if self.describer is None:
             return "The game isn't filmed in this run.", []
         why = self.describer.unfilmed()
@@ -1574,19 +1729,23 @@ class Session:
                 self.alert(self.describer.alert(why, filming=True))
             return (f"Can't look at the game's picture in this run: {why}. A request about how something looks is "
                     "INCONCLUSIVE here (report visual: true)" + ("; the user is told why." if live else ".")), []
+        k, other, refused = self._player(player)
+        if refused:
+            return refused, []
         n, span = self._episode_span(episode)
         if span is None:
             return n, []
-        label = f"episode {n}"
-        base = span.get("t_start") or 0.0
+        label, kept, base, why = self._view(k, other, n, span)
+        if why:
+            return why, []
         if live:
             self.say(RESULTS)
         chosen, frames, why = self.describer.frames_of(span["wall_start"] - 0.5, (span.get("wall_end") or time.time())
                                                        + 0.5, count or vision.DEFAULT_FRAMES, start, end, label,
-                                                       base, live)
+                                                       base, live, kept=kept)
         if why:
             self.look_failed = why
-            if live and self.describer.no_picture:
+            if live and self.describer.no_picture and other is None:
                 self.alert(self.describer.alert("no picture came from the game while it played (its window was "
                                                 "minimized or hidden)", filming=True))
             if live:
@@ -1697,7 +1856,24 @@ class Session:
         self.still("report", outcome=args.get("outcome"))
         with open(os.path.join(self.run_dir, "report.json"), "w", encoding="utf-8") as f:
             json.dump(args, f, indent=1)
-        return "Reported. You can stop now."
+        videos = self.players_videos(args.get("episode") or self.episodes) if self.looks_itself else ""
+        return "Reported. You can stop now." + (f"\n{videos}" if videos else "")
+
+    def players_videos(self, n):
+        """The line naming each player's video of episode n, in a game of several players whose other players are
+        recorded (media.Recorder's `others`), for the user's own agent to tell the user: paths in this game's folder,
+        as its file tools take them. "" in a game of one player. The file names are the Recorder's (media.Clip), so
+        they are known before its encoder has closed the episode's video."""
+        recorder = self.recorder or getattr(self.describer, "recorder", None)
+        others = [k for k, other in sorted((getattr(recorder, "others", None) or {}).items())
+                  if getattr(other, "confirmed", True)]  # (a player the plugin never pictured has no video)
+        if not others:
+            return ""
+        folder = f"{self.run_rel}/{os.path.relpath(recorder.folder, self.run_dir).replace(os.sep, '/')}"
+        names = [f"player 1: {folder}/recording-{n}.mp4"] + [f"player {k}: {folder}/recording-{n}-p{k}.mp4"
+                                                            for k in others]
+        return (f"Each player's video of episode {n}, in this game's folder (the Autopilot tab plays player 1's): "
+                + ", ".join(names) + ".")
 
     def _report_episode(self, episode):
         """The report's `episode` (the one whose recording is the run's) as a number 1..episodes played, or why it
@@ -1719,15 +1895,18 @@ class Session:
         return n
 
 
-def network_note(net, paused=None):
+def network_note(net, paused=None, features=()):
     """The opening's line on a multiplayer game (the plugin's context `net`): whose player the run plays, where the
     truth is kept, and whether the game pauses. A single-player game has none; a Roblox game (`rc_side` "server": a
     client of the game's server, its reads made on the server) has its own, one player or several. Several players in
     one editor (Unreal's `players`: its Play settings' Number of Players) get a line on driving them."""
+    compare = ("To compare host and client, read an actor on every world in one frame with game.read_worlds (KIT.md: "
+               "a gap that closes is lag, one that stays is desync).")
     if net.get("mode") == "listen_server":
         return " ".join(n for n in ["Multiplayer: the game is hosted by the player you play (a listen server), so this "
                                     "world has authority: what you read is the game's truth and a change from a probe "
-                                    "sticks.", players_note(net)] if n)
+                                    "sticks.", compare if int(net.get("players") or 1) > 1 else "",
+                                    players_note(net, features)] if n)
     if net.get("rc_side") == "server":
         # (Roblox: every play session is a client of the game's server, and the plugin's reads go to the server)
         clients = int(net.get("clients") or 1)
@@ -1753,24 +1932,29 @@ def network_note(net, paused=None):
                     f"(controller {net.get('server_controller') or '-'}); "
                     f"find other server actors with game.call(GAMEPLAY, \"GetAllActorsOfClass\", "
                     f"WorldContextObject=\"{server}\", ActorClass=...).")
+        note.append(compare)
     else:
         note.append("The server runs in another process: its state can't be read from here, only what it sent the "
                     "client.")
     if isinstance(paused, dict) and paused.get("why"):
         note.append(f"The game can't be paused ({paused['why']}): it runs on while you read or think.")
-    if players_note(net):
-        note.append(players_note(net))
+    if players_note(net, features):
+        note.append(players_note(net, features))
     note.append("Play the game as the editor is set up to play it: don't change the editor's Play settings (the net "
                 "mode is the user's).")
     return " ".join(note)
 
 
-def players_note(net):
+def players_note(net, features=()):
     """The opening's line on the other players an editor plays (the plugin's context `net` with `players` above 1:
-    Unreal's multiplayer Play In Editor, every player in one process): how to drive them; "" for one player."""
+    Unreal's multiplayer Play In Editor, every player in one process): how to drive them, and, when the plugin records
+    each player (its hello's features have "players" and "instances": media.Recorder), how to look at their views;
+    "" for one player."""
     players = int(net.get("players") or 1)
     if players <= 1:
         return ""
+    filmed = (" Each player is filmed: frames and describe_frames take player=n for player n's view."
+              if {"players", "instances"} <= set(features or ()) else "")
     return (f"The editor plays {players} players, as its Play settings start them: you are player 1 (game), "
             "and game.player(n) is player n as a game of its own: its pawn, pose, view, screen, keys, ui_act and every "
             "controller (walk_to(game.player(2), ...)); game.players() lists them. A player nobody drives stands idle "
@@ -1778,7 +1962,10 @@ def players_note(net):
             "seeing another) or when the game needs every player to go on (a door for two, a revive); otherwise play "
             "player 1 and leave them be. The pointer (a click at a place on the view) is player 1's only: another "
             "player's UI takes game.player(n).ui_act. The number of players is the user's: game.restart(players=N) "
-            "can't change it.")
+            "can't change it. Every read waits for a frame and reads sent together share one: step the players at "
+            "once with yield from together([gen1, gen2]) and read them at once with game.each_player(fn) or "
+            "game.poses(), once a tick, rather than one player after another (each player then costs another frame "
+            "a tick)." + filmed)
 
 
 def _whole(path):
@@ -1790,31 +1977,75 @@ def _whole(path):
         return ""
 
 
-def _quoted(session, rel, title, fence=None, why=""):
+def _quoted(session, rel, title, fence=None, why="", seen=None, budget=None):
     """A file of the game's folder (rel: its path there) as a part of the briefing under title: whole when it fits
-    BRIEF_PART, else its first lines, with how long it is and from where to read on (why: what reading the rest is
-    for). fence: a code block's language, or None. None when the file is missing or empty."""
+    budget (default BRIEF_PART), else its first lines, with how long it is and from where to read on (why: what
+    reading the rest is for). fence: a code block's language, or None. seen: a dict, or None; when given, seen[rel]
+    is set to the file's whole length in characters, before any cut. None when the file is missing or empty."""
     text = _whole(os.path.join(session.root, *rel.split("/"))).rstrip()
+    if seen is not None:
+        seen[rel] = len(text)
     if not text.strip():
         return None
-    note, shown = whole.split(text, BRIEF_PART, rel, what=rel, holds="the briefing quotes")
+    note, shown = whole.split(text, BRIEF_PART if budget is None else budget, rel, what=rel,
+                              holds="the briefing quotes")
     if fence is not None and shown:
         shown = f"```{fence}\n{shown}\n```"
     return "\n".join(filter(None, [title, note + (f" {why}" if note and why else ""), shown]))
 
 
-def _listing(session, title, items, stem, what, latest=False):
-    """(a list of the briefing under title, the items it shows): items one a line when they fit BRIEF_LIST, else all
-    of them written whole to a file of the run (stem) and those that fit (the first, or the latest), saying where
-    the rest are."""
-    k = whole.listed(items, BRIEF_LIST, latest)
+def _listing(session, title, items, stem, what, latest=False, budget=None, full=None):
+    """(a list of the briefing under title, the items it shows): items one a line when they fit budget (default
+    BRIEF_LIST), else all of them written whole to a file of the run (stem) and those that fit (the first, or the
+    latest), saying where the rest are. full: the items as the file has them, when the list shows them shorter (one
+    to one)."""
+    k = whole.listed(items, BRIEF_LIST if budget is None else budget, latest)
     if k == len(items):
         return "\n".join([title, *items]), items
-    rel = whole.kept(session.run_dir, session.run_rel, stem, "\n".join(items) + "\n")[1]
+    rel = whole.kept(session.run_dir, session.run_rel, stem, "\n".join(full or items) + "\n")[1]
     shown = items[len(items) - k:] if latest else items[:k]
     said = (f"({len(items)} {what}, one a line, whole in {rel}"
             + (f"; the {'latest' if latest else 'first'} {k} follow)" if k else ": read them there)"))
     return "\n".join([title, said, *shown]), shown
+
+
+def _one_line(text, limit, where):
+    """text made one line; when longer than limit, cut at a word and ending with where the rest is (where)."""
+    text = " ".join(str(text).split())
+    if len(text) <= limit:
+        return text
+    tail = f" ... ({where})"
+    cut = text[:max(0, limit - len(tail))]
+    if " " in cut:
+        cut = cut[:cut.rindex(" ")]
+    return cut + tail
+
+
+def _live_line(line, where):
+    """A line of what the live game shows ("key: <json>"): whole when it fits LIVE_LINE or its value is no list or
+    table (a text, such as the network note, is never cut), else its first items that fit and how many more are in
+    where (the whole of it, a file of the run)."""
+    key, sep, value = line.partition(": ")
+    if not sep or len(line) <= LIVE_LINE:
+        return line
+    try:
+        value = json.loads(value)
+    except ValueError:
+        return line
+    if isinstance(value, list):
+        items, ends = [json.dumps(v, default=str) for v in value], "[]"
+    elif isinstance(value, dict):
+        items, ends = [f"{json.dumps(k)}: {json.dumps(v, default=str)}" for k, v in value.items()], "{}"
+    else:
+        return line
+    room = LIVE_LINE - len(key) - len(sep) - len(ends) - len(f" (+{len(items)} more: whole in {where})")
+    size, k = -2, 0
+    for item in items:
+        size += len(item) + 2
+        if size > room:
+            break
+        k += 1
+    return f"{key}{sep}{ends[0]}{', '.join(items[:k])}{ends[1]} (+{len(items) - k} more: whole in {where})"
 
 
 def _stem(word):
@@ -1875,21 +2106,40 @@ def word_hits(codex_root, prompt, limit=None):
     return lines
 
 
-def briefing(session, opening=None):
-    """The request message's second half: what every run used to read in its first turns."""
+def briefing(session, opening=None, short=False, room=None):
+    """The request message's second half: what every run used to read in its first turns. short: the shorter one the
+    user's own agent reads (README_PART, WORDS_PART, RUN_LINE and RUNS_PART, LIVE_LINE and LIVE_PART, each saying
+    where the rest is); Autopilot's own agents get the whole of each part as far as BRIEF_PART and BRIEF_LIST go.
+    room: characters the briefing may take (short, first_message): when it is longer, notes.md and lib.py are quoted
+    as far as the rest leaves room, if that makes it fit; None: no limit."""
     root = session.root
-    out = []
+    out, parts, seen = [], {}, {}  # (parts, seen: each part's length, each quoted file's whole length; logged below)
+    at = {}  # (each part's place in out)
+
+    def add(name, text):
+        at[name] = len(out)
+        out.append(text)
+        parts[name] = len(text)
+
     level = levelsmod.briefing(getattr(session.game, "level_info", None), budget=BRIEF_LIST,
                                keep=lambda stem, text: whole.kept(session.run_dir, session.run_rel, stem, text)[1])
     if level:  # (first: which level to play is the first decision)
-        out.append(level)
+        add("level", level)
     read_whole = "Read the rest of it before you rely on what it says."
-    notes = _quoted(session, "notes.md", "## notes.md (what earlier requests on this game verified)", why=read_whole)
-    lib = _quoted(session, "lib.py", "## lib.py (importable as `import lib`)", fence="python", why=read_whole)
-    out += [part for part in (notes, lib) if part]
+    learned = {"notes.md": ("## notes.md (what earlier requests on this game verified)", None),
+               "lib.py": ("## lib.py (importable as `import lib`)", "python")}  # (title, fence)
+
+    def quote(rel, budget=None):
+        title, fence = learned[rel]
+        return _quoted(session, rel, title, fence=fence, why=read_whole, seen=seen, budget=budget)
+
+    notes, lib = quote("notes.md"), quote("lib.py")
+    for name, part in (("notes.md", notes), ("lib.py", lib)):
+        if part:
+            add(name, part)
     if not notes and not lib:
-        out.append("## notes.md, lib.py\nNone yet: the first request on this game.")
-    runs = []
+        add("none yet", "## notes.md, lib.py\nNone yet: the first request on this game.")
+    runs, rids = [], []
     runs_dir = os.path.join(root, "runs")
     for rid in sorted(os.listdir(runs_dir)) if os.path.isdir(runs_dir) else []:
         if rid == session.run_id:
@@ -1902,9 +2152,15 @@ def briefing(session, opening=None):
             rep = {}
         if prompt:
             runs.append(f"- runs/{rid}: {prompt} -> {rep.get('outcome', 'no report')}: {rep.get('summary', '')}")
-    if runs:
-        out.append(_listing(session, "## Earlier runs (each folder keeps its harness versions, traces and report)",
-                            runs, "earlier_runs", "earlier runs", latest=True)[0])
+            rids.append(rid)
+    if runs and short:  # (each run one short line; the file of the run keeps them whole)
+        lines = [_one_line(run, RUN_LINE, f"runs/{rid}/report.json") for run, rid in zip(runs, rids)]
+        add("earlier runs", _listing(session, "## Earlier runs (each folder keeps its harness versions, traces and "
+                                     "report)", lines, "earlier_runs", "earlier runs", latest=True, budget=RUNS_PART,
+                                     full=runs)[0])
+    elif runs:
+        add("earlier runs", _listing(session, "## Earlier runs (each folder keeps its harness versions, traces and "
+                                     "report)", runs, "earlier_runs", "earlier runs", latest=True)[0])
     codex_root = os.path.join(root, "codex")
     try:
         since = codex_since(session, codex_root)
@@ -1912,18 +2168,21 @@ def briefing(session, opening=None):
         session.note(f"codex changes: {e}")
         since = None
     if since and (notes or lib or runs):  # (with nothing learned yet, nothing can be out of date)
-        out.append(since)
+        add("codex since", since)
     idx = session.indexer()
+    status = None  # (the export's, when it streams in: while it runs, a word in no file may still come)
     if idx is not None:
         with session.news_lock:  # (what arrived before now is in the codex the briefing reads: not news)
             session.news_batches = len(idx.batches)
         status = idx.status()
         if "level snapshot" in status.get("working", []):
-            out.append("## The level's snapshot is being taken\n"
-                       "codex/level.txt (every actor of the running level, by kind, and where) is being written while "
-                       "you work: a tool result says when it is in. What the live game shows now is below.")
+            add("level snapshot",
+                "## The level's snapshot is being taken\n"
+                "codex/level.txt (every actor of the running level, by kind, and where) is being written while "
+                "you work: a tool result says when it is in. What the live game shows now is below.")
         if status["running"]:
-            out.append(
+            add(
+                "indexing",
                 "## The game's files are still being indexed\n"
                 f"The plugin is exporting the game's Blueprints, data and maps ({codexmod.progress(status)} "
                 f"so far; the level this run plays and what it uses first). The codex has {status['files']} "
@@ -1931,9 +2190,10 @@ def briefing(session, opening=None):
                 f"one (all of them also in {codexmod.INDEXING}/batch-N.txt), and says when the export is in. A search "
                 "that finds nothing has looked at what is indexed so far: what you need may still come. Work with "
                 "what is there; you never need to read a file again unless it changed and you rely on it.")
-    readme = _quoted(session, "codex/README.md", "## codex/README.md")
+    readme = _quoted(session, "codex/README.md", "## codex/README.md", seen=seen,
+                     budget=README_PART if short else None)
     if readme:
-        out.append(readme)
+        add("codex/README.md", readme)
     try:
         hits = word_hits(codex_root, session.prompt) if os.path.isdir(codex_root) else None
     except Exception:
@@ -1941,25 +2201,67 @@ def briefing(session, opening=None):
     if hits:
         ranked = [line for line in hits if line.startswith("- ")]
         text, _ = _listing(session, "## Where the request's words appear in the codex (files, with how often)",
-                           ranked, "request_words", "files have some of the request's words, the most first")
-        out.append("\n".join([text, *(line for line in hits if not line.startswith("- "))]))
+                           ranked, "request_words", "files have some of the request's words, the most first",
+                           budget=WORDS_PART if short else None)
+        asides = [line for line in hits if not line.startswith("- ")]
+        if status and status["running"]:
+            missing = "(not in the codex: "
+            later = f"; {codexmod.export_words(status)}, it may still come)"
+            asides = [f"(not in the codex yet: {line[len(missing):-1]}{later}" if line.startswith(missing) else line
+                      for line in asides]
+        add("request words", "\n".join([text, *asides]))
     try:  # (the workflow for this kind of request: the package's, or this game's own: autopilot/workflows.py)
         from .. import workflows
         from ..cli import kind_by_words
 
         flow = workflows.text(kind_by_words(session.prompt), root)
         if flow:
-            out.append(flow)
+            add("workflow", flow)
     except Exception as e:  # noqa: BLE001 - a run never fails for its playbook
         session.note(f"workflow: {e}")
     if opening:  # (last: the live game's state is the part a long briefing is cut at, and it is kept whole in a file)
         title = "## The live game now (looked at just before you started; it is paused)"
-        if len(opening) > BRIEF_PART:  # (whole in a file of the run)
+        seen["live game"] = len(opening)
+        if short:
+            opening = _live(session, opening)
+        elif len(opening) > BRIEF_PART:  # (whole in a file of the run)
             rel = whole.kept(session.run_dir, session.run_rel, "opening", opening)[1]
             opening = whole.deliver(opening, BRIEF_PART, rel, what="What the live game shows",
                                     holds="the briefing quotes")
-        out.append(f"{title}\n{opening}")
-    return "\n\n".join(out)
+        add("live game", f"{title}\n{opening}")
+    text = "\n\n".join(out)
+    quoted = [rel for rel in learned if rel in parts]
+    if room is not None and len(text) > room and quoted:  # (notes.md and lib.py get what the rest leaves)
+        left = room - len(text) + sum(parts[rel] for rel in quoted)
+        small = min(quoted, key=parts.get)  # (the shorter one keeps all of it when it fits half, the other the rest)
+        share = {small: min(parts[small], left // len(quoted))}
+        share.update({rel: left - share[small] for rel in quoted if rel != small})
+        fitted = list(out)
+        for rel in (rel for rel in quoted if share[rel] < parts[rel]):
+            title, fence = learned[rel]
+            # (what the part adds beside the quote: its title and why, the code block's lines; the quote's own note is
+            # within its budget)
+            fitted[at[rel]] = quote(rel, budget=share[rel] - len(title) - len(read_whole) - 2 - (14 if fence else 0))
+        if len("\n\n".join(fitted)) <= room:  # (else it can't fit anyway: the message is read in parts, notes whole)
+            out = fitted
+            parts.update({rel: len(out[at[rel]]) for rel in quoted})
+            text = "\n\n".join(out)
+    # (sizes only, never the text: what a total budget for the briefing would be decided from)
+    session.note("briefing sizes: " + json.dumps({"total": len(text), "parts": parts, "whole": seen}))
+    return text
+
+
+def _live(session, opening):
+    """What the live game shows, for the shorter briefing: whole when it fits LIVE_PART and each line LIVE_LINE; else
+    kept whole in a file of the run, each long list or table its first items (_live_line), and, when that is still
+    longer than LIVE_PART, the lines that fit, saying from which line to read on."""
+    lines = opening.splitlines()
+    if len(opening) <= LIVE_PART and all(len(line) <= LIVE_LINE for line in lines):
+        return opening
+    rel = whole.kept(session.run_dir, session.run_rel, "opening", opening)[1]
+    text = "\n".join(_live_line(line, rel) for line in lines)  # (line for line: the file's line numbers hold)
+    return whole.deliver(text, LIVE_PART, rel, what="What the live game shows (long lists cut)",
+                         holds="the briefing quotes")
 
 
 NAMED_IN = ("notes.md", "lib.py")  # what runs wrote down, which may name codex files
@@ -2156,14 +2458,17 @@ def looker_for(describer, client):
 
 
 def start_reading(session, describer=None):
-    """The brain's own reading for the run: llm and llm_map in probes (an llm.Reader on the describer's provider, its
-    calls counted in the run's usage) and the background researcher (agents/researcher.py), told of each batch the
-    export brings (codex.Indexer). Neither when no model can be reached; the researcher only when the run has it
-    (researcher.enabled: the user's choice on the plugin's Settings page, else off in the Aura app's Autopilot)."""
+    """The brain's own reading for the run: llm and llm_map in probes (an llm.Reader on the agent's provider, which
+    the run gives the describer as agent_provider, else the describer's; its calls counted in the run's usage) and
+    the background researcher (agents/researcher.py), told of each batch the export brings (codex.Indexer). Neither
+    when no model can be reached; the researcher unless the run turns it off (researcher.enabled:
+    AUTOPILOT_RESEARCHER=0, else the run's choice, which the run gives the describer as research, else the plugin's
+    Settings page's, else on)."""
     from .. import llm
     from . import researcher
 
-    provider = getattr(describer, "provider", None) or "anthropic"
+    # (not the describer's: through Aura a text-only model's frames are described by another provider's, Google's)
+    provider = getattr(describer, "agent_provider", None) or getattr(describer, "provider", None) or "anthropic"
     reading = llm.Model(provider, agent_model=model(provider), usage=getattr(describer, "usage", None),
                         proxied=getattr(describer, "proxied", None))
     idx = session.indexer()
@@ -2175,8 +2480,8 @@ def start_reading(session, describer=None):
     if session.sandbox is not None:
         session.sandbox.reader = session.reader
     hello = getattr(getattr(session.game, "link", None), "hello", None)
-    if not researcher.enabled(hello):
-        session.note("researcher: off (the user's choice, or the Aura app's Autopilot with none)")
+    if not researcher.enabled(hello, getattr(describer, "research", None)):
+        session.note("researcher: off (the run's or the plugin's choice, or AUTOPILOT_RESEARCHER=0)")
     else:
         session.researcher = researcher.Researcher(session, reading)
         if idx is not None:
@@ -2184,9 +2489,10 @@ def start_reading(session, describer=None):
         session.note(f"researcher: on, {reading.name}")
 
 
-def first_message(session):
+def first_message(session, short=False):
     """The request message an agent starts from: the request, then the briefing (what every run would read first,
-    and what the live game shows now). Also saves the request as prompt.txt in the run's folder."""
+    and what the live game shows now). Also saves the request as prompt.txt in the run's folder. short: with the
+    shorter briefing the user's own agent reads (briefing)."""
     opening = None
     try:
         opening = session.opening()
@@ -2196,8 +2502,20 @@ def first_message(session):
     with open(os.path.join(session.run_dir, "prompt.txt"), "w", encoding="utf-8") as f:
         f.write(session.prompt)
     going_on = GOING_ON.format(run=session.run_rel) + "\n\n" if getattr(session, "going_on", False) else ""
-    return PROMPT.format(prompt=session.prompt, project=session.project, run=session.run_rel,
-                         briefing=going_on + briefing(session, opening) + "\n\n" + session.looking_note())
+    if short:  # (the briefing gets what the message's other words leave of SHORT_MESSAGE)
+        looking = session.looking_note()
+        rest = len(PROMPT.format(prompt=session.prompt, project=session.project, run=session.run_rel,
+                                 briefing=going_on + "\n\n" + looking))
+        brief = briefing(session, opening, short=True, room=SHORT_MESSAGE - rest)
+    else:
+        brief = briefing(session, opening)
+        looking = session.looking_note()
+    message = PROMPT.format(prompt=session.prompt, project=session.project, run=session.run_rel,
+                            briefing=going_on + brief + "\n\n" + looking)
+    # (sizes only, never the text; the briefing's own line has its parts)
+    session.note("request message sizes: " + json.dumps({"total": len(message), "briefing": len(brief),
+                                                         "going on": len(going_on), "looking": len(looking)}))
+    return message
 
 
 def watch_steering(session):
@@ -2218,11 +2536,201 @@ def watch_steering(session):
     return done
 
 
+def last_harness_index(session):
+    """(n, the indexer's status when harness n started) for the last harness played, or (None, None) when none played
+    or the export didn't stream in for it."""
+    statuses = getattr(session, "harness_index", None) or {}
+    played = [k for k in statuses if k <= session.episodes]
+    if not played:
+        return None, None
+    return max(played), statuses[max(played)]
+
+
+def index_alert(session):
+    """The result's alert when the last harness played was written while the game's files were still being indexed
+    (the files exported after it started were never read for it), else "". A harness that had the whole codex, or
+    after whose start the export brought none of the game's files (a re-export of what the codex had), says nothing:
+    the alert would show on every run."""
+    n, status = last_harness_index(session)
+    if not status or not status.get("running"):
+        return ""
+    if not exported_after(session, (getattr(session, "harness_started", None) or {}).get(n)):
+        return ""  # (nothing of the game's came after it started, e.g. a re-export that brought nothing new)
+    counted = (f"{status.get('done')} of {status['total']} exported" if status.get("total")
+               else "the export hadn't counted its files yet")
+    return (f"Harness {n}, the last one played, was written while the game's files were still being indexed "
+            f"({counted}). Files exported after that were not read for it.")
+
+
+def exported_after(session, cutoff):
+    """{kind: how many} of the game's files the export brought after time.time() cutoff (a harness's start), each file
+    once however many batches rewrote it, and none that ended as it was when the harness started (Unreal's re-export
+    writes maps.txt again after every map: one that changes nothing ends where it began). The codex's own files
+    (codex.VOLATILE: the level's snapshot, the index) are left out, as codex.codex_kinds counts them."""
+    late = {}
+    idx = session.indexer() if callable(getattr(session, "indexer", None)) else None
+    if idx is None or cutoff is None:
+        return late
+    first, last = {}, {}  # (each file's first arrival after the cutoff, and its last)
+    for batch in idx.since(0):
+        if batch.get("at", 0) > cutoff:
+            for f in batch.get("files") or []:
+                path = str(f.get("path", "")).replace("\\", "/")
+                if path in codexmod.VOLATILE or os.path.basename(path).startswith("."):
+                    continue
+                first.setdefault(path, f)
+                last[path] = f
+    for path, f in first.items():
+        if f.get("kind") != "new" and f.get("was") is not None and last[path].get("hash") == f.get("was"):
+            continue  # (back as the harness had it)
+        late[codexmod.kind_of(path)] = late.get(codexmod.kind_of(path), 0) + 1
+    return late
+
+
+# The words for the codex's kinds (codex.kind_of) in what the report says was read, in this order; others count as
+# others (the files at the codex's top, maps.txt among them, too)
+KIND_WORDS = {"blueprints": ("Blueprint", "Blueprints"), "data": ("data file", "data files"),
+              "source": ("source file", "source files"), "script": ("script", "scripts"),
+              "input": ("input file", "input files"), "config": ("config file", "config files")}
+
+
+def _count(n, one, many):
+    return f"{n} {one if n == 1 else many}"
+
+
+def _kinds_text(kinds):
+    """{kind: how many} in words: "41 Blueprints, 80 data files, 5 others"."""
+    parts = [_count(kinds[k], *KIND_WORDS[k]) for k in KIND_WORDS if kinds.get(k)]
+    others = sum(v for k, v in kinds.items() if k not in KIND_WORDS)
+    if others:
+        parts.append(_count(others, "other", "others"))
+    return ", ".join(parts)
+
+
+def read_summary(session):
+    """What the run had read for the last harness played (for the whole run when none played): how far the game's
+    files were indexed when it started; the game's files the agent read and its searches before then, and the
+    background researcher's file reads and findings (with its passes, and those that failed); and, for a harness
+    written while the export still ran, the codex's files by kind then and those exported after it started (never
+    read for it). The report's `read`: {"harness", "index", "agent", "researcher", "lines"}, with "had" and "after"
+    when the index was partial; lines: the same said for the user, one when the index was complete, else three."""
+    episodes = getattr(session, "episodes", 0) or 0
+    began = {k: t for k, t in (getattr(session, "harness_started", None) or {}).items() if k <= episodes}
+    n = max(began) if began else None
+    cutoff = began.get(n)  # (time.time() the harness started; None: the whole run)
+    since = getattr(session, "started", 0.0) or 0.0
+    status = (getattr(session, "harness_index", None) or {}).get(n) if n is not None else None
+
+    def before(t):
+        # (an event's t is rounded to 0.1 s: one sent as the harness started counts as before it)
+        return cutoff is None or (isinstance(t, (int, float)) and t <= round(cutoff - since, 1))
+
+    events = list(getattr(session, "events", None) or [])
+    agent = {"files": len({e.get("detail") for e in events if e.get("kind") == "read" and before(e.get("t"))
+                           and str(e.get("detail") or "").startswith("codex/")}),
+             "searches": sum(1 for e in events if e.get("kind") == "search" and before(e.get("t")))}
+    out = {"harness": n}
+    # With no indexer: whole only when this run got the codex (from the plugin, or the project's own files); else it is
+    # what an earlier run left (maybe stale), or there is none (a plugin without the codex ops, a failed fetch). The
+    # project's own files read after a failed fetch aren't whole either: its source, and only what an earlier export
+    # left of its Blueprints and data (engines' build_local)
+    cx = getattr(getattr(session, "game", None), "codex", None)
+    source, fetch_error = getattr(cx, "source", None), getattr(cx, "fetch_error", None)
+    whole = source is not None and not fetch_error
+    on_disk = 0
+    if status is None and n is not None and not whole and getattr(session, "root", None):
+        on_disk = sum(codexmod.codex_kinds(os.path.join(session.root, "codex")).values())
+    if status is None:
+        if n is None:
+            out["index"] = None
+        elif whole:
+            out["index"] = {"complete": True}
+        else:
+            out["index"] = {"complete": False, "files": on_disk, "fetched": False,
+                            **({"from": source} if source else {}), **({"error": fetch_error} if fetch_error else {})}
+    else:
+        out["index"] = {"complete": not status.get("running") and not status.get("error"),
+                        **{k: status.get(k) for k in ("done", "total", "files")}}
+    out["agent"] = agent
+    r = getattr(session, "researcher", None)
+    if r is None:
+        out["researcher"] = None
+    else:
+        found = [f for f in getattr(session, "findings", None) or [] if cutoff is None or f.get("at", 0) <= cutoff]
+        out["researcher"] = {"files": len({p for t, p in getattr(r, "read", None) or []
+                                           if (cutoff is None or t <= cutoff) and str(p).startswith("codex/")}),
+                             "findings": len(found), "passes": int(getattr(r, "passes", 0) or 0),
+                             "failed": int(getattr(r, "failed", 0) or 0)}
+    # The words
+    if agent["files"] or agent["searches"]:
+        by_agent = (f"{agent['files']} of the game's files and {_count(agent['searches'], 'search', 'searches')} "
+                    "by the agent")
+    else:
+        by_agent = "nothing by the agent"
+    res = out["researcher"]
+    if res is None:
+        by_researcher = "the background researcher was off"
+    else:
+        by_researcher = (f"{_count(res['files'], 'file', 'files')} and {_count(res['findings'], 'finding', 'findings')}"
+                         " by the background researcher" if res["files"] or res["findings"]
+                         else "nothing by the background researcher")
+        if res["failed"] and res["failed"] >= res["passes"]:
+            by_researcher += f" (its {_count(res['failed'], 'pass', 'passes')} failed)"
+        elif res["failed"]:
+            by_researcher += f" ({res['failed']} of {res['passes']} passes failed)"
+    if n is None:
+        out["lines"] = [f"No harness was played. Read: {by_agent}; {by_researcher}."]
+        return out
+    read_for = f"Read for it: {by_agent}; {by_researcher}."
+    head = f"Harness {n}, the last one played, was written"
+    if status is None:
+        if whole:
+            had_codex = "the game's whole codex (" + ("fetched by this run" if source == "plugin"
+                                                      else "read from the project's folder this run") + ")"
+        elif source == "project":
+            had_codex = (f"the project's own files, read from its folder ({_count(on_disk, 'file', 'files')}; this run "
+                         f"couldn't fetch the game's files from the plugin: {fetch_error}, so the Blueprints and data "
+                         "may be an earlier export's, or missing)")
+        elif on_disk:
+            why = (f"this run couldn't fetch the game's files: {fetch_error}" if fetch_error
+                   else "the plugin sent none this run")
+            had_codex = f"the codex an earlier run left ({_count(on_disk, 'file', 'files')}; {why})"
+        else:
+            had_codex = ("no codex of the game's files ("
+                         + (f"this run couldn't fetch them: {fetch_error}" if fetch_error else "the plugin sent none")
+                         + ")")
+        out["lines"] = [f"{head} with {had_codex}. {read_for}"]
+        return out
+    counted = (f"{status.get('done')} of {status['total']} exported" if status.get("total")
+               else f"{status.get('files')} files in the codex")
+    if not status.get("running"):
+        if status.get("error"):
+            out["lines"] = [f"{head} after the indexing of the game's files stopped early ({counted}). {read_for}"]
+        else:
+            out["lines"] = [f"{head} with all of the game's files indexed ({counted}). {read_for}"]
+        return out
+    # Written while the export ran: what the codex had then, and what came after it started
+    had = dict(status.get("kinds") or {})
+    out["had"] = had
+    late = exported_after(session, cutoff)
+    out["after"] = {"files": sum(late.values()), "kinds": late}
+    so_far = (f"{status.get('done')} of {status['total']} exported" if status.get("total")
+              else "the export hadn't counted its files yet")
+    codex_now = (f"{_count(sum(had.values()), 'file', 'files')} in the codex ({_kinds_text(had)})" if had
+                 else "no files in the codex yet")
+    after = (f"{_count(out['after']['files'], 'file', 'files')} ({_kinds_text(late)})" if late else "none")
+    out["lines"] = [f"{head} while the game's files were still being indexed: {so_far}, {codex_now}.", read_for,
+                    f"Exported after it started, so not read for it: {after}."]
+    return out
+
+
 def finish(session, started, stopped, last_text, **facts):
     """The request's report: what the agent reported (or, when it reported nothing, a fallback saying why), with the
     run's facts added. Saved as report.json in the run's folder. started: time.time() when the agent started;
     stopped: why the agent ended early (None when it ended by itself); last_text: the agent's last words; facts: the
-    agent's own (model, cost, turns...)."""
+    agent's own (model, cost, turns...). The run completes report.json once its recording has stopped
+    (cli.keep_in_report): `recording`, `recordings` (every player's, in a game of several), `no_recording` and the
+    final `alerts`, their paths relative to the run's folder."""
     if session.out_of_time():  # (an exploration ended by its minutes of play, not by the user)
         stopped = f"its {session.play_seconds / 60:.0f} minutes of play were up"
     report = report_words(session.report or {
@@ -2243,6 +2751,9 @@ def finish(session, started, stopped, last_text, **facts):
     })
     if session.reported_at_time_up:  # (the run's own fact: an agent's words about its time aren't taken for it)
         report["time_up"] = True
+    partial = index_alert(session)
+    if partial:
+        session.alert(partial)
     if session.alerts:
         report["alerts"] = list(session.alerts)
     if session.researcher is not None:
@@ -2255,8 +2766,15 @@ def finish(session, started, stopped, last_text, **facts):
             idx.listeners.remove(session.researcher.arrived)
         # How much of the export the run had (it streamed in while the run worked), and what the researcher found
         report["indexing"] = dict(idx.status(), batches_told=session.news_batches)
+        n, status = last_harness_index(session)
+        if status:  # (what the last harness played could read)
+            report["indexing"]["last_harness"] = dict(status, n=n)
     if session.findings:
         report["background_findings"] = len(session.findings)
+    try:  # (what the last harness was written on, said for the user; never at the cost of the report)
+        report["read"] = read_summary(session)
+    except Exception as e:
+        session.note(f"couldn't say what was read: {type(e).__name__}: {e}")
     if session.reader is not None and session.reader.model.tokens:  # (llm, llm_map and the researcher, by model)
         report["reading_usage"] = session.reader.model.tokens
     with open(os.path.join(session.run_dir, "report.json"), "w", encoding="utf-8") as f:

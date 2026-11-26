@@ -654,11 +654,10 @@ func prefs_tests(dir: String) -> void:
 	check("not chosen: the command line still chooses", _choice(Prefs.research_for_run("")) == "none"
 		and _choice(Prefs.research_for_run("0")) == "off" and _choice(Prefs.research_for_run("1")) == "on"
 		and _choice(Prefs.research_for_run("maybe")) == "none")
-	# what the Settings page's switch shows: the choice, else off through the Aura app (Use with Aura), on otherwise
-	check("research switch shows: not chosen, Use with Aura on: off", not SettingsPage.research_shown(null, true))
-	check("research switch shows: not chosen, Use with Aura off: on", SettingsPage.research_shown(null, false))
-	check("research switch shows: the choice beats Use with Aura", SettingsPage.research_shown(true, true)
-		and not SettingsPage.research_shown(false, false))
+	# what the Settings page's switch shows: the choice, else on (the agent service's default, through the Aura app too)
+	check("research switch shows: not chosen: on", SettingsPage.research_shown(null))
+	check("research switch shows: not a boolean is not chosen: on", SettingsPage.research_shown("no"))
+	check("research switch shows: the choice", SettingsPage.research_shown(true) and not SettingsPage.research_shown(false))
 	check("merged: null removes a key", not Prefs.merged({"access": "aura", "a": 1}, {"access": null}).has("access"))
 
 

@@ -20,7 +20,8 @@ and revise the harness, and report what play showed. Its tools come from the `au
    - a goal ("Kill the boss while keeping your health above 20% of its maximum value"): `goal`.
    Pass `time_limit_minutes` when the user gives a time limit.
 3. Read the INSTRUCTIONS.md it names, all of it, with Autopilot's `read_file` (in parts: it is long). Follow it: it is
-   how to work, what the kit is, and the rules a report must meet.
+   how to work, what the kit is, and the rules a report must meet. It names the rest of the kit to read when you need
+   it: KIT_MORE.md in the run's folder, and autopilot/kit/harness.py (the harness contract) before you write a harness.
 4. A call that answers "still going" (an episode, the game starting) isn't done: call `wait` until it gives the
    result.
 5. To look at the game's picture, never call `frames` yourself: hand the run's id, the episode, the times in it

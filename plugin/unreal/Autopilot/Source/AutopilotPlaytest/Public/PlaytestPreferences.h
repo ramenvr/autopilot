@@ -21,7 +21,7 @@ struct AUTOPILOTPLAYTEST_API FPlaytestPreferences
 	bool bShareData = true;
 	/**
 	 * Whether runs have the research agent (the brain's background reader of the game's code), once the user chose on the
-	 * Settings page. Unset (never chosen): the agent service decides, off in the Aura app's and on in the user's own.
+	 * Settings page. Unset (never chosen): the agent service decides, on, the Aura app's and the user's own alike.
 	 */
 	TOptional<bool> ResearchChoice;
 	/** How the user chose to run it: "aura", "own_keys", or "" (not chosen). */

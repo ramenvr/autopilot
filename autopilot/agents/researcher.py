@@ -13,9 +13,9 @@ events, one pass each (several waiting at once are one pass):
 
 Each pass is a fresh conversation (the request, the harness as it is, notes.md, the findings so far and the event),
 of at most TURNS model turns. The user chooses on the plugin's Settings page (the hello's `research`, from
-preferences.json research_agent); until they do, runs from the Aura app's Autopilot go without it and runs from the
-user's own (the plugin's agent service, signed in to Aura or on their own keys) have it. AUTOPILOT_RESEARCHER=0 turns it
-off whatever was chosen.
+preferences.json research_agent), and Aura's switch can choose for one run (the start frame's `research`, which wins);
+until either chooses, every run has it: from the Aura app's Autopilot and from the user's own alike.
+AUTOPILOT_RESEARCHER=0 turns it off whatever was chosen.
 """
 
 import fnmatch
@@ -24,6 +24,8 @@ import queue
 import re
 import threading
 import time
+
+from .. import codex as codexmod
 
 TURNS = 20  # model turns one pass may take (a pass is a few greps and reads, then the findings)
 READ_LINES = 2000  # lines one read_file gives, from `offset` (the rest is read with a later offset)
@@ -63,17 +65,16 @@ TOOLS = (
 )
 
 
-def enabled(hello=None):
-    """Whether a run has the researcher: what the user chose in the plugin (hello `research`), else off in the Aura
-    app's Autopilot (aura.from_app) and on in the user's own; never with AUTOPILOT_RESEARCHER=0."""
-    from .. import aura
-
+def enabled(hello=None, chosen=None):
+    """Whether a run has the researcher: never with AUTOPILOT_RESEARCHER=0; else what the run chose (chosen: the start
+    frame's run `research`, Aura's Research agent switch), else what the user chose in the plugin (hello `research`),
+    else on. Only a bool is a choice."""
     if (os.environ.get("AUTOPILOT_RESEARCHER") or "").strip() == "0":
         return False
-    chosen = (hello or {}).get("research")
-    if isinstance(chosen, bool):
-        return chosen
-    return not aura.from_app()
+    for choice in (chosen, (hello or {}).get("research")):
+        if isinstance(choice, bool):
+            return choice
+    return True
 
 
 class Researcher:
@@ -86,6 +87,8 @@ class Researcher:
         self.events = queue.Queue()
         self.stopped = threading.Event()
         self.passes = 0
+        self.failed = 0  # passes that failed (the model refused or unreachable): the report says so
+        self.read = []  # [(time.time(), path in the game's folder)] of each file read_file read (the report's `read`)
         self.thread = threading.Thread(target=self._loop, name="researcher", daemon=True)
         self.thread.start()
 
@@ -139,6 +142,7 @@ class Researcher:
             try:
                 self._pass(events)
             except Exception as e:
+                self.failed += 1
                 self.session.note(f"researcher: the pass failed: {type(e).__name__}: {e}")
 
     def _event_text(self, events):
@@ -175,9 +179,17 @@ class Researcher:
         harness = written.get("harness.py") or "(none yet)"
         findings = s.findings_text() or "(none yet)"
         notes, lib = written.get("notes.md") or "(none)", written.get("lib.py") or "(none)"
+        indexing = ""
+        status = self._partial()
+        if status:  # (only while the export runs: a finished run's prompt is as it was)
+            indexing = ("## The game's files are still being indexed\n"
+                        f"The export is {codexmod.progress(status)}; the codex has {status['files']} files now and "
+                        "grows while you read. A search that finds nothing has looked at what is indexed so far. "
+                        "Never write that something isn't in the game: write what you found, and 'not found yet' with "
+                        "how far the export is.\n\n")
         prompt = (f"The request: {s.prompt}\n\n## The harness now ({s.run_rel}/harness.py)\n{harness}\n\n"
                   f"## notes.md\n{notes}\n\n## lib.py\n{lib}\n\n## Findings so far\n{findings}\n\n"
-                  f"## What happened\n{self._event_text(events)}")
+                  f"{indexing}## What happened\n{self._event_text(events)}")
         what = ", ".join(f"{k} {i}" for k, i, _ in events)
         s.note(f"researcher pass {n} ({self.model.name}): {what}")
         messages = [{"role": "user", "content": prompt}]
@@ -204,7 +216,16 @@ class Researcher:
             if name == "grep":
                 return self._grep(str(args.get("pattern") or ""), args.get("path"))
             if name == "read_file":
-                return self._read(str(args.get("path") or ""), int(args.get("offset") or 1))
+                path = str(args.get("path") or "")
+                try:
+                    text = self._read(path, int(args.get("offset") or 1))
+                    self.read.append((time.time(), os.path.relpath(self._path(path), self.root).replace(os.sep, "/")))
+                    return text
+                except FileNotFoundError:
+                    status = self._partial()
+                    if not status:
+                        raise
+                    return f"{path} is not in the codex yet: {codexmod.export_words(status)}; it may still come."
             if name == "list_files":
                 return self._list(str(args.get("glob") or "**/*"))
             if name == "add_finding":
@@ -217,6 +238,13 @@ class Researcher:
             return f"No tool {name}."
         except Exception as e:
             return f"{name} failed: {type(e).__name__}: {e}"
+
+    def _partial(self):
+        """The export's status (codex.Indexer.status) while it is still running, else None: then what isn't found may
+        still come."""
+        idx = self.session.indexer()
+        status = idx.status() if idx is not None else None
+        return status if status and status.get("running") else None
 
     def _path(self, rel):
         full = os.path.realpath(os.path.join(self.root, *str(rel).replace("\\", "/").split("/")))
@@ -246,7 +274,15 @@ class Researcher:
                             out.append(f"{os.path.relpath(full, self.root).replace(os.sep, '/')}:{i}: {line.rstrip()}")
             except OSError:
                 continue
-        return self._kept("\n".join(out) or "(no match)", "grep")
+        status = self._partial()
+        if not out and status:
+            return (f"(no match in the files indexed so far: {codexmod.export_words(status)}, "
+                    f"{status['files']} files in the codex now; it may still come)")
+        text = self._kept("\n".join(out) or "(no match)", "grep")
+        if status:  # (after the kept answer, so one kept in a file still says it)
+            text += (f"\n(searched what is indexed so far: {codexmod.export_words(status)}; what is still "
+                     "coming may match too)")
+        return text
 
     def _read(self, rel, offset=1):
         with open(self._path(rel), encoding="utf-8", errors="replace") as f:
@@ -260,7 +296,16 @@ class Researcher:
 
     def _list(self, pattern):
         found = [os.path.relpath(p, self.root).replace(os.sep, "/") for p in self._files(self.root)]
-        return self._kept("\n".join(p for p in found if fnmatch.fnmatch(p, pattern)) or "(none)", "list")
+        listed = "\n".join(p for p in found if fnmatch.fnmatch(p, pattern))
+        status = self._partial()
+        if not listed and status:
+            return (f"(none in the files indexed so far: {codexmod.export_words(status)}, "
+                    f"{status['files']} files in the codex now; they may still come)")
+        text = self._kept(listed or "(none)", "list")
+        if status:
+            text += (f"\n(listed what is indexed so far: {codexmod.export_words(status)}; what is still coming "
+                     "may match too)")
+        return text
 
     def _kept(self, text, kind):
         """A tool's answer; one too big for the pass's context goes whole to a file it is pointed at."""

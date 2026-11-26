@@ -261,8 +261,14 @@ def refused(e):
     return None
 
 
+class StoppedWhileWaiting(Exception):
+    """The user pressed Stop while the run waited for the game's files to be indexed (prepare, codex.wait_for_index):
+    it ends there, nothing played (stopped_waiting_report)."""
+
+
 class EndsIfGameWontStart:
-    """Around a run's setup: a GameWontStart ends it there (kept in .error, the run's report: wont_start_report)."""
+    """Around a run's setup: a GameWontStart, or a StoppedWhileWaiting, ends it there (kept in .error, the run's
+    report: wont_start_report, stopped_waiting_report)."""
 
     error = None
 
@@ -270,7 +276,7 @@ class EndsIfGameWontStart:
         return self
 
     def __exit__(self, kind, e, tb):
-        if isinstance(e, GameWontStart):
+        if isinstance(e, (GameWontStart, StoppedWhileWaiting)):
             self.error = e
             return True
         return False
@@ -281,6 +287,13 @@ def wont_start_report(kind, e):
     why = str(e)
     return {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved", "summary": why, "evidence": [],
             "alerts": [why]}
+
+
+def stopped_waiting_report(kind):
+    """The report of a run the user stopped while it waited for the game's files to be indexed: nothing was played."""
+    return {"outcome": "INCONCLUSIVE" if kind == "verify" else "not_achieved",
+            "summary": "No report (stopped while waiting for the game's files to be indexed). Nothing was played.",
+            "evidence": [], "stopped": "stopped", "episodes": 0}
 
 
 def start_level(link, game, level):
@@ -355,12 +368,13 @@ def wait_for_start(link, seconds=GAME_START_SECONDS):
     return time.time() - t0
 
 
-def prepare(link, path=None, level=None, restart_in_place=False):
+def prepare(link, path=None, level=None, restart_in_place=False, stop=None):
     """The game, started if needed in the level the run plays (choose_level), and its codex (built on first use; the
     level snapshot refreshed every time). path: the project on this machine when given by hand (--project);
     otherwise it is remembered or asked of the game. level: the level the run asks for (its start frame's), if any.
     restart_in_place: the run is one of several in one game (start_run's keep_game_open): its restarts reopen the
-    level in the game playing (kit.Game.restart_in_place), never stopping play."""
+    level in the game playing (kit.Game.restart_in_place), never stopping play. stop(): true once the run must end
+    (the user pressed Stop): it ends a wait for the export (codex.wait_for_index), and game.stopped_waiting says so."""
     project = codexmod.project_of(link.hello)  # (its memory folder's name)
     game = Game(link, codexmod.Codex.for_project(project))
     game.restart_in_place = bool(restart_in_place)
@@ -405,8 +419,22 @@ def prepare(link, path=None, level=None, restart_in_place=False):
     game.codex = codexmod.build(project, path=path, game=game, export=True, stream=True,
                                 first_map=game.level_info.playing or game.level)
     indexer = getattr(game.codex, "indexer", None)
+    game.stopped_waiting = False
+    if indexer is not None and indexer.running and codexmod.wait_for_index(link.hello):
+        # The user chose to wait for the game's files to be indexed: the game stays paused, the tab says how far the
+        # export is, and Stop (or the plugin going) ends the wait
+        t0 = time.time()
+        done = indexer.wait(codexmod.WAIT_FOR_EXPORT_SECONDS,
+                            tick=lambda text: link.status(f"Reading the game's code: {text}"),
+                            until=lambda: bool(getattr(link, "closed", False)) or bool(stop and stop()))
+        game.stopped_waiting = bool(not done and stop and stop())
+        indexer.waited_batches = len(indexer.since(0))  # (the codex the run starts on: not news to its agent)
+        print(f"codex: waited {time.time() - t0:.0f} s for the export (the user's setting)"
+              + ("" if done else ": stopped" if game.stopped_waiting else ": it goes on while the run works"))
+        game.ready_at = time.time()  # (the wait isn't the run's reading and probing time)
     if indexer is not None and indexer.running:
-        print(f"codex: the export goes on while the run works ({codexmod.progress(indexer.status())})")
+        if not game.stopped_waiting:
+            print(f"codex: the export goes on while the run works ({codexmod.progress(indexer.status())})")
     elif not game.engine.has_export(game.codex.root):
         if codexmod.from_game(game):
             print("note: this is a build of the game, which carries no source: the run reads the code from the codex "
@@ -433,11 +461,87 @@ def shown_recording(tel, report):
     return recording, report
 
 
+def players_recordings(tel, recording, report):
+    """(the result's `recordings`, the report), in a game that plays several players: every player's video of the
+    episode `recording` shows, player 1's (`recording`) first; the report's alerts say which player's is missing, and
+    why. None (and the report as it was) when the game played one player, or there is no recording."""
+    if not recording or getattr(tel, "players_recordings", None) is None:
+        return None, report
+    episode = recording.get("episode")
+    others, missing = tel.players_recordings(episode), tel.players_missing(episode)
+    if not others and not missing:
+        return None, report
+    if missing and isinstance(report, dict):
+        report = dict(report, alerts=list(report.get("alerts") or []) + [
+            f"Player {k}'s view wasn't recorded: {why}." for k, why in sorted(missing.items())])
+    return [{"player": 1, **recording}] + list(others), report
+
+
+def portable(text, run_dir, run_name=None):
+    """text that may name a folder (a video that couldn't be made says where its pictures are), as it is shared: a
+    path in the run's folder relative to it (media/frames-1, as report.json's videos are written; the folder itself in
+    words), or from run_name when given (runs/<id>/media/frames-1, as the agent's tools name the game's files), and the
+    rest through redact (the home folder as ~...)."""
+    from . import redact  # (here: only once something shared is written)
+
+    # The run's folder (as given and as the disk has it), then the path in it up to a word that isn't a file name's
+    roots = sorted({os.path.abspath(run_dir), os.path.realpath(run_dir)}, key=len, reverse=True)
+    in_run = re.compile(rf"(?:{'|'.join(map(re.escape, roots))})(?P<rest>(?:[\\/][\w-]+(?:\.[\w-]+)*)*)(?![\w-])")
+
+    def in_run_words(m):
+        rest = re.sub(r"[\\/]+", "/", m.group("rest")).strip("/")
+        if run_name:
+            return f"{run_name}/{rest}" if rest else run_name
+        return rest or "the run's folder"
+
+    return redact.Redactor().text(in_run.sub(in_run_words, str(text)))
+
+
+def keep_in_report(run_dir, recording, recordings, missing, report):
+    """Complete the run's report.json (the agent wrote it before the recording stopped: session.finish) with what the
+    result says of the recording: `recording`, `recordings` (a game of several players) and `no_recording`, as
+    run_prompt gives them, their paths relative to the run's folder (report.json is synced and shared: no home folder
+    in it, and it means the same on another machine), and the report's `alerts` as they ended (those added after the
+    agent ended too). A run with no report.json gets none; one that can't be read is left as it is. The words of
+    `no_recording` and the alerts may name a folder (a video that couldn't be made says where its pictures are): one
+    in the run's folder is written relative to it, and the rest goes through redact (the home folder as ~...)."""
+    path = os.path.join(run_dir, "report.json")
+    if not os.path.isfile(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            kept = json.load(f)
+        if not isinstance(kept, dict):
+            return
+
+        def relative(item):
+            return dict(item, **{k: os.path.relpath(item[k], run_dir).replace(os.sep, "/")
+                                 for k in ("video", "frames") if isinstance(item.get(k), str)})
+
+        if recording:
+            kept["recording"] = relative(recording)
+            if recordings:
+                kept["recordings"] = [relative(r) for r in recordings]
+        elif missing:
+            kept["no_recording"] = portable(missing, run_dir)
+        if isinstance(report, dict) and report.get("alerts"):
+            kept["alerts"] = [portable(a, run_dir) for a in report["alerts"]]
+        with open(path + ".part", "w", encoding="utf-8") as f:
+            json.dump(kept, f, indent=1)
+        os.replace(path + ".part", path)
+    except (OSError, ValueError) as e:
+        print(f"note: report.json doesn't list the recording: {type(e).__name__}: {e}")
+        with contextlib.suppress(OSError):
+            os.remove(path + ".part")
+
+
 def result_frame(report, prompt, kind=None):
     """The `result` the plugin is sent for a report (docs/protocol.md, Runs): a verdict for a claim, else a goal's.
     kind: the run's (verify, goal or explore), which decides the result's shape: a goal worded as a claim ("Confirm
     the player spawns...") may be reported CONFIRMED and is still a goal's result, reached. Without one the prompt
-    and the outcome decide."""
+    and the outcome decide. run_prompt adds the recording: `recording` (player 1's video, which the plugins play),
+    `recordings` (in a game of several players: every player's video of that episode, player 1's first) or
+    `no_recording` (why there is none)."""
     outcome = report.get("outcome", "")
     code = EXIT.get(outcome, 1)
     summary = plain_words(report.get("summary", ""))
@@ -449,13 +553,16 @@ def result_frame(report, prompt, kind=None):
                for c in report.get("level_modified", []) or [] if isinstance(c, dict)]
     # What the user must know to trust the outcome or to get a better one (the game's picture couldn't be looked at)
     alerts = {"alerts": [str(a) for a in report["alerts"]]} if report.get("alerts") else {}
+    # What the last harness played was written on and what was read for it (session.read_summary), in lines
+    read = report.get("read") if isinstance(report.get("read"), dict) else {}
+    read = {"read": [str(line) for line in read["lines"]]} if read.get("lines") else {}
     if kind == "verify" or (kind is None and (re.match(r"(?i)\s*verify", prompt) or outcome in VERDICTS)):
         # (a claim reported as a goal: achieved is shown true)
         verdict = outcome if outcome in VERDICTS else "CONFIRMED" if outcome == "achieved" else "INCONCLUSIVE"
         return {"verdict": verdict, "reason": summary, "claim": prompt, "evidence": evidence, "changes": changes,
-                "exit_code": EXIT[verdict], **alerts}
+                "exit_code": EXIT[verdict], **alerts, **read}
     return {"kind": "goal", "reached": outcome in ("achieved", "CONFIRMED"), "goal": prompt,
-            "notes": [summary] + evidence + findings, "changes": changes, "exit_code": code, **alerts}
+            "notes": [summary] + evidence + findings, "changes": changes, "exit_code": code, **alerts, **read}
 
 
 def prompt_of(run):
@@ -656,8 +763,18 @@ def describer_model(run, provider):
     return "anthropic", None
 
 
+def reading_on(describer, provider, research=None):
+    """describer, told what the brain's own reading (session.start_reading) needs of the run: the agent's provider
+    (agent_provider; None: the describer's), which reading is on, with the run's model, not the describer's (through
+    Aura a text-only model's frames are described by another provider's, Google's Gemini, whose API reading doesn't
+    speak); and research, the run's choice of the background researcher (None: none, researcher.enabled)."""
+    describer.agent_provider = provider
+    describer.research = research
+    return describer
+
+
 def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, activity, stop, steering,
-                    play_seconds, model):
+                    play_seconds, model, research=None):
     """When Aura says the run's premium credits stopped its agent (the relay's 402: aura.Run.go_on_free), the run goes
     on on the team's free allowance: a new session of the agent Aura names (Auto's free-tier model) picks it up from
     its folder (agents/session.go_on), with `left` seconds of its time limit. Nothing tells the user. Returns the
@@ -682,7 +799,8 @@ def go_on_aura_free(link, run, tel, report, left, game, project, asked, run_id, 
                             activity=activity, client=tel.jev(runtime.jev_client()), model=model, timeout=left,
                             stop=stop, steering=steering,
                             play_seconds=min(play_seconds, left) if play_seconds else play_seconds,
-                            describer=tel.describer(model or agent_model(seen_by), provider=seen_by, model=named))
+                            describer=reading_on(tel.describer(model or agent_model(seen_by), provider=seen_by,
+                                                               model=named), run.agent["provider"], research))
     # (the run's time is both sessions'; its episodes are counted on from the first's already)
     for field in ("seconds", "tool_seconds"):
         if isinstance(later.get(field), (int, float)) and isinstance(report.get(field), (int, float)):
@@ -722,7 +840,7 @@ LAST_REPORT = {}  # the report of the run run_prompt finished last (`play --even
 def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sent=None, steering=None, kind=None,
                play_minutes=None, trace=None, desk=None, level=None, aura_model=None, disable_premium_models=False,
                feed=None, explore_minutes=None, design_brief=None, thinking_level=None, keep_game_open=False,
-               restart_in_place=False):
+               restart_in_place=False, research=None):
     """Research, write and run a harness for prompt; send the plugin the result and return the exit code.
 
     path: the project on this machine (--project); model: the language model; timeout: the agent's budget in
@@ -746,13 +864,15 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     keeps the run's activity events for a plugin that asks for them again (by default they are only sent);
     keep_game_open: the play session stays open once the run has reported (paused, for the next run of the same agent:
     start_run's keep_game_open), unless the run was stopped; restart_in_place: the run's restarts reopen the level in
-    the game playing, never stopping play (a run of several in one game).
+    the game playing, never stopping play (a run of several in one game); research: the start frame's run `research`
+    (Aura's Research agent switch), whether the run has the background researcher (None: the plugin's choice, else
+    on: agents/researcher.enabled).
 
     The plugin is told the tokens the run uses as it goes (telemetry.RunTelemetry). When the run's data is shared
     (telemetry.sharing, and for a run through Aura the user's Aura account), it is kept whole in the run's
     telemetry/ folder and sent once the plugin has the result (autopilot/training.py).
     """
-    run = upload = kept = learned = recording = missing = None
+    run = upload = kept = learned = recording = recordings = missing = None
     credits_refused = False
     if feed is not None:
         feed.start()
@@ -806,11 +926,17 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
             if not kind:
                 kind, tested = told_kind(link, prompt)
             asked, play_seconds = settle()
-            project, game = prepare(link, path, level, restart_in_place=restart_in_place or keep_game_open)
+            project, game = prepare(link, path, level, restart_in_place=restart_in_place or keep_game_open,
+                                    stop=stop)
             setup.push(resume_if_failed(game))
             indexer = getattr(getattr(game, "codex", None), "indexer", None)
             if indexer is not None:  # (an export still going when the run ends is the next run's)
                 setup.callback(indexer.stop)
+            if getattr(game, "stopped_waiting", False):  # (Stop while it waited for the export: no agent starts)
+                with contextlib.suppress(Exception):
+                    game.pause(False)
+                close_game(link)
+                raise StoppedWhileWaiting()
             # (runs through Aura use the agent Aura names, Claude Code unless the model picked in Aura's chat needs
             # OpenCode, whatever AUTOPILOT_AGENT says; the user's own agent works on a run started from it, through
             # Aura or not)
@@ -841,6 +967,8 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                 # (describe_frames: the recording's frames, described by a vision model of the agent's provider, or
                 # the one Aura named)
                 describer = tel.describer(model or agent_model(seen_by), provider=seen_by, model=named)
+                # (the user's own agent reads as before, on the describer's provider)
+                reading_on(describer, provider if desk is None else None, research)
                 started = time.time()
                 report = agent.implement(game, project, asked, run_id=run_id,
                                          say=lambda text: link.status(plain_words(text)), activity=activity,
@@ -853,7 +981,7 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                     left = (timeout or default_timeout()) - (time.time() - started)
                     report = go_on_aura_free(link, run, tel, report, left, game=game, project=project, asked=asked,
                                              run_id=run_id, activity=activity, stop=stop, steering=steering,
-                                             play_seconds=play_seconds, model=model) or report
+                                             play_seconds=play_seconds, model=model, research=research) or report
                 alert = level_alert(getattr(game, "level_info", None))
                 if alert:  # (the user must know the run played another level than the one asked for)
                     report = dict(report, alerts=[alert] + list(report.get("alerts") or []))
@@ -863,14 +991,19 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
                     with contextlib.suppress(Exception):
                         link.status(SAVING_MEMORY)
             recording, report = shown_recording(tel, report)
+            recordings, report = players_recordings(tel, recording, report)  # (a game of several players: each one's)
             missing = None if recording else tel.no_recording()
+            # (before the memory is saved and the run's data sent: both take report.json as it is now)
+            keep_in_report(tel.run_dir, recording, recordings, missing, report)
             if keep_game_open and not (stop and stop()):
                 keep_game(game)  # (the next run of the agent's goes on in it)
             else:
                 close_game(link)  # (every harness has run, and the recording has stopped)
             if share:
                 upload = (root, project if run else key, run)
-        if ends.error is not None:
+        if isinstance(ends.error, StoppedWhileWaiting):
+            report = stopped_waiting_report(kind)
+        elif ends.error is not None:
             report = wont_start_report(kind, ends.error)
     print(json.dumps(report, indent=1))
     LAST_REPORT.clear()
@@ -881,11 +1014,14 @@ def run_prompt(link, prompt, path=None, model=None, timeout=None, stop=None, sen
     if tested:
         frame["tested"] = True  # (the plugins show it as GAME TESTED)
     # What the run added to the memory (the plugins say so at the end of the feed) and its recording (their report
-    # plays it): both on this machine, never scrubbed
+    # plays player 1's; `recordings` lists every player's in a game of several): both on this machine, never scrubbed
+    # (report.json has the same, its paths relative to the run's folder: keep_in_report)
     if learned is not None:
         frame["memory"] = learned
     if recording:
         frame["recording"] = recording
+        if recordings:
+            frame["recordings"] = recordings  # (every player's, player 1's first: the plugins read `recording`)
     elif missing:
         frame["no_recording"] = missing  # (why there is none: the plugins' report says so where it would play)
     if run is not None and "usd" in (run.finished or {}):  # (what Aura billed the run, for the Settings page)
@@ -1062,8 +1198,8 @@ def mirror_events(link, args):
     link.send, link.status = send, status
 
 
-REPORT_FIELDS = ("run", "project", "prompt", "outcome", "summary", "evidence", "findings", "alerts", "episodes",
-                 "seconds", "cost_usd", "visual")
+REPORT_FIELDS = ("run", "project", "prompt", "outcome", "summary", "evidence", "findings", "alerts", "read",
+                 "episodes", "seconds", "cost_usd", "visual")
 
 
 def cmd_play(link, args):
@@ -1572,7 +1708,8 @@ def cmd_serve(link, args):
                            feed=feed if lane in (None, 1) else None, explore_minutes=explore_minutes(run),
                            design_brief=str(run.get("design_brief") or "").strip() or None,
                            keep_game_open=bool(run.get("keep_game_open")) and lane is None,
-                           restart_in_place=in_place)
+                           restart_in_place=in_place,
+                           research=run.get("research") if isinstance(run.get("research"), bool) else None)
         except Exception as e:
             print(f"The run failed: {type(e).__name__}: {e}")
             if desk is not None:

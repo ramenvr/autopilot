@@ -102,6 +102,35 @@ def test_a_roblox_link_answers_capture_and_record_itself(monkeypatch):
     assert link.media._thread is None and link.media.pictures._client is None
 
 
+def test_roblox_pictures_only_player_one(monkeypatch):
+    # Studio's MCP server pictures player 1's client only: another player's picture or recording is refused, so a
+    # Recorder never takes player 1's picture for player 2's
+    monkeypatch.setattr(studio_mcp, "command", lambda: argv([{"id": "s1", "name": "Sky Farm"}]))
+    link = bridge.Link(lambda f: None)
+    link.feed(roblox_hello())
+    link.feed({"type": "events", "events": [{"kind": "session", "running": True, "t": 1.5}], "t": 1.5})
+    try:
+        with pytest.raises(bridge.BridgeError, match="no picture of player 2: .*player 1's client") as e:
+            link.request("capture", {"max_dim": 32, "player": 2})
+        assert e.value.status == 409
+        with pytest.raises(bridge.BridgeError, match="no picture of player 2: .*player 1's client") as e:
+            link.request("record", {"action": "start", "fps": 10, "max_dim": 32, "player": 2})
+        assert e.value.status == 409
+        assert link.request("capture", {"max_dim": 32, "player": 1})["width"] == 32  # (player 1, said: as before)
+        frames = []
+        link.frame_listeners.append(frames.append)
+        assert link.request("record", {"action": "start", "fps": 10, "max_dim": 32})["recording"] is True
+        # (player 2's stop leaves player 1's recording going)
+        assert link.request("record", {"action": "stop", "player": 2}) == {"recording": False, "frames": 0}
+        deadline = time.time() + 10
+        while len(frames) < 3 and time.time() < deadline:
+            time.sleep(0.05)
+        assert len(frames) >= 3 and link.media._thread is not None and link.media._thread.is_alive()
+        assert link.request("record", {"action": "stop"})["recording"] is False
+    finally:
+        link.close("test")
+
+
 def test_a_failing_studio_says_why(monkeypatch):
     monkeypatch.setattr(studio_mcp, "command", lambda: argv(fail=True))
     link = bridge.Link(lambda f: None)

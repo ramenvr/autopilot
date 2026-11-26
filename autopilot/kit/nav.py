@@ -39,6 +39,7 @@ HIT_OUTLIVES = 2.0  # s: a hit this much newer than a sweep through a cell's mid
 NEAR_COST = 1.5  # extra cost of a step into a cell next to a blocked one (keeps the way off walls)
 HEURISTIC_WEIGHT = 1.2  # A* leans this much toward the target (fewer cells searched; a way at most this much longer)
 MAX_EXPANSIONS = 120000  # A* gives up after this many cells (a far target in a big level: no way found)
+POCKET_CELLS = 1000  # cells of the open pocket round a goal looked through to find it walled in (see walled_in)
 
 
 def _ij(x, y, cell=CELL):
@@ -215,6 +216,8 @@ class NavMap:
         """The shortest way from start to within `within` of goal (across the floor) on the floor at height z, as a list
         of points to walk to in turn (corners only), or None when the map shows no way. It looks for one in the box
         round start and goal, `margin` wider each way (by default wider and wider: round a long wall)."""
+        if self.walled_in(start, goal, within, z):
+            return None  # (no box holds a way: searching each, twice with _walk_on's retry, held a tick for seconds)
         if margin is not None:
             return self._plan(start, goal, within, z, margin)
         base = max(1500.0, 0.6 * goal.dist2d(start))
@@ -230,7 +233,9 @@ class NavMap:
         lo_i, lo_j = _ij(min(start.x, goal.x) - margin, min(start.y, goal.y) - margin, c)
         hi_i, hi_j = _ij(max(start.x, goal.x) + margin, max(start.y, goal.y) + margin, c)
         s = _ij(start.x, start.y, c)
-        reach = max(within * 0.9, c * 0.75)
+        reach = self._reach(within)
+        # (what is open, the moves and arriving are walled_in's too: change them there as well, or plan's "no way"
+        # stops matching this search's)
         blocked = {}
         lingered = bool(self.lingered)
 
@@ -298,6 +303,49 @@ class NavMap:
         cells.reverse()
         points = [self.center(i, j, z) for i, j in cells[1:]] or [Vec(goal.x, goal.y, z)]
         return self.smooth(start, points, z)
+
+    def _reach(self, within):
+        """How near the goal a cell's middle must be for the way to end there."""
+        return max(within * 0.9, self.cell * 0.75)
+
+    def walled_in(self, start, goal, within, z):
+        """Whether the map shows no way from start to within `within` of goal in any box: every cell near enough the
+        goal is blocked, or the open ones lie in a pocket of at most POCKET_CELLS cells closed all round that start
+        isn't in (another character's middle felt from all sides, a closed room). The way's search would look through
+        every open cell of its boxes to find that out. Same moves as the search: 8 ways, no cutting a corner, the
+        start's cell always open."""
+        c = self.cell
+        k = self._k(z)
+        s = _ij(start.x, start.y, c)
+        reach = self._reach(within)
+        gi, gj = _ij(goal.x, goal.y, c)
+        r = int(reach / c) + 1
+        known = {}
+
+        def open_(i, j):
+            v = known.get((i, j))
+            if v is None:
+                v = known[(i, j)] = (i, j) == s or not self.blocked_key((i, j, k))
+            return v
+
+        todo = [(i, j) for i in range(gi - r, gi + r + 1) for j in range(gj - r, gj + r + 1)
+                if math.hypot((i + 0.5) * c - goal.x, (j + 0.5) * c - goal.y) <= reach and open_(i, j)]
+        seen = set(todo)
+        while todo:
+            if len(seen) > POCKET_CELLS:
+                return False
+            ci, cj = todo.pop()
+            if (ci, cj) == s:
+                return False
+            for di, dj in ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1)):
+                n = (ci + di, cj + dj)
+                if n in seen or not open_(*n):
+                    continue
+                if di and dj and not (open_(ci + di, cj) and open_(ci, cj + dj)):
+                    continue  # (no cutting a corner)
+                seen.add(n)
+                todo.append(n)
+        return True
 
     def smooth(self, start, points, z):
         """The corners of a way: from each point, straight on to the farthest later one with nothing in between."""

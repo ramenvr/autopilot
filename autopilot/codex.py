@@ -16,7 +16,7 @@ import shutil
 import threading
 import time
 
-from . import bridge, engines, memory
+from . import bridge, engines, memory, redact
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -75,6 +75,10 @@ class Codex:
         self.root = root
         self._bp = None
         self.indexer = None  # an Indexer while (and after) the plugin's export streams in, else None
+        # How this run got the codex (build): "plugin" (fetched from it), "project" (the project's own files read), or
+        # None: not this run (what an earlier run left, or nothing); fetch_error: why the fetch from the plugin failed
+        self.source = None
+        self.fetch_error = None
 
     @staticmethod
     def for_project(project):
@@ -160,6 +164,20 @@ def from_game(game):
     return isinstance(hello, dict) and hello.get("host") == "game"
 
 
+def wait_for_index(hello=None):
+    """Whether the run waits for the game's files to be indexed before it starts reading (cli.prepare): the user's
+    choice on the plugin's Settings page (hello `wait_for_index`, true or false), with AUTOPILOT_WAIT_FOR_INDEX=1 or 0
+    winning over it (a bench or an eval host forces one mode). Off by default: the run starts on the files indexed
+    so far and the rest stream in while it works (Indexer), so it starts sooner. Only a plugin whose export streams
+    (Unreal's) has anything to wait for. For now only the env var turns it on: no plugin sends `wait_for_index` yet
+    (the Settings switch comes later)."""
+    forced = (os.environ.get("AUTOPILOT_WAIT_FOR_INDEX") or "").strip()
+    if forced in ("0", "1"):
+        return forced == "1"
+    chosen = hello.get("wait_for_index") if isinstance(hello, dict) else None
+    return chosen if isinstance(chosen, bool) else False
+
+
 def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait=True, first_map=None, follow=False):
     """The game's code and asset export, fetched from the plugin (codex_manifest / codex_read). Only files that changed
     since the last fetch are read; which files go where is the game's engine's (Engine.codex_path).
@@ -168,8 +186,9 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
     first_map: the level the run plays, which an export started now does first.
     follow: asking again about the export an earlier answer said runs: the plugin never starts one for this, so an
     export the user stopped stays stopped while the run finishes up.
-    Returns {"files", "fetched", "removed", "export", "arrived": [(codex path, "new" or "changed")]}, or None when the
-    plugin has no such ops (an older build)."""
+    Returns {"files", "fetched", "removed", "export", "arrived": [(codex path, "new" or "changed")], "hashes": {codex
+    path: [the plugin's hash of it before (None: none), now]}}, or None when the plugin has no such ops (an older
+    build)."""
     from .kit.game import GameError
 
     codex_path = engines.of(game).codex_path
@@ -198,6 +217,7 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
               if have.get(p) != h or not os.path.exists(os.path.join(codex_root, codex_path(p)))]
     fetched = 0
     arrived = []
+    hashes = {}
     while wanted:
         batch, size = [], 0
         sizes = {f["path"]: int(f.get("size") or 0) for f in manifest.get("files", [])}
@@ -217,6 +237,7 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
             arrived.append((dest, "changed" if os.path.exists(full) else "new"))
             with open(full, "w", encoding="utf-8", newline="") as f:
                 f.write(text)
+            hashes[dest] = [have.get(p), listed[p]]
             have[p] = listed[p]
             fetched += 1
         skipped = set(res.get("missing") or []) | set(res.get("too_big") or [])
@@ -238,7 +259,7 @@ def fetch_from_plugin(game, codex_root, export="auto", batch_bytes=512_000, wait
     with open(index_file, "w", encoding="utf-8") as f:
         json.dump(have, f)
     return {"files": len(listed), "fetched": fetched, "removed": removed, "export": manifest.get("export"),
-            "arrived": arrived}
+            "arrived": arrived, "hashes": hashes}
 
 
 # What the export brought while a run worked (Indexer): in the project's folder beside codex/, started over by each
@@ -248,6 +269,8 @@ POLL_SECONDS = 3.0  # how often the plugin is asked for what its export has writ
 GONE_TRIES = 5  # failed asks in a row (the game gone, the editor busy) before the indexer gives up
 ASIDE_TRIES = 3  # tries of a piece of background work (the level's snapshot) before it is left out of the run
 ASIDE_RETRY_SECONDS = 20.0
+WAIT_FOR_EXPORT_SECONDS = 900  # the longest a run waits for the export (wait_for_index), as the manifest's own wait
+WAIT_TICK_SECONDS = 2.0  # how often a wait for the export says how far it is
 
 
 def digest(codex_root, rel):
@@ -287,6 +310,26 @@ def digest(codex_root, rel):
     return first
 
 
+def kind_of(rel):
+    """A codex path's kind: its top folder ("blueprints", "data", "source"...), "other" for a file at the top."""
+    rel = str(rel).replace("\\", "/")
+    return rel.split("/", 1)[0] if "/" in rel else "other"
+
+
+def codex_kinds(codex_root):
+    """{kind_of(path): how many} of the codex's files now, the VOLATILE and hidden ones excepted (what a harness
+    written while the export ran had: agents/session.py, read_summary)."""
+    kinds = {}
+    for folder, dirs, names in os.walk(codex_root):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in names:
+            rel = os.path.relpath(os.path.join(folder, name), codex_root).replace(os.sep, "/")
+            if rel in VOLATILE or name.startswith("."):
+                continue
+            kinds[kind_of(rel)] = kinds.get(kind_of(rel), 0) + 1
+    return kinds
+
+
 class Indexer:
     """The plugin's export fetched as it is written, in a thread of its own: a run starts on the codex there is, and its
     agent is told what arrives while it works (agents/session.py, news). Each fetch that brings files is a batch: its
@@ -302,7 +345,9 @@ class Indexer:
         self.first_map = first_map
         self.on_done = on_done or (lambda: None)  # (once the export is in: the codex's index written again)
         self.lock = threading.Lock()
-        self.batches = []  # [{"n", "at": time.time(), "files": [{"path", "kind", "line"}]}]
+        # [{"n", "at": time.time(), "files": [{"path", "kind", "line", "was", "hash"}]}]; was, hash: the plugin's hash
+        # of the file before this batch and after it (None: not known, as for the level's snapshot)
+        self.batches = []
         self.listeners = []  # callables(batch), called from the indexer's thread (the background researcher)
         self.running = False
         self.done = 0  # the export's files written, of total
@@ -313,6 +358,9 @@ class Indexer:
         self.error = None
         self.export = None  # the manifest's last word on the export
         self.working = []  # what aside() is still writing (its names: "level snapshot")
+        # The batches that came while the run waited for the export (wait_for_index, cli.prepare): part of the codex
+        # the run starts on, so never told as news (agents/session.py)
+        self.waited_batches = 0
         self._stop = threading.Event()
         self.thread = None
 
@@ -364,12 +412,15 @@ class Indexer:
             elif export.get("ran") and not self.running:
                 self.done = self.total  # (the end's answer has no progress: an export that ended well wrote it all)
         if announce and res.get("arrived"):
-            self._arrive(res["arrived"])
+            self._arrive(res["arrived"], res.get("hashes"))
         self._write_status()
 
-    def _arrive(self, arrived):
-        """A batch of files ([(codex path, "new" or "changed")]): kept, written down, told to the listeners."""
-        files = [{"path": p, "kind": kind, "line": digest(self.root, p)} for p, kind in arrived]
+    def _arrive(self, arrived, hashes=None):
+        """A batch of files ([(codex path, "new" or "changed")], with {codex path: [hash before, after]}): kept, written
+        down, told to the listeners."""
+        hashes = hashes or {}
+        files = [{"path": p, "kind": kind, "line": digest(self.root, p), "was": (hashes.get(p) or [None, None])[0],
+                  "hash": (hashes.get(p) or [None, None])[1]} for p, kind in arrived]
         with self.lock:
             batch = {"n": len(self.batches) + 1, "at": time.time(), "files": files}
             self.batches.append(batch)
@@ -430,10 +481,12 @@ class Indexer:
                 print(f"codex: a listener failed at the end: {e}")
 
     def status(self):
-        """{"running", "done", "total", "files", "batches", "seconds", "finished", "error", "working"}."""
+        """{"running", "done", "total", "files", "batches", "seconds", "finished", "error", "working"}; seconds: how
+        long the export has taken, up to now while it runs, else to its end."""
         with self.lock:
+            seconds = (self.finished_at or time.time()) - self.started
             return {"running": self.running, "done": self.done, "total": self.total, "files": self.files,
-                    "batches": len(self.batches), "seconds": round(time.time() - self.started, 1),
+                    "batches": len(self.batches), "seconds": round(seconds, 1),
                     "finished": self.finished_at is not None, "error": self.error, "working": list(self.working)}
 
     def _write_status(self):
@@ -442,6 +495,24 @@ class Indexer:
                 json.dump(self.status(), f)
         except OSError:
             pass
+
+    def wait(self, timeout, tick=None, until=None):
+        """Wait until the export is in, `timeout` seconds pass or until() is true (the user pressed Stop, the plugin
+        went), calling tick(progress) about every WAIT_TICK_SECONDS. The export goes on either way. Returns whether
+        it is in."""
+        t0, said = time.time(), None
+        while self.status()["running"]:
+            now = time.time()
+            if now - t0 >= timeout or (until is not None and until()):
+                break
+            if tick is not None and (said is None or now - said >= WAIT_TICK_SECONDS):
+                said = now
+                tick(progress(self.status()))
+            if self.thread is not None:
+                self.thread.join(0.1)
+            else:
+                time.sleep(0.1)
+        return not self.status()["running"]
 
     def since(self, n):
         """The batches after the n-th."""
@@ -457,6 +528,14 @@ def progress(status):
     if not status.get("total"):
         return "starting, nothing written yet"
     return f"{status.get('done')} of {status.get('total')} written"
+
+
+def export_words(status):
+    """progress() with "the export" before it, for a line that goes on after it: "the export is starting" before the
+    export has counted its files, else "the export 412 of 983 written"."""
+    if not status.get("total"):
+        return "the export is starting"
+    return f"the export {progress(status)}"
 
 
 class View:
@@ -524,6 +603,23 @@ def batch_text(batch):
     return "".join(f"{'+' if f['kind'] == 'new' else '~'} codex/{f['path']}  {f['line']}\n" for f in batch["files"])
 
 
+# An absolute POSIX path redact.Redactor leaves (/private/..., /var/..., /tmp/...): not after ~, <project> or [path],
+# and not an Unreal asset's path (/Game/..., /Script/..., /Engine/...: no folder on this machine)
+OTHER_PATH = re.compile(r"(?<![\w.~>\]/])/(?!(?:Game|Script|Engine)/)(?:[^/\s'\"]+/)+([^/\s'\"]*)")
+
+
+def error_words(e, project=None):
+    """Why something failed, in one line (up to 200 characters) that names no folder on this machine: it goes into
+    report.json and the plugin's result. A file error's reason and the file's name; else the error's first line with
+    the project's and home folders, other absolute paths and secrets taken out (redact.Redactor)."""
+    if isinstance(e, OSError) and e.strerror:
+        text = e.strerror + (f": {os.path.basename(str(e.filename))}" if e.filename else "")
+    else:
+        text = (str(e).strip().splitlines() or [type(e).__name__])[0]
+    text = redact.Redactor(project=project).text(text)
+    return OTHER_PATH.sub(lambda m: "[path]/" + m.group(1), text)[:200]
+
+
 def build(project, path=None, game=None, export=True, engine=None, stream=False, first_map=None):
     """Make (or refresh) a project's codex. path: the project on this machine (Unreal: the .uproject; Unity, Godot:
     the folder), for its files and the commandlet; game: the live game, for level.txt; engine: the game's engine
@@ -551,12 +647,15 @@ def build(project, path=None, game=None, export=True, engine=None, stream=False,
                 fetched = fetch_from_plugin(game, codex.root, export="auto" if export else "skip")
         except Exception as e:
             print(f"codex: couldn't fetch the code from the plugin: {e}")
+            codex.fetch_error = error_words(e, path)
         if fetched is not None:
+            codex.source = "plugin"
             print(f"codex: {fetched['files']} files from the plugin ({fetched['fetched']} new or changed, "
                   f"{fetched['removed']} gone); export: {fetched.get('export')}")
     if path and fetched is None:
         # (a plugin without the codex ops: read the project's files directly)
         eng.build_local(path, codex.root, export=export)
+        codex.source = "project"
     if game is not None and codex.indexer is not None:
         # The level's snapshot reads every actor of the running level (on a big World Partition map, tens of
         # thousands at a few frames a second: minutes): written while the run works, told when it is in

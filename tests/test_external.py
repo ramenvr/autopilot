@@ -3,9 +3,11 @@
 that take long answered "still going" and given to `wait`, frames handed over as images, the decision model's key,
 brain.json, and the agent's transcript kept with a shared run (autopilot/transcripts.py)."""
 
+import base64
 import io
 import json
 import os
+import re
 import threading
 import time
 import types
@@ -118,6 +120,101 @@ def test_a_run_is_worked_on_through_the_mcp_front(started, tmp_path):
     # (frames still answers: a describer may still be looking; this game isn't filmed)
     looked = settled(front, front.call("frames", {"episode": 1}))
     assert not looked["isError"] and "isn't filmed" in text_of(looked)
+
+
+def test_an_outside_run_logs_what_its_agent_is_given(started, tmp_path):
+    front, control, box = started
+    settled(front, front.call("start_run", {"request": "Verify that the crate opens"}))
+    desk = control.desk
+    run = tmp_path / "memory" / "fake" / "runs" / "r1"
+    instructions = (run / "INSTRUCTIONS.md").read_text(encoding="utf-8")
+    request = (run / "REQUEST.md").read_text(encoding="utf-8")
+    with open(desk.session.log, encoding="utf-8") as f:
+        lines = [line for line in f.read().splitlines() if "] instructions sizes: " in line]
+    assert len(lines) == 1, lines
+    sizes = json.loads(lines[0].split("] instructions sizes: ", 1)[1])
+    assert sizes == {"instructions": len(instructions), "request": len(request), "start": len(desk.opening),
+                     "inline": request in desk.opening}
+    assert sizes["inline"] is True  # (the fake game's briefing is short)
+    assert "crate" not in lines[0] and "Verify" not in lines[0]  # (numbers only, never the text)
+    desk.session.stop = lambda: True  # (the tab's Stop)
+    box["thread"].join(30)
+
+
+def test_an_outside_agent_gets_the_shorter_briefing_and_instructions(started, tmp_path):
+    front, control, box = started
+    folder = tmp_path / "memory" / "fake" / "codex"
+    folder.mkdir(parents=True)
+    (folder / "README.md").write_text("".join(f"- Parent_{i} (25): " + "b" * 150 + "\n" for i in range(120)),
+                                      encoding="utf-8")
+    settled(front, front.call("start_run", {"request": "Verify that the crate opens"}))
+    run = tmp_path / "memory" / "fake" / "runs" / "r1"
+    request = (run / "REQUEST.md").read_text(encoding="utf-8")
+    part = request[request.index("## codex/README.md"):].split("\n\n")[0]
+    assert len(part) <= sessionmod.README_PART + 200 and "all of it (120 lines) is in codex/README.md" in part
+    # The kit's longer parts are there to read when the instructions say so
+    instructions = (run / "INSTRUCTIONS.md").read_text(encoding="utf-8")
+    assert "runs/r1/KIT_MORE.md" in instructions and "## Reacting in time" not in instructions
+    assert "## Reacting in time" in (run / "KIT_MORE.md").read_text(encoding="utf-8")
+    assert "## Reacting in time" in text_of(front.call("read_file", {"path": "runs/r1/KIT_MORE.md"}))
+    assert "class Harness" in text_of(front.call("read_file", {"path": "autopilot/kit/harness.py"}))
+    control.desk.session.stop = lambda: True  # (the tab's Stop)
+    box["thread"].join(30)
+
+
+def reads(text, tmp_path):
+    """How many read_file calls read all of text, as an agent reads INSTRUCTIONS.md."""
+    from autopilot.agents.files import FileTools
+
+    (tmp_path / "runs" / "r").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "runs" / "r" / "I.md").write_text(text, encoding="utf-8", newline="\n")
+    files, calls, offset = FileTools(str(tmp_path), "runs/r", sessionmod.PACKAGE), 0, 1
+    while True:
+        answer = files.read_file("runs/r/I.md", offset=offset)
+        calls += 1
+        on = re.search(r"read on from line (\d+)\)$", answer.rsplit("\n", 1)[-1])
+        if not on or calls > 20:
+            return calls
+        offset = int(on.group(1))
+
+
+def test_an_outside_agents_instructions_are_shorter_and_say_where_the_rest_is(tmp_path):
+    from autopilot import engines
+
+    assert sessionmod.CONTRACT in sessionmod.SYSTEM
+    for name, engine in engines.ENGINES.items():
+        own = sessionmod.system_prompt(engine, "runs/r")
+        text = external.instructions_text(engine, "runs/r", "r-1")
+        more = sessionmod.kit_more(engine)
+        assert len(own) - len(sessionmod.system_prompt(engine, "runs/r", short=True)) >= 21000, name
+        # the contract: read in the kit, not quoted
+        assert "autopilot/kit/harness.py with read_file" in text and "class Harness" not in text
+        assert "The contract's docstrings" not in text
+        # the kit's reference sections read on demand: listed, with where they are, and whole in KIT_MORE.md
+        assert "runs/r/KIT_MORE.md" in text
+        for start in sessionmod.KIT_ON_DEMAND:
+            title = next(line[3:] for line in more.splitlines() if line.startswith("## " + start))
+            assert f"\n- {title}: " in text and f"\n## {title}\n" not in text, (name, title)
+        for kept in ("## Controllers", "## The harness (kit.harness", "## The plan (", "## What makes a harness"):
+            assert kept in text and kept not in more, (name, kept)
+        if name != "unreal":
+            assert "## The engine: " in text
+        # nothing of the kit is lost: each of its lines is in the instructions or in KIT_MORE.md
+        lost = [line for line in sessionmod.kit_doc(engine).splitlines() if line.strip() and line not in text
+                and line not in more]
+        assert not lost, (name, lost[:3])
+    unreal = external.instructions_text(engines.get("unreal"), "runs/20261124-060037", "20261124-060037-0000abcd")
+    assert reads(unreal, tmp_path) == 3  # (it was 4 when the instructions quoted all of the kit)
+
+
+def test_the_agent_is_told_where_the_rest_of_the_kit_is():
+    short = external.start_text("r1-ab", "fake", "Open the crate", "Request: Open the crate\n\nbrief", "runs/r1")
+    long = external.start_text("r1-ab", "fake", "Open the crate", "b" * 60000, "runs/r1")
+    for text in (short, long):
+        assert "runs/r1/KIT_MORE.md" in text and "autopilot/kit/harness.py" in text
+    with open(os.path.join(sessionmod.PACKAGE, "assistants", "SKILL.md"), encoding="utf-8") as f:
+        skill = f.read()
+    assert "KIT_MORE.md" in skill and "autopilot/kit/harness.py" in skill
 
 
 def test_file_calls_are_never_held_up_by_a_call_still_going(started):
@@ -333,6 +430,188 @@ def test_frames_are_handed_over_as_images_and_count_for_a_visual_report(tmp_path
     shutil.rmtree(session.run_dir)
     lost = desk.call("frames", {"episode": 1})
     assert "files are gone" in text_of(lost) and not [c for c in lost["content"] if c["type"] == "image"]
+
+
+def players_session(tmp_path, monkeypatch, players=2, looks_itself=True, share=False):
+    """A session whose run has played an episode, with a recorder stub as media.Recorder is in a game of several
+    players: player 1's, its `others` the other players' (each with frames of its own)."""
+    monkeypatch.setattr(codex, "MEMORY", str(tmp_path / "memory"))
+    session = sessionmod.Session(Game(FakeLink()), "fake", "Reach the gate together", "r1")
+    session.looks_itself = looks_itself
+    session.marker = "r1-abcd" if looks_itself else None
+    base = os.path.join(session.run_dir, "telemetry") if share else session.run_dir
+    link = types.SimpleNamespace(hello={"features": ["media", "players", "instances"]})
+
+    def stub(player):
+        return types.SimpleNamespace(frames=vision.Frames(), link=link, received=True, problem=None, confirmed=True,
+                                     missing=lambda: None, player=player, base=base,
+                                     folder=os.path.join(base, "media"), others={}, players_missing=lambda e=None: {})
+
+    recorder = stub(1)
+    recorder.others = {k: stub(k) for k in range(2, players + 1)}
+    session.describer = vision.Describer(recorder, "deepseek")
+    session.episodes, session.most_decisions = 1, sessionmod.MIN_JEV_DECISIONS
+    return session, recorder
+
+
+def test_the_outside_agents_report_names_every_players_video(tmp_path, monkeypatch):
+    report = {"outcome": "achieved", "summary": "Both reached the gate", "evidence": []}
+    session, _ = players_session(tmp_path, monkeypatch)
+    answer = session.do_report(dict(report))
+    assert answer.startswith("Reported. You can stop now.\n")
+    # Paths in this game's folder, as its file tools take them; the one the tab plays is said
+    assert "player 1: runs/r1/media/recording-1.mp4" in answer
+    assert "player 2: runs/r1/media/recording-1-p2.mp4" in answer
+    assert "the Autopilot tab plays player 1's" in answer
+    # The episode the report names, in a shared run's folder; 3 players
+    session, _ = players_session(tmp_path, monkeypatch, players=3, share=True)
+    session.episodes = 2
+    answer = session.do_report(dict(report, episode=1))
+    assert "episode 1" in answer and "runs/r1/telemetry/media/recording-1-p3.mp4" in answer
+    assert "recording-2" not in answer
+    # A player the plugin never pictured has no video to name
+    session, recorder = players_session(tmp_path, monkeypatch, players=3)
+    recorder.others[3].confirmed = False
+    answer = session.do_report(dict(report))
+    assert "recording-1-p2.mp4" in answer and "-p3" not in answer
+
+
+def test_a_one_player_or_inner_agents_report_answer_is_as_before(tmp_path, monkeypatch):
+    report = {"outcome": "achieved", "summary": "Reached the gate", "evidence": []}
+    session, _ = players_session(tmp_path, monkeypatch, players=1)
+    assert session.do_report(dict(report)) == "Reported. You can stop now."
+    # An agent Autopilot runs itself (not the outside agent): as before, in a game of several players too
+    session, _ = players_session(tmp_path, monkeypatch, players=2, looks_itself=False)
+    assert session.do_report(dict(report)) == "Reported. You can stop now."
+    # Every other player's never pictured: nothing to name
+    session, recorder = players_session(tmp_path, monkeypatch, players=2)
+    recorder.others[2].confirmed = False
+    assert session.do_report(dict(report)) == "Reported. You can stop now."
+
+
+def filmed_players(tmp_path, monkeypatch, **k):
+    """players_session with episode 1 played and filmed: player 1's frames at game times 30.0, 30.25... (its summary's
+    t=0 is 30.0), player 2's a little after each (0.1 s) on a game clock of its own, 0.83 s behind player 1's (each
+    player's world keeps its own time). (session, recorder)"""
+    session, recorder = players_session(tmp_path, monkeypatch, **k)
+    t0 = time.time()
+    for i in range(20):
+        recorder.frames.add(f"p1-{i}".encode(), t=30.0 + i * 0.25, wall=t0 + i * 0.25)
+        if 2 in recorder.others:
+            recorder.others[2].frames.add(f"p2-{i}".encode(), t=29.17 + 0.1 + i * 0.25, wall=t0 + 0.1 + i * 0.25)
+    with open(os.path.join(session.run_dir, "trace1.jsonl"), "w", encoding="utf-8") as f:
+        f.write(json.dumps({"kind": "start", "wall": t0}) + "\n")
+        f.write(json.dumps({"kind": "obs", "wall": t0, "t": 30.0}) + "\n")
+        f.write(json.dumps({"kind": "end", "wall": t0 + 5, "t": 34.75}) + "\n")
+    return session, recorder
+
+
+def test_frames_of_another_player_are_that_players(tmp_path, monkeypatch):
+    session, recorder = filmed_players(tmp_path, monkeypatch)
+    # Player 2's frames of the same stretch, its times on player 1's clock (the summary's t=, the only one the agent
+    # knows): player 2's frame 0.1 s after player 1's t=1.00 is at t=1.10
+    text, jpegs = session.frames(1, start=0.9, end=3.0, count=4, player=2)
+    assert jpegs == [b"p2-4", b"p2-6", b"p2-9", b"p2-11"]
+    assert text == ("4 frames of 8 (episode 1, player 2), in order, at t= 1.10, 1.60, 2.35, 2.85 s (seconds from the "
+                    "episode's start, as its summary's t=) (run r1-abcd):")
+    assert session.events[-1]["text"] == "Took 4 frames of episode 1, player 2"
+    # Without player 1's frames to set the clocks side by side, the episode's start does it
+    recorder.frames.items.clear()
+    assert session.frames(1, start=0.9, end=3.0, count=4, player=2) == (text, jpegs)
+    # Through the tool, while the run goes and once it has ended
+    desk = external.Desk("codex")
+    desk.marker = session.marker
+    desk.open(session, None, "opening")
+    result = desk.call("frames", {"episode": 1, "start": 0.9, "end": 3.0, "count": 2, "player": 2})
+    images = [base64.b64decode(c["data"]) for c in result["content"] if c["type"] == "image"]
+    assert images == [b"p2-4", b"p2-11"] and "player 2" in text_of(result)
+    desk.end("reported")
+    after = desk.call("frames", {"episode": 1, "start": 0.9, "end": 3.0, "count": 2, "player": 2})
+    images = [base64.b64decode(c["data"]) for c in after["content"] if c["type"] == "image"]
+    assert images == [b"p2-4", b"p2-11"] and "has ended" in text_of(after)
+
+
+def test_frames_of_a_player_not_filmed_says_so(tmp_path, monkeypatch):
+    session, recorder = filmed_players(tmp_path, monkeypatch)
+    events = len(session.events)
+    assert session.frames(1, player=3) == ("No frames of player 3: only players 1 and 2 are filmed in this run.", [])
+    for wrong in (0, -1, "two", 1.5, True):
+        text, jpegs = session.frames(1, player=wrong)
+        assert text.startswith(f"No player {wrong!r} here: player is a player's number") and not jpegs
+    assert not session.alerts  # (the agent's to fix)
+    # The reason the run knows, when it knows one: a plugin that records player 1 only
+    session, recorder = filmed_players(tmp_path, monkeypatch, players=1)
+    why = "this plugin records player 1 only (an Autopilot plugin built before per-player recording, or Roblox Studio)"
+    recorder.players_missing = lambda episode=None: {2: why}
+    assert session.frames(1, player=2) == (f"No frames of player 2: {why}.", [])
+    assert session.frames(1, player=3) == ("No frames of player 3: only player 1 is filmed in this run.", [])
+    assert len(session.events) >= events
+    # A player recorded but not seen in the stretch: no alert about the game's window (player 1's picture came)
+    session, recorder = filmed_players(tmp_path, monkeypatch, players=3)
+    text, jpegs = session.frames(1, player=3)
+    assert text.startswith("No frames of episode 1, player 3") and not jpegs and not session.alerts
+
+
+def test_why_a_player_has_no_frames_names_no_full_path(tmp_path, monkeypatch):
+    """A player whose video couldn't be made says where its pictures are: in the tool's answer (which the agent may
+    copy into its report, which is synced) that folder is named in the game's folder, as report answers name videos."""
+    session, recorder = filmed_players(tmp_path, monkeypatch, players=3)
+    pictures = os.path.join(session.run_dir, "media", "frames-1-p3")
+    recorder.players_missing = lambda episode=None: {
+        3: f"the video couldn't be made (RuntimeError: x): its pictures are in {pictures}"}
+    why = "No frames of episode 1, player 3: the video couldn't be made (RuntimeError: x): its pictures are in "
+    text, jpegs = session.frames(1, player=3)
+    assert text == f"{why}runs/r1/media/frames-1-p3." and not jpegs
+    session.describer.unavailable = lambda: None  # (a describer that could look: the answer comes before it does)
+    session.looks_itself = False
+    assert session.describe_frames(["Where is the gate?"], episode=1, player=3) == text
+
+
+def test_frames_without_player_are_player_ones_as_before(tmp_path, monkeypatch):
+    session, _ = filmed_players(tmp_path, monkeypatch)
+    text, jpegs = session.frames(1, start=0.9, end=3.0, count=4)
+    assert jpegs == [b"p1-4", b"p1-7", b"p1-9", b"p1-12"]
+    assert text == ("4 frames of 9 (episode 1), in order, at t= 1.00, 1.75, 2.25, 3.00 s (seconds from the episode's "
+                    "start, as its summary's t=) (run r1-abcd):")
+    shown = {k: session.events[-1][k] for k in ("kind", "text", "detail")}
+    assert shown == {"kind": "look", "text": "Took 4 frames of episode 1",
+                     "detail": "At t= 1.00, 1.75, 2.25, 3.00 s of it"}
+    assert session.frames(1, start=0.9, end=3.0, count=4, player=1) == (text, jpegs)
+    assert {k: session.events[-1][k] for k in ("kind", "text", "detail")} == shown
+    assert session.frames(1, start=0.9, end=3.0, count=4, player=None) == (text, jpegs)
+
+
+def test_frames_and_describe_frames_take_a_player():
+    tools = {t["name"]: t for t in mcp.tools()}
+    for name in ("frames", "describe_frames"):
+        assert tools[name]["inputSchema"]["properties"]["player"] == {"type": "integer"}
+        assert "player: whose view, in a game of several players (default 1)" in tools[name]["description"]
+        assert "player" not in tools[name]["inputSchema"].get("required", [])
+    assert "player" in dict((n, s) for n, _, s in sessionmod.TOOL_SPECS)["describe_frames"]["properties"]
+    assert unknown_args_none("frames", {"episode": 1, "player": 2})
+    assert unknown_args_none("describe_frames", {"questions": ["?"], "player": 2})
+    # The describer is briefed how to ask for another player's view
+    assert "player=<n: only for another player's view>" in external.EXTERNAL_TOOLS
+
+
+def unknown_args_none(tool, args):
+    return sessionmod.unknown_args(tool, args, sessionmod.TOOL_SPECS + (external.FRAMES_SPEC,)) is None
+
+
+def test_the_players_note_says_each_player_is_filmed_when_the_plugin_records_each():
+    net = {"mode": "listen_server", "players": 2, "player": 1}
+    before = sessionmod.players_note(net)
+    filmed = sessionmod.players_note(net, ["media", "players", "instances"])
+    assert filmed == before + " Each player is filmed: frames and describe_frames take player=n for player n's view."
+    # A plugin that records player 1 only, or one player: as before
+    assert sessionmod.players_note(net, ["media", "players"]) == before
+    assert sessionmod.players_note({"mode": "listen_server", "players": 1}, ["players", "instances"]) == ""
+    host = sessionmod.network_note(net, None, ["players", "instances"])
+    assert host.endswith("Each player is filmed: frames and describe_frames take player=n for player n's view.")
+    assert sessionmod.network_note(net) == sessionmod.network_note(net, None, ["players"])
+    client = sessionmod.network_note({"mode": "client", "server_world": "/Game/UEDPIE_0_Map.Map", "clients": 2,
+                                      "players": 2}, None, ["players", "instances"])
+    assert "Each player is filmed" in client
 
 
 def test_the_mcp_front_lists_its_tools_and_finds_the_service(tmp_path, monkeypatch):
