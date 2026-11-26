@@ -1,5 +1,9 @@
 """Finding the way (kit.nav, and walk_to on it) in simulated levels (tests/navsim.py: simulated time, no engine)."""
 
+import math
+import random
+import time
+
 import navsim
 import pytest
 
@@ -127,3 +131,90 @@ def test_walk_to_gives_up_soon_when_the_view_wont_turn():
     assert res is not None and not res.ok
     assert "turn" in res.why
     assert seconds < 4.0
+
+
+# -- a goal the map shows no way to (here inside another player's felt outline): the ~5 s pauses of the CircleEachOther
+# replays, 26 Nov, were the tick thread inside nav.plan from _walk_on, which searched three boxes, then again ---------
+
+def felt_body(goal, half=25.0):
+    """A level with a body (another player, 50 wide) at goal, and a map that felt it with sonar from all round it, as
+    walking round and round it does."""
+    world = navsim.World(walls=[(goal.x - half, goal.y - half, goal.x + half, goal.y + half)])
+    nav = NavMap()
+    for n in range(12):
+        a = math.radians(30 * n)
+        world.pos = Vec(goal.x + 110 * math.cos(a), goal.y + 110 * math.sin(a), Z)
+        world.yaw = (30 * n + 180) % 360
+        nav.observe(world.pos, world.yaw, look(world), t=10.0 + 0.2 * n)
+    return world, nav
+
+
+def test_plan_gives_up_at_once_on_a_body_it_cant_get_near():
+    goal = Vec(1000, 0, Z)
+    _, nav = felt_body(goal)
+    start = Vec(1400, 0, Z)
+    real, looked = nav.blocked_key, []
+
+    def counted(key):
+        looked.append(key)
+        return real(key)
+
+    nav.blocked_key = counted
+    t0 = time.perf_counter()
+    first = nav.plan(start, goal, 40, Z)
+    n1 = len(looked)
+    # (what _walk_on does next when no way is found: forget what may have moved, and plan again)
+    nav.forget(12.5 - 5.0)
+    nav.plan(start, goal, 40, Z)
+    n2 = len(looked) - n1
+    seconds = time.perf_counter() - t0
+    assert first is None, "no way to within 40 of a body's middle"
+    assert n1 <= 5000 and n2 <= 5000, f"cells looked up: {n1} then {n2}"
+    assert seconds < 0.5, f"{seconds:.2f} s on the tick thread"
+
+
+def test_walk_to_a_body_it_cant_get_near_never_holds_a_tick():
+    goal = Vec(400, 0, Z)
+    world = navsim.World(walls=[(goal.x - 25, goal.y - 25, goal.x + 25, goal.y + 25)])
+    worst = [0.0]
+
+    def timed(gen):
+        while True:
+            t0 = time.perf_counter()
+            try:
+                next(gen)
+            except StopIteration as s:
+                return s.value
+            finally:
+                worst[0] = max(worst[0], time.perf_counter() - t0)
+            assert worst[0] < 0.5, f"one tick of the walk held the thread {worst[0]:.2f} s"
+            yield
+
+    res, _ = world.run(timed(walk_to(world.game(), goal, within=40, timeout=6)), limit=8)
+    assert res is not None and not res.ok, res  # (it can't get within 40 of the body's middle)
+    assert worst[0] < 0.5
+
+
+def test_walled_in_check_never_changes_the_way(monkeypatch):
+    rnd = random.Random(7)
+    cases = []
+    for _ in range(300):
+        nav = NavMap()
+        k = nav._k(Z)
+        goal = Vec(rnd.uniform(200, 800), rnd.uniform(-300, 300), Z)
+        for _ in range(rnd.randint(0, 150)):
+            nav.hits[(rnd.randint(-5, 40), rnd.randint(-15, 15), k)] = 1.0
+        if rnd.random() < 0.4:  # (a closed ring round the goal, some cells wide)
+            gi, gj, _ = nav.key(goal)
+            r = rnd.randint(1, 4)
+            for d in range(-r, r + 1):
+                for cell in ((gi + d, gj - r), (gi + d, gj + r), (gi - r, gj + d), (gi + r, gj + d)):
+                    nav.hits[cell + (k,)] = 1.0
+        cases.append((nav, Vec(0, 0, Z), goal, rnd.choice([40, 100, 200])))
+    walled = sum(bool(nav.walled_in(s, g, w, Z)) for nav, s, g, w in cases)
+    way = lambda w: None if w is None else [(p.x, p.y, p.z) for p in w]
+    checked = [way(nav.plan(s, g, w, Z, margin=300)) for nav, s, g, w in cases]
+    monkeypatch.setattr(NavMap, "walled_in", lambda self, *a: False)
+    searched = [way(nav.plan(s, g, w, Z, margin=300)) for nav, s, g, w in cases]
+    assert checked == searched
+    assert walled >= 30, walled  # (the check had walled-in goals to decide, not only open ones)
