@@ -1060,7 +1060,11 @@ class Session:
             pass
 
         def check_harness(file="harness.py", **kwargs):
-            """runtime.check on this run's harness (as the kit's reference says): the harness as it is on disk now."""
+            """runtime.check on this run's harness (as the kit's reference says): the harness as it is on disk now.
+            The path the agent reads it under (runs/<id>/harness.py, ./runs/<id>/harness.py) names this run's file."""
+            own = file.removeprefix("./")
+            if own.startswith(self.run_rel + "/"):
+                file = own[len(self.run_rel) + 1:]
             path = os.path.join(self.run_dir, file)
             if not os.path.exists(path):
                 return f"{self.run_rel}/{file} doesn't exist yet: write it first."

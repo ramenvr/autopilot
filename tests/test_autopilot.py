@@ -1860,6 +1860,30 @@ def test_probe_namespace_has_check_harness(game, tmp_path, monkeypatch):
     assert "doesn't exist yet" in ns["check_harness"]()
 
 
+def test_check_harness_takes_the_path_the_agent_reads_the_file_under(game, tmp_path, monkeypatch):
+    """The agent reads and writes its harness as runs/<id>/harness.py, and passes that path to check_harness too: it is
+    this run's harness, not runs/<id>/runs/<id>/harness.py. Every other path works as before, and a file that isn't
+    there still says so."""
+    import io
+
+    s = crate_session(game, tmp_path, monkeypatch)
+    check = s._namespace(io.StringIO())["check_harness"]
+    assert "setup() ran" in check(only=[])  # (the bare name, as before)
+    assert "setup() ran" in check("harness.py", only=[])
+    assert "setup() ran" in check("runs/r1/harness.py", only=[])
+    assert "setup() ran" in check("./runs/r1/harness.py", only=[])
+    # a file that really isn't there, named either way
+    assert check("nope.py") == "runs/r1/nope.py doesn't exist yet: write it first."
+    assert check("runs/r1/nope.py") == "runs/r1/nope.py doesn't exist yet: write it first."
+    # other paths as before: another run's harness by a path from this run's folder, or an absolute one, still loads
+    other = tmp_path / "fake" / "runs" / "r2"
+    other.mkdir(parents=True)
+    (other / "harness.py").write_text((tmp_path / "fake" / "runs" / "r1" / "harness.py").read_text(encoding="utf-8"),
+                                      encoding="utf-8")
+    assert "setup() ran" in check("../r2/harness.py", only=[])
+    assert "setup() ran" in check(str(other / "harness.py"), only=[])
+    assert check("runs/r2/harness.py") == "runs/r1/runs/r2/harness.py doesn't exist yet: write it first."
+
 class InputNotesLink(FakeLink):
     """A game whose context also says how input reaches it (Unity's "input": Hands.Capabilities())."""
 
